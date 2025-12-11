@@ -1,14 +1,21 @@
-// 必ず自分のFirebaseプロジェクトの値に差し替え
+// src/firebase.js
 import { initializeApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
+import Constants from 'expo-constants';
+
+const extra =
+  (Constants.expoConfig && Constants.expoConfig.extra) ||
+  (Constants.manifest && Constants.manifest.extra) ||
+  {};
 
 const firebaseConfig = {
-  apiKey: 'AIzaSyDxM4skyoBwXHIUFn_bCqTfIeW3mRbtvvA',
-  authDomain: 'smart-bukatsu.firebaseapp.com',
-  projectId: 'smart-bukatsu',
-  storageBucket: 'smart-bukatsu.firebasestorage.app',
-  messagingSenderId: '217234021892',
-  appId: '1:217234021892:web:9a0313f0620b0c88e31f51',
+  apiKey: extra.firebaseApiKey,
+  authDomain: extra.authDomain,
+  projectId: extra.projectId,
+  storageBucket: extra.storageBucket,
+  messagingSenderId: extra.messagingSenderId,
+  appId: extra.appId,
+  measurementId: extra.measurementId,
 };
 
 const app = initializeApp(firebaseConfig);

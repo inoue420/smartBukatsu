@@ -1,41 +1,54 @@
-# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
+ # Learn more https://docs.github.com/en/get-started/get-started-with-git/ignoring-files
 
-# dependencies
-node_modules/
+ # dependencies
+ node_modules/
 
-# Expo
-.expo/
-dist/
-web-build/
-expo-env.d.ts
+ # Expo
+ .expo/
+ dist/
+ web-build/
+ expo-env.d.ts
 
-# Native
-.kotlin/
-*.orig.*
-*.jks
-*.p8
-*.p12
-*.key
-*.mobileprovision
+ # Native
+ .kotlin/
+ *.orig.*
+ *.jks
+*.keystore
+ *.p8
+ *.p12
+ *.key
+ *.mobileprovision
 
-# Metro
-.metro-health-check*
+ # Metro
+ .metro-health-check*
 
-# debug
-npm-debug.*
-yarn-debug.*
-yarn-error.*
+ # debug
+ npm-debug.*
+ yarn-debug.*
+ yarn-error.*
 
-# macOS
-.DS_Store
-*.pem
+ # macOS
+ .DS_Store
+ *.pem
+*.cer
 
-# local env files
-.env*.local
+# env files（ぜんぶ無視して、雛形だけコミット）
+.env
+.env.*
+!.env.example
 
-# typescript
-*.tsbuildinfo
+ # typescript
+ *.tsbuildinfo
 
-# generated native folders
-/ios
-/android
+ # generated native folders
+ /ios
+ /android
+
+# ビルド成果物（念のため）
+*.apk
+*.aab
+*.ipa
+*.log
+Thumbs.db
+.idea/
+*.iml
