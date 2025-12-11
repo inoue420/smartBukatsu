@@ -1,10 +1,11 @@
+// App.js
 import 'react-native-gesture-handler';
 import React from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 
 import VideoListScreen from './src/screens/VideoListScreen';
-import AddVideoScreen from './src/screens/AddVideoScreen';
+import AddVideoScreen from './src/screens/AddVideoScreen'; 
 import TaggingScreen from './src/screens/TaggingScreen';
 import HighlightPlayerScreen from './src/screens/HighlightPlayerScreen';
 
