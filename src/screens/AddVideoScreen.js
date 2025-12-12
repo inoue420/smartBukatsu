@@ -1,7 +1,8 @@
 // src/screens/AddVideoScreen.js
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, FlatList } from 'react-native';
-import { Video, ResizeMode } from 'expo-av';
+import { useEvent } from 'expo';
+import { useVideoPlayer, VideoView } from 'expo-video';
 import YoutubePlayer from 'react-native-youtube-iframe';
 
 import { addVideo, addEvent, subscribeEvents } from '../services/firestoreService';
@@ -46,10 +47,14 @@ export default function AddVideoScreen() {
   const [events, setEvents] = useState([]);
 
   // 再生用
-  const videoRef = useRef(null);
-  const [status, setStatus] = useState(null);
   const ytRef = useRef(null);
   const [playing, setPlaying] = useState(false);
+
+  // URL(MP4/HLS) 再生用（expo-video）
+  // nullソースで作っておいて、必要になったら replace() で差し替える方式（公式の推奨パターン）:contentReference[oaicite:3]{index=3}
+  const urlPlayer = useVideoPlayer(null);
+  const { isUrlPlaying } = useEvent(urlPlayer, 'playingChange', { isUrlPlaying: urlPlayer.playing });
+
 
   // URL入力のたびに種別判定
   useEffect(() => {
@@ -61,11 +66,22 @@ export default function AddVideoScreen() {
      // YouTubeっぽいなら YouTube扱いに寄せる（ytIdが取れない場合は後段で警告表示）
      setSourceType('youtube');
      setYtId(id);
+     try { urlPlayer.pause(); } catch {}
    } else {
      setSourceType('url');
      setYtId(null);
    }
   }, [videoUrl]);
+ 
+   // URL(MP4/HLS) のときだけ、player にソース反映
+   useEffect(() => {
+     if (sourceType !== 'url') return;
+     const url = (videoUrl || '').trim();
+     if (!url) return;
+     try {
+       urlPlayer.replace(url);
+     } catch {}
+   }, [sourceType, videoUrl]);
 
   // 保存
   const handleSave = async () => {
@@ -95,7 +111,7 @@ export default function AddVideoScreen() {
     return () => unsub && unsub();
   }, [savedVideoId]);
 
-  // 現在秒取得（expo-av or YouTube）
+  // 現在秒取得（expo-video or YouTube）
   const getCurrentSec = async () => {
     if (sourceType === 'youtube') {
       try {
@@ -105,12 +121,7 @@ export default function AddVideoScreen() {
         return 0;
       }
     } else {
-       try {
-         const st = await videoRef.current?.getStatusAsync?.();
-         if (st?.isLoaded) return st.positionMillis / 1000;
-       } catch {}
-       if (status?.isLoaded) return status.positionMillis / 1000;
-       return 0;
+       return urlPlayer?.currentTime ?? 0;
     }
   };
 
@@ -209,14 +220,28 @@ export default function AddVideoScreen() {
            </View>
          )
        ) : (
-         <Video
-           ref={videoRef}
-           source={{ uri: videoUrl }}
-           style={styles.video}
-           resizeMode={ResizeMode.CONTAIN}
-           useNativeControls
-           onPlaybackStatusUpdate={setStatus}
-         />
+          <>
+            <VideoView
+              style={styles.video}
+              player={urlPlayer}
+              nativeControls
+              contentFit="contain"
+              allowsFullscreen
+            />
+            <View style={styles.row}>
+              <TouchableOpacity
+                style={styles.playBtn}
+                onPress={() => {
+                  try {
+                    if (isUrlPlaying) urlPlayer.pause();
+                    else urlPlayer.play();
+                  } catch {}
+                }}
+              >
+                <Text style={styles.playBtnText}>{isUrlPlaying ? '⏸ 一時停止' : '▶ 再生'}</Text>
+              </TouchableOpacity>
+            </View>
+          </>
        )}
       </View>
 
