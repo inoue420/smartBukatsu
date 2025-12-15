@@ -12,12 +12,13 @@ import {
 } from 'firebase/firestore';
 import { db } from '../firebase';
 
-// videos: { title, sourceType, videoUrl, createdBy, createdAt }
-export async function addVideo({ title, videoUrl, sourceType = 'url', createdBy = 'anon' }) {
+// videos: { title, sourceType, videoUrl, youtubeId?, createdBy, createdAt }
+export async function addVideo({ title, videoUrl, sourceType = 'url', youtubeId = null, createdBy = 'anon' }) {
   const ref = await addDoc(collection(db, 'videos'), {
     title,
     sourceType,
     videoUrl,
+    ...(youtubeId ? { youtubeId } : {}),
     createdBy,
     createdAt: serverTimestamp(),
   });

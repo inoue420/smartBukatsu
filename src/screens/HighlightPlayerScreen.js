@@ -1,18 +1,47 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, FlatList, TextInput, Alert } from 'react-native';
 import { Video, ResizeMode } from 'expo-av';
+import YoutubePlayer from 'react-native-youtube-iframe';
 import { getVideo, subscribeEvents } from '../services/firestoreService';
 import { PLAYBACK_MARGIN_START, PLAYBACK_MARGIN_END } from '../constants';
+
+function parseYouTubeId(rawUrl) {
+  const url = (rawUrl || '').trim();
+  if (!url) return null;
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace('www.', '');
+    if (host === 'youtu.be') {
+      const id = u.pathname.split('/').filter(Boolean)[0];
+      return id || null;
+    }
+    if (host.endsWith('youtube.com')) {
+      const v = u.searchParams.get('v');
+      if (v) return v;
+      const parts = u.pathname.split('/').filter(Boolean);
+      const idx = parts.findIndex((p) => ['shorts', 'embed', 'live'].includes(p));
+      if (idx >= 0 && parts[idx + 1]) return parts[idx + 1];
+    }
+  } catch {}
+  return null;
+}
 
 export default function HighlightPlayerScreen({ route, navigation }) {
   const { videoId } = route.params;
   const videoRef = useRef(null);
+  const ytRef = useRef(null);
   const [video, setVideo] = useState(null);
   const [events, setEvents] = useState([]);
   const [filterText, setFilterText] = useState('シュート,10番'); // 例
   const [playlist, setPlaylist] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const currentIndexRef = useRef(0);
+  const [ytPlaying, setYtPlaying] = useState(false);
+
+  const isYoutube = video?.sourceType === 'youtube';
+  const youtubeId = useMemo(() => {
+    return video?.youtubeId || parseYouTubeId(video?.videoUrl);
+  }, [video]);
 
   useEffect(() => {
     (async () => {
@@ -56,17 +85,31 @@ export default function HighlightPlayerScreen({ route, navigation }) {
   useEffect(() => {
     // クリップ変わったらシーク
     const clip = playlist[currentIndex];
-    if (!clip || !videoRef.current) return;
+    if (!clip) return;
+
+    currentIndexRef.current = currentIndex;
+
+    const startPos = Math.max(clip.startSec - PLAYBACK_MARGIN_START, 0);
+
+    if (isYoutube) {
+      if (!youtubeId) return;
+      ytRef.current?.seekTo?.(startPos, true);
+      setYtPlaying(true);
+      return;
+    }
+
+    if (!videoRef.current) return;
     (async () => {
       await videoRef.current.setStatusAsync({
-        positionMillis: Math.max(clip.startSec - PLAYBACK_MARGIN_START, 0) * 1000,
+        positionMillis: startPos * 1000,
         shouldPlay: true,
       });
     })();
-    currentIndexRef.current = currentIndex;
+
   }, [currentIndex, playlist]);
 
   const handleStatusUpdate = (status) => {
+    if (isYoutube) return; // YouTubeは別ロジック
     if (!status.isLoaded || !status.isPlaying) return;
     const idx = currentIndexRef.current;
     const clip = playlist[idx];
@@ -90,6 +133,33 @@ export default function HighlightPlayerScreen({ route, navigation }) {
     }
   };
 
+  // YouTube: intervalで終端判定して次へ
+  useEffect(() => {
+    if (!isYoutube) return;
+    const timer = setInterval(async () => {
+      if (!ytPlaying) return;
+      const idx = currentIndexRef.current;
+      const clip = playlist[idx];
+      if (!clip) return;
+
+      try {
+        const t = await ytRef.current?.getCurrentTime?.();
+        if (typeof t !== 'number') return;
+        if (t >= clip.endSec - PLAYBACK_MARGIN_END) {
+          const nextIndex = idx + 1;
+          const nextClip = playlist[nextIndex];
+          if (nextClip) {
+            currentIndexRef.current = nextIndex;
+            setCurrentIndex(nextIndex);
+          } else {
+            setYtPlaying(false);
+          }
+        }
+      } catch {}
+    }, 200);
+    return () => clearInterval(timer);
+  }, [isYoutube, ytPlaying, playlist]);
+
   const playFrom = (index) => {
     if (!playlist[index]) return;
     currentIndexRef.current = index;
@@ -100,14 +170,28 @@ export default function HighlightPlayerScreen({ route, navigation }) {
     <View style={styles.container}>
       {video && (
         <>
-          <Video
-            ref={videoRef}
-            source={{ uri: video.videoUrl }}
-            style={styles.video}
-            resizeMode={ResizeMode.CONTAIN}
-            useNativeControls
-            onPlaybackStatusUpdate={handleStatusUpdate}
-          />
+          {isYoutube ? (
+            <View style={styles.videoWrap}>
+              <YoutubePlayer
+                ref={ytRef}
+                height={220}
+                videoId={youtubeId || ''}
+                play={ytPlaying}
+                onChangeState={(s) => {
+                  if (s === 'ended') setYtPlaying(false);
+                }}
+              />
+            </View>
+          ) : (
+            <Video
+              ref={videoRef}
+              source={{ uri: video.videoUrl }}
+              style={styles.video}
+              resizeMode={ResizeMode.CONTAIN}
+              useNativeControls
+              onPlaybackStatusUpdate={handleStatusUpdate}
+            />
+          )}
 
           <View style={styles.filterRow}>
             <Text style={styles.label}>タグ（AND, カンマ区切り）</Text>
@@ -144,6 +228,7 @@ export default function HighlightPlayerScreen({ route, navigation }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#E0FFFF' },
+  videoWrap: { width: '100%', height: 220, backgroundColor: '#000' },
   video: { width: '100%', height: 220, backgroundColor: '#000' },
   filterRow: { padding: 12 },
   label: { fontWeight: 'bold' },

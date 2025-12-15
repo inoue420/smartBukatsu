@@ -1,12 +1,11 @@
 // src/screens/AddVideoScreen.js
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, FlatList } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, FlatList, KeyboardAvoidingView, Platform } from 'react-native';
 import { useEvent } from 'expo';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import YoutubePlayer from 'react-native-youtube-iframe';
 
 import { addVideo, addEvent, subscribeEvents } from '../services/firestoreService';
-import { TAG_PRESETS } from '../constants';
 
  function parseYouTubeId(rawUrl) {
    const url = (rawUrl || '').trim();
@@ -34,6 +33,13 @@ import { TAG_PRESETS } from '../constants';
    return null;
  }
 
+function splitTags(text) {
+  return String(text || '')
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+ 
 export default function AddVideoScreen() {
   const [title, setTitle] = useState('');
   const [videoUrl, setVideoUrl] = useState('https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4');
@@ -42,9 +48,10 @@ export default function AddVideoScreen() {
   const [ytId, setYtId] = useState(null);
 
   // タグ付け用
-  const [currentTag, setCurrentTag] = useState(TAG_PRESETS[0]);
+  const [tagText, setTagText] = useState('');
   const [pendingStart, setPendingStart] = useState(null);
   const [events, setEvents] = useState([]);
+  const [previewEndSec, setPreviewEndSec] = useState(null);
 
   // 再生用
   const ytRef = useRef(null);
@@ -94,6 +101,7 @@ export default function AddVideoScreen() {
         title,
         videoUrl,
         sourceType,
+        youtubeId: sourceType === 'youtube' ? ytId : null,
         createdBy: 'anon',
       });
       setSavedVideoId(vid);
@@ -125,12 +133,12 @@ export default function AddVideoScreen() {
     }
   };
 
-  const handleStart = async () => {
+  const handleTagStart = async () => {
     const t = await getCurrentSec();
     setPendingStart(t);
   };
 
-  const handleEnd = async () => {
+  const handleTagEnd = async () => {
     if (!savedVideoId) {
       Alert.alert('先に保存', 'タグ付けするには動画を保存してください');
       return;
@@ -139,160 +147,228 @@ export default function AddVideoScreen() {
       Alert.alert('開始が未記録', '「開始」ボタンを先に押してください');
       return;
     }
+    const tags = splitTags(tagText);
+    if (!tags.length) {
+      Alert.alert('タグ未入力', 'タグを入力してください（例：シュート,10番）');
+      return;
+    }
     const endSec = await getCurrentSec();
     if (endSec <= pendingStart) {
       Alert.alert('範囲エラー', '終了時刻が開始より前です');
       return;
     }
     await addEvent(savedVideoId, {
-      tagTypes: [currentTag],
+      tagTypes: tags,
       startSec: pendingStart,
       endSec,
       note: '',
       createdBy: 'anon',
     });
     setPendingStart(null);
+    setTagText('');
   };
 
-  const renderTag = ({ item }) => {
-    const active = currentTag === item;
-    return (
-      <TouchableOpacity onPress={() => setCurrentTag(item)} style={[styles.tagBtn, active && styles.tagBtnActive]}>
-        <Text style={[styles.tagBtnText, active && styles.tagBtnTextActive]}>{item}</Text>
-      </TouchableOpacity>
-    );
+  const playFullFromStart = async () => {
+    setPreviewEndSec(null);
+    if (sourceType === 'youtube') {
+      if (!ytId) return;
+      ytRef.current?.seekTo?.(0, true);
+      setPlaying(true);
+    } else {
+      try {
+        urlPlayer.currentTime = 0; // expo-video: currentTimeをセットでシーク可能
+        urlPlayer.play();
+      } catch {}
+    }
   };
+
+  const playClip = async (startSec, endSec) => {
+    setPreviewEndSec(endSec);
+    if (sourceType === 'youtube') {
+      if (!ytId) return;
+      ytRef.current?.seekTo?.(Math.max(startSec, 0), true);
+      setPlaying(true);
+    } else {
+      try {
+        urlPlayer.currentTime = Math.max(startSec, 0);
+        urlPlayer.play();
+      } catch {}
+    }
+  };
+
+  // クリップ終端で自動停止（YouTube / URL共通）
+  useEffect(() => {
+    if (previewEndSec == null) return;
+    const timer = setInterval(async () => {
+      if (sourceType === 'youtube') {
+        if (!playing) return;
+        try {
+          const t = await ytRef.current?.getCurrentTime?.();
+          if (typeof t === 'number' && t >= previewEndSec) {
+            setPlaying(false);
+            setPreviewEndSec(null);
+          }
+        } catch {}
+      } else {
+        if (!isUrlPlaying) return;
+        try {
+          if ((urlPlayer?.currentTime ?? 0) >= previewEndSec) {
+            urlPlayer.pause();
+            setPreviewEndSec(null);
+          }
+        } catch {}
+      }
+    }, 200);
+    return () => clearInterval(timer);
+  }, [previewEndSec, sourceType, playing, isUrlPlaying]);
 
   return (
-    <View style={styles.container}>
-      {/* 入力エリア */}
-      <Text style={styles.label}>タイトル</Text>
-      <TextInput style={styles.input} value={title} onChangeText={setTitle} placeholder="例）2025/12/11_練習" />
+    <KeyboardAvoidingView
+      style={styles.container}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 80 : 0}
+    >
+      <FlatList
+        data={savedVideoId ? events : []}
+        keyExtractor={(e) => e.id}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        contentContainerStyle={styles.contentContainer}
+        ListHeaderComponent={
+          <View>
+            {/* 入力エリア */}
+            <Text style={styles.label}>タイトル</Text>
+            <TextInput style={styles.input} value={title} onChangeText={setTitle} placeholder="例）2025/12/11_練習" />
 
-      <Text style={styles.label}>動画URL（YouTube または MP4/HLS）</Text>
-     <TextInput
-       style={styles.input}
-       value={videoUrl}
-       onChangeText={(t) => setVideoUrl(t.trim())}
-       placeholder="https://..."
-     />
-
-      <View style={styles.row}>
-        <Text style={styles.small}>検出された種類: {sourceType === 'youtube' ? 'YouTube' : 'URL(MP4/HLS)'}</Text>
-      </View>
-
-      <TouchableOpacity style={styles.saveBtn} onPress={handleSave}>
-        <Text style={styles.saveBtnText}>{savedVideoId ? '上書き保存' : '保存'}</Text>
-      </TouchableOpacity>
-
-      {/* 再生エリア */}
-      <View style={{ height: 12 }} />
-      <Text style={styles.sectionTitle}>プレビュー & タグ付け</Text>
-
-      <View style={styles.playerBox}>
-       {sourceType === 'youtube' ? (
-         ytId ? (
-           <>
-             <YoutubePlayer
-               ref={ytRef}
-               height={220}
-               videoId={ytId}
-               play={playing}
-               onChangeState={(s) => {
-                 if (s === 'ended') setPlaying(false);
-               }}
-             />
-             <View style={styles.row}>
-               <TouchableOpacity style={styles.playBtn} onPress={() => setPlaying(true)}>
-                 <Text style={styles.playBtnText}>▶ 再生</Text>
-               </TouchableOpacity>
-               <TouchableOpacity style={styles.playBtn} onPress={() => setPlaying(false)}>
-                 <Text style={styles.playBtnText}>⏸ 一時停止</Text>
-               </TouchableOpacity>
-             </View>
-           </>
-         ) : (
-           <View style={{ height: 220, justifyContent: 'center', alignItems: 'center', padding: 12 }}>
-             <Text style={{ color: '#fff', fontWeight: 'bold' }}>YouTubeリンクを認識できません</Text>
-             <Text style={{ color: '#fff', marginTop: 6, textAlign: 'center' }}>
-               例）https://www.youtube.com/watch?v=XXXX または https://youtu.be/XXXX
-             </Text>
-           </View>
-         )
-       ) : (
-          <>
-            <VideoView
-              style={styles.video}
-              player={urlPlayer}
-              nativeControls
-              contentFit="contain"
-              allowsFullscreen
+            <Text style={styles.label}>動画URL（YouTube または MP4/HLS）</Text>
+            <TextInput
+              style={styles.input}
+              value={videoUrl}
+              onChangeText={(t) => setVideoUrl(t.trim())}
+              placeholder="https://..."
             />
+
             <View style={styles.row}>
-              <TouchableOpacity
-                style={styles.playBtn}
-                onPress={() => {
-                  try {
-                    if (isUrlPlaying) urlPlayer.pause();
-                    else urlPlayer.play();
-                  } catch {}
-                }}
-              >
-                <Text style={styles.playBtnText}>{isUrlPlaying ? '⏸ 一時停止' : '▶ 再生'}</Text>
+              <Text style={styles.small}>検出された種類: {sourceType === 'youtube' ? 'YouTube' : 'URL(MP4/HLS)'}</Text>
+            </View>
+
+            <TouchableOpacity style={styles.saveBtn} onPress={handleSave}>
+              <Text style={styles.saveBtnText}>{savedVideoId ? '上書き保存' : '保存'}</Text>
+            </TouchableOpacity>
+
+            {/* 再生エリア */}
+            <View style={{ height: 12 }} />
+            <Text style={styles.sectionTitle}>プレビュー & タグ付け</Text>
+
+            <View style={styles.playerBox}>
+              {sourceType === 'youtube' ? (
+                ytId ? (
+                  <>
+                    <YoutubePlayer
+                      ref={ytRef}
+                      height={220}
+                      videoId={ytId}
+                      play={playing}
+                      onChangeState={(s) => {
+                        if (s === 'ended') setPlaying(false);
+                      }}
+                    />
+                    <View style={styles.row}>
+                      <TouchableOpacity style={styles.playBtn} onPress={playFullFromStart}>
+                        <Text style={styles.playBtnText}>⟲ 最初から</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={styles.playBtn} onPress={() => setPlaying(true)}>
+                        <Text style={styles.playBtnText}>▶ 再生</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={styles.playBtn} onPress={() => setPlaying(false)}>
+                        <Text style={styles.playBtnText}>⏸ 一時停止</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </>
+                ) : (
+                  <View style={{ height: 220, justifyContent: 'center', alignItems: 'center', padding: 12 }}>
+                    <Text style={{ color: '#fff', fontWeight: 'bold' }}>YouTubeリンクを認識できません</Text>
+                    <Text style={{ color: '#fff', marginTop: 6, textAlign: 'center' }}>
+                      例）https://www.youtube.com/watch?v=XXXX または https://youtu.be/XXXX
+                    </Text>
+                  </View>
+                )
+              ) : (
+                <>
+                  <VideoView
+                    style={styles.video}
+                    player={urlPlayer}
+                    nativeControls
+                    contentFit="contain"
+                    allowsFullscreen
+                  />
+                  <View style={styles.row}>
+                    <TouchableOpacity style={styles.playBtn} onPress={playFullFromStart}>
+                      <Text style={styles.playBtnText}>⟲ 最初から</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.playBtn}
+                      onPress={() => {
+                        try {
+                          if (isUrlPlaying) urlPlayer.pause();
+                          else urlPlayer.play();
+                        } catch {}
+                      }}
+                    >
+                      <Text style={styles.playBtnText}>{isUrlPlaying ? '⏸ 一時停止' : '▶ 再生'}</Text>
+                    </TouchableOpacity>
+                  </View>
+                </>
+              )}
+            </View>
+
+            {/* タグUI（自由入力） */}
+            <Text style={styles.label}>タグ（カンマ区切りOK）</Text>
+            <TextInput
+              style={styles.input}
+              value={tagText}
+              onChangeText={setTagText}
+              placeholder="例）シュート,10番 / パスミス / GK"
+            />
+
+            <View style={styles.row}>
+              <TouchableOpacity style={styles.actionBtn} onPress={handleTagStart}>
+                <Text style={styles.actionBtnText}>タグ開始</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.actionBtn, styles.endBtn]} onPress={handleTagEnd}>
+                <Text style={styles.actionBtnText}>タグ終了</Text>
               </TouchableOpacity>
             </View>
-          </>
-       )}
-      </View>
 
-      {/* タグUI */}
-      <FlatList
-        data={TAG_PRESETS}
-        horizontal
-        keyExtractor={(t) => t}
-        renderItem={renderTag}
-        contentContainerStyle={{ paddingHorizontal: 8 }}
-        showsHorizontalScrollIndicator={false}
-      />
-
-      <View style={styles.row}>
-        <TouchableOpacity style={styles.actionBtn} onPress={handleStart}>
-          <Text style={styles.actionBtnText}>開始（{currentTag}）</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={[styles.actionBtn, styles.endBtn]} onPress={handleEnd}>
-          <Text style={styles.actionBtnText}>終了</Text>
-        </TouchableOpacity>
-      </View>
-
-      {pendingStart != null && (
-        <Text style={styles.small}>開始記録: {pendingStart.toFixed(2)}s</Text>
-      )}
-
-      {/* 記録済みイベント一覧 */}
-      {savedVideoId && (
-        <>
-          <Text style={styles.sectionTitle}>記録済みイベント</Text>
-          <FlatList
-            data={events}
-            keyExtractor={(e) => e.id}
-            renderItem={({ item, index }) => (
-              <View style={styles.eventItem}>
-                <Text style={styles.eventText}>
-                  #{index + 1} [{item.startSec.toFixed(1)}s - {item.endSec.toFixed(1)}s] {item.tagTypes?.join(', ')}
-                </Text>
-              </View>
+            {pendingStart != null && (
+              <Text style={styles.small}>開始記録: {pendingStart.toFixed(2)}s</Text>
             )}
-            ListEmptyComponent={<Text style={{ paddingHorizontal: 8 }}>まだありません</Text>}
-            contentContainerStyle={{ paddingHorizontal: 8, paddingBottom: 20 }}
-          />
-        </>
-      )}
-    </View>
+
+            <Text style={styles.sectionTitle}>記録済みイベント</Text>
+          </View>
+        }
+        renderItem={({ item, index }) => (
+          <TouchableOpacity style={styles.eventItem} onPress={() => playClip(item.startSec, item.endSec)}>
+            <Text style={styles.eventText}>
+              #{index + 1} [{item.startSec.toFixed(1)}s - {item.endSec.toFixed(1)}s] {item.tagTypes?.join(', ')}
+            </Text>
+          </TouchableOpacity>
+        )}
+        ListEmptyComponent={
+          savedVideoId ? (
+            <Text style={{ paddingHorizontal: 8 }}>まだありません</Text>
+          ) : (
+            <Text style={{ paddingHorizontal: 8, color: '#555' }}>※ 保存するとイベント一覧が表示されます</Text>
+          )
+        }
+      />
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#E0FFFF', padding: 16 },
+  container: { flex: 1, backgroundColor: '#E0FFFF' },
+  contentContainer: { padding: 16, paddingBottom: 80 },
   label: { marginTop: 8, fontWeight: 'bold' },
   input: { backgroundColor: '#fff', padding: 10, borderRadius: 8, marginTop: 4 },
   row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8 },
@@ -305,10 +381,6 @@ const styles = StyleSheet.create({
   playerBox: { backgroundColor: '#000', borderRadius: 8, overflow: 'hidden' },
   video: { width: '100%', height: 220, backgroundColor: '#000' },
 
-  tagBtn: { paddingVertical: 8, paddingHorizontal: 12, backgroundColor: '#fff', borderRadius: 16, marginHorizontal: 4 },
-  tagBtnActive: { backgroundColor: '#0077cc' },
-  tagBtnText: { color: '#0077cc', fontWeight: 'bold' },
-  tagBtnTextActive: { color: '#fff' },
 
   actionBtn: { flex: 1, marginHorizontal: 8, backgroundColor: '#0077cc', borderRadius: 8, alignItems: 'center', padding: 12 },
   endBtn: { backgroundColor: '#cc3300' },
