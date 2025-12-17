@@ -32,7 +32,11 @@ export default function HighlightPlayerScreen({ route, navigation }) {
   const { videoId } = route.params;
   const { width, height } = useWindowDimensions();
   const ytRef = useRef(null);
+  const ytStateRef = useRef('unstarted');
+  const remountedAfterFinishRef = useRef(false);
   const finishedRef = useRef(false); // 最後まで到達して停止したか（再開しちゃう個体差対策）
+  const finishAtRef = useRef(null);  // 最終停止させたい時刻（秒）
+  const [finished, setFinished] = useState(false); // finished を state でも持ってタイマーを止める
   const [video, setVideo] = useState(null);
   const [events, setEvents] = useState([]);
   const [tags, setTags] = useState([]);
@@ -42,6 +46,7 @@ export default function HighlightPlayerScreen({ route, navigation }) {
   const currentIndexRef = useRef(0);
   const [ytPlaying, setYtPlaying] = useState(false);
   const [landscapeMode, setLandscapeMode] = useState(false);
+  const [playerKey, setPlayerKey] = useState(0); // YouTube強制停止用（再マウント）
 
   const { fsVideoW } = useMemo(() => {
     const uiMin = 280; // 右側はタグ＋一覧があるので少し広めに確保
@@ -127,6 +132,8 @@ export default function HighlightPlayerScreen({ route, navigation }) {
     setCurrentIndex(0);
     currentIndexRef.current = 0;
     finishedRef.current = false;
+    finishAtRef.current = null;
+    setFinished(false);
     // 条件が変わって空になったら停止
     if (playlist.length === 0) {
       setYtPlaying(false);
@@ -140,6 +147,9 @@ export default function HighlightPlayerScreen({ route, navigation }) {
     if (!clip) return;
 
     finishedRef.current = false;
+    finishAtRef.current = null;
+    setFinished(false);
+    remountedAfterFinishRef.current = false;
     currentIndexRef.current = currentIndex;
 
     const startPos = Math.max(clip.startSec - PLAYBACK_MARGIN_START, 0);
@@ -160,19 +170,9 @@ export default function HighlightPlayerScreen({ route, navigation }) {
 
   // 終端判定して次へ（YouTube / URL 共通）
   useEffect(() => {
+    // finished ならこのタイマー自体を回さない（読み込み連打の原因を断つ）
+    if (finished) return;
     const timer = setInterval(async () => {
-      // 最後まで行って止めたはずなのに再開する個体差があるので、停止を強制
-      if (finishedRef.current) {
-        if (isYoutube) {
-          try { ytRef.current?.stopVideo?.(); } catch {}
-          try { ytRef.current?.pauseVideo?.(); } catch {}
-          setYtPlaying(false);
-        } else {
-          try { urlPlayer.pause(); } catch {}
-        }
-        return;
-      }
-
       const idx = currentIndexRef.current;
       const clip = playlist[idx];
       if (!clip) return;
@@ -184,7 +184,17 @@ export default function HighlightPlayerScreen({ route, navigation }) {
         : Math.max(clip.endSec - PLAYBACK_MARGIN_END, clip.startSec);
 
       if (isYoutube) {
-        if (!ytPlaying) return;
+        // ズレてる時だけ seek（毎回 seek すると「読み込み」に見えやすい）
+        (async () => {
+          if (typeof fin === 'number') {
+            try {
+              const cur = await ytRef.current?.getCurrentTime?.();
+              if (typeof cur === 'number' && Math.abs(cur - fin) > 0.6) {
+                try { ytRef.current?.seekTo?.(fin, true); } catch {}
+              }
+            } catch {}
+          }
+        })();
         try {
           const t = await ytRef.current?.getCurrentTime?.();
           if (typeof t !== 'number') return;
@@ -195,9 +205,11 @@ export default function HighlightPlayerScreen({ route, navigation }) {
               setCurrentIndex(nextIndex);
             } else {
               finishedRef.current = true;
-              try { ytRef.current?.stopVideo?.(); } catch {}
+              finishAtRef.current = endLimit;
+              // まずは素直に止める（seekはしない：seekが再生復帰/バッファの原因になりやすい）
               try { ytRef.current?.pauseVideo?.(); } catch {}
               setYtPlaying(false);
+              setFinished(true);
             }
           }
         } catch {}
@@ -212,18 +224,56 @@ export default function HighlightPlayerScreen({ route, navigation }) {
               setCurrentIndex(nextIndex);
             } else {
               finishedRef.current = true;
+              finishAtRef.current = endLimit;
               try { urlPlayer.currentTime = endLimit; } catch {}
               urlPlayer.pause();
+              setFinished(true);
             }
           }
         } catch {}
       }
     }, 200);
     return () => clearInterval(timer);
-  }, [isYoutube, ytPlaying, playlist, isUrlPlaying]);
+  }, [isYoutube, ytPlaying, playlist, isUrlPlaying, finished]);
 
+  // finished になった瞬間に “もう一回だけ” 停止を押し込む（端末差対策）
+  useEffect(() => {
+    if (!finished) return;
+    const fin = finishAtRef.current;
+    const id = setTimeout(() => {
+      if (isYoutube) {
+        try { ytRef.current?.pauseVideo?.(); } catch {}
+        setYtPlaying(false);
+
+        // それでも “再生が復帰する端末” 用：まだ動いていたら1回だけ再マウントして止める
+        setTimeout(async () => {
+          if (remountedAfterFinishRef.current) return;
+          try {
+            const cur = await ytRef.current?.getCurrentTime?.();
+            // fin が取れていて、かつ fin より明らかに進んでるならまだ再生中
+            if (typeof fin === 'number' && typeof cur === 'number' && cur > fin + 0.8) {
+              remountedAfterFinishRef.current = true;
+              setPlayerKey(k => k + 1);
+            }
+          } catch {
+            // ref が不安定な端末もあるので、その場合も1回だけ再マウント
+            remountedAfterFinishRef.current = true;
+            setPlayerKey(k => k + 1);
+          }
+        }, 600);
+      } else {
+        if (typeof fin === 'number') { try { urlPlayer.currentTime = fin; } catch {} }
+        try { urlPlayer.pause(); } catch {}
+      }
+    }, 350);
+    return () => clearTimeout(id);
+  }, [finished, isYoutube]);  
   const playFrom = (index) => {
     if (!playlist[index]) return;
+    finishedRef.current = false;
+    finishAtRef.current = null;
+    setFinished(false);
+    remountedAfterFinishRef.current = false;
     currentIndexRef.current = index;
     setCurrentIndex(index);
   };
@@ -257,20 +307,27 @@ export default function HighlightPlayerScreen({ route, navigation }) {
       return (
         <View style={landscape ? [styles.fsVideoWrap, { width: fsVideoW }] : styles.videoWrap}>
           <YoutubePlayer
+            key={`${youtubeId || 'yt'}-${playerKey}`}
             ref={ytRef}
             height={landscape ? Math.max(200, height) : 220}
             width={landscape ? fsVideoW : undefined}
             videoId={youtubeId || ''}
-            play={ytPlaying}
+            play={ytPlaying && !finished}
             initialPlayerParams={landscape ? { preventFullScreen: true } : undefined}
             onChangeState={(s) => {
-                  // finished なのに再度 playing になる個体差対策
-                  if (finishedRef.current && (s === 'playing' || s === 'buffering')) {
-                    try { ytRef.current?.stopVideo?.(); } catch {}
-                    try { ytRef.current?.pauseVideo?.(); } catch {}
-                    setYtPlaying(false);
-                    return;
-                  }
+               ytStateRef.current = s;
+              // finished なのに再度 playing になる個体差対策（より強く）
+              // ※ state名は 'cued'（'video cued' ではない）
+              if (finishedRef.current && (s === 'playing' || s === 'buffering')) {
+                // ここでも “1回だけ” 再マウントで叩き潰す
+                if (!remountedAfterFinishRef.current) {
+                  remountedAfterFinishRef.current = true;
+                  setPlayerKey(k => k + 1);
+                }
+                try { ytRef.current?.pauseVideo?.(); } catch {}
+                setYtPlaying(false);
+                return;
+              }
               if (s === 'ended') setYtPlaying(false);
             }}
           />
