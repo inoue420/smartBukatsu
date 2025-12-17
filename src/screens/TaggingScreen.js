@@ -1,8 +1,9 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, FlatList, Alert, TextInput } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, FlatList, Alert, TextInput, StatusBar, useWindowDimensions } from 'react-native';
 import { useEvent } from 'expo';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import YoutubePlayer from 'react-native-youtube-iframe';
+import * as ScreenOrientation from 'expo-screen-orientation';
 import {
   getVideo,
   subscribeEvents,
@@ -43,6 +44,7 @@ function splitTags(text) {
 
 export default function TaggingScreen({ route, navigation }) {
   const { videoId } = route.params;
+  const { width, height } = useWindowDimensions();
   const [video, setVideo] = useState(null);
   const [events, setEvents] = useState([]);
   // タグ登録用
@@ -51,6 +53,8 @@ export default function TaggingScreen({ route, navigation }) {
   const [tags, setTags] = useState([]);
   // アクティブタグ
   const [activeTags, setActiveTags] = useState(new Set());
+  // 疑似フルスクリーン（横画面固定）
+  const [landscapeMode, setLandscapeMode] = useState(false);
 
   // 記録中（開始秒＋開始時点のタグスナップショット）
   const [pendingStart, setPendingStart] = useState(null);
@@ -81,6 +85,13 @@ export default function TaggingScreen({ route, navigation }) {
       navigation.setOptions({ title: `タグ付け：${v.title}` });
     })();
   }, [videoId]);
+
+  // 画面離脱時にロック解除（念のため）
+  useEffect(() => {
+    return () => {
+      ScreenOrientation.unlockAsync().catch(() => {});
+    };
+  }, []);
 
   useEffect(() => {
     const unsub = subscribeEvents(videoId, setEvents);
@@ -297,113 +308,249 @@ export default function TaggingScreen({ route, navigation }) {
     } catch {}
   };
 
+  const openLandscapeMode = async () => {
+    if (landscapeMode) return;
+    try {
+      setLandscapeMode(true);
+      await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+    } catch {}
+  };
+
+  const closeLandscapeMode = async () => {
+    // ここは好みで。閉じるときに停止しておくと事故が減る
+    setYtPlaying(false);
+    setPreviewEndSec(null);
+    try { urlPlayer.pause(); } catch {}
+
+    setLandscapeMode(false);
+    try { await ScreenOrientation.unlockAsync(); } catch {}
+  };
+
+  const renderPlayer = ({ landscape = false } = {}) => {
+    if (isYoutube) {
+      return (
+        <View style={landscape ? styles.fsVideoWrap : styles.videoWrap}>
+          <YoutubePlayer
+            ref={ytRef}
+            height={landscape ? Math.max(200, height) : 220}
+            width={landscape ? Math.floor(width * 0.68) : undefined}
+            videoId={youtubeId || ''}
+            play={landscape ? ytPlaying : ytPlaying}
+            initialPlayerParams={landscape ? { preventFullScreen: true } : undefined}
+            onChangeState={(s) => {
+              if (s === 'ended') setYtPlaying(false);
+            }}
+          />
+        </View>
+      );
+    }
+    return (
+      <VideoView
+        player={urlPlayer}
+        style={landscape ? styles.fsVideo : styles.video}
+        contentFit="contain"
+        nativeControls
+        allowsFullscreen={!landscape}
+        allowsPictureInPicture
+      />
+    );
+  };
+  
   return (
     <View style={styles.container}>
       {video && (
         <>
-          {isYoutube ? (
-            <View style={styles.videoWrap}>
-              <YoutubePlayer
-                ref={ytRef}
-                height={220}
-                videoId={youtubeId || ''}
-                play={ytPlaying}
-                onChangeState={(s) => {
-                  if (s === 'ended') setYtPlaying(false);
-                }}
-              />
+          <StatusBar hidden={landscapeMode} />
+
+          {landscapeMode ? (
+            <View style={styles.fsRoot}>
+              <View style={styles.fsRow}>
+                <View style={styles.fsVideoCol}>
+                  {renderPlayer({ landscape: true })}
+                </View>
+
+                <View style={styles.fsUiCol}>
+                  <FlatList
+                    data={events}
+                    keyExtractor={(e) => e.id}
+                    renderItem={({ item, index }) => (
+                      <TouchableOpacity
+                        style={styles.eventItem}
+                        onPress={() => playClip(item.startSec, item.endSec)}
+                      >
+                        <Text style={styles.eventText}>
+                          #{index + 1} [{item.startSec.toFixed(1)}s - {item.endSec.toFixed(1)}s] {item.tagTypes?.join(', ')}
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                    ListHeaderComponent={
+                      <View style={styles.tagArea}>
+                        <Text style={styles.label}>タグ登録（カンマ区切りOK）</Text>
+                        <View style={styles.tagRegisterRow}>
+                          <TextInput
+                            style={[styles.input, { flex: 1 }]}
+                            value={tagText}
+                            onChangeText={setTagText}
+                            placeholder="例）シュート,10番 / パスミス / GK"
+                          />
+                          <TouchableOpacity style={styles.confirmBtn} onPress={handleRegisterTags}>
+                            <Text style={styles.confirmBtnText}>確定</Text>
+                          </TouchableOpacity>
+                        </View>
+
+                        <Text style={[styles.label, { marginTop: 10 }]}>タグボタン（押してON/OFF・長押しで削除）</Text>
+                        <View style={styles.tagButtonsWrap}>
+                          {tags.length === 0 ? (
+                            <Text style={styles.small}>まだタグが登録されていません</Text>
+                          ) : (
+                            tags.map((t) => {
+                              const name = t?.name;
+                              if (!name) return null;
+                              const isActive = activeTags.has(name);
+                              return (
+                                <TouchableOpacity
+                                  key={t.id || name}
+                                  style={[styles.tagBtn, isActive ? styles.tagBtnActive : styles.tagBtnInactive]}
+                                  onPress={() => toggleTag(name)}
+                                  onLongPress={() => confirmDeleteTag(name)}
+                                >
+                                  <Text style={[styles.tagBtnText, isActive ? styles.tagBtnTextActive : styles.tagBtnTextInactive]}>
+                                    {name}
+                                  </Text>
+                                </TouchableOpacity>
+                              );
+                            })
+                          )}
+                        </View>
+
+                        <Text style={styles.small}>
+                          {pendingStart == null
+                            ? '開始未記録'
+                            : `開始記録: ${pendingStart.toFixed(2)}s / タグ: ${(pendingTagTypes || []).join(', ')}`}
+                        </Text>
+
+                        <View style={styles.row}>
+                          <TouchableOpacity style={styles.actionBtn} onPress={handleRecordStart}>
+                            <Text style={styles.actionBtnText}>記録開始</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity style={[styles.actionBtn, styles.endBtn]} onPress={handleRecordEnd}>
+                            <Text style={styles.actionBtnText}>記録終了</Text>
+                          </TouchableOpacity>
+                        </View>
+
+                        <View style={styles.row}>
+                          <TouchableOpacity style={styles.secondaryBtn} onPress={playFullFromStart}>
+                            <Text style={styles.secondaryBtnText}>▶ 最初から再生</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity style={styles.secondaryBtn} onPress={goHighlights}>
+                            <Text style={styles.secondaryBtnText}>▶ ハイライト再生へ</Text>
+                          </TouchableOpacity>
+                        </View>
+
+                        <Text style={{ fontWeight: 'bold', marginBottom: 4 }}>記録済みイベント</Text>
+                      </View>
+                    }
+                    contentContainerStyle={{ paddingHorizontal: 8, paddingBottom: 12 }}
+                  />
+                </View>
+              </View>
+
+              <TouchableOpacity style={styles.fsCloseBtn} onPress={closeLandscapeMode}>
+                <Text style={styles.fsCloseBtnText}>閉じる</Text>
+              </TouchableOpacity>
             </View>
           ) : (
-            <VideoView
-              player={urlPlayer}
-              style={styles.video}
-              contentFit="contain"
-              nativeControls
-              allowsFullscreen
-              allowsPictureInPicture
-            />
-          )}
+            <>
+              {renderPlayer({ landscape: false })}
 
-          <View style={styles.tagArea}>
-            <Text style={styles.label}>タグ登録（カンマ区切りOK）</Text>
-            <View style={styles.tagRegisterRow}>
-              <TextInput
-                style={[styles.input, { flex: 1 }]}
-                value={tagText}
-                onChangeText={setTagText}
-                placeholder="例）シュート,10番 / パスミス / GK"
-              />
-              <TouchableOpacity style={styles.confirmBtn} onPress={handleRegisterTags}>
-                <Text style={styles.confirmBtnText}>確定</Text>
-              </TouchableOpacity>
-            </View>
+              <View style={styles.tagArea}>
+                <Text style={styles.label}>タグ登録（カンマ区切りOK）</Text>
+                <View style={styles.tagRegisterRow}>
+                  <TextInput
+                    style={[styles.input, { flex: 1 }]}
+                    value={tagText}
+                    onChangeText={setTagText}
+                    placeholder="例）シュート,10番 / パスミス / GK"
+                  />
+                  <TouchableOpacity style={styles.confirmBtn} onPress={handleRegisterTags}>
+                    <Text style={styles.confirmBtnText}>確定</Text>
+                  </TouchableOpacity>
+                </View>
 
-            <Text style={[styles.label, { marginTop: 10 }]}>タグボタン（押してON/OFF・長押しで削除）</Text>
-            <View style={styles.tagButtonsWrap}>
-              {tags.length === 0 ? (
-                <Text style={styles.small}>まだタグが登録されていません</Text>
-              ) : (
-                tags.map((t) => {
-                  const name = t?.name;
-                  if (!name) return null;
-                  const isActive = activeTags.has(name);
-                  return (
-                    <TouchableOpacity
-                      key={t.id || name}
-                      style={[styles.tagBtn, isActive ? styles.tagBtnActive : styles.tagBtnInactive]}
-                      onPress={() => toggleTag(name)}
-                      onLongPress={() => confirmDeleteTag(name)}
-                    >
-                      <Text style={[styles.tagBtnText, isActive ? styles.tagBtnTextActive : styles.tagBtnTextInactive]}>
-                        {name}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })
-              )}
-            </View>
+                <Text style={[styles.label, { marginTop: 10 }]}>タグボタン（押してON/OFF・長押しで削除）</Text>
+                <View style={styles.tagButtonsWrap}>
+                  {tags.length === 0 ? (
+                    <Text style={styles.small}>まだタグが登録されていません</Text>
+                  ) : (
+                    tags.map((t) => {
+                      const name = t?.name;
+                      if (!name) return null;
+                      const isActive = activeTags.has(name);
+                      return (
+                        <TouchableOpacity
+                          key={t.id || name}
+                          style={[styles.tagBtn, isActive ? styles.tagBtnActive : styles.tagBtnInactive]}
+                          onPress={() => toggleTag(name)}
+                          onLongPress={() => confirmDeleteTag(name)}
+                        >
+                          <Text style={[styles.tagBtnText, isActive ? styles.tagBtnTextActive : styles.tagBtnTextInactive]}>
+                            {name}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })
+                  )}
+                </View>
 
-            <Text style={styles.small}>
-              {pendingStart == null
-                ? '開始未記録'
-                : `開始記録: ${pendingStart.toFixed(2)}s / タグ: ${(pendingTagTypes || []).join(', ')}`}
-            </Text>
-          </View>
-
-          <View style={styles.row}>
-            <TouchableOpacity style={styles.actionBtn} onPress={handleRecordStart}>
-              <Text style={styles.actionBtnText}>記録開始</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[styles.actionBtn, styles.endBtn]} onPress={handleRecordEnd}>
-              <Text style={styles.actionBtnText}>記録終了</Text>
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.row}>
-            <TouchableOpacity style={styles.secondaryBtn} onPress={playFullFromStart}>
-              <Text style={styles.secondaryBtnText}>▶ 最初から再生</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.secondaryBtn} onPress={goHighlights}>
-              <Text style={styles.secondaryBtnText}>▶ ハイライト再生へ</Text>
-            </TouchableOpacity>
-          </View>
-
-          <FlatList
-            data={events}
-            keyExtractor={(e) => e.id}
-            renderItem={({ item, index }) => (
-              <TouchableOpacity
-                style={styles.eventItem}
-                onPress={() => playClip(item.startSec, item.endSec)}
-              >
-                <Text style={styles.eventText}>
-                  #{index + 1} [{item.startSec.toFixed(1)}s - {item.endSec.toFixed(1)}s] {item.tagTypes?.join(', ')}
+                <Text style={styles.small}>
+                  {pendingStart == null
+                    ? '開始未記録'
+                    : `開始記録: ${pendingStart.toFixed(2)}s / タグ: ${(pendingTagTypes || []).join(', ')}`}
                 </Text>
-              </TouchableOpacity>
-            )}
-            ListHeaderComponent={<Text style={{ fontWeight: 'bold', marginBottom: 4 }}>記録済みイベント</Text>}
-            contentContainerStyle={{ paddingHorizontal: 8, paddingBottom: 12 }}
-          />
+              </View>
+
+              <View style={styles.row}>
+                <TouchableOpacity style={styles.actionBtn} onPress={handleRecordStart}>
+                  <Text style={styles.actionBtnText}>記録開始</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.actionBtn, styles.endBtn]} onPress={handleRecordEnd}>
+                  <Text style={styles.actionBtnText}>記録終了</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.row}>
+                <TouchableOpacity style={styles.secondaryBtn} onPress={playFullFromStart}>
+                  <Text style={styles.secondaryBtnText}>▶ 最初から再生</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.secondaryBtn} onPress={goHighlights}>
+                  <Text style={styles.secondaryBtnText}>▶ ハイライト再生へ</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.row}>
+                <TouchableOpacity style={styles.secondaryBtn} onPress={openLandscapeMode}>
+                  <Text style={styles.secondaryBtnText}>⛶ 横画面でタグ付け</Text>
+                </TouchableOpacity>
+              </View>
+
+              <FlatList
+                data={events}
+                keyExtractor={(e) => e.id}
+                renderItem={({ item, index }) => (
+                  <TouchableOpacity
+                    style={styles.eventItem}
+                    onPress={() => playClip(item.startSec, item.endSec)}
+                  >
+                    <Text style={styles.eventText}>
+                      #{index + 1} [{item.startSec.toFixed(1)}s - {item.endSec.toFixed(1)}s] {item.tagTypes?.join(', ')}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+                ListHeaderComponent={<Text style={{ fontWeight: 'bold', marginBottom: 4 }}>記録済みイベント</Text>}
+                contentContainerStyle={{ paddingHorizontal: 8, paddingBottom: 12 }}
+              />
+            </>
+          )}
         </>
       )}
     </View>
@@ -436,4 +583,22 @@ const styles = StyleSheet.create({
   secondaryBtnText: { color: '#0077cc', fontWeight: 'bold' },
   eventItem: { backgroundColor: '#fff', padding: 8, borderRadius: 6, marginVertical: 4 },
   eventText: { color: '#333' },
+
+  // 疑似フルスクリーン（横向き）
+  fsRoot: { flex: 1, backgroundColor: '#000' },
+  fsRow: { flex: 1, flexDirection: 'row' },
+  fsVideoCol: { flex: 0.68, backgroundColor: '#000' },
+  fsUiCol: { flex: 0.32, backgroundColor: '#E0FFFF' },
+  fsVideo: { flex: 1, backgroundColor: '#000' },
+  fsVideoWrap: { flex: 1, backgroundColor: '#000' },
+  fsCloseBtn: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+  },
+  fsCloseBtnText: { color: '#fff', fontWeight: 'bold' },
 });
