@@ -3,6 +3,7 @@ import {
   addDoc,
   serverTimestamp,
   doc,
+  setDoc,
   deleteDoc,
   getDoc,
   getDocs,
@@ -80,6 +81,65 @@ export function subscribeEvents(videoId, callback, filters = null) {
   });
 }
 
+// -----------------------------
+// tags: /videos/{videoId}/tags
+// tag: { name: string, createdAt }
+// -----------------------------
+function tagDocId(name) {
+  return encodeURIComponent(String(name || '').trim());
+}
+
+export function subscribeTags(videoId, callback) {
+  const q = query(
+    collection(db, 'videos', videoId, 'tags'),
+    orderBy('createdAt', 'asc')
+  );
+  return onSnapshot(q, (snap) => {
+    const arr = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    callback(arr);
+  });
+}
+
+// 既にあってもOK（同名は同一docにmerge）
+export async function upsertTag(videoId, name) {
+  const trimmed = String(name || '').trim();
+  if (!trimmed) return;
+  const ref = doc(db, 'videos', videoId, 'tags', tagDocId(trimmed));
+  await setDoc(ref, { name: trimmed, createdAt: serverTimestamp() }, { merge: true });
+}
+
+export async function deleteTag(videoId, name) {
+  const trimmed = String(name || '').trim();
+  if (!trimmed) return;
+  await deleteDoc(doc(db, 'videos', videoId, 'tags', tagDocId(trimmed)));
+}
+
+// タグ削除時：events側からも除去（空になったイベントは削除）
+export async function removeTagFromAllEvents(videoId, tagName) {
+  const trimmed = String(tagName || '').trim();
+  if (!trimmed) return;
+
+  const colRef = collection(db, 'videos', videoId, 'events');
+  const q = query(colRef, where('tagTypes', 'array-contains', trimmed));
+  const snap = await getDocs(q);
+  if (snap.empty) return;
+
+  const docs = snap.docs;
+  const CHUNK = 450;
+
+  for (let i = 0; i < docs.length; i += CHUNK) {
+    const batch = writeBatch(db);
+    docs.slice(i, i + CHUNK).forEach((d) => {
+      const data = d.data() || {};
+      const tags = Array.isArray(data.tagTypes) ? data.tagTypes : [];
+      const next = tags.filter((t) => t !== trimmed);
+      if (next.length === 0) batch.delete(d.ref);
+      else batch.update(d.ref, { tagTypes: next });
+    });
+    await batch.commit();
+  }
+}
+
 // videos/{videoId} を削除（サブコレ events も削除）
 async function deleteAllDocsInSubcollection(videoId, subcollectionName) {
   const colRef = collection(db, 'videos', videoId, subcollectionName);
@@ -100,6 +160,8 @@ async function deleteAllDocsInSubcollection(videoId, subcollectionName) {
 export async function deleteVideo(videoId) {
   // まずイベント（タグ）を全削除
   await deleteAllDocsInSubcollection(videoId, 'events');
+  // タグボタンも削除
+  await deleteAllDocsInSubcollection(videoId, 'tags');
 
   // もし highlights 等のサブコレがあるならここも同様に追加
   // await deleteAllDocsInSubcollection(videoId, 'highlights');

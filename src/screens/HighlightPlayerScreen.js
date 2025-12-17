@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, FlatList, TextInput, Alert } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, FlatList, Alert } from 'react-native';
 import { Video, ResizeMode } from 'expo-av';
 import YoutubePlayer from 'react-native-youtube-iframe';
-import { getVideo, subscribeEvents } from '../services/firestoreService';
+import { getVideo, subscribeEvents, subscribeTags } from '../services/firestoreService';
 import { PLAYBACK_MARGIN_START, PLAYBACK_MARGIN_END } from '../constants';
 
 function parseYouTubeId(rawUrl) {
@@ -32,8 +32,9 @@ export default function HighlightPlayerScreen({ route, navigation }) {
   const ytRef = useRef(null);
   const [video, setVideo] = useState(null);
   const [events, setEvents] = useState([]);
-  const [filterText, setFilterText] = useState('シュート,10番'); // 例
-  const [playlist, setPlaylist] = useState([]);
+  const [tags, setTags] = useState([]);
+  const [selectedTags, setSelectedTags] = useState(new Set());
+  const [matchMode, setMatchMode] = useState('OR'); // 'OR' | 'AND'
   const [currentIndex, setCurrentIndex] = useState(0);
   const currentIndexRef = useRef(0);
   const [ytPlaying, setYtPlaying] = useState(false);
@@ -61,26 +62,42 @@ export default function HighlightPlayerScreen({ route, navigation }) {
     return () => unsub();
   }, [videoId]);
 
-  const activeTags = useMemo(() => {
-    return filterText
-      .split(',')
-      .map(s => s.trim())
-      .filter(Boolean);
-  }, [filterText]);
+  useEffect(() => {
+    const unsub = subscribeTags(videoId, setTags);
+    return () => unsub?.();
+  }, [videoId]);
 
-  const filtered = useMemo(() => {
-    if (!activeTags.length) return [];
-    const ok = events.filter(e =>
-      activeTags.every(t => (e.tagTypes || []).includes(t))
-    );
-    return ok.sort((a, b) => a.startSec - b.startSec);
-  }, [events, activeTags]);
+  // tagsが更新されたら、selectedTagsを存在するタグだけに整理
+  useEffect(() => {
+    const exist = new Set(tags.map(t => t?.name).filter(Boolean));
+    setSelectedTags(prev => {
+      const next = new Set();
+      prev.forEach(n => { if (exist.has(n)) next.add(n); });
+      return next;
+    });
+  }, [tags]);
+
+  const selectedTagArray = useMemo(() => Array.from(selectedTags), [selectedTags]);
+
+  const playlist = useMemo(() => {
+    if (!selectedTagArray.length) return [];
+    const ok = events.filter(e => {
+      const t = Array.isArray(e.tagTypes) ? e.tagTypes : [];
+      if (matchMode === 'AND') return selectedTagArray.every(x => t.includes(x));
+      return selectedTagArray.some(x => t.includes(x)); // OR（デフォルト）
+    });
+    return ok.slice().sort((a, b) => a.startSec - b.startSec);
+  }, [events, selectedTagArray, matchMode]);
 
   useEffect(() => {
-    setPlaylist(filtered);
     setCurrentIndex(0);
     currentIndexRef.current = 0;
-  }, [filtered]);
+    // 条件が変わって空になったら停止
+    if (playlist.length === 0) {
+      setYtPlaying(false);
+      try { videoRef.current?.setStatusAsync?.({ shouldPlay: false }); } catch {}
+    }
+  }, [playlist]);
 
   useEffect(() => {
     // クリップ変わったらシーク
@@ -106,7 +123,7 @@ export default function HighlightPlayerScreen({ route, navigation }) {
       });
     })();
 
-  }, [currentIndex, playlist]);
+  }, [currentIndex, playlist, isYoutube, youtubeId]);
 
   const handleStatusUpdate = (status) => {
     if (isYoutube) return; // YouTubeは別ロジック
@@ -116,16 +133,13 @@ export default function HighlightPlayerScreen({ route, navigation }) {
     if (!clip) return;
 
     const posSec = status.positionMillis / 1000;
-    if (posSec >= clip.endSec - PLAYBACK_MARGIN_END) {
+    const endLimit = Math.max(clip.endSec - PLAYBACK_MARGIN_END, clip.startSec);
+    if (posSec >= endLimit) {
       const nextIndex = idx + 1;
       const nextClip = playlist[nextIndex];
       if (nextClip) {
         currentIndexRef.current = nextIndex;
         setCurrentIndex(nextIndex);
-        videoRef.current.setStatusAsync({
-          positionMillis: Math.max(nextClip.startSec - PLAYBACK_MARGIN_START, 0) * 1000,
-          shouldPlay: true,
-        });
       } else {
         // 最後まで再生したら停止
         videoRef.current.setStatusAsync({ shouldPlay: false });
@@ -145,7 +159,8 @@ export default function HighlightPlayerScreen({ route, navigation }) {
       try {
         const t = await ytRef.current?.getCurrentTime?.();
         if (typeof t !== 'number') return;
-        if (t >= clip.endSec - PLAYBACK_MARGIN_END) {
+        const endLimit = Math.max(clip.endSec - PLAYBACK_MARGIN_END, clip.startSec);
+        if (t >= endLimit) {
           const nextIndex = idx + 1;
           const nextClip = playlist[nextIndex];
           if (nextClip) {
@@ -165,6 +180,15 @@ export default function HighlightPlayerScreen({ route, navigation }) {
     currentIndexRef.current = index;
     setCurrentIndex(index);
   };
+
+  const toggleSelectTag = (name) => {
+    setSelectedTags(prev => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }; 
 
   return (
     <View style={styles.container}>
@@ -194,13 +218,45 @@ export default function HighlightPlayerScreen({ route, navigation }) {
           )}
 
           <View style={styles.filterRow}>
-            <Text style={styles.label}>タグ（AND, カンマ区切り）</Text>
-            <TextInput
-              style={styles.input}
-              value={filterText}
-              onChangeText={setFilterText}
-              placeholder="例）シュート,10番"
-            />
+            <View style={styles.filterHeader}>
+              <Text style={styles.label}>タグで絞り込み（{matchMode}）</Text>
+              <TouchableOpacity
+                style={styles.modeBtn}
+                onPress={() => setMatchMode(m => (m === 'OR' ? 'AND' : 'OR'))}
+              >
+                <Text style={styles.modeBtnText}>切替</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.clearBtn}
+                onPress={() => setSelectedTags(new Set())}
+              >
+                <Text style={styles.clearBtnText}>クリア</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.tagButtonsWrap}>
+              {tags.length === 0 ? (
+                <Text style={styles.small}>タグがありません（タグ付け画面で登録してください）</Text>
+              ) : (
+                tags.map(t => {
+                  const name = t?.name;
+                  if (!name) return null;
+                  const on = selectedTags.has(name);
+                  return (
+                    <TouchableOpacity
+                      key={t.id || name}
+                      style={[styles.tagBtn, on ? styles.tagBtnActive : styles.tagBtnInactive]}
+                      onPress={() => toggleSelectTag(name)}
+                    >
+                      <Text style={[styles.tagBtnText, on ? styles.tagBtnTextActive : styles.tagBtnTextInactive]}>
+                        {name}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })
+              )}
+            </View>
+
             <Text style={styles.small}>一致: {playlist.length} 件</Text>
           </View>
 
@@ -218,7 +274,7 @@ export default function HighlightPlayerScreen({ route, navigation }) {
               </TouchableOpacity>
             )}
             contentContainerStyle={{ paddingHorizontal: 8, paddingBottom: 12 }}
-            ListEmptyComponent={<Text style={{ padding: 8 }}>条件に一致するクリップがありません</Text>}
+            ListEmptyComponent={<Text style={{ padding: 8 }}>タグを選択してください（または条件に一致するクリップがありません）</Text>}
           />
         </>
       )}
@@ -232,8 +288,19 @@ const styles = StyleSheet.create({
   video: { width: '100%', height: 220, backgroundColor: '#000' },
   filterRow: { padding: 12 },
   label: { fontWeight: 'bold' },
-  input: { backgroundColor: '#fff', padding: 10, borderRadius: 8, marginTop: 6 },
   small: { marginTop: 6, color: '#333' },
+  filterHeader: { flexDirection: 'row', alignItems: 'center' },
+  modeBtn: { marginLeft: 10, backgroundColor: '#fff', borderWidth: 1, borderColor: '#0077cc', borderRadius: 8, paddingVertical: 6, paddingHorizontal: 10 },
+  modeBtnText: { color: '#0077cc', fontWeight: 'bold' },
+  clearBtn: { marginLeft: 8, backgroundColor: '#fff', borderWidth: 1, borderColor: '#999', borderRadius: 8, paddingVertical: 6, paddingHorizontal: 10 },
+  clearBtnText: { color: '#333', fontWeight: 'bold' },
+  tagButtonsWrap: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 8 },
+  tagBtn: { paddingVertical: 8, paddingHorizontal: 10, borderRadius: 999, borderWidth: 1, marginRight: 8, marginBottom: 8 },
+  tagBtnActive: { backgroundColor: '#0077cc', borderColor: '#0077cc' },
+  tagBtnInactive: { backgroundColor: '#fff', borderColor: '#0077cc' },
+  tagBtnText: { fontWeight: 'bold' },
+  tagBtnTextActive: { color: '#fff' },
+  tagBtnTextInactive: { color: '#0077cc' },  
   clipItem: { backgroundColor: '#fff', padding: 10, borderRadius: 6, marginVertical: 4 },
   clipItemActive: { borderWidth: 2, borderColor: '#0077cc' },
   clipText: { color: '#333' },

@@ -2,7 +2,15 @@ import React, { useEffect, useRef, useState, useMemo } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, FlatList, Alert, TextInput } from 'react-native';
 import { Video, ResizeMode } from 'expo-av';
 import YoutubePlayer from 'react-native-youtube-iframe';
-import { getVideo, subscribeEvents, addEvent } from '../services/firestoreService';
+import {
+  getVideo,
+  subscribeEvents,
+  addEvent,
+  subscribeTags,
+  upsertTag,
+  deleteTag,
+  removeTagFromAllEvents,
+} from '../services/firestoreService';
 
 function parseYouTubeId(rawUrl) {
   const url = (rawUrl || '').trim();
@@ -36,8 +44,16 @@ export default function TaggingScreen({ route, navigation }) {
   const { videoId } = route.params;
   const [video, setVideo] = useState(null);
   const [events, setEvents] = useState([]);
+  // タグ登録用
   const [tagText, setTagText] = useState('');
+  // タグ一覧（Firestore）
+  const [tags, setTags] = useState([]);
+  // アクティブタグ
+  const [activeTags, setActiveTags] = useState(new Set());
+
+  // 記録中（開始秒＋開始時点のタグスナップショット）
   const [pendingStart, setPendingStart] = useState(null);
+  const [pendingTagTypes, setPendingTagTypes] = useState(null);
   const videoRef = useRef(null);
   const [status, setStatus] = useState(null);
   const ytRef = useRef(null);
@@ -66,6 +82,21 @@ export default function TaggingScreen({ route, navigation }) {
     const unsub = subscribeEvents(videoId, setEvents);
     return () => unsub();
   }, [videoId]);
+
+  useEffect(() => {
+    const unsub = subscribeTags(videoId, setTags);
+    return () => unsub?.();
+  }, [videoId]);
+
+  // tagsが更新されたら、activeTagsを存在するタグだけに整理
+  useEffect(() => {
+    const exist = new Set(tags.map(t => t?.name).filter(Boolean));
+    setActiveTags(prev => {
+      const next = new Set();
+      prev.forEach(n => { if (exist.has(n)) next.add(n); });
+      return next;
+    });
+  }, [tags]);
 
   // expo-av: クリップ再生時、終端を超えたら停止
   const handlePlaybackStatusUpdate = (s) => {
@@ -109,13 +140,82 @@ export default function TaggingScreen({ route, navigation }) {
     return status.positionMillis / 1000;
   };
 
-  const handleTagStart = async () => {
+  const handleRegisterTags = async () => {
+    const names = splitTags(tagText);
+    if (!names.length) {
+      Alert.alert('タグ未入力', 'タグを入力してください（例：シュート,10番）');
+      return;
+    }
+    try {
+      await Promise.all(names.map(n => upsertTag(videoId, n)));
+      setTagText('');
+    } catch (e) {
+      Alert.alert('エラー', 'タグ登録に失敗しました');
+    }
+  };
+
+  const toggleTag = (name) => {
+    setActiveTags(prev => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
+
+  const confirmDeleteTag = (name) => {
+    Alert.alert('タグ削除', `「${name}」を削除しますか？\n※既存の記録からも削除されます`, [
+      { text: 'キャンセル', style: 'cancel' },
+      {
+        text: '削除',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await deleteTag(videoId, name);
+            await removeTagFromAllEvents(videoId, name);
+
+            // 記録中のスナップショットにも反映（空になったら記録を解除）
+            setPendingTagTypes(prev => {
+              if (!Array.isArray(prev)) return prev;
+              const next = prev.filter(t => t !== name);
+              if (next.length === 0) {
+                setPendingStart(null);
+                return null;
+              }
+              return next;
+            });
+
+            // アクティブ解除
+            setActiveTags(prev => {
+              const next = new Set(prev);
+              next.delete(name);
+              return next;
+            });
+          } catch (e) {
+            Alert.alert('エラー', 'タグ削除に失敗しました');
+          }
+        }
+      }
+    ]);
+  };
+
+  const handleRecordStart = async () => {
+    if (pendingStart != null) {
+      Alert.alert('記録中', 'すでに記録開始されています。先に「記録終了」してください。');
+      return;
+    }
+    const selected = Array.from(activeTags);
+    if (!selected.length) {
+      Alert.alert('タグ未選択', '記録するタグを1つ以上アクティブにしてください。');
+      return;
+    }
     const t = await getCurrentSec();
     if (t == null) return;
     setPendingStart(t);
+    setPendingTagTypes(selected);
   };
 
-  const handleTagEnd = async () => {
+  const handleRecordEnd = async () => {
     const endSec = await getCurrentSec();
     if (endSec == null || pendingStart == null) return;
 
@@ -124,14 +224,16 @@ export default function TaggingScreen({ route, navigation }) {
       return;
     }
 
-    const tags = splitTags(tagText);
-    if (!tags.length) {
-      Alert.alert('タグ未入力', 'タグを入力してください（例：シュート,10番）');
+    const tagsForThisRecord = Array.isArray(pendingTagTypes) ? pendingTagTypes : [];
+    if (!tagsForThisRecord.length) {
+      Alert.alert('タグ未選択', '記録開始時点のタグがありません。もう一度「記録開始」から行ってください。');
+      setPendingStart(null);
+      setPendingTagTypes(null);
       return;
     }
 
     await addEvent(videoId, {
-      tagTypes: tags,
+      tagTypes: tagsForThisRecord,
       startSec: pendingStart,
       endSec,
       note: '',
@@ -139,7 +241,7 @@ export default function TaggingScreen({ route, navigation }) {
     });
 
     setPendingStart(null);
-    setTagText('');
+    setPendingTagTypes(null);
   };
 
   const goHighlights = () => {
@@ -205,24 +307,57 @@ export default function TaggingScreen({ route, navigation }) {
           )}
 
           <View style={styles.tagArea}>
-            <Text style={styles.label}>タグ（カンマ区切りOK）</Text>
-            <TextInput
-              style={styles.input}
-              value={tagText}
-              onChangeText={setTagText}
-              placeholder="例）シュート,10番 / パスミス / GK"
-            />
+            <Text style={styles.label}>タグ登録（カンマ区切りOK）</Text>
+            <View style={styles.tagRegisterRow}>
+              <TextInput
+                style={[styles.input, { flex: 1 }]}
+                value={tagText}
+                onChangeText={setTagText}
+                placeholder="例）シュート,10番 / パスミス / GK"
+              />
+              <TouchableOpacity style={styles.confirmBtn} onPress={handleRegisterTags}>
+                <Text style={styles.confirmBtnText}>確定</Text>
+              </TouchableOpacity>
+            </View>
+
+            <Text style={[styles.label, { marginTop: 10 }]}>タグボタン（押してON/OFF・長押しで削除）</Text>
+            <View style={styles.tagButtonsWrap}>
+              {tags.length === 0 ? (
+                <Text style={styles.small}>まだタグが登録されていません</Text>
+              ) : (
+                tags.map((t) => {
+                  const name = t?.name;
+                  if (!name) return null;
+                  const isActive = activeTags.has(name);
+                  return (
+                    <TouchableOpacity
+                      key={t.id || name}
+                      style={[styles.tagBtn, isActive ? styles.tagBtnActive : styles.tagBtnInactive]}
+                      onPress={() => toggleTag(name)}
+                      onLongPress={() => confirmDeleteTag(name)}
+                    >
+                      <Text style={[styles.tagBtnText, isActive ? styles.tagBtnTextActive : styles.tagBtnTextInactive]}>
+                        {name}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })
+              )}
+            </View>
+
             <Text style={styles.small}>
-              {pendingStart == null ? '開始未記録' : `開始記録: ${pendingStart.toFixed(2)}s`}
+              {pendingStart == null
+                ? '開始未記録'
+                : `開始記録: ${pendingStart.toFixed(2)}s / タグ: ${(pendingTagTypes || []).join(', ')}`}
             </Text>
           </View>
 
           <View style={styles.row}>
-            <TouchableOpacity style={styles.actionBtn} onPress={handleTagStart}>
-              <Text style={styles.actionBtnText}>タグ開始</Text>
+            <TouchableOpacity style={styles.actionBtn} onPress={handleRecordStart}>
+              <Text style={styles.actionBtnText}>記録開始</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={[styles.actionBtn, styles.endBtn]} onPress={handleTagEnd}>
-              <Text style={styles.actionBtnText}>タグ終了</Text>
+            <TouchableOpacity style={[styles.actionBtn, styles.endBtn]} onPress={handleRecordEnd}>
+              <Text style={styles.actionBtnText}>記録終了</Text>
             </TouchableOpacity>
           </View>
 
@@ -266,6 +401,16 @@ const styles = StyleSheet.create({
   label: { fontWeight: 'bold' },
   input: { backgroundColor: '#fff', padding: 10, borderRadius: 8, marginTop: 6 },
   small: { marginTop: 6, color: '#333' },
+  tagRegisterRow: { flexDirection: 'row', alignItems: 'center' },
+  confirmBtn: { marginTop: 6, marginLeft: 8, backgroundColor: '#0077cc', borderRadius: 8, alignItems: 'center', paddingVertical: 10, paddingHorizontal: 14 },
+  confirmBtnText: { color: '#fff', fontWeight: 'bold' },
+  tagButtonsWrap: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 8 },
+  tagBtn: { paddingVertical: 8, paddingHorizontal: 10, borderRadius: 999, borderWidth: 1, marginRight: 8, marginBottom: 8 },
+  tagBtnActive: { backgroundColor: '#0077cc', borderColor: '#0077cc' },
+  tagBtnInactive: { backgroundColor: '#fff', borderColor: '#0077cc' },
+  tagBtnText: { fontWeight: 'bold' },
+  tagBtnTextActive: { color: '#fff' },
+  tagBtnTextInactive: { color: '#0077cc' },
   actionBtn: { flex: 1, marginHorizontal: 8, backgroundColor: '#0077cc', borderRadius: 8, alignItems: 'center', padding: 12 },
   endBtn: { backgroundColor: '#cc3300' },
   actionBtnText: { color: '#fff', fontWeight: 'bold' },
