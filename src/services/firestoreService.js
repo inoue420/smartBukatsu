@@ -3,11 +3,13 @@ import {
   addDoc,
   serverTimestamp,
   doc,
+  deleteDoc,
   getDoc,
   getDocs,
   query,
   orderBy,
   onSnapshot,
+  writeBatch,
   where
 } from 'firebase/firestore';
 import { db } from '../firebase';
@@ -76,4 +78,32 @@ export function subscribeEvents(videoId, callback, filters = null) {
     const arr = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     callback(arr);
   });
+}
+
+// videos/{videoId} を削除（サブコレ events も削除）
+async function deleteAllDocsInSubcollection(videoId, subcollectionName) {
+  const colRef = collection(db, 'videos', videoId, subcollectionName);
+  const snap = await getDocs(colRef);
+  if (snap.empty) return;
+
+  // batch 上限(500)に備えて分割
+  const docs = snap.docs;
+  const CHUNK = 450;
+
+  for (let i = 0; i < docs.length; i += CHUNK) {
+    const batch = writeBatch(db);
+    docs.slice(i, i + CHUNK).forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+  }
+}
+
+export async function deleteVideo(videoId) {
+  // まずイベント（タグ）を全削除
+  await deleteAllDocsInSubcollection(videoId, 'events');
+
+  // もし highlights 等のサブコレがあるならここも同様に追加
+  // await deleteAllDocsInSubcollection(videoId, 'highlights');
+
+  // 最後に videos 本体を削除
+  await deleteDoc(doc(db, 'videos', videoId));
 }
