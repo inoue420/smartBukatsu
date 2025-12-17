@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, FlatList, Alert, TextInput } from 'react-native';
-import { Video, ResizeMode } from 'expo-av';
+import { useEvent } from 'expo';
+import { useVideoPlayer, VideoView } from 'expo-video';
 import YoutubePlayer from 'react-native-youtube-iframe';
 import {
   getVideo,
@@ -54,12 +55,15 @@ export default function TaggingScreen({ route, navigation }) {
   // 記録中（開始秒＋開始時点のタグスナップショット）
   const [pendingStart, setPendingStart] = useState(null);
   const [pendingTagTypes, setPendingTagTypes] = useState(null);
-  const videoRef = useRef(null);
-  const [status, setStatus] = useState(null);
   const ytRef = useRef(null);
   const [ytPlaying, setYtPlaying] = useState(false);
   const [previewEndSec, setPreviewEndSec] = useState(null);
 
+  // URL(MP4/HLS) 再生用（expo-video）
+  const urlPlayer = useVideoPlayer(null);
+  const { isUrlPlaying } = useEvent(urlPlayer, 'playingChange', { isUrlPlaying: urlPlayer.playing });
+  const { urlStatus } = useEvent(urlPlayer, 'statusChange', { urlStatus: urlPlayer.status });
+  
   const isYoutube = video?.sourceType === 'youtube';
   const youtubeId = useMemo(() => {
     return video?.youtubeId || parseYouTubeId(video?.videoUrl);
@@ -83,6 +87,19 @@ export default function TaggingScreen({ route, navigation }) {
     return () => unsub();
   }, [videoId]);
 
+  // URL(MP4/HLS) のときだけ player にソース反映（null player -> replace() が公式推奨パターン）:contentReference[oaicite:1]{index=1}
+  useEffect(() => {
+    if (!video) return;
+    if (video.sourceType === 'youtube') {
+      try { urlPlayer.pause(); } catch {}
+      return;
+    }
+    const url = (video.videoUrl || '').trim();
+    if (!url) return;
+    try { urlPlayer.replace(url); } catch {}
+  }, [video]);
+
+
   useEffect(() => {
     const unsub = subscribeTags(videoId, setTags);
     return () => unsub?.();
@@ -98,34 +115,32 @@ export default function TaggingScreen({ route, navigation }) {
     });
   }, [tags]);
 
-  // expo-av: クリップ再生時、終端を超えたら停止
-  const handlePlaybackStatusUpdate = (s) => {
-    setStatus(s);
-    if (!s?.isLoaded || !s?.isPlaying) return;
-    if (previewEndSec == null) return;
-    const posSec = s.positionMillis / 1000;
-    if (posSec >= previewEndSec) {
-      videoRef.current?.setStatusAsync({ shouldPlay: false });
-      setPreviewEndSec(null);
-    }
-  };
-
-  // YouTube: クリップ再生時、終端を超えたら停止（interval）
+  // クリップ再生時、終端を超えたら停止（YouTube / URL 共通）
   useEffect(() => {
-    if (!isYoutube) return;
     const timer = setInterval(async () => {
-      if (!ytPlaying) return;
       if (previewEndSec == null) return;
-      try {
-        const t = await ytRef.current?.getCurrentTime?.();
-        if (typeof t === 'number' && t >= previewEndSec) {
-          setYtPlaying(false);
-          setPreviewEndSec(null);
-        }
-      } catch {}
+      if (isYoutube) {
+        if (!ytPlaying) return;
+        try {
+          const t = await ytRef.current?.getCurrentTime?.();
+          if (typeof t === 'number' && t >= previewEndSec) {
+            setYtPlaying(false);
+            setPreviewEndSec(null);
+          }
+        } catch {}
+      } else {
+        if (!isUrlPlaying) return;
+        try {
+          const t = urlPlayer?.currentTime ?? 0;
+          if (t >= previewEndSec) {
+            urlPlayer.pause();
+            setPreviewEndSec(null);
+          }
+        } catch {}
+      }
     }, 200);
     return () => clearInterval(timer);
-  }, [isYoutube, ytPlaying, previewEndSec]);
+  }, [isYoutube, ytPlaying, previewEndSec, isUrlPlaying]);
 
   const getCurrentSec = async () => {
     if (isYoutube) {
@@ -136,8 +151,8 @@ export default function TaggingScreen({ route, navigation }) {
         return null;
       }
     }
-    if (!status?.isLoaded) return null;
-    return status.positionMillis / 1000;
+    if (urlStatus !== 'readyToPlay') return null;
+    return urlPlayer?.currentTime ?? 0;
   };
 
   const handleRegisterTags = async () => {
@@ -259,7 +274,10 @@ export default function TaggingScreen({ route, navigation }) {
       setYtPlaying(true);
       return;
     }
-    await videoRef.current?.setStatusAsync({ positionMillis: 0, shouldPlay: true });
+    try {
+      urlPlayer.currentTime = 0;
+      urlPlayer.play();
+    } catch {}
   };
 
   const playClip = async (startSec, endSec) => {
@@ -273,10 +291,10 @@ export default function TaggingScreen({ route, navigation }) {
       setYtPlaying(true);
       return;
     }
-    await videoRef.current?.setStatusAsync({
-      positionMillis: Math.max(startSec, 0) * 1000,
-      shouldPlay: true,
-    });
+    try {
+      urlPlayer.currentTime = Math.max(startSec, 0);
+      urlPlayer.play();
+    } catch {}
   };
 
   return (
@@ -296,13 +314,13 @@ export default function TaggingScreen({ route, navigation }) {
               />
             </View>
           ) : (
-            <Video
-              ref={videoRef}
-              source={{ uri: video.videoUrl }}
+            <VideoView
+              player={urlPlayer}
               style={styles.video}
-              resizeMode={ResizeMode.CONTAIN}
-              useNativeControls
-              onPlaybackStatusUpdate={handlePlaybackStatusUpdate}
+              contentFit="contain"
+              nativeControls
+              allowsFullscreen
+              allowsPictureInPicture
             />
           )}
 

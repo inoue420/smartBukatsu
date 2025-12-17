@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, FlatList, Alert } from 'react-native';
-import { Video, ResizeMode } from 'expo-av';
+import { useEvent } from 'expo';
+import { useVideoPlayer, VideoView } from 'expo-video';
 import YoutubePlayer from 'react-native-youtube-iframe';
 import { getVideo, subscribeEvents, subscribeTags } from '../services/firestoreService';
 import { PLAYBACK_MARGIN_START, PLAYBACK_MARGIN_END } from '../constants';
@@ -28,7 +29,6 @@ function parseYouTubeId(rawUrl) {
 
 export default function HighlightPlayerScreen({ route, navigation }) {
   const { videoId } = route.params;
-  const videoRef = useRef(null);
   const ytRef = useRef(null);
   const [video, setVideo] = useState(null);
   const [events, setEvents] = useState([]);
@@ -39,6 +39,10 @@ export default function HighlightPlayerScreen({ route, navigation }) {
   const currentIndexRef = useRef(0);
   const [ytPlaying, setYtPlaying] = useState(false);
 
+  // URL(MP4/HLS) 再生用（expo-video）
+  const urlPlayer = useVideoPlayer(null);
+  const { isUrlPlaying } = useEvent(urlPlayer, 'playingChange', { isUrlPlaying: urlPlayer.playing });
+  
   const isYoutube = video?.sourceType === 'youtube';
   const youtubeId = useMemo(() => {
     return video?.youtubeId || parseYouTubeId(video?.videoUrl);
@@ -66,6 +70,17 @@ export default function HighlightPlayerScreen({ route, navigation }) {
     const unsub = subscribeTags(videoId, setTags);
     return () => unsub?.();
   }, [videoId]);
+  // URL(MP4/HLS) のときだけ player にソース反映（null player -> replace() が公式推奨）:contentReference[oaicite:2]{index=2}
+  useEffect(() => {
+    if (!video) return;
+    if (video.sourceType === 'youtube') {
+      try { urlPlayer.pause(); } catch {}
+      return;
+    }
+    const url = (video.videoUrl || '').trim();
+    if (!url) return;
+    try { urlPlayer.replace(url); } catch {}
+  }, [video]);
 
   // tagsが更新されたら、selectedTagsを存在するタグだけに整理
   useEffect(() => {
@@ -95,7 +110,7 @@ export default function HighlightPlayerScreen({ route, navigation }) {
     // 条件が変わって空になったら停止
     if (playlist.length === 0) {
       setYtPlaying(false);
-      try { videoRef.current?.setStatusAsync?.({ shouldPlay: false }); } catch {}
+      try { urlPlayer.pause(); } catch {}
     }
   }, [playlist]);
 
@@ -115,65 +130,57 @@ export default function HighlightPlayerScreen({ route, navigation }) {
       return;
     }
 
-    if (!videoRef.current) return;
-    (async () => {
-      await videoRef.current.setStatusAsync({
-        positionMillis: startPos * 1000,
-        shouldPlay: true,
-      });
-    })();
+    try {
+      urlPlayer.currentTime = startPos;
+      urlPlayer.play();
+    } catch {}
 
   }, [currentIndex, playlist, isYoutube, youtubeId]);
 
-  const handleStatusUpdate = (status) => {
-    if (isYoutube) return; // YouTubeは別ロジック
-    if (!status.isLoaded || !status.isPlaying) return;
-    const idx = currentIndexRef.current;
-    const clip = playlist[idx];
-    if (!clip) return;
-
-    const posSec = status.positionMillis / 1000;
-    const endLimit = Math.max(clip.endSec - PLAYBACK_MARGIN_END, clip.startSec);
-    if (posSec >= endLimit) {
-      const nextIndex = idx + 1;
-      const nextClip = playlist[nextIndex];
-      if (nextClip) {
-        currentIndexRef.current = nextIndex;
-        setCurrentIndex(nextIndex);
-      } else {
-        // 最後まで再生したら停止
-        videoRef.current.setStatusAsync({ shouldPlay: false });
-      }
-    }
-  };
-
-  // YouTube: intervalで終端判定して次へ
+  // 終端判定して次へ（YouTube / URL 共通）
   useEffect(() => {
-    if (!isYoutube) return;
     const timer = setInterval(async () => {
-      if (!ytPlaying) return;
       const idx = currentIndexRef.current;
       const clip = playlist[idx];
       if (!clip) return;
 
-      try {
-        const t = await ytRef.current?.getCurrentTime?.();
-        if (typeof t !== 'number') return;
-        const endLimit = Math.max(clip.endSec - PLAYBACK_MARGIN_END, clip.startSec);
-        if (t >= endLimit) {
-          const nextIndex = idx + 1;
-          const nextClip = playlist[nextIndex];
-          if (nextClip) {
-            currentIndexRef.current = nextIndex;
-            setCurrentIndex(nextIndex);
-          } else {
-            setYtPlaying(false);
+      const endLimit = Math.max(clip.endSec - PLAYBACK_MARGIN_END, clip.startSec);
+
+      if (isYoutube) {
+        if (!ytPlaying) return;
+        try {
+          const t = await ytRef.current?.getCurrentTime?.();
+          if (typeof t !== 'number') return;
+          if (t >= endLimit) {
+            const nextIndex = idx + 1;
+            const nextClip = playlist[nextIndex];
+            if (nextClip) {
+              currentIndexRef.current = nextIndex;
+              setCurrentIndex(nextIndex);
+            } else {
+              setYtPlaying(false);
+            }
           }
-        }
-      } catch {}
+        } catch {}
+      } else {
+        if (!isUrlPlaying) return;
+        try {
+          const t = urlPlayer?.currentTime ?? 0;
+          if (t >= endLimit) {
+            const nextIndex = idx + 1;
+            const nextClip = playlist[nextIndex];
+            if (nextClip) {
+              currentIndexRef.current = nextIndex;
+              setCurrentIndex(nextIndex);
+            } else {
+              urlPlayer.pause();
+            }
+          }
+        } catch {}
+      }
     }, 200);
     return () => clearInterval(timer);
-  }, [isYoutube, ytPlaying, playlist]);
+  }, [isYoutube, ytPlaying, playlist, isUrlPlaying]);
 
   const playFrom = (index) => {
     if (!playlist[index]) return;
@@ -207,13 +214,13 @@ export default function HighlightPlayerScreen({ route, navigation }) {
               />
             </View>
           ) : (
-            <Video
-              ref={videoRef}
-              source={{ uri: video.videoUrl }}
+            <VideoView
+              player={urlPlayer}
               style={styles.video}
-              resizeMode={ResizeMode.CONTAIN}
-              useNativeControls
-              onPlaybackStatusUpdate={handleStatusUpdate}
+              contentFit="contain"
+              nativeControls
+              allowsFullscreen
+              allowsPictureInPicture
             />
           )}
 
