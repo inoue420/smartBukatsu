@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, FlatList, Alert, StatusBar } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, FlatList, Alert, StatusBar, useWindowDimensions } from 'react-native';
 import { useEvent } from 'expo';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import YoutubePlayer from 'react-native-youtube-iframe';
+import * as ScreenOrientation from 'expo-screen-orientation';
 
 import { useAuth } from '../contexts/AuthContext';
 import { getProject, subscribeProjectVideos, getVideo, listEventsOnce, subscribeTags } from '../services/firestoreService';
@@ -32,10 +33,13 @@ function parseYouTubeId(rawUrl) {
 export default function ProjectHighlightPlayerScreen({ route, navigation }) {
   const { projectId } = route.params;
   const { activeTeamId } = useAuth();
+  const { width, height } = useWindowDimensions();
 
   const ytRef = useRef(null);
   const currentIndexRef = useRef(0);
   const finishedRef = useRef(false);
+  const remountedAfterFinishRef = useRef(false);
+  const finishAtRef = useRef(null);
 
   const [project, setProject] = useState(null);
   const [projectVideos, setProjectVideos] = useState([]); // [{id(videoId), order, offsetSec}]
@@ -49,6 +53,17 @@ export default function ProjectHighlightPlayerScreen({ route, navigation }) {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [ytPlaying, setYtPlaying] = useState(false);
   const [finished, setFinished] = useState(false);
+  const [landscapeMode, setLandscapeMode] = useState(false);
+  const [playerKey, setPlayerKey] = useState(0); // YouTube強制停止用（再マウント）
+
+  const { fsVideoW } = useMemo(() => {
+    const uiMin = 280;
+    const ideal = Math.round((height * 16) / 9);
+    let vw = ideal;
+    if (width - vw < uiMin) vw = width - uiMin;
+    vw = Math.max(240, Math.min(vw, Math.floor(width * 0.8)));
+    return { fsVideoW: vw };
+  }, [width, height]);
 
   // URL(MP4/HLS) 再生用
   const urlPlayer = useVideoPlayer(null);
@@ -68,6 +83,12 @@ export default function ProjectHighlightPlayerScreen({ route, navigation }) {
       navigation.setOptions({ title: `PJ：${p.name}` });
     })();
   }, [activeTeamId, projectId]);
+
+  useEffect(() => {
+    return () => {
+      ScreenOrientation.unlockAsync().catch(() => {});
+    };
+  }, []);
 
   useEffect(() => {
     if (!activeTeamId) return;
@@ -182,6 +203,8 @@ export default function ProjectHighlightPlayerScreen({ route, navigation }) {
     setCurrentIndex(0);
     currentIndexRef.current = 0;
     finishedRef.current = false;
+    remountedAfterFinishRef.current = false;
+    finishAtRef.current = null;
     setFinished(false);
     setYtPlaying(false);
     try { urlPlayer.pause(); } catch {}
@@ -213,6 +236,8 @@ export default function ProjectHighlightPlayerScreen({ route, navigation }) {
     if (!currentClip || !currentVideo) return;
 
     finishedRef.current = false;
+    remountedAfterFinishRef.current = false;
+    finishAtRef.current = null;
     setFinished(false);
     currentIndexRef.current = currentIndex;
 
@@ -248,6 +273,7 @@ export default function ProjectHighlightPlayerScreen({ route, navigation }) {
       if (!clip) return;
 
       const isLast = !playlist[idx + 1];
+      // 最後のクリップは endSec で止める（マージンは引かない）
       const endLimit = isLast ? clip.endSec : Math.max(clip.endSec - PLAYBACK_MARGIN_END, clip.startSec);
 
       const v = videosById[clip.videoId];
@@ -264,6 +290,7 @@ export default function ProjectHighlightPlayerScreen({ route, navigation }) {
               setCurrentIndex(nextIndex);
             } else {
               finishedRef.current = true;
+              finishAtRef.current = endLimit;
               try { ytRef.current?.pauseVideo?.(); } catch {}
               setYtPlaying(false);
               setFinished(true);
@@ -281,6 +308,8 @@ export default function ProjectHighlightPlayerScreen({ route, navigation }) {
               setCurrentIndex(nextIndex);
             } else {
               finishedRef.current = true;
+              finishAtRef.current = endLimit;
+              try { urlPlayer.currentTime = endLimit; } catch {}
               try { urlPlayer.pause(); } catch {}
               setFinished(true);
             }
@@ -292,9 +321,42 @@ export default function ProjectHighlightPlayerScreen({ route, navigation }) {
     return () => clearInterval(timer);
   }, [playlist, videosById, isUrlPlaying, finished]);
 
+  // finished になった瞬間に “もう一回だけ” 停止を押し込む（端末差対策）
+  useEffect(() => {
+    if (!finished) return;
+    const fin = finishAtRef.current;
+    const id = setTimeout(() => {
+      if (isYoutube) {
+        try { ytRef.current?.pauseVideo?.(); } catch {}
+        setYtPlaying(false);
+
+        // それでも “再生が復帰する端末” 用：まだ動いていたら1回だけ再マウントして止める
+        setTimeout(async () => {
+          if (remountedAfterFinishRef.current) return;
+          try {
+            const cur = await ytRef.current?.getCurrentTime?.();
+            if (typeof fin === 'number' && typeof cur === 'number' && cur > fin + 0.8) {
+              remountedAfterFinishRef.current = true;
+              setPlayerKey((k) => k + 1);
+            }
+          } catch {
+            remountedAfterFinishRef.current = true;
+            setPlayerKey((k) => k + 1);
+          }
+        }, 600);
+      } else {
+        if (typeof fin === 'number') { try { urlPlayer.currentTime = fin; } catch {} }
+        try { urlPlayer.pause(); } catch {}
+      }
+    }, 350);
+    return () => clearTimeout(id);
+  }, [finished, isYoutube]);
+  
   const playFrom = (index) => {
     if (!playlist[index]) return;
     finishedRef.current = false;
+    remountedAfterFinishRef.current = false;
+    finishAtRef.current = null;
     setFinished(false);
     currentIndexRef.current = index;
     setCurrentIndex(index);
@@ -309,102 +371,212 @@ export default function ProjectHighlightPlayerScreen({ route, navigation }) {
     });
   };
 
+  const openLandscapeMode = async () => {
+    if (landscapeMode) return;
+    try {
+      setLandscapeMode(true);
+      await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+    } catch {}
+  };
+
+  const closeLandscapeMode = async () => {
+    setYtPlaying(false);
+    try { urlPlayer.pause(); } catch {}
+    setLandscapeMode(false);
+    try { await ScreenOrientation.unlockAsync(); } catch {}
+  };
+
+  const renderPlayer = ({ landscape = false } = {}) => {
+    if (!currentVideo) {
+      return (
+        <View style={styles.playerFallback}>
+          <Text style={styles.playerFallbackText}>タグを選択してください</Text>
+        </View>
+      );
+    }
+
+    if (isYoutube) {
+      return youtubeId ? (
+        <View style={landscape ? [styles.fsVideoWrap, { width: fsVideoW }] : styles.videoWrap}>
+          <YoutubePlayer
+            key={`${youtubeId || 'yt'}-${playerKey}`}
+            ref={ytRef}
+            height={landscape ? Math.max(200, height) : 220}
+            width={landscape ? fsVideoW : undefined}
+            videoId={youtubeId || ''}
+            play={ytPlaying && !finished}
+            initialPlayerParams={landscape ? { preventFullScreen: true } : undefined}
+            onChangeState={(s) => {
+              // finished なのに再度 playing/buffering になる個体差対策（より強く）
+              if (finishedRef.current && (s === 'playing' || s === 'buffering')) {
+                if (!remountedAfterFinishRef.current) {
+                  remountedAfterFinishRef.current = true;
+                  setPlayerKey((k) => k + 1);
+                }
+                try { ytRef.current?.pauseVideo?.(); } catch {}
+                setYtPlaying(false);
+              }
+              if (s === 'ended') setYtPlaying(false);
+            }}
+          />
+        </View>
+      ) : (
+        <View style={styles.playerFallback}>
+          <Text style={styles.playerFallbackText}>YouTube ID が取得できません</Text>
+        </View>
+      );
+    }
+
+    return (
+      <VideoView
+        player={urlPlayer}
+        style={landscape ? [styles.fsVideo, { width: fsVideoW }] : styles.video}
+        contentFit="contain"
+        nativeControls
+        fullscreenOptions={{ enabled: !landscape }}
+        allowsPictureInPicture
+      />
+    );
+  };
+
   return (
     <View style={styles.container}>
-      <StatusBar />
       {!project ? null : (
         <>
-          <View style={styles.filterRow}>
-            <View style={styles.filterHeader}>
-              <Text style={styles.label}>タグで絞り込み（{matchMode}）</Text>
-              <TouchableOpacity style={styles.modeBtn} onPress={() => setMatchMode((m) => (m === 'OR' ? 'AND' : 'OR'))}>
-                <Text style={styles.modeBtnText}>切替</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.clearBtn} onPress={() => setSelectedTags(new Set())}>
-                <Text style={styles.clearBtnText}>クリア</Text>
-              </TouchableOpacity>
-            </View>
+          <StatusBar hidden={landscapeMode} />
 
-            <View style={styles.tagButtonsWrap}>
-              {tags.length === 0 ? (
-                <Text style={styles.small}>タグがありません（タグ付け画面で登録してください）</Text>
-              ) : (
-                tags.map((t) => {
-                  const name = t?.name;
-                  if (!name) return null;
-                  const on = selectedTags.has(name);
-                  return (
-                    <TouchableOpacity
-                      key={t.id || name}
-                      style={[styles.tagBtn, on ? styles.tagBtnActive : styles.tagBtnInactive]}
-                      onPress={() => toggleSelectTag(name)}
-                    >
-                      <Text style={[styles.tagBtnText, on ? styles.tagBtnTextActive : styles.tagBtnTextInactive]}>{name}</Text>
-                    </TouchableOpacity>
-                  );
-                })
-              )}
-            </View>
+          {landscapeMode ? (
+            <View style={styles.fsRoot}>
+              <View style={styles.fsRow}>
+                <View style={[styles.fsVideoCol, { width: fsVideoW }]}>
+                  {renderPlayer({ landscape: true })}
+                </View>
 
-            <Text style={styles.small}>一致: {playlist.length} 件 / 集約イベント: {allClips.length} 件</Text>
-          </View>
+                <View style={styles.fsUiCol}>
+                  <FlatList
+                    data={playlist}
+                    keyExtractor={(c) => c.uid}
+                    renderItem={({ item, index }) => (
+                      <TouchableOpacity
+                        style={[styles.clipItem, index === currentIndex && styles.clipItemActive]}
+                        onPress={() => playFrom(index)}
+                      >
+                        <Text style={styles.clipText}>
+                          #{index + 1} [{item.startSec.toFixed(1)}s - {item.endSec.toFixed(1)}s]（{item.title}） {item.tagTypes?.join(', ')}
+                        </Text>
+                     </TouchableOpacity>
+                    )}
+                    ListHeaderComponent={
+                      <View style={styles.filterRow}>
+                        <View style={styles.filterHeader}>
+                          <Text style={styles.label}>タグで絞り込み（{matchMode}）</Text>
+                          <TouchableOpacity style={styles.modeBtn} onPress={() => setMatchMode((m) => (m === 'OR' ? 'AND' : 'OR'))}>
+                            <Text style={styles.modeBtnText}>切替</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity style={styles.clearBtn} onPress={() => setSelectedTags(new Set())}>
+                            <Text style={styles.clearBtnText}>クリア</Text>
+                          </TouchableOpacity>
+                        </View>
 
-          {/* Player */}
-          <View style={styles.playerBox}>
-            {currentVideo ? (
-              isYoutube ? (
-                youtubeId ? (
-                  <YoutubePlayer
-                    ref={ytRef}
-                    height={220}
-                    videoId={youtubeId}
-                    play={ytPlaying && !finished}
-                    onChangeState={(s) => {
-                      if (finishedRef.current && (s === 'playing' || s === 'buffering')) {
-                        try { ytRef.current?.pauseVideo?.(); } catch {}
-                        setYtPlaying(false);
-                      }
-                    }}
+                        <View style={styles.tagButtonsWrap}>
+                          {tags.length === 0 ? (
+                            <Text style={styles.small}>タグがありません（タグ付け画面で登録してください）</Text>
+                          ) : (
+                            tags.map((t) => {
+                              const name = t?.name;
+                              if (!name) return null;
+                              const on = selectedTags.has(name);
+                              return (
+                                <TouchableOpacity
+                                  key={t.id || name}
+                                  style={[styles.tagBtn, on ? styles.tagBtnActive : styles.tagBtnInactive]}
+                                  onPress={() => toggleSelectTag(name)}
+                                >
+                                  <Text style={[styles.tagBtnText, on ? styles.tagBtnTextActive : styles.tagBtnTextInactive]}>{name}</Text>
+                                </TouchableOpacity>
+                              );
+                            })
+                          )}
+                        </View>
+
+                        <Text style={styles.small}>一致: {playlist.length} 件 / 集約イベント: {allClips.length} 件</Text>
+                        <Text style={[styles.label, { marginTop: 8 }]}>クリップ一覧</Text>
+                      </View>
+                    }
+                    contentContainerStyle={{ paddingHorizontal: 8, paddingBottom: 12 }}
+                    ListEmptyComponent={<Text style={{ padding: 12 }}>タグを選択してください（または一致なし）</Text>}
                   />
-                ) : (
-                  <View style={styles.playerFallback}>
-                    <Text style={styles.playerFallbackText}>YouTube ID が取得できません</Text>
-                  </View>
-                )
-              ) : (
-                <VideoView
-                  player={urlPlayer}
-                  style={styles.video}
-                  contentFit="contain"
-                  nativeControls
-                  fullscreenOptions={{ enabled: true }}
-                  allowsPictureInPicture
-                />
-              )
-            ) : (
-              <View style={styles.playerFallback}>
-                <Text style={styles.playerFallbackText}>タグを選択してください</Text>
+                </View>
               </View>
-            )}
-          </View>
 
-          {/* Playlist */}
-          <FlatList
-            data={playlist}
-            keyExtractor={(c) => c.uid}
-            renderItem={({ item, index }) => (
-              <TouchableOpacity
-                style={[styles.clipItem, index === currentIndex && styles.clipItemActive]}
-                onPress={() => playFrom(index)}
-              >
-                <Text style={styles.clipText}>
-                  #{index + 1} [{item.startSec.toFixed(1)}s - {item.endSec.toFixed(1)}s]（{item.title}） {item.tagTypes?.join(', ')}
-                </Text>
+              <TouchableOpacity style={styles.fsCloseBtn} onPress={closeLandscapeMode}>
+                <Text style={styles.fsCloseBtnText}>閉じる</Text>
               </TouchableOpacity>
-            )}
-            contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 16 }}
-            ListEmptyComponent={<Text style={{ padding: 12 }}>タグを選択してください（または一致なし）</Text>}
-          />
+            </View>
+          ) : (
+            <>
+              <View style={styles.filterRow}>
+                <View style={styles.filterHeader}>
+                  <Text style={styles.label}>タグで絞り込み（{matchMode}）</Text>
+                  <TouchableOpacity style={styles.modeBtn} onPress={() => setMatchMode((m) => (m === 'OR' ? 'AND' : 'OR'))}>
+                    <Text style={styles.modeBtnText}>切替</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.clearBtn} onPress={() => setSelectedTags(new Set())}>
+                    <Text style={styles.clearBtnText}>クリア</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.landscapeBtn} onPress={openLandscapeMode}>
+                    <Text style={styles.landscapeBtnText}>横</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.tagButtonsWrap}>
+                  {tags.length === 0 ? (
+                    <Text style={styles.small}>タグがありません（タグ付け画面で登録してください）</Text>
+                  ) : (
+                    tags.map((t) => {
+                      const name = t?.name;
+                      if (!name) return null;
+                      const on = selectedTags.has(name);
+                      return (
+                        <TouchableOpacity
+                          key={t.id || name}
+                          style={[styles.tagBtn, on ? styles.tagBtnActive : styles.tagBtnInactive]}
+                          onPress={() => toggleSelectTag(name)}
+                        >
+                          <Text style={[styles.tagBtnText, on ? styles.tagBtnTextActive : styles.tagBtnTextInactive]}>{name}</Text>
+                        </TouchableOpacity>
+                      );
+                    })
+                  )}
+                </View>
+
+                <Text style={styles.small}>一致: {playlist.length} 件 / 集約イベント: {allClips.length} 件</Text>
+              </View>
+
+              {/* Player */}
+              <View style={styles.playerBox}>
+                {renderPlayer({ landscape: false })}
+              </View>
+
+              {/* Playlist */}
+              <FlatList
+                data={playlist}
+                keyExtractor={(c) => c.uid}
+                renderItem={({ item, index }) => (
+                  <TouchableOpacity
+                    style={[styles.clipItem, index === currentIndex && styles.clipItemActive]}
+                    onPress={() => playFrom(index)}
+                  >
+                    <Text style={styles.clipText}>
+                      #{index + 1} [{item.startSec.toFixed(1)}s - {item.endSec.toFixed(1)}s]（{item.title}） {item.tagTypes?.join(', ')}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+                contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 16 }}
+                ListEmptyComponent={<Text style={{ padding: 12 }}>タグを選択してください（または一致なし）</Text>}
+              />
+            </>
+          )}
         </>
       )}
     </View>
@@ -422,6 +594,8 @@ const styles = StyleSheet.create({
   modeBtnText: { color: '#0077cc', fontWeight: 'bold' },
   clearBtn: { marginLeft: 8, backgroundColor: '#fff', borderWidth: 1, borderColor: '#999', borderRadius: 8, paddingVertical: 6, paddingHorizontal: 10 },
   clearBtnText: { color: '#333', fontWeight: 'bold' },
+  landscapeBtn: { marginLeft: 8, backgroundColor: '#fff', borderWidth: 1, borderColor: '#0077cc', borderRadius: 8, paddingVertical: 6, paddingHorizontal: 10 },
+  landscapeBtnText: { color: '#0077cc', fontWeight: 'bold' },
 
   tagButtonsWrap: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 8 },
   tagBtn: { paddingVertical: 8, paddingHorizontal: 10, borderRadius: 999, borderWidth: 1, marginRight: 8, marginBottom: 8 },
@@ -433,10 +607,29 @@ const styles = StyleSheet.create({
 
   playerBox: { backgroundColor: '#000', height: 220 },
   video: { width: '100%', height: 220, backgroundColor: '#000' },
+  videoWrap: { width: '100%', height: 220, backgroundColor: '#000' },
   playerFallback: { height: 220, justifyContent: 'center', alignItems: 'center' },
   playerFallbackText: { color: '#fff', fontWeight: 'bold' },
 
   clipItem: { backgroundColor: '#fff', padding: 10, borderRadius: 10, marginVertical: 6 },
   clipItemActive: { borderWidth: 2, borderColor: '#0077cc' },
   clipText: { color: '#333' },
+
+  // 横画面（疑似フルスクリーン）
+  fsRoot: { flex: 1, backgroundColor: '#000' },
+  fsRow: { flex: 1, flexDirection: 'row' },
+  fsVideoCol: { backgroundColor: '#000' },
+  fsUiCol: { flex: 1, backgroundColor: '#E0FFFF' },
+  fsVideo: { height: '100%', backgroundColor: '#000' },
+  fsVideoWrap: { height: '100%', backgroundColor: '#000' },
+  fsCloseBtn: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+  },
+  fsCloseBtnText: { color: '#fff', fontWeight: 'bold' },  
 });
