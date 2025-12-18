@@ -345,7 +345,7 @@ export default function HighlightPlayerScreen({ route, navigation }) {
         style={landscape ? [styles.fsVideo, { width: fsVideoW }] : styles.video}
         contentFit="contain"
         nativeControls
-        allowsFullscreen={!landscape}
+        fullscreenOptions={{ enabled: !landscape }}
         allowsPictureInPicture
       />
     );

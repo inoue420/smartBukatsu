@@ -64,6 +64,7 @@ export default function TaggingScreen({ route, navigation }) {
   const ytRef = useRef(null);
   const [ytPlaying, setYtPlaying] = useState(false);
   const [previewEndSec, setPreviewEndSec] = useState(null);
+  const lastLoadedUrlRef = useRef(null);
 
   // URL(MP4/HLS) 再生用（expo-video）
   const urlPlayer = useVideoPlayer(null);
@@ -102,6 +103,16 @@ export default function TaggingScreen({ route, navigation }) {
     return () => unsub();
   }, [activeTeamId, videoId]);
 
+  const replaceUrlSource = async (url) => {
+    try {
+      if (typeof urlPlayer?.replaceAsync === 'function') {
+        await urlPlayer.replaceAsync(url);
+      } else {
+        urlPlayer.replace(url);
+      }
+    } catch {}
+  };
+
   // URL(MP4/HLS) のときだけ player にソース反映（null player -> replace() が公式推奨パターン）:contentReference[oaicite:1]{index=1}
   useEffect(() => {
     if (!video) return;
@@ -111,7 +122,9 @@ export default function TaggingScreen({ route, navigation }) {
     }
     const url = (video.videoUrl || '').trim();
     if (!url) return;
-    try { urlPlayer.replace(url); } catch {}
+    if (lastLoadedUrlRef.current === url) return;
+    lastLoadedUrlRef.current = url;
+    replaceUrlSource(url);
   }, [video]);
 
 
@@ -366,7 +379,7 @@ export default function TaggingScreen({ route, navigation }) {
         style={landscape ? styles.fsVideo : styles.video}
         contentFit="contain"
         nativeControls
-        allowsFullscreen={!landscape}
+        fullscreenOptions={{ enabled: !landscape }}
         allowsPictureInPicture
       />
     );
@@ -484,18 +497,22 @@ export default function TaggingScreen({ route, navigation }) {
               {renderPlayer({ landscape: false })}
 
               <View style={styles.tagArea}>
-                <Text style={styles.label}>共通タグ登録（全動画に適用 / カンマ区切りOK）</Text>
-                <View style={styles.tagRegisterRow}>
-                  <TextInput
-                    style={[styles.input, { flex: 1 }]}
-                    value={tagText}
-                    onChangeText={setTagText}
-                    placeholder="例）シュート,10番 / パスミス / GK"
-                  />
-                  <TouchableOpacity style={styles.confirmBtn} onPress={handleRegisterTags}>
-                    <Text style={styles.confirmBtnText}>確定</Text>
-                  </TouchableOpacity>
-                </View>
+                <Text style={styles.label}>共通タグ登録（チーム共通 / カンマ区切りOK）</Text>
+                {isAdmin ? (
+                  <View style={styles.tagRegisterRow}>
+                    <TextInput
+                      style={[styles.input, { flex: 1 }]}
+                      value={tagText}
+                      onChangeText={setTagText}
+                      placeholder="例）シュート,10番 / パスミス / GK"
+                    />
+                    <TouchableOpacity style={styles.confirmBtn} onPress={handleRegisterTags}>
+                      <Text style={styles.confirmBtnText}>確定</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <Text style={styles.small}>※タグ登録/削除は管理者のみ</Text>
+                )}
 
                 <Text style={[styles.label, { marginTop: 10 }]}>共通タグボタン（押してON/OFF・長押しで削除）</Text>
                 <View style={styles.tagButtonsWrap}>

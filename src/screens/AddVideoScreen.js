@@ -58,12 +58,22 @@ export default function AddVideoScreen() {
   // 再生用
   const ytRef = useRef(null);
   const [playing, setPlaying] = useState(false);
+  const lastLoadedUrlRef = useRef(null);
 
   // URL(MP4/HLS) 再生用（expo-video）
   // nullソースで作っておいて、必要になったら replace() で差し替える方式（公式の推奨パターン）:contentReference[oaicite:3]{index=3}
   const urlPlayer = useVideoPlayer(null);
   const { isUrlPlaying } = useEvent(urlPlayer, 'playingChange', { isUrlPlaying: urlPlayer.playing });
 
+  const replaceUrlSource = async (url) => {
+    try {
+      if (typeof urlPlayer?.replaceAsync === 'function') {
+        await urlPlayer.replaceAsync(url);
+     } else {
+        urlPlayer.replace(url);
+      }
+    } catch {}
+  };  
 
   // URL入力のたびに種別判定
   useEffect(() => {
@@ -87,9 +97,13 @@ export default function AddVideoScreen() {
      if (sourceType !== 'url') return;
      const url = (videoUrl || '').trim();
      if (!url) return;
-     try {
-       urlPlayer.replace(url);
-     } catch {}
+     // 入力中に毎回読み込むのを避ける（特に iOS）
+     const t = setTimeout(() => {
+       if (lastLoadedUrlRef.current === url) return;
+       lastLoadedUrlRef.current = url;
+       replaceUrlSource(url);
+     }, 350);
+     return () => clearTimeout(t);
    }, [sourceType, videoUrl]);
 
   // 保存
@@ -306,7 +320,7 @@ export default function AddVideoScreen() {
                     player={urlPlayer}
                     nativeControls
                     contentFit="contain"
-                    allowsFullscreen
+                    fullscreenOptions={{ enabled: true }}
                   />
                   <View style={styles.row}>
                     <TouchableOpacity style={styles.playBtn} onPress={playFullFromStart}>
