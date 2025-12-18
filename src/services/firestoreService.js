@@ -23,8 +23,12 @@ import { db } from '../firebase';
 const teamRef = (teamId) => doc(db, 'teams', teamId);
 const teamVideosCol = (teamId) => collection(db, 'teams', teamId, 'videos');
 const teamTagsCol = (teamId) => collection(db, 'teams', teamId, 'tags');
+const teamProjectsCol = (teamId) => collection(db, 'teams', teamId, 'projects');
 const videoRef = (teamId, videoId) => doc(db, 'teams', teamId, 'videos', videoId);
 const eventsCol = (teamId, videoId) => collection(db, 'teams', teamId, 'videos', videoId, 'events');
+const projectRef = (teamId, projectId) => doc(db, 'teams', teamId, 'projects', projectId);
+const projectVideosCol = (teamId, projectId) => collection(db, 'teams', teamId, 'projects', projectId, 'videos');
+const projectVideoRef = (teamId, projectId, videoId) => doc(db, 'teams', teamId, 'projects', projectId, 'videos', videoId);
 
 function tagDocId(name) {
   return encodeURIComponent(String(name || '').trim());
@@ -111,6 +115,66 @@ export function subscribeVideos(teamId, callback) {
 }
 
 // -----------------------------
+// projects: /teams/{teamId}/projects/{projectId}
+//          /teams/{teamId}/projects/{projectId}/videos/{videoId}
+// -----------------------------
+export async function createProject(teamId, { name, createdBy }) {
+  const trimmed = String(name || '').trim();
+  if (!trimmed) throw new Error('プロジェクト名を入力してください');
+  const ref = await addDoc(teamProjectsCol(teamId), {
+    name: trimmed,
+    createdBy,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+  return ref.id;
+}
+
+export async function getProject(teamId, projectId) {
+  const snap = await getDoc(projectRef(teamId, projectId));
+  return snap.exists() ? { id: snap.id, ...snap.data() } : null;
+}
+
+export function subscribeProjects(teamId, callback) {
+  const q = query(teamProjectsCol(teamId), orderBy('createdAt', 'desc'));
+  return onSnapshot(q, (snap) => {
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+  });
+}
+
+export function subscribeProjectVideos(teamId, projectId, callback) {
+  // order が無い場合もあるので、まずは order を入れる運用に寄せる（pickerで付与）
+  const q = query(projectVideosCol(teamId, projectId), orderBy('order', 'asc'));
+  return onSnapshot(q, (snap) => {
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() }))); // id === videoId
+  });
+}
+
+export async function getProjectVideos(teamId, projectId) {
+  const snap = await getDocs(projectVideosCol(teamId, projectId));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() })); // id === videoId
+}
+
+export async function addVideoToProject(teamId, projectId, videoId, { order = 0, offsetSec = 0, addedBy } = {}) {
+  await setDoc(
+    projectVideoRef(teamId, projectId, videoId),
+    {
+      order,
+      offsetSec,
+      addedBy,
+      addedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+  await setDoc(projectRef(teamId, projectId), { updatedAt: serverTimestamp() }, { merge: true });
+}
+
+export async function removeVideoFromProject(teamId, projectId, videoId) {
+  await deleteDoc(projectVideoRef(teamId, projectId, videoId));
+  await setDoc(projectRef(teamId, projectId), { updatedAt: serverTimestamp() }, { merge: true });
+}
+
+// -----------------------------
 // events: /teams/{teamId}/videos/{videoId}/events
 // -----------------------------
 export async function addEvent(teamId, videoId, event) {
@@ -123,6 +187,14 @@ export function subscribeEvents(teamId, videoId, callback) {
     callback(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
   });
 }
+
+// 一括集約用：購読ではなく「その時点の events を取得」
+export async function listEventsOnce(teamId, videoId) {
+  const q = query(eventsCol(teamId, videoId), orderBy('startSec', 'asc'));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
 
 // -----------------------------
 // tags: /teams/{teamId}/tags

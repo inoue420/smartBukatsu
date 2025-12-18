@@ -9,6 +9,10 @@ import VideoListScreen from './src/screens/VideoListScreen';
 import AddVideoScreen from './src/screens/AddVideoScreen'; 
 import TaggingScreen from './src/screens/TaggingScreen';
 import HighlightPlayerScreen from './src/screens/HighlightPlayerScreen';
+import ProjectListScreen from './src/screens/ProjectListScreen';
+import ProjectDetailScreen from './src/screens/ProjectDetailScreen';
+import ProjectVideoPickerScreen from './src/screens/ProjectVideoPickerScreen';
+import ProjectHighlightPlayerScreen from './src/screens/ProjectHighlightPlayerScreen';
 import AuthScreen from './src/screens/AuthScreen';
 import TeamSetupScreen from './src/screens/TeamSetupScreen';
 import { AuthProvider, useAuth } from './src/contexts/AuthContext';
@@ -45,6 +49,10 @@ function RootNavigator() {
       <Stack.Screen name="AddVideo" component={AddVideoScreen} options={{ title: '動画追加' }} />
       <Stack.Screen name="Tagging" component={TaggingScreen} options={{ title: 'タグ付け' }} />
       <Stack.Screen name="Highlights" component={HighlightPlayerScreen} options={{ title: 'ハイライト' }} />
+      <Stack.Screen name="Projects" component={ProjectListScreen} options={{ title: 'プロジェクト' }} />
+      <Stack.Screen name="ProjectDetail" component={ProjectDetailScreen} options={{ title: 'プロジェクト詳細' }} />
+      <Stack.Screen name="ProjectVideoPicker" component={ProjectVideoPickerScreen} options={{ title: '動画を追加' }} />
+      <Stack.Screen name="ProjectHighlights" component={ProjectHighlightPlayerScreen} options={{ title: 'プロジェクトハイライト' }} />
     </Stack.Navigator>
   );
 }

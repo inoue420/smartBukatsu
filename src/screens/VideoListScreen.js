@@ -129,6 +129,14 @@ export default function VideoListScreen({ navigation }) {
         </TouchableOpacity>
       </View>
 
+      <TouchableOpacity
+        style={[styles.addBtn, { backgroundColor: '#009966', marginBottom: 10 }]}
+        onPress={() => navigation.navigate('Projects')}
+      >
+        <Text style={styles.addBtnText}>📁 プロジェクト</Text>
+      </TouchableOpacity>
+
+
       {isAdmin && (
         <TouchableOpacity style={[styles.addBtn, { backgroundColor: '#0077cc', marginBottom: 10 }]} onPress={handleCreateInvite}>
           <Text style={styles.addBtnText}>＋ 招待コードを発行</Text>
