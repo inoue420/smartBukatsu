@@ -40,6 +40,12 @@ export default function ProjectHighlightPlayerScreen({ route, navigation }) {
   const finishedRef = useRef(false);
   const remountedAfterFinishRef = useRef(false);
   const finishAtRef = useRef(null);
+  const ytReadyRef = useRef(false);
+  const pendingYtStartRef = useRef(null);
+  const pendingYtUidRef = useRef(null);
+  const pendingUrlStartRef = useRef(null);
+  const pendingUrlUidRef = useRef(null);
+  const lastLoadedUrlRef = useRef(null);
 
   const [project, setProject] = useState(null);
   const [projectVideos, setProjectVideos] = useState([]); // [{id(videoId), order, offsetSec}]
@@ -68,6 +74,14 @@ export default function ProjectHighlightPlayerScreen({ route, navigation }) {
   // URL(MP4/HLS) 再生用
   const urlPlayer = useVideoPlayer(null);
   const { isUrlPlaying } = useEvent(urlPlayer, 'playingChange', { isUrlPlaying: urlPlayer.playing });
+  const { urlStatus } = useEvent(urlPlayer, 'statusChange', { urlStatus: urlPlayer.status });
+
+  const replaceUrlSource = async (url) => {
+    try {
+      if (typeof urlPlayer?.replaceAsync === 'function') await urlPlayer.replaceAsync(url);
+      else urlPlayer.replace(url);
+    } catch {}
+  };
 
   // project / projectVideos
   useEffect(() => {
@@ -219,16 +233,24 @@ export default function ProjectHighlightPlayerScreen({ route, navigation }) {
     return currentVideo.youtubeId || parseYouTubeId(currentVideo.videoUrl);
   }, [currentVideo]);
 
+  // YouTube の動画が切り替わったら「ready」をリセット（初回seekの取りこぼし防止）
+  useEffect(() => {
+    ytReadyRef.current = false;
+  }, [youtubeId, playerKey]);
+  
   // 動画切替時：URLなら replace、YouTubeならURL停止
   useEffect(() => {
     if (!currentVideo) return;
     if (currentVideo.sourceType === 'youtube') {
       try { urlPlayer.pause(); } catch {}
+      lastLoadedUrlRef.current = null;
       return;
     }
     const url = (currentVideo.videoUrl || '').trim();
     if (!url) return;
-    try { urlPlayer.replace(url); } catch {}
+    if (lastLoadedUrlRef.current === url) return;
+    lastLoadedUrlRef.current = url;
+    replaceUrlSource(url);
   }, [currentVideo]);
 
   // クリップ開始シーク
@@ -245,23 +267,50 @@ export default function ProjectHighlightPlayerScreen({ route, navigation }) {
 
     if (isYoutube) {
       if (!youtubeId) return;
-      // videoId prop 変更で内部的に読み替わるが、seekが効くよう少し遅延
-      setTimeout(() => {
-        try {
-          ytRef.current?.seekTo?.(startPos, true);
-          setYtPlaying(true);
-        } catch {}
-      }, 200);
+      // ✅ 動画切替直後は onReady 前に seekTo が落ちることがあるので保留して確実に適用
+      pendingYtStartRef.current = startPos;
+      pendingYtUidRef.current = currentClip.uid;
+
+      // 先に play=true になると 0秒から動きがちなので、ready までは止める
+      if (!ytReadyRef.current) {
+        setYtPlaying(false);
+        return;
+      }
+      try { ytRef.current?.seekTo?.(startPos, true); } catch {}
+      setYtPlaying(true);
+      pendingYtStartRef.current = null;
+      pendingYtUidRef.current = null;
       return;
     }
 
     // URL
     setYtPlaying(false);
-    try {
-      urlPlayer.currentTime = startPos;
-      urlPlayer.play();
-    } catch {}
-  }, [currentIndex, currentClip?.uid, currentVideo?.id, isYoutube, youtubeId]);
+    pendingUrlStartRef.current = startPos;
+    pendingUrlUidRef.current = currentClip.uid;
+    if (urlStatus !== 'readyToPlay') {
+      try { urlPlayer.pause(); } catch {}
+      return;
+    }
+    try { urlPlayer.currentTime = startPos; } catch {}
+    try { urlPlayer.play(); } catch {}
+    pendingUrlStartRef.current = null;
+    pendingUrlUidRef.current = null;
+  }, [currentIndex, currentClip?.uid, currentVideo?.id, isYoutube, youtubeId, urlStatus]);
+
+  // ✅ URLプレイヤーが ready になった瞬間に、保留していたシーク＆再生を適用（動画切替直後の1発目対策）
+  useEffect(() => {
+    if (isYoutube) return;
+    if (urlStatus !== 'readyToPlay') return;
+    if (!currentClip) return;
+    const uid = pendingUrlUidRef.current;
+    const pos = pendingUrlStartRef.current;
+    if (uid !== currentClip.uid) return;
+    if (typeof pos !== 'number') return;
+    try { urlPlayer.currentTime = pos; } catch {}
+    try { urlPlayer.play(); } catch {}
+    pendingUrlStartRef.current = null;
+    pendingUrlUidRef.current = null;
+  }, [urlStatus, isYoutube, currentClip?.uid]);
 
   // 終端判定して次へ（複数動画またぎ）
   useEffect(() => {
@@ -406,6 +455,20 @@ export default function ProjectHighlightPlayerScreen({ route, navigation }) {
             videoId={youtubeId || ''}
             play={ytPlaying && !finished}
             initialPlayerParams={landscape ? { preventFullScreen: true } : undefined}
+            onReady={() => {
+              ytReadyRef.current = true;
+              // ✅ 動画切替直後の「最初のタグ」が効かない対策：ready後にseek/playを確実に適用
+              const uid = pendingYtUidRef.current;
+              const pos = pendingYtStartRef.current;
+              if (!currentClip) return;
+              if (uid !== currentClip.uid) return;
+              if (typeof pos !== 'number') return;
+              if (finishedRef.current) return;
+              try { ytRef.current?.seekTo?.(pos, true); } catch {}
+              setYtPlaying(true);
+              pendingYtStartRef.current = null;
+              pendingYtUidRef.current = null;
+            }}
             onChangeState={(s) => {
               // finished なのに再度 playing/buffering になる個体差対策（より強く）
               if (finishedRef.current && (s === 'playing' || s === 'buffering')) {
