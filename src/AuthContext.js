@@ -7,7 +7,7 @@ import {
   signOut as fbSignOut,
 } from 'firebase/auth';
 import { doc, getDoc, onSnapshot, serverTimestamp, setDoc } from 'firebase/firestore';
-import { auth, db } from '../firebase';
+import { auth, db } from './firebase';
 
 const AuthContext = createContext(null);
 
@@ -51,7 +51,11 @@ export function AuthProvider({ children }) {
 
   // teams/{teamId}/members/{uid}.role
   useEffect(() => {
-    if (!user?.uid || !activeTeamId) return;
+    // activeTeamId が消えたら role を残さない（残留すると isAdmin が嘘になる）
+    if (!user?.uid || !activeTeamId) {
+      setRole(null);
+      return;
+    }
     const ref = doc(db, 'teams', activeTeamId, 'members', user.uid);
     const unsub = onSnapshot(ref, (snap) => {
       const data = snap.data() || {};
@@ -94,3 +98,4 @@ export function useAuth() {
   if (!ctx) throw new Error('useAuth must be used within AuthProvider');
   return ctx;
 }
+
