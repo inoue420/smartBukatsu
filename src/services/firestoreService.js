@@ -1,6 +1,5 @@
 import {
   collection,
-  collectionGroup,
   addDoc,
   serverTimestamp,
   doc,
@@ -12,13 +11,82 @@ import {
   orderBy,
   onSnapshot,
   writeBatch,
-  where
+  where,
+  updateDoc,
 } from 'firebase/firestore';
 import { db } from '../firebase';
 
-// videos: { title, sourceType, videoUrl, youtubeId?, createdBy, createdAt }
-export async function addVideo({ title, videoUrl, sourceType = 'url', youtubeId = null, createdBy = 'anon' }) {
-  const ref = await addDoc(collection(db, 'videos'), {
+// -----------------------------
+// Team helpers
+// -----------------------------
+const teamRef = (teamId) => doc(db, 'teams', teamId);
+const teamVideosCol = (teamId) => collection(db, 'teams', teamId, 'videos');
+const teamTagsCol = (teamId) => collection(db, 'teams', teamId, 'tags');
+const videoRef = (teamId, videoId) => doc(db, 'teams', teamId, 'videos', videoId);
+const eventsCol = (teamId, videoId) => collection(db, 'teams', teamId, 'videos', videoId, 'events');
+
+function tagDocId(name) {
+  return encodeURIComponent(String(name || '').trim());
+}
+
+// -----------------------------
+// Team / Invite
+// -----------------------------
+export async function createTeam({ name, uid }) {
+  const t = await addDoc(collection(db, 'teams'), {
+    name,
+    createdBy: uid,
+    createdAt: serverTimestamp(),
+  });
+  // 作成者は admin
+  await setDoc(doc(db, 'teams', t.id, 'members', uid), { role: 'admin', joinedAt: serverTimestamp() }, { merge: true });
+  // activeTeamId をセット
+  await setDoc(doc(db, 'users', uid), { activeTeamId: t.id, updatedAt: serverTimestamp() }, { merge: true });
+  return t.id;
+}
+
+function makeInviteCode() {
+  const a = Math.random().toString(36).slice(2, 6).toUpperCase();
+  const b = Math.random().toString(36).slice(2, 6).toUpperCase();
+  return `${a}${b}`;
+}
+
+// /invites/{CODE} -> { teamId, createdBy, active }
+export async function createInvite({ teamId, uid }) {
+  const code = makeInviteCode();
+  await setDoc(doc(db, 'invites', code), {
+    teamId,
+    createdBy: uid,
+    active: true,
+    createdAt: serverTimestamp(),
+  });
+  return code;
+}
+
+export async function joinTeamByInvite({ code, uid }) {
+  const ref = doc(db, 'invites', String(code || '').trim().toUpperCase());
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error('招待コードが見つかりません');
+  const data = snap.data() || {};
+  if (!data.active) throw new Error('この招待コードは無効です');
+  const teamId = data.teamId;
+  if (!teamId) throw new Error('招待データが不正です');
+
+  // 参加（招待コードを member に残してルールで検証できるようにする）
+  await setDoc(
+    doc(db, 'teams', teamId, 'members', uid),
+    { role: 'member', joinedAt: serverTimestamp(), inviteCode: ref.id },
+    { merge: true }
+  );
+  await setDoc(doc(db, 'users', uid), { activeTeamId: teamId, updatedAt: serverTimestamp() }, { merge: true });
+  return teamId;
+}
+
+// -----------------------------
+// videos: /teams/{teamId}/videos/{videoId}
+// -----------------------------
+export async function addVideo(teamId, { title, videoUrl, sourceType = 'url', youtubeId = null, createdBy }) {
+  const ref = await addDoc(teamVideosCol(teamId), {
     title,
     sourceType,
     videoUrl,
@@ -29,165 +97,93 @@ export async function addVideo({ title, videoUrl, sourceType = 'url', youtubeId 
   return ref.id;
 }
 
-export async function getVideo(videoId) {
-  const snap = await getDoc(doc(db, 'videos', videoId));
+export async function getVideo(teamId, videoId) {
+  const snap = await getDoc(videoRef(teamId, videoId));
   return snap.exists() ? { id: snap.id, ...snap.data() } : null;
 }
 
-export async function listVideosOnce() {
-  const q = query(collection(db, 'videos'), orderBy('createdAt', 'desc'));
-  const snap = await getDocs(q);
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
-}
-
-export function subscribeVideos(callback) {
-  const q = query(collection(db, 'videos'), orderBy('createdAt', 'desc'));
+export function subscribeVideos(teamId, callback) {
+  const q = query(teamVideosCol(teamId), orderBy('createdAt', 'desc'));
   return onSnapshot(q, (snap) => {
-    const arr = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    callback(arr);
-  });
-}
-
-// events: /videos/{videoId}/events
-// event: { tagTypes: string[], startSec: number, endSec: number, note?, createdAt, createdBy }
-export async function addEvent(videoId, event) {
-  return addDoc(collection(db, 'videos', videoId, 'events'), {
-    ...event,
-    createdAt: serverTimestamp(),
-  });
-}
-
-export async function listEventsOnce(videoId) {
-  const q = query(
-    collection(db, 'videos', videoId, 'events'),
-    orderBy('startSec', 'asc')
-  );
-  const snap = await getDocs(q);
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
-}
-
-export function subscribeEvents(videoId, callback, filters = null) {
-  // 最初は全件購読、重くなったら where で絞る
-  let qbase = query(
-    collection(db, 'videos', videoId, 'events'),
-    orderBy('startSec', 'asc')
-  );
-
-  // 例: where を足したいならここに条件追加（AND条件に注意）
-  // if (filters?.tag) { ... }
-
-  return onSnapshot(qbase, (snap) => {
-    const arr = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    callback(arr);
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
   });
 }
 
 // -----------------------------
-// tags: /tags（全動画共通）
-// tag: { name: string, createdAt }
-// 互換性のため subscribeTags(videoId, cb) / upsertTag(videoId, name) も生かす
+// events: /teams/{teamId}/videos/{videoId}/events
 // -----------------------------
-function tagDocId(name) {
-  return encodeURIComponent(String(name || '').trim());
+export async function addEvent(teamId, videoId, event) {
+  return addDoc(eventsCol(teamId, videoId), { ...event, createdAt: serverTimestamp() });
 }
 
-// 旧: /videos/{videoId}/tags → 新: /tags に自動移送（同一セッションで1回だけ）
-const migratedVideoIds = new Set();
-async function migrateLegacyVideoTagsToGlobal(videoId) {
-  if (!videoId) return;
-  try {
-    const legacyCol = collection(db, 'videos', videoId, 'tags');
-    const snap = await getDocs(legacyCol);
-    if (snap.empty) return;
-
-    const names = snap.docs
-      .map((d) => d.data()?.name)
-      .filter(Boolean);
-
-    await Promise.all(names.map((n) => upsertTag(n)));
-  } catch {
-    // 失敗しても致命ではないので握りつぶし
-  }
-}
-
-// subscribeTags(videoId, callback) / subscribeTags(callback) 両対応
-export function subscribeTags(videoIdOrCallback, maybeCallback) {
-  const hasVideoId = typeof videoIdOrCallback === 'string' && !!videoIdOrCallback;
-  const callback = typeof videoIdOrCallback === 'function' ? videoIdOrCallback : maybeCallback;
-
-  if (hasVideoId && !migratedVideoIds.has(videoIdOrCallback)) {
-    migratedVideoIds.add(videoIdOrCallback);
-    // fire-and-forget（UIブロックしない）
-    migrateLegacyVideoTagsToGlobal(videoIdOrCallback);
-  }
-
-  const q = query(
-    collection(db, 'tags'),
-    orderBy('createdAt', 'asc')
-  );
+export function subscribeEvents(teamId, videoId, callback) {
+  const q = query(eventsCol(teamId, videoId), orderBy('startSec', 'asc'));
   return onSnapshot(q, (snap) => {
-    const arr = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    callback(arr);
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
   });
 }
 
-// upsertTag(videoId, name) / upsertTag(name) 両対応
-// 既にあってもOK（同名は同一docにmerge）
-export async function upsertTag(videoIdOrName, maybeName) {
-  const name = typeof maybeName === 'string' ? maybeName : videoIdOrName;
-  const trimmed = String(name || '').trim();
-  if (!trimmed) return;
-  const ref = doc(db, 'tags', tagDocId(trimmed));
-  await setDoc(ref, { name: trimmed, createdAt: serverTimestamp() }, { merge: true });
+// -----------------------------
+// tags: /teams/{teamId}/tags
+// -----------------------------
+export function subscribeTags(teamId, callback) {
+  const q = query(teamTagsCol(teamId), orderBy('createdAt', 'asc'));
+  return onSnapshot(q, (snap) => {
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+  });
 }
 
-// deleteTag(videoId, name) / deleteTag(name) 両対応
-export async function deleteTag(videoIdOrName, maybeName) {
-  const name = typeof maybeName === 'string' ? maybeName : videoIdOrName;
+export async function upsertTag(teamId, name, createdBy) {
   const trimmed = String(name || '').trim();
   if (!trimmed) return;
-  await deleteDoc(doc(db, 'tags', tagDocId(trimmed)));
+  const ref = doc(db, 'teams', teamId, 'tags', tagDocId(trimmed));
+  await setDoc(ref, { name: trimmed, createdBy, createdAt: serverTimestamp() }, { merge: true });
 }
 
-// タグ削除時：全動画のevents側からも除去（空になったイベントは削除）
-export async function removeTagFromAllEvents(videoIdOrTagName, maybeTagName) {
-  const tagName = typeof maybeTagName === 'string' ? maybeTagName : videoIdOrTagName;
+export async function deleteTag(teamId, name) {
+  const trimmed = String(name || '').trim();
+  if (!trimmed) return;
+  await deleteDoc(doc(db, 'teams', teamId, 'tags', tagDocId(trimmed)));
+}
+
+// タグ削除時：チーム内の全動画イベントから除去（空になったらイベント削除）
+export async function removeTagFromAllEvents(teamId, tagName) {
   const trimmed = String(tagName || '').trim();
   if (!trimmed) return;
 
-  const q = query(
-    collectionGroup(db, 'events'),
-    where('tagTypes', 'array-contains', trimmed)
-  );
-  const snap = await getDocs(q);
-  if (snap.empty) return;
+  const vidsSnap = await getDocs(teamVideosCol(teamId));
+  if (vidsSnap.empty) return;
 
-  const docs = snap.docs;
-  const CHUNK = 450;
+  for (const v of vidsSnap.docs) {
+    const videoId = v.id;
+    const colRef = eventsCol(teamId, videoId);
+    const q = query(colRef, where('tagTypes', 'array-contains', trimmed));
+    const snap = await getDocs(q);
+    if (snap.empty) continue;
 
-  for (let i = 0; i < docs.length; i += CHUNK) {
-    const batch = writeBatch(db);
-    docs.slice(i, i + CHUNK).forEach((d) => {
-      const data = d.data() || {};
-      const tags = Array.isArray(data.tagTypes) ? data.tagTypes : [];
-      const next = tags.filter((t) => t !== trimmed);
-      if (next.length === 0) batch.delete(d.ref);
-      else batch.update(d.ref, { tagTypes: next });
-    });
-    await batch.commit();
+    const docs = snap.docs;
+    const CHUNK = 450;
+    for (let i = 0; i < docs.length; i += CHUNK) {
+      const batch = writeBatch(db);
+      docs.slice(i, i + CHUNK).forEach((d) => {
+        const data = d.data() || {};
+        const tags = Array.isArray(data.tagTypes) ? data.tagTypes : [];
+        const next = tags.filter((t) => t !== trimmed);
+        if (next.length === 0) batch.delete(d.ref);
+        else batch.update(d.ref, { tagTypes: next });
+      });
+      await batch.commit();
+    }
   }
 }
 
-// videos/{videoId} を削除（サブコレ events も削除）
-async function deleteAllDocsInSubcollection(videoId, subcollectionName) {
-  const colRef = collection(db, 'videos', videoId, subcollectionName);
+// videos/{videoId} を削除（events も削除）
+async function deleteAllDocsInSubcollection(teamId, videoId, subcollectionName) {
+  const colRef = collection(db, 'teams', teamId, 'videos', videoId, subcollectionName);
   const snap = await getDocs(colRef);
   if (snap.empty) return;
-
-  // batch 上限(500)に備えて分割
   const docs = snap.docs;
   const CHUNK = 450;
-
   for (let i = 0; i < docs.length; i += CHUNK) {
     const batch = writeBatch(db);
     docs.slice(i, i + CHUNK).forEach((d) => batch.delete(d.ref));
@@ -195,16 +191,7 @@ async function deleteAllDocsInSubcollection(videoId, subcollectionName) {
   }
 }
 
-export async function deleteVideo(videoId) {
-  // まずイベント（タグ）を全削除
-  await deleteAllDocsInSubcollection(videoId, 'events');
-
-  // 旧構造の /videos/{videoId}/tags が残っている場合の掃除（全動画共通タグ /tags は消さない）
-  await deleteAllDocsInSubcollection(videoId, 'tags');
-
-  // もし highlights 等のサブコレがあるならここも同様に追加
-  // await deleteAllDocsInSubcollection(videoId, 'highlights');
-
-  // 最後に videos 本体を削除
-  await deleteDoc(doc(db, 'videos', videoId));
+export async function deleteVideo(teamId, videoId) {
+  await deleteAllDocsInSubcollection(teamId, videoId, 'events');
+  await deleteDoc(videoRef(teamId, videoId));
 }

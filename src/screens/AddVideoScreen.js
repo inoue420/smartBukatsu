@@ -6,6 +6,7 @@ import { useVideoPlayer, VideoView } from 'expo-video';
 import YoutubePlayer from 'react-native-youtube-iframe';
 
 import { addVideo, addEvent, subscribeEvents } from '../services/firestoreService';
+import { useAuth } from '../contexts/AuthContext';
 
  function parseYouTubeId(rawUrl) {
    const url = (rawUrl || '').trim();
@@ -41,6 +42,7 @@ function splitTags(text) {
 }
  
 export default function AddVideoScreen() {
+  const { activeTeamId, isAdmin, user } = useAuth();
   const [title, setTitle] = useState('');
   const [videoUrl, setVideoUrl] = useState('https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4');
   const [savedVideoId, setSavedVideoId] = useState(null);
@@ -92,17 +94,21 @@ export default function AddVideoScreen() {
 
   // 保存
   const handleSave = async () => {
+    if (!isAdmin) {
+      Alert.alert('権限がありません', '動画追加は管理者のみ可能です');
+      return;
+    }
     if (!title || !videoUrl) {
       Alert.alert('未入力', 'タイトルと動画URLを入力してください');
       return;
     }
     try {
-      const vid = await addVideo({
+      const vid = await addVideo(activeTeamId, {
         title,
         videoUrl,
         sourceType,
         youtubeId: sourceType === 'youtube' ? ytId : null,
-        createdBy: 'anon',
+        createdBy: user.uid,
       });
       setSavedVideoId(vid);
       Alert.alert('保存成功', 'このページでそのまま再生・タグ付けできます');
@@ -115,9 +121,9 @@ export default function AddVideoScreen() {
   // イベント購読（保存後）
   useEffect(() => {
     if (!savedVideoId) return;
-    const unsub = subscribeEvents(savedVideoId, setEvents);
+    const unsub = subscribeEvents(activeTeamId, savedVideoId, setEvents);
     return () => unsub && unsub();
-  }, [savedVideoId]);
+  }, [activeTeamId, savedVideoId]);
 
   // 現在秒取得（expo-video or YouTube）
   const getCurrentSec = async () => {
@@ -157,12 +163,12 @@ export default function AddVideoScreen() {
       Alert.alert('範囲エラー', '終了時刻が開始より前です');
       return;
     }
-    await addEvent(savedVideoId, {
+    await addEvent(activeTeamId, savedVideoId, {
       tagTypes: tags,
       startSec: pendingStart,
       endSec,
       note: '',
-      createdBy: 'anon',
+      createdBy: user?.uid || 'anon',
     });
     setPendingStart(null);
     setTagText('');

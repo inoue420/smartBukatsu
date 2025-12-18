@@ -13,6 +13,7 @@ import {
   deleteTag,
   removeTagFromAllEvents,
 } from '../services/firestoreService';
+import { useAuth } from '../contexts/AuthContext';
 
 function parseYouTubeId(rawUrl) {
   const url = (rawUrl || '').trim();
@@ -44,6 +45,7 @@ function splitTags(text) {
 
 export default function TaggingScreen({ route, navigation }) {
   const { videoId } = route.params;
+  const { activeTeamId, isAdmin, user } = useAuth();
   const { width, height } = useWindowDimensions();
   const [video, setVideo] = useState(null);
   const [events, setEvents] = useState([]);
@@ -75,7 +77,8 @@ export default function TaggingScreen({ route, navigation }) {
 
   useEffect(() => {
     (async () => {
-      const v = await getVideo(videoId);
+      if (!activeTeamId) return;
+      const v = await getVideo(activeTeamId, videoId);
       if (!v) {
         Alert.alert('エラー', '動画が見つかりませんでした');
         navigation.goBack();
@@ -84,7 +87,7 @@ export default function TaggingScreen({ route, navigation }) {
       setVideo(v);
       navigation.setOptions({ title: `タグ付け：${v.title}` });
     })();
-  }, [videoId]);
+  }, [activeTeamId, videoId]);
 
   // 画面離脱時にロック解除（念のため）
   useEffect(() => {
@@ -94,9 +97,10 @@ export default function TaggingScreen({ route, navigation }) {
   }, []);
 
   useEffect(() => {
-    const unsub = subscribeEvents(videoId, setEvents);
+    if (!activeTeamId) return;
+    const unsub = subscribeEvents(activeTeamId, videoId, setEvents);
     return () => unsub();
-  }, [videoId]);
+  }, [activeTeamId, videoId]);
 
   // URL(MP4/HLS) のときだけ player にソース反映（null player -> replace() が公式推奨パターン）:contentReference[oaicite:1]{index=1}
   useEffect(() => {
@@ -112,9 +116,10 @@ export default function TaggingScreen({ route, navigation }) {
 
 
   useEffect(() => {
-    const unsub = subscribeTags(videoId, setTags);
+    if (!activeTeamId) return;
+    const unsub = subscribeTags(activeTeamId, setTags);
     return () => unsub?.();
-  }, [videoId]);
+  }, [activeTeamId]);
 
   // tagsが更新されたら、activeTagsを存在するタグだけに整理
   useEffect(() => {
@@ -167,13 +172,18 @@ export default function TaggingScreen({ route, navigation }) {
   };
 
   const handleRegisterTags = async () => {
+    if (!isAdmin) {
+      Alert.alert('権限がありません', 'タグ登録は管理者のみ可能です');
+      return;
+    }
     const names = splitTags(tagText);
     if (!names.length) {
       Alert.alert('タグ未入力', 'タグを入力してください（例：シュート,10番）');
       return;
     }
     try {
-      await Promise.all(names.map(n => upsertTag(videoId, n)));
+      if (!activeTeamId) return;
+      await Promise.all(names.map(n => upsertTag(activeTeamId, n, user?.uid || 'anon')));
       setTagText('');
     } catch (e) {
       Alert.alert('エラー', 'タグ登録に失敗しました');
@@ -190,15 +200,20 @@ export default function TaggingScreen({ route, navigation }) {
   };
 
   const confirmDeleteTag = (name) => {
-     Alert.alert('タグ削除（全動画共通）', `「${name}」を削除しますか？\n※全ての動画の記録からも削除されます`, [
+    if (!isAdmin) {
+      Alert.alert('権限がありません', 'タグ削除は管理者のみ可能です');
+      return;
+    }
+    Alert.alert('タグ削除（チーム共通）', `「${name}」を削除しますか？\n※このチームの全動画の記録からも削除されます`, [
       { text: 'キャンセル', style: 'cancel' },
       {
         text: '削除',
         style: 'destructive',
         onPress: async () => {
           try {
-            await deleteTag(videoId, name);
-            await removeTagFromAllEvents(videoId, name);
+            if (!activeTeamId) return;
+            await deleteTag(activeTeamId, name);
+            await removeTagFromAllEvents(activeTeamId, name);
 
             // 記録中のスナップショットにも反映（空になったら記録を解除）
             setPendingTagTypes(prev => {
@@ -258,12 +273,13 @@ export default function TaggingScreen({ route, navigation }) {
       return;
     }
 
-    await addEvent(videoId, {
+    if (!activeTeamId) return;
+    await addEvent(activeTeamId, videoId, {
       tagTypes: tagsForThisRecord,
       startSec: pendingStart,
       endSec,
       note: '',
-      createdBy: 'anon',
+      createdBy: user?.uid || 'anon',
     });
 
     setPendingStart(null);
@@ -385,18 +401,22 @@ export default function TaggingScreen({ route, navigation }) {
                     )}
                     ListHeaderComponent={
                       <View style={styles.tagArea}>
-                        <Text style={styles.label}>共通タグ登録（全動画に適用 / カンマ区切りOK）</Text>
-                        <View style={styles.tagRegisterRow}>
-                          <TextInput
-                            style={[styles.input, { flex: 1 }]}
-                            value={tagText}
-                            onChangeText={setTagText}
-                            placeholder="例）シュート,10番 / パスミス / GK"
-                          />
-                          <TouchableOpacity style={styles.confirmBtn} onPress={handleRegisterTags}>
-                            <Text style={styles.confirmBtnText}>確定</Text>
-                          </TouchableOpacity>
-                        </View>
+                        <Text style={styles.label}>共通タグ登録（チーム共通 / カンマ区切りOK）</Text>
+                        {isAdmin ? (
+                          <View style={styles.tagRegisterRow}>
+                            <TextInput
+                              style={[styles.input, { flex: 1 }]}
+                              value={tagText}
+                              onChangeText={setTagText}
+                              placeholder="例）シュート,10番 / パスミス / GK"
+                            />
+                            <TouchableOpacity style={styles.confirmBtn} onPress={handleRegisterTags}>
+                              <Text style={styles.confirmBtnText}>確定</Text>
+                            </TouchableOpacity>
+                          </View>
+                        ) : (
+                          <Text style={styles.small}>※タグ登録/削除は管理者のみ</Text>
+                        )}
 
                         <Text style={[styles.label, { marginTop: 10 }]}>共通タグボタン（押してON/OFF・長押しで削除）</Text>
                         <View style={styles.tagButtonsWrap}>
@@ -412,7 +432,7 @@ export default function TaggingScreen({ route, navigation }) {
                                   key={t.id || name}
                                   style={[styles.tagBtn, isActive ? styles.tagBtnActive : styles.tagBtnInactive]}
                                   onPress={() => toggleTag(name)}
-                                  onLongPress={() => confirmDeleteTag(name)}
+                                  onLongPress={() => isAdmin && confirmDeleteTag(name)}
                                 >
                                   <Text style={[styles.tagBtnText, isActive ? styles.tagBtnTextActive : styles.tagBtnTextInactive]}>
                                     {name}
@@ -491,7 +511,7 @@ export default function TaggingScreen({ route, navigation }) {
                           key={t.id || name}
                           style={[styles.tagBtn, isActive ? styles.tagBtnActive : styles.tagBtnInactive]}
                           onPress={() => toggleTag(name)}
-                          onLongPress={() => confirmDeleteTag(name)}
+                          onLongPress={() => isAdmin && confirmDeleteTag(name)}
                         >
                           <Text style={[styles.tagBtnText, isActive ? styles.tagBtnTextActive : styles.tagBtnTextInactive]}>
                             {name}

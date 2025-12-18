@@ -6,6 +6,7 @@ import YoutubePlayer from 'react-native-youtube-iframe';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { getVideo, subscribeEvents, subscribeTags } from '../services/firestoreService';
 import { PLAYBACK_MARGIN_START, PLAYBACK_MARGIN_END } from '../constants';
+import { useAuth } from '../contexts/AuthContext';
 
 function parseYouTubeId(rawUrl) {
   const url = (rawUrl || '').trim();
@@ -30,6 +31,7 @@ function parseYouTubeId(rawUrl) {
 
 export default function HighlightPlayerScreen({ route, navigation }) {
   const { videoId } = route.params;
+  const { activeTeamId } = useAuth();
   const { width, height } = useWindowDimensions();
   const ytRef = useRef(null);
   const ytStateRef = useRef('unstarted');
@@ -68,7 +70,8 @@ export default function HighlightPlayerScreen({ route, navigation }) {
 
   useEffect(() => {
     (async () => {
-      const v = await getVideo(videoId);
+      if (!activeTeamId) return;
+      const v = await getVideo(activeTeamId, videoId);
       if (!v) {
         Alert.alert('エラー', '動画が見つかりません');
         navigation.goBack();
@@ -77,7 +80,7 @@ export default function HighlightPlayerScreen({ route, navigation }) {
       setVideo(v);
       navigation.setOptions({ title: `ハイライト：${v.title}` });
     })();
-  }, [videoId]);
+  }, [activeTeamId, videoId]);
 
   useEffect(() => {
     return () => {
@@ -86,14 +89,16 @@ export default function HighlightPlayerScreen({ route, navigation }) {
   }, []);
   
   useEffect(() => {
-    const unsub = subscribeEvents(videoId, setEvents);
+    if (!activeTeamId) return;
+    const unsub = subscribeEvents(activeTeamId, videoId, setEvents);
     return () => unsub();
-  }, [videoId]);
+  }, [activeTeamId, videoId]);
 
   useEffect(() => {
-    const unsub = subscribeTags(videoId, setTags);
+    if (!activeTeamId) return;
+    const unsub = subscribeTags(activeTeamId, setTags);
     return () => unsub?.();
-  }, [videoId]);
+  }, [activeTeamId]);
   // URL(MP4/HLS) のときだけ player にソース反映（null player -> replace() が公式推奨）:contentReference[oaicite:2]{index=2}
   useEffect(() => {
     if (!video) return;
