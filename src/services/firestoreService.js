@@ -1,5 +1,6 @@
 import {
   collection,
+  collectionGroup,
   addDoc,
   serverTimestamp,
   doc,
@@ -82,16 +83,46 @@ export function subscribeEvents(videoId, callback, filters = null) {
 }
 
 // -----------------------------
-// tags: /videos/{videoId}/tags
+// tags: /tags（全動画共通）
 // tag: { name: string, createdAt }
+// 互換性のため subscribeTags(videoId, cb) / upsertTag(videoId, name) も生かす
 // -----------------------------
 function tagDocId(name) {
   return encodeURIComponent(String(name || '').trim());
 }
 
-export function subscribeTags(videoId, callback) {
+// 旧: /videos/{videoId}/tags → 新: /tags に自動移送（同一セッションで1回だけ）
+const migratedVideoIds = new Set();
+async function migrateLegacyVideoTagsToGlobal(videoId) {
+  if (!videoId) return;
+  try {
+    const legacyCol = collection(db, 'videos', videoId, 'tags');
+    const snap = await getDocs(legacyCol);
+    if (snap.empty) return;
+
+    const names = snap.docs
+      .map((d) => d.data()?.name)
+      .filter(Boolean);
+
+    await Promise.all(names.map((n) => upsertTag(n)));
+  } catch {
+    // 失敗しても致命ではないので握りつぶし
+  }
+}
+
+// subscribeTags(videoId, callback) / subscribeTags(callback) 両対応
+export function subscribeTags(videoIdOrCallback, maybeCallback) {
+  const hasVideoId = typeof videoIdOrCallback === 'string' && !!videoIdOrCallback;
+  const callback = typeof videoIdOrCallback === 'function' ? videoIdOrCallback : maybeCallback;
+
+  if (hasVideoId && !migratedVideoIds.has(videoIdOrCallback)) {
+    migratedVideoIds.add(videoIdOrCallback);
+    // fire-and-forget（UIブロックしない）
+    migrateLegacyVideoTagsToGlobal(videoIdOrCallback);
+  }
+
   const q = query(
-    collection(db, 'videos', videoId, 'tags'),
+    collection(db, 'tags'),
     orderBy('createdAt', 'asc')
   );
   return onSnapshot(q, (snap) => {
@@ -100,27 +131,34 @@ export function subscribeTags(videoId, callback) {
   });
 }
 
+// upsertTag(videoId, name) / upsertTag(name) 両対応
 // 既にあってもOK（同名は同一docにmerge）
-export async function upsertTag(videoId, name) {
+export async function upsertTag(videoIdOrName, maybeName) {
+  const name = typeof maybeName === 'string' ? maybeName : videoIdOrName;
   const trimmed = String(name || '').trim();
   if (!trimmed) return;
-  const ref = doc(db, 'videos', videoId, 'tags', tagDocId(trimmed));
+  const ref = doc(db, 'tags', tagDocId(trimmed));
   await setDoc(ref, { name: trimmed, createdAt: serverTimestamp() }, { merge: true });
 }
 
-export async function deleteTag(videoId, name) {
+// deleteTag(videoId, name) / deleteTag(name) 両対応
+export async function deleteTag(videoIdOrName, maybeName) {
+  const name = typeof maybeName === 'string' ? maybeName : videoIdOrName;
   const trimmed = String(name || '').trim();
   if (!trimmed) return;
-  await deleteDoc(doc(db, 'videos', videoId, 'tags', tagDocId(trimmed)));
+  await deleteDoc(doc(db, 'tags', tagDocId(trimmed)));
 }
 
-// タグ削除時：events側からも除去（空になったイベントは削除）
-export async function removeTagFromAllEvents(videoId, tagName) {
+// タグ削除時：全動画のevents側からも除去（空になったイベントは削除）
+export async function removeTagFromAllEvents(videoIdOrTagName, maybeTagName) {
+  const tagName = typeof maybeTagName === 'string' ? maybeTagName : videoIdOrTagName;
   const trimmed = String(tagName || '').trim();
   if (!trimmed) return;
 
-  const colRef = collection(db, 'videos', videoId, 'events');
-  const q = query(colRef, where('tagTypes', 'array-contains', trimmed));
+  const q = query(
+    collectionGroup(db, 'events'),
+    where('tagTypes', 'array-contains', trimmed)
+  );
   const snap = await getDocs(q);
   if (snap.empty) return;
 
@@ -160,7 +198,8 @@ async function deleteAllDocsInSubcollection(videoId, subcollectionName) {
 export async function deleteVideo(videoId) {
   // まずイベント（タグ）を全削除
   await deleteAllDocsInSubcollection(videoId, 'events');
-  // タグボタンも削除
+
+  // 旧構造の /videos/{videoId}/tags が残っている場合の掃除（全動画共通タグ /tags は消さない）
   await deleteAllDocsInSubcollection(videoId, 'tags');
 
   // もし highlights 等のサブコレがあるならここも同様に追加

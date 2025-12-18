@@ -190,7 +190,7 @@ export default function TaggingScreen({ route, navigation }) {
   };
 
   const confirmDeleteTag = (name) => {
-    Alert.alert('タグ削除', `「${name}」を削除しますか？\n※既存の記録からも削除されます`, [
+     Alert.alert('タグ削除（全動画共通）', `「${name}」を削除しますか？\n※全ての動画の記録からも削除されます`, [
       { text: 'キャンセル', style: 'cancel' },
       {
         text: '削除',
@@ -385,7 +385,7 @@ export default function TaggingScreen({ route, navigation }) {
                     )}
                     ListHeaderComponent={
                       <View style={styles.tagArea}>
-                        <Text style={styles.label}>タグ登録（カンマ区切りOK）</Text>
+                        <Text style={styles.label}>共通タグ登録（全動画に適用 / カンマ区切りOK）</Text>
                         <View style={styles.tagRegisterRow}>
                           <TextInput
                             style={[styles.input, { flex: 1 }]}
@@ -398,7 +398,7 @@ export default function TaggingScreen({ route, navigation }) {
                           </TouchableOpacity>
                         </View>
 
-                        <Text style={[styles.label, { marginTop: 10 }]}>タグボタン（押してON/OFF・長押しで削除）</Text>
+                        <Text style={[styles.label, { marginTop: 10 }]}>共通タグボタン（押してON/OFF・長押しで削除）</Text>
                         <View style={styles.tagButtonsWrap}>
                           {tags.length === 0 ? (
                             <Text style={styles.small}>まだタグが登録されていません</Text>
@@ -464,7 +464,7 @@ export default function TaggingScreen({ route, navigation }) {
               {renderPlayer({ landscape: false })}
 
               <View style={styles.tagArea}>
-                <Text style={styles.label}>タグ登録（カンマ区切りOK）</Text>
+                <Text style={styles.label}>共通タグ登録（全動画に適用 / カンマ区切りOK）</Text>
                 <View style={styles.tagRegisterRow}>
                   <TextInput
                     style={[styles.input, { flex: 1 }]}
@@ -477,7 +477,7 @@ export default function TaggingScreen({ route, navigation }) {
                   </TouchableOpacity>
                 </View>
 
-                <Text style={[styles.label, { marginTop: 10 }]}>タグボタン（押してON/OFF・長押しで削除）</Text>
+                <Text style={[styles.label, { marginTop: 10 }]}>共通タグボタン（押してON/OFF・長押しで削除）</Text>
                 <View style={styles.tagButtonsWrap}>
                   {tags.length === 0 ? (
                     <Text style={styles.small}>まだタグが登録されていません</Text>
