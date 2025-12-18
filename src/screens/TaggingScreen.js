@@ -1,3 +1,4 @@
+//TaggingScreen.js
 import React, { useEffect, useRef, useState, useMemo } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, FlatList, Alert, TextInput, StatusBar, useWindowDimensions } from 'react-native';
 import { useEvent } from 'expo';

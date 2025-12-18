@@ -1,3 +1,4 @@
+//HighlightPlayerScreen.js
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, FlatList, Alert, StatusBar, useWindowDimensions } from 'react-native';
 import { useEvent } from 'expo';
