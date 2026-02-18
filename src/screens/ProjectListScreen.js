@@ -60,7 +60,7 @@ export default function ProjectListScreen({ navigation }) {
     </View>
   );
 }
-
+ 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#E0FFFF', padding: 12 },
   createBox: { backgroundColor: '#fff', padding: 12, borderRadius: 10, marginBottom: 12 },
