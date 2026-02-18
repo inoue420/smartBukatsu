@@ -1,0 +1,3864 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.expo/devices.json
+.expo/README.md
+.expo/web/cache/production/images/favicon/favicon-24272cdaeff82cc5facdaccd982a6f05b60c4504704bbf94c19a6388659880bb-contain-transparent/favicon-48.png
+.gitignore
+app.config.js
+App.js
+app.json
+assets/adaptive-icon.png
+assets/favicon.png
+assets/icon.png
+assets/splash-icon.png
+index.js
+package.json
+src/AuthContext.js
+src/constants.js
+src/contexts/AuthContext.js
+src/eas.json
+src/firebase.js
+src/screens/AddVideoScreen.js
+src/screens/AuthScreen.js
+src/screens/HighlightPlayerScreen.js
+src/screens/ProjectDetailScreen.js
+src/screens/ProjectHighlightPlayerScreen.js
+src/screens/ProjectListScreen.js
+src/screens/ProjectVideoPickerScreen.js
+src/screens/TaggingScreen.js
+src/screens/TeamSetupScreen.js
+src/screens/VideoListScreen.js
+src/services/firestoreService.js
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path=".expo/devices.json">
+{
+  "devices": [
+    {
+      "installationId": "4F6A6715-0CDE-4E86-8541-85417804A9BB",
+      "lastUsed": 1767595294339
+    }
+  ]
+}
+</file>
+
+<file path=".expo/README.md">
+> Why do I have a folder named ".expo" in my project?
+
+The ".expo" folder is created when an Expo project is started using "expo start" command.
+
+> What do the files contain?
+
+- "devices.json": contains information about devices that have recently opened this project. This is used to populate the "Development sessions" list in your development builds.
+- "settings.json": contains the server configuration that is used to serve the application manifest.
+
+> Should I commit the ".expo" folder?
+
+No, you should not share the ".expo" folder. It does not contain any information that is relevant for other developers working on the project, it is specific to your machine.
+Upon project creation, the ".expo" folder is already added to your ".gitignore" file.
+</file>
+
+<file path=".gitignore">
+# Learn more https://docs.github.com/en/get-started/get-started-with-git/ignoring-files
+
+ # dependencies
+ node_modules/
+
+ # Expo
+ .expo/
+ dist/
+ web-build/
+ expo-env.d.ts
+
+ # Native
+ .kotlin/
+ *.orig.*
+ *.jks
+*.keystore
+ *.p8
+ *.p12
+ *.key
+ *.mobileprovision
+
+ # Metro
+ .metro-health-check*
+
+ # debug
+ npm-debug.*
+ yarn-debug.*
+ yarn-error.*
+
+ # macOS
+ .DS_Store
+ *.pem
+*.cer
+
+# env files（ぜんぶ無視して、雛形だけコミット）
+.env
+.env.*
+!.env.example
+
+ # typescript
+ *.tsbuildinfo
+
+ # generated native folders
+ /ios
+ /android
+
+# ビルド成果物（念のため）
+*.apk
+*.aab
+*.ipa
+*.log
+Thumbs.db
+.idea/
+*.iml
+node_modules
+</file>
+
+<file path="app.config.js">
+// app.config.js（CJS版・.env.local対応）
+const path = require('path');
+const dotenvFlow = require('dotenv-flow');
+const dotenvExpand = require('dotenv-expand');
+const appJson = require('./app.json');
+
+dotenvExpand.expand(
+  dotenvFlow.config({
+    path: path.resolve(__dirname),   // ルート直下の .env* を読む（.env.local 最優先）
+    default_node_env: 'development',
+  })
+);
+
+module.exports = {
+  expo: {
+    ...appJson.expo,
+    extra: {
+      firebaseApiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY,
+      authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN,
+      projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID,
+      storageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET,
+      messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
+      appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID,
+      measurementId: process.env.EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID,
+    },
+  },
+};
+</file>
+
+<file path="index.js">
+import { registerRootComponent } from 'expo';
+
+import App from './App';
+
+// registerRootComponent calls AppRegistry.registerComponent('main', () => App);
+// It also ensures that whether you load the app in Expo Go or in a native build,
+// the environment is set up appropriately
+registerRootComponent(App);
+</file>
+
+<file path="src/constants.js">
+export const TAG_PRESETS = [
+  'シュート', 'アシスト', 'パスミス', 'スティール', 'セーブ',
+  '右サイド', '左サイド', '中央', 'CK', 'FK',
+  '10番', '11番', 'GK', 'カウンター', 'セット'
+];
+
+// ハイライト再生時、開始/終了の余白（秒）
+export const PLAYBACK_MARGIN_START = 0.2;
+export const PLAYBACK_MARGIN_END = 0.1;
+</file>
+
+<file path="src/contexts/AuthContext.js">
+export { AuthProvider, useAuth } from '../AuthContext';
+</file>
+
+<file path="src/eas.json">
+
+</file>
+
+<file path="src/screens/AuthScreen.js">
+// /src/screens/AuthScreen.js
+import React, { useState } from 'react';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, KeyboardAvoidingView, Platform } from 'react-native';
+import { useAuth } from '../contexts/AuthContext';
+
+export default function AuthScreen() {
+  const { signIn, signUp, resetPassword } = useAuth();
+  const [mode, setMode] = useState('signin'); // 'signin' | 'signup'
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+
+  const handleSubmit = async () => {
+    if (!email.trim() || !password) {
+      Alert.alert('未入力', 'メールアドレスとパスワードを入力してください');
+      return;
+    }
+    try {
+      if (mode === 'signin') await signIn(email, password);
+      else await signUp(email, password);
+    } catch (e) {
+      Alert.alert('エラー', e?.message ? String(e.message) : String(e));
+    }
+  };
+
+  const handleReset = async () => {
+    if (!email.trim()) {
+      Alert.alert('未入力', 'メールアドレスを入力してください');
+      return;
+    }
+    try {
+      await resetPassword(email);
+      Alert.alert('送信しました', 'パスワードリセットメールを送信しました');
+    } catch (e) {
+      Alert.alert('エラー', e?.message ? String(e.message) : String(e));
+    }
+  };
+
+  return (
+    <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <Text style={styles.title}>ログイン</Text>
+      <TextInput
+        style={styles.input}
+        value={email}
+        onChangeText={setEmail}
+        placeholder="email@example.com"
+        autoCapitalize="none"
+        keyboardType="email-address"
+      />
+      <TextInput
+        style={styles.input}
+        value={password}
+        onChangeText={setPassword}
+        placeholder="password"
+        secureTextEntry
+      />
+
+      <TouchableOpacity style={styles.primaryBtn} onPress={handleSubmit}>
+        <Text style={styles.primaryBtnText}>{mode === 'signin' ? 'ログイン' : '新規登録'}</Text>
+      </TouchableOpacity>
+
+      <View style={styles.row}>
+        <TouchableOpacity style={styles.linkBtn} onPress={() => setMode(mode === 'signin' ? 'signup' : 'signin')}>
+          <Text style={styles.linkText}>{mode === 'signin' ? '新規登録へ' : 'ログインへ'}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.linkBtn} onPress={handleReset}>
+          <Text style={styles.linkText}>PWリセット</Text>
+        </TouchableOpacity>
+      </View>
+    </KeyboardAvoidingView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#E0FFFF', padding: 16, justifyContent: 'center' },
+  title: { fontSize: 22, fontWeight: 'bold', marginBottom: 12, textAlign: 'center' },
+  input: { backgroundColor: '#fff', padding: 12, borderRadius: 8, marginTop: 10 },
+  primaryBtn: { marginTop: 14, backgroundColor: '#0077cc', padding: 12, borderRadius: 8, alignItems: 'center' },
+  primaryBtnText: { color: '#fff', fontWeight: 'bold' },
+  row: { marginTop: 12, flexDirection: 'row', justifyContent: 'space-between' },
+  linkBtn: { padding: 8 },
+  linkText: { color: '#0077cc', fontWeight: 'bold' },
+});
+</file>
+
+<file path="src/screens/ProjectDetailScreen.js">
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, FlatList, Alert } from 'react-native';
+import { useAuth } from '../contexts/AuthContext';
+import { getProject, subscribeProjectVideos, subscribeVideos, removeVideoFromProject } from '../services/firestoreService';
+
+export default function ProjectDetailScreen({ route, navigation }) {
+  const { projectId } = route.params;
+  const { activeTeamId, isAdmin } = useAuth();
+  const [project, setProject] = useState(null);
+  const [projectVideos, setProjectVideos] = useState([]); // [{id(videoId), order, offsetSec}]
+  const [allVideos, setAllVideos] = useState([]); // team videos
+
+  useEffect(() => {
+    (async () => {
+      if (!activeTeamId) return;
+      const p = await getProject(activeTeamId, projectId);
+      setProject(p);
+      navigation.setOptions({ title: p?.name ? `プロジェクト：${p.name}` : 'プロジェクト詳細' });
+    })();
+  }, [activeTeamId, projectId]);
+
+  useEffect(() => {
+    if (!activeTeamId) return;
+    const unsub = subscribeProjectVideos(activeTeamId, projectId, setProjectVideos);
+    return () => unsub?.();
+  }, [activeTeamId, projectId]);
+
+  useEffect(() => {
+    if (!activeTeamId) return;
+    const unsub = subscribeVideos(activeTeamId, setAllVideos);
+    return () => unsub?.();
+  }, [activeTeamId]);
+
+  const videoById = useMemo(() => {
+    const m = new Map();
+    allVideos.forEach((v) => m.set(v.id, v));
+    return m;
+  }, [allVideos]);
+
+  const rows = useMemo(() => {
+    return projectVideos
+      .map((pv) => {
+        const v = videoById.get(pv.id);
+        return { ...pv, video: v || null };
+      })
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  }, [projectVideos, videoById]);
+
+  const onRemove = useCallback(
+    (videoId, title) => {
+      if (!isAdmin) {
+        Alert.alert('権限がありません', 'プロジェクト編集は管理者のみ可能です');
+        return;
+      }
+      Alert.alert('削除しますか？', `このプロジェクトから「${title || videoId}」を外します`, [
+        { text: 'キャンセル', style: 'cancel' },
+        {
+          text: '外す',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await removeVideoFromProject(activeTeamId, projectId, videoId);
+            } catch (e) {
+              Alert.alert('エラー', e?.message ? String(e.message) : String(e));
+            }
+          },
+        },
+      ]);
+    },
+    [isAdmin, activeTeamId, projectId]
+  );
+
+  return (
+    <View style={styles.container}>
+      <View style={styles.topRow}>
+        <TouchableOpacity
+          style={[styles.btn, { backgroundColor: '#0077cc', opacity: rows.length ? 1 : 0.5 }]}
+          onPress={() => rows.length && navigation.navigate('ProjectHighlights', { projectId })}
+        >
+          <Text style={styles.btnText}>▶ ハイライト</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.btn, { backgroundColor: '#009966', opacity: isAdmin ? 1 : 0.5 }]}
+          onPress={() =>
+            isAdmin
+              ? navigation.navigate('ProjectVideoPicker', { projectId })
+              : Alert.alert('権限がありません', 'プロジェクト編集は管理者のみ可能です')
+          }
+        >
+          <Text style={styles.btnText}>＋ 動画を追加</Text>
+        </TouchableOpacity>
+      </View>
+
+      <FlatList
+        data={rows}
+        keyExtractor={(r) => r.id}
+        renderItem={({ item }) => (
+          <TouchableOpacity
+            style={styles.card}
+            onPress={() => item.video && navigation.navigate('Tagging', { videoId: item.id })}
+            onLongPress={() => onRemove(item.id, item.video?.title)}
+          >
+            <Text style={styles.title}>
+              {item.order ?? 0}. {item.video?.title || '(動画が見つかりません)'}
+            </Text>
+            <Text style={styles.small} numberOfLines={1}>
+              {item.video?.videoUrl || item.id}
+            </Text>
+            <Text style={styles.hint}>タップ：タグ付け / 長押し：プロジェクトから外す</Text>
+          </TouchableOpacity>
+        )}
+        ListEmptyComponent={<Text style={{ padding: 12 }}>このプロジェクトにはまだ動画がありません</Text>}
+      />
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#E0FFFF', padding: 12 },
+  topRow: { flexDirection: 'row', gap: 10, marginBottom: 12 },
+  btn: { flex: 1, padding: 12, borderRadius: 10, alignItems: 'center' },
+  btnText: { color: '#fff', fontWeight: 'bold' },
+  card: { backgroundColor: '#fff', padding: 12, borderRadius: 10, marginBottom: 10 },
+  title: { fontWeight: 'bold', fontSize: 16 },
+  small: { marginTop: 4, color: '#555' },
+  hint: { marginTop: 8, color: '#0077cc' },
+});
+</file>
+
+<file path="src/screens/ProjectListScreen.js">
+import React, { useCallback, useEffect, useState } from 'react';
+import { View, Text, FlatList, TouchableOpacity, StyleSheet, TextInput, Alert } from 'react-native';
+import { useAuth } from '../contexts/AuthContext';
+import { createProject, subscribeProjects } from '../services/firestoreService';
+
+export default function ProjectListScreen({ navigation }) {
+  const { activeTeamId, isAdmin, user } = useAuth();
+  const [projects, setProjects] = useState([]);
+  const [name, setName] = useState('');
+
+  useEffect(() => {
+    if (!activeTeamId) return;
+    const unsub = subscribeProjects(activeTeamId, setProjects);
+    return () => unsub?.();
+  }, [activeTeamId]);
+
+  const onCreate = useCallback(async () => {
+    if (!isAdmin) {
+      Alert.alert('権限がありません', 'プロジェクト作成は管理者のみ可能です');
+      return;
+    }
+    try {
+      const projectId = await createProject(activeTeamId, { name, createdBy: user.uid });
+      setName('');
+      navigation.navigate('ProjectDetail', { projectId });
+    } catch (e) {
+      Alert.alert('エラー', e?.message ? String(e.message) : String(e));
+    }
+  }, [isAdmin, activeTeamId, name, user?.uid]);
+
+  return (
+    <View style={styles.container}>
+      <View style={styles.createBox}>
+        <Text style={styles.label}>新規プロジェクト</Text>
+        <View style={{ flexDirection: 'row', gap: 8 }}>
+          <TextInput
+            style={[styles.input, { flex: 1 }]}
+            value={name}
+            onChangeText={setName}
+            placeholder="例）2025/12/練習試合 vs ○○"
+          />
+          <TouchableOpacity style={[styles.btn, { opacity: isAdmin ? 1 : 0.5 }]} onPress={onCreate}>
+            <Text style={styles.btnText}>作成</Text>
+          </TouchableOpacity>
+        </View>
+        {!isAdmin && <Text style={styles.small}>※プロジェクトの作成/編集は管理者のみ</Text>}
+      </View>
+
+      <FlatList
+        data={projects}
+        keyExtractor={(p) => p.id}
+        renderItem={({ item }) => (
+          <TouchableOpacity style={styles.card} onPress={() => navigation.navigate('ProjectDetail', { projectId: item.id })}>
+            <Text style={styles.title}>{item.name}</Text>
+            <Text style={styles.small}>updated: {item.updatedAt?.toDate?.()?.toLocaleString?.() || '-'}</Text>
+          </TouchableOpacity>
+        )}
+        ListEmptyComponent={<Text style={{ padding: 12 }}>プロジェクトがありません</Text>}
+      />
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#E0FFFF', padding: 12 },
+  createBox: { backgroundColor: '#fff', padding: 12, borderRadius: 10, marginBottom: 12 },
+  label: { fontWeight: 'bold', marginBottom: 6 },
+  input: { backgroundColor: '#f7ffff', padding: 10, borderRadius: 8, borderWidth: 1, borderColor: '#bfefff' },
+  btn: { backgroundColor: '#009966', paddingHorizontal: 14, justifyContent: 'center', borderRadius: 8 },
+  btnText: { color: '#fff', fontWeight: 'bold' },
+  card: { backgroundColor: '#fff', padding: 12, borderRadius: 10, marginBottom: 10 },
+  title: { fontWeight: 'bold', fontSize: 16 },
+  small: { marginTop: 6, color: '#333' },
+});
+</file>
+
+<file path="src/screens/ProjectVideoPickerScreen.js">
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import { View, Text, FlatList, TouchableOpacity, StyleSheet, Alert } from 'react-native';
+import { useAuth } from '../contexts/AuthContext';
+import { subscribeVideos, getProjectVideos, addVideoToProject } from '../services/firestoreService';
+
+export default function ProjectVideoPickerScreen({ route, navigation }) {
+  const { projectId } = route.params;
+  const { activeTeamId, isAdmin, user } = useAuth();
+  const [videos, setVideos] = useState([]);
+  const [existing, setExisting] = useState(new Map()); // videoId -> {order,...}
+  const [selected, setSelected] = useState(new Set());
+
+  useEffect(() => {
+    if (!activeTeamId) return;
+    const unsub = subscribeVideos(activeTeamId, setVideos);
+    return () => unsub?.();
+  }, [activeTeamId]);
+
+  useEffect(() => {
+    (async () => {
+      if (!activeTeamId) return;
+      const rows = await getProjectVideos(activeTeamId, projectId);
+      const m = new Map();
+      rows.forEach((r) => m.set(r.id, r));
+      setExisting(m);
+    })();
+  }, [activeTeamId, projectId]);
+
+  const maxOrder = useMemo(() => {
+    let m = -1;
+    existing.forEach((v) => {
+      const o = typeof v.order === 'number' ? v.order : 0;
+      if (o > m) m = o;
+    });
+    return m;
+  }, [existing]);
+
+  const toggle = useCallback(
+    (videoId) => {
+      if (existing.has(videoId)) return; // 既に追加済みは触れない（MVP）
+      setSelected((prev) => {
+        const next = new Set(prev);
+        if (next.has(videoId)) next.delete(videoId);
+        else next.add(videoId);
+        return next;
+      });
+    },
+    [existing]
+  );
+
+  const onAdd = useCallback(async () => {
+    if (!isAdmin) {
+      Alert.alert('権限がありません', 'プロジェクト編集は管理者のみ可能です');
+      return;
+    }
+    const ids = Array.from(selected);
+    if (!ids.length) {
+      Alert.alert('未選択', '追加する動画を選択してください');
+      return;
+    }
+    try {
+      let order = maxOrder + 1;
+      for (const vid of ids) {
+        await addVideoToProject(activeTeamId, projectId, vid, { order, offsetSec: 0, addedBy: user.uid });
+        order += 1;
+      }
+      navigation.goBack();
+    } catch (e) {
+      Alert.alert('エラー', e?.message ? String(e.message) : String(e));
+    }
+  }, [isAdmin, selected, maxOrder, activeTeamId, projectId, user?.uid]);
+
+  return (
+    <View style={styles.container}>
+      <TouchableOpacity style={[styles.btn, { opacity: isAdmin ? 1 : 0.5 }]} onPress={onAdd}>
+        <Text style={styles.btnText}>選択した動画を追加（{selected.size}）</Text>
+      </TouchableOpacity>
+
+      <FlatList
+        data={videos}
+        keyExtractor={(v) => v.id}
+        renderItem={({ item }) => {
+          const already = existing.has(item.id);
+          const on = selected.has(item.id);
+          return (
+            <TouchableOpacity
+              style={[styles.card, already && styles.cardDisabled, on && styles.cardSelected]}
+              onPress={() => toggle(item.id)}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.title}>
+                {already ? '✅ ' : on ? '☑️ ' : '⬜ '}
+                {item.title}
+              </Text>
+              <Text style={styles.small} numberOfLines={1}>{item.videoUrl}</Text>
+              {already && <Text style={styles.small}>（追加済み）</Text>}
+            </TouchableOpacity>
+          );
+        }}
+        ListEmptyComponent={<Text style={{ padding: 12 }}>動画がありません</Text>}
+      />
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#E0FFFF', padding: 12 },
+  btn: { backgroundColor: '#009966', padding: 12, borderRadius: 10, alignItems: 'center', marginBottom: 10 },
+  btnText: { color: '#fff', fontWeight: 'bold' },
+  card: { backgroundColor: '#fff', padding: 12, borderRadius: 10, marginBottom: 10 },
+  cardSelected: { borderWidth: 2, borderColor: '#009966' },
+  cardDisabled: { opacity: 0.6 },
+  title: { fontWeight: 'bold', fontSize: 16 },
+  small: { marginTop: 4, color: '#555' },
+});
+</file>
+
+<file path="src/screens/TeamSetupScreen.js">
+// /src/screens/TeamSetupScreen.js
+
+import React, { useState } from 'react';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert } from 'react-native';
+import { useAuth } from '../contexts/AuthContext';
+import { createTeam, joinTeamByInvite } from '../services/firestoreService';
+
+export default function TeamSetupScreen() {
+  const { user, signOut } = useAuth();
+  const [teamName, setTeamName] = useState('');
+  const [inviteCode, setInviteCode] = useState('');
+
+  const handleCreateTeam = async () => {
+    if (!teamName.trim()) {
+      Alert.alert('未入力', 'チーム名を入力してください');
+      return;
+    }
+    try {
+      await createTeam({ name: teamName.trim(), uid: user.uid });
+      // activeTeamId は users/{uid} 更新で自動的に反映される
+    } catch (e) {
+      Alert.alert('エラー', e?.message ? String(e.message) : String(e));
+    }
+  };
+
+  const handleJoin = async () => {
+    const code = inviteCode.trim().toUpperCase();
+    if (!code) {
+      Alert.alert('未入力', '招待コードを入力してください');
+      return;
+    }
+    try {
+      await joinTeamByInvite({ code, uid: user.uid });
+    } catch (e) {
+      Alert.alert('参加できません', e?.message ? String(e.message) : String(e));
+    }
+  };
+
+  return (
+    <View style={styles.container}>
+      <Text style={styles.title}>チーム設定</Text>
+
+      <Text style={styles.section}>招待コードで参加</Text>
+      <TextInput
+        style={styles.input}
+        value={inviteCode}
+        onChangeText={setInviteCode}
+        placeholder="例）AB12CD34"
+        autoCapitalize="characters"
+      />
+      <TouchableOpacity style={styles.primaryBtn} onPress={handleJoin}>
+        <Text style={styles.primaryBtnText}>参加</Text>
+      </TouchableOpacity>
+
+      <Text style={[styles.section, { marginTop: 18 }]}>チームを作成（作成者は管理者）</Text>
+      <TextInput
+        style={styles.input}
+        value={teamName}
+        onChangeText={setTeamName}
+        placeholder="例）◯◯高校 ハンド部"
+      />
+      <TouchableOpacity style={styles.primaryBtn} onPress={handleCreateTeam}>
+        <Text style={styles.primaryBtnText}>作成</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity style={styles.secondaryBtn} onPress={signOut}>
+        <Text style={styles.secondaryBtnText}>ログアウト</Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#E0FFFF', padding: 16, justifyContent: 'center' },
+  title: { fontSize: 22, fontWeight: 'bold', marginBottom: 14, textAlign: 'center' },
+  section: { fontWeight: 'bold', marginTop: 8 },
+  input: { backgroundColor: '#fff', padding: 12, borderRadius: 8, marginTop: 10 },
+  primaryBtn: { marginTop: 12, backgroundColor: '#0077cc', padding: 12, borderRadius: 8, alignItems: 'center' },
+  primaryBtnText: { color: '#fff', fontWeight: 'bold' },
+  secondaryBtn: { marginTop: 16, backgroundColor: '#fff', borderWidth: 1, borderColor: '#0077cc', padding: 12, borderRadius: 8, alignItems: 'center' },
+  secondaryBtnText: { color: '#0077cc', fontWeight: 'bold' },
+});
+</file>
+
+<file path="app.json">
+{
+  "expo": {
+    "name": "SMRTBUKATSU",
+    "slug": "SMRTBUKATSU",
+    "version": "1.0.0",
+    "orientation": "default",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "edgeToEdgeEnabled": true
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}
+</file>
+
+<file path="src/AuthContext.js">
+import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import {
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  sendPasswordResetEmail,
+  signOut as fbSignOut,
+} from 'firebase/auth';
+import { doc, getDoc, onSnapshot, serverTimestamp, setDoc } from 'firebase/firestore';
+import { auth, db } from './firebase';
+
+const AuthContext = createContext(null);
+
+export function AuthProvider({ children }) {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [activeTeamId, setActiveTeamId] = useState(null);
+  const [role, setRole] = useState(null); // 'admin' | 'member' | null
+
+  // Auth state
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (u) => {
+      setUser(u || null);
+      setRole(null);
+      setActiveTeamId(null);
+      setLoading(false);
+
+      // ユーザーがログインしたら users/{uid} を必ず用意（なければ作る）
+      if (u?.uid) {
+        const ref = doc(db, 'users', u.uid);
+        const snap = await getDoc(ref);
+        if (!snap.exists()) {
+          await setDoc(ref, { activeTeamId: '', createdAt: serverTimestamp() }, { merge: true });
+        }
+      }
+    });
+    return () => unsub();
+  }, []);
+
+  // users/{uid}.activeTeamId
+  useEffect(() => {
+    if (!user?.uid) return;
+    const ref = doc(db, 'users', user.uid);
+    const unsub = onSnapshot(ref, (snap) => {
+      const data = snap.data() || {};
+      const t = typeof data.activeTeamId === 'string' ? data.activeTeamId : '';
+      setActiveTeamId(t || null);
+    });
+    return () => unsub();
+  }, [user?.uid]);
+
+  // teams/{teamId}/members/{uid}.role
+  useEffect(() => {
+    // activeTeamId が消えたら role を残さない（残留すると isAdmin が嘘になる）
+    if (!user?.uid || !activeTeamId) {
+      setRole(null);
+      return;
+    }
+    const ref = doc(db, 'teams', activeTeamId, 'members', user.uid);
+    const unsub = onSnapshot(ref, (snap) => {
+      const data = snap.data() || {};
+      setRole(data.role || null);
+    });
+    return () => unsub();
+  }, [user?.uid, activeTeamId]);
+
+  const api = useMemo(() => {
+    const signIn = async (email, password) => {
+      await signInWithEmailAndPassword(auth, email.trim(), password);
+    };
+    const signUp = async (email, password) => {
+      await createUserWithEmailAndPassword(auth, email.trim(), password);
+    };
+    const resetPassword = async (email) => {
+      await sendPasswordResetEmail(auth, email.trim());
+    };
+    const signOut = async () => {
+      await fbSignOut(auth);
+    };
+    return {
+      user,
+      loading,
+      activeTeamId,
+      role,
+      isAdmin: role === 'admin',
+      signIn,
+      signUp,
+      resetPassword,
+      signOut,
+    };
+  }, [user, loading, activeTeamId, role]);
+
+  return <AuthContext.Provider value={api}>{children}</AuthContext.Provider>;
+}
+
+export function useAuth() {
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error('useAuth must be used within AuthProvider');
+  return ctx;
+}
+</file>
+
+<file path="src/screens/ProjectHighlightPlayerScreen.js">
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, FlatList, Alert, StatusBar, useWindowDimensions } from 'react-native';
+import { useEvent } from 'expo';
+import { useVideoPlayer, VideoView } from 'expo-video';
+import YoutubePlayer from 'react-native-youtube-iframe';
+import * as ScreenOrientation from 'expo-screen-orientation';
+
+import { useAuth } from '../contexts/AuthContext';
+import { getProject, subscribeProjectVideos, getVideo, listEventsOnce, subscribeTags } from '../services/firestoreService';
+import { PLAYBACK_MARGIN_START, PLAYBACK_MARGIN_END } from '../constants';
+
+function parseYouTubeId(rawUrl) {
+  const url = (rawUrl || '').trim();
+  if (!url) return null;
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace('www.', '');
+    if (host === 'youtu.be') {
+      const id = u.pathname.split('/').filter(Boolean)[0];
+      return id || null;
+    }
+    if (host.endsWith('youtube.com')) {
+      const v = u.searchParams.get('v');
+      if (v) return v;
+      const parts = u.pathname.split('/').filter(Boolean);
+      const idx = parts.findIndex((p) => ['shorts', 'embed', 'live'].includes(p));
+      if (idx >= 0 && parts[idx + 1]) return parts[idx + 1];
+    }
+  } catch {}
+  return null;
+}
+
+export default function ProjectHighlightPlayerScreen({ route, navigation }) {
+  const { projectId } = route.params;
+  const { activeTeamId } = useAuth();
+  const { width, height } = useWindowDimensions();
+
+  const ytRef = useRef(null);
+  const currentIndexRef = useRef(0);
+  const finishedRef = useRef(false);
+  const remountedAfterFinishRef = useRef(false);
+  const finishAtRef = useRef(null);
+  const ytReadyRef = useRef(false);
+  const pendingYtStartRef = useRef(null);
+  const pendingYtUidRef = useRef(null);
+  const pendingUrlStartRef = useRef(null);
+  const pendingUrlUidRef = useRef(null);
+  const lastLoadedUrlRef = useRef(null);
+
+  const [project, setProject] = useState(null);
+  const [projectVideos, setProjectVideos] = useState([]); // [{id(videoId), order, offsetSec}]
+  const [videosById, setVideosById] = useState({}); // videoId -> videoDoc
+  const [allClips, setAllClips] = useState([]); // aggregated clips
+
+  const [tags, setTags] = useState([]);
+  const [selectedTags, setSelectedTags] = useState(new Set());
+  const [matchMode, setMatchMode] = useState('OR');
+
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [ytPlaying, setYtPlaying] = useState(false);
+  const [finished, setFinished] = useState(false);
+  const [landscapeMode, setLandscapeMode] = useState(false);
+  const [playerKey, setPlayerKey] = useState(0); // YouTube強制停止用（再マウント）
+
+  const { fsVideoW } = useMemo(() => {
+    const uiMin = 280;
+    const ideal = Math.round((height * 16) / 9);
+    let vw = ideal;
+    if (width - vw < uiMin) vw = width - uiMin;
+    vw = Math.max(240, Math.min(vw, Math.floor(width * 0.8)));
+    return { fsVideoW: vw };
+  }, [width, height]);
+
+  // URL(MP4/HLS) 再生用
+  const urlPlayer = useVideoPlayer(null);
+  const { isUrlPlaying } = useEvent(urlPlayer, 'playingChange', { isUrlPlaying: urlPlayer.playing });
+  const { urlStatus } = useEvent(urlPlayer, 'statusChange', { urlStatus: urlPlayer.status });
+
+  const replaceUrlSource = async (url) => {
+    try {
+      if (typeof urlPlayer?.replaceAsync === 'function') await urlPlayer.replaceAsync(url);
+      else urlPlayer.replace(url);
+    } catch {}
+  };
+
+  // project / projectVideos
+  useEffect(() => {
+    (async () => {
+      if (!activeTeamId) return;
+      const p = await getProject(activeTeamId, projectId);
+      if (!p) {
+        Alert.alert('エラー', 'プロジェクトが見つかりません');
+        navigation.goBack();
+        return;
+      }
+      setProject(p);
+      navigation.setOptions({ title: `PJ：${p.name}` });
+    })();
+  }, [activeTeamId, projectId]);
+
+  useEffect(() => {
+    return () => {
+      ScreenOrientation.unlockAsync().catch(() => {});
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!activeTeamId) return;
+    const unsub = subscribeProjectVideos(activeTeamId, projectId, setProjectVideos);
+    return () => unsub?.();
+  }, [activeTeamId, projectId]);
+
+  // tags
+  useEffect(() => {
+    if (!activeTeamId) return;
+    const unsub = subscribeTags(activeTeamId, setTags);
+    return () => unsub?.();
+  }, [activeTeamId]);
+
+  // 集約ロード（projectVideos 変更時に再構築：まずは getDocs ベースの “軽い集約”）
+  useEffect(() => {
+    let canceled = false;
+
+    (async () => {
+      if (!activeTeamId) return;
+      if (!projectVideos.length) {
+        setVideosById({});
+        setAllClips([]);
+        return;
+      }
+
+      try {
+        const pvSorted = projectVideos.slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+
+        const videoPairs = await Promise.all(
+          pvSorted.map(async (pv) => {
+            const v = await getVideo(activeTeamId, pv.id);
+            const evs = await listEventsOnce(activeTeamId, pv.id);
+            return { pv, v, evs };
+          })
+        );
+
+        if (canceled) return;
+
+        const nextVideosById = {};
+        const nextClips = [];
+
+        for (const pair of videoPairs) {
+          const videoId = pair.pv.id;
+          const v = pair.v;
+          if (v) nextVideosById[videoId] = v;
+
+          const order = typeof pair.pv.order === 'number' ? pair.pv.order : 0;
+          const offsetSec = typeof pair.pv.offsetSec === 'number' ? pair.pv.offsetSec : 0;
+
+          (pair.evs || []).forEach((e) => {
+            const tagTypes = Array.isArray(e.tagTypes) ? e.tagTypes : [];
+            const startSec = Number(e.startSec ?? 0);
+            const endSec = Number(e.endSec ?? 0);
+            // offsetSec が未運用でも “order順→startSec” で並ぶように sortKey を作る
+            const sortKey = offsetSec + startSec + order * 1000000;
+
+            nextClips.push({
+              uid: `${videoId}_${e.id}`,
+              videoId,
+              eventId: e.id,
+              startSec,
+              endSec,
+              tagTypes,
+              sortKey,
+              title: v?.title || '',
+            });
+          });
+        }
+
+        nextClips.sort((a, b) => a.sortKey - b.sortKey);
+
+        setVideosById(nextVideosById);
+        setAllClips(nextClips);
+      } catch (e) {
+        console.error(e);
+        Alert.alert('エラー', 'プロジェクトの集約に失敗しました');
+      }
+    })();
+
+    return () => {
+      canceled = true;
+    };
+  }, [activeTeamId, projectVideos]);
+
+  // tags が更新されたら selectedTags を整理
+  useEffect(() => {
+    const exist = new Set(tags.map((t) => t?.name).filter(Boolean));
+    setSelectedTags((prev) => {
+      const next = new Set();
+      prev.forEach((n) => {
+        if (exist.has(n)) next.add(n);
+      });
+      return next;
+    });
+  }, [tags]);
+
+  const selectedTagArray = useMemo(() => Array.from(selectedTags), [selectedTags]);
+
+  const playlist = useMemo(() => {
+    if (!selectedTagArray.length) return [];
+    const ok = allClips.filter((c) => {
+      const t = Array.isArray(c.tagTypes) ? c.tagTypes : [];
+      if (matchMode === 'AND') return selectedTagArray.every((x) => t.includes(x));
+      return selectedTagArray.some((x) => t.includes(x));
+    });
+    return ok.slice().sort((a, b) => a.sortKey - b.sortKey);
+  }, [allClips, selectedTagArray, matchMode]);
+
+  // 条件変更で先頭へ
+  useEffect(() => {
+    setCurrentIndex(0);
+    currentIndexRef.current = 0;
+    finishedRef.current = false;
+    remountedAfterFinishRef.current = false;
+    finishAtRef.current = null;
+    setFinished(false);
+    setYtPlaying(false);
+    try { urlPlayer.pause(); } catch {}
+  }, [playlist.length, matchMode, selectedTagArray.join('|')]);
+
+  const currentClip = playlist[currentIndex] || null;
+  const currentVideo = currentClip ? videosById[currentClip.videoId] : null;
+
+  const isYoutube = currentVideo?.sourceType === 'youtube';
+  const youtubeId = useMemo(() => {
+    if (!currentVideo) return null;
+    return currentVideo.youtubeId || parseYouTubeId(currentVideo.videoUrl);
+  }, [currentVideo]);
+
+  // YouTube の動画が切り替わったら「ready」をリセット（初回seekの取りこぼし防止）
+  useEffect(() => {
+    ytReadyRef.current = false;
+  }, [youtubeId, playerKey]);
+  
+  // 動画切替時：URLなら replace、YouTubeならURL停止
+  useEffect(() => {
+    if (!currentVideo) return;
+    if (currentVideo.sourceType === 'youtube') {
+      try { urlPlayer.pause(); } catch {}
+      lastLoadedUrlRef.current = null;
+      return;
+    }
+    const url = (currentVideo.videoUrl || '').trim();
+    if (!url) return;
+    if (lastLoadedUrlRef.current === url) return;
+    lastLoadedUrlRef.current = url;
+    replaceUrlSource(url);
+  }, [currentVideo]);
+
+  // クリップ開始シーク
+  useEffect(() => {
+    if (!currentClip || !currentVideo) return;
+
+    finishedRef.current = false;
+    remountedAfterFinishRef.current = false;
+    finishAtRef.current = null;
+    setFinished(false);
+    currentIndexRef.current = currentIndex;
+
+    const startPos = Math.max(currentClip.startSec - PLAYBACK_MARGIN_START, 0);
+
+    if (isYoutube) {
+      if (!youtubeId) return;
+      // ✅ 動画切替直後は onReady 前に seekTo が落ちることがあるので保留して確実に適用
+      pendingYtStartRef.current = startPos;
+      pendingYtUidRef.current = currentClip.uid;
+
+      // 先に play=true になると 0秒から動きがちなので、ready までは止める
+      if (!ytReadyRef.current) {
+        setYtPlaying(false);
+        return;
+      }
+      try { ytRef.current?.seekTo?.(startPos, true); } catch {}
+      setYtPlaying(true);
+      pendingYtStartRef.current = null;
+      pendingYtUidRef.current = null;
+      return;
+    }
+
+    // URL
+    setYtPlaying(false);
+    pendingUrlStartRef.current = startPos;
+    pendingUrlUidRef.current = currentClip.uid;
+    if (urlStatus !== 'readyToPlay') {
+      try { urlPlayer.pause(); } catch {}
+      return;
+    }
+    try { urlPlayer.currentTime = startPos; } catch {}
+    try { urlPlayer.play(); } catch {}
+    pendingUrlStartRef.current = null;
+    pendingUrlUidRef.current = null;
+  }, [currentIndex, currentClip?.uid, currentVideo?.id, isYoutube, youtubeId, urlStatus]);
+
+  // ✅ URLプレイヤーが ready になった瞬間に、保留していたシーク＆再生を適用（動画切替直後の1発目対策）
+  useEffect(() => {
+    if (isYoutube) return;
+    if (urlStatus !== 'readyToPlay') return;
+    if (!currentClip) return;
+    const uid = pendingUrlUidRef.current;
+    const pos = pendingUrlStartRef.current;
+    if (uid !== currentClip.uid) return;
+    if (typeof pos !== 'number') return;
+    try { urlPlayer.currentTime = pos; } catch {}
+    try { urlPlayer.play(); } catch {}
+    pendingUrlStartRef.current = null;
+    pendingUrlUidRef.current = null;
+  }, [urlStatus, isYoutube, currentClip?.uid]);
+
+  // 終端判定して次へ（複数動画またぎ）
+  useEffect(() => {
+    if (finished) return;
+
+    const timer = setInterval(async () => {
+      const idx = currentIndexRef.current;
+      const clip = playlist[idx];
+      if (!clip) return;
+
+      const isLast = !playlist[idx + 1];
+      // 最後のクリップは endSec で止める（マージンは引かない）
+      const endLimit = isLast ? clip.endSec : Math.max(clip.endSec - PLAYBACK_MARGIN_END, clip.startSec);
+
+      const v = videosById[clip.videoId];
+      const clipIsYoutube = v?.sourceType === 'youtube';
+
+      if (clipIsYoutube) {
+        try {
+          const t = await ytRef.current?.getCurrentTime?.();
+          if (typeof t !== 'number') return;
+          if (t >= endLimit) {
+            if (!isLast) {
+              const nextIndex = idx + 1;
+              currentIndexRef.current = nextIndex;
+              setCurrentIndex(nextIndex);
+            } else {
+              finishedRef.current = true;
+              finishAtRef.current = endLimit;
+              try { ytRef.current?.pauseVideo?.(); } catch {}
+              setYtPlaying(false);
+              setFinished(true);
+            }
+          }
+        } catch {}
+      } else {
+        if (!isUrlPlaying) return;
+        try {
+          const t = urlPlayer?.currentTime ?? 0;
+          if (t >= endLimit) {
+            if (!isLast) {
+              const nextIndex = idx + 1;
+              currentIndexRef.current = nextIndex;
+              setCurrentIndex(nextIndex);
+            } else {
+              finishedRef.current = true;
+              finishAtRef.current = endLimit;
+              try { urlPlayer.currentTime = endLimit; } catch {}
+              try { urlPlayer.pause(); } catch {}
+              setFinished(true);
+            }
+          }
+        } catch {}
+      }
+    }, 200);
+
+    return () => clearInterval(timer);
+  }, [playlist, videosById, isUrlPlaying, finished]);
+
+  // finished になった瞬間に “もう一回だけ” 停止を押し込む（端末差対策）
+  useEffect(() => {
+    if (!finished) return;
+    const fin = finishAtRef.current;
+    const id = setTimeout(() => {
+      if (isYoutube) {
+        try { ytRef.current?.pauseVideo?.(); } catch {}
+        setYtPlaying(false);
+
+        // それでも “再生が復帰する端末” 用：まだ動いていたら1回だけ再マウントして止める
+        setTimeout(async () => {
+          if (remountedAfterFinishRef.current) return;
+          try {
+            const cur = await ytRef.current?.getCurrentTime?.();
+            if (typeof fin === 'number' && typeof cur === 'number' && cur > fin + 0.8) {
+              remountedAfterFinishRef.current = true;
+              setPlayerKey((k) => k + 1);
+            }
+          } catch {
+            remountedAfterFinishRef.current = true;
+            setPlayerKey((k) => k + 1);
+          }
+        }, 600);
+      } else {
+        if (typeof fin === 'number') { try { urlPlayer.currentTime = fin; } catch {} }
+        try { urlPlayer.pause(); } catch {}
+      }
+    }, 350);
+    return () => clearTimeout(id);
+  }, [finished, isYoutube]);
+  
+  const playFrom = (index) => {
+    if (!playlist[index]) return;
+    finishedRef.current = false;
+    remountedAfterFinishRef.current = false;
+    finishAtRef.current = null;
+    setFinished(false);
+    currentIndexRef.current = index;
+    setCurrentIndex(index);
+  };
+
+  const toggleSelectTag = (name) => {
+    setSelectedTags((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
+
+  const openLandscapeMode = async () => {
+    if (landscapeMode) return;
+    try {
+      setLandscapeMode(true);
+      await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+    } catch {}
+  };
+
+  const closeLandscapeMode = async () => {
+    setYtPlaying(false);
+    try { urlPlayer.pause(); } catch {}
+    setLandscapeMode(false);
+    try { await ScreenOrientation.unlockAsync(); } catch {}
+  };
+
+  const renderPlayer = ({ landscape = false } = {}) => {
+    if (!currentVideo) {
+      return (
+        <View style={styles.playerFallback}>
+          <Text style={styles.playerFallbackText}>タグを選択してください</Text>
+        </View>
+      );
+    }
+
+    if (isYoutube) {
+      return youtubeId ? (
+        <View style={landscape ? [styles.fsVideoWrap, { width: fsVideoW }] : styles.videoWrap}>
+          <YoutubePlayer
+            key={`${youtubeId || 'yt'}-${playerKey}`}
+            ref={ytRef}
+            height={landscape ? Math.max(200, height) : 220}
+            width={landscape ? fsVideoW : undefined}
+            videoId={youtubeId || ''}
+            play={ytPlaying && !finished}
+            initialPlayerParams={landscape ? { preventFullScreen: true } : undefined}
+            onReady={() => {
+              ytReadyRef.current = true;
+              // ✅ 動画切替直後の「最初のタグ」が効かない対策：ready後にseek/playを確実に適用
+              const uid = pendingYtUidRef.current;
+              const pos = pendingYtStartRef.current;
+              if (!currentClip) return;
+              if (uid !== currentClip.uid) return;
+              if (typeof pos !== 'number') return;
+              if (finishedRef.current) return;
+              try { ytRef.current?.seekTo?.(pos, true); } catch {}
+              setYtPlaying(true);
+              pendingYtStartRef.current = null;
+              pendingYtUidRef.current = null;
+            }}
+            onChangeState={(s) => {
+              // finished なのに再度 playing/buffering になる個体差対策（より強く）
+              if (finishedRef.current && (s === 'playing' || s === 'buffering')) {
+                if (!remountedAfterFinishRef.current) {
+                  remountedAfterFinishRef.current = true;
+                  setPlayerKey((k) => k + 1);
+                }
+                try { ytRef.current?.pauseVideo?.(); } catch {}
+                setYtPlaying(false);
+              }
+              if (s === 'ended') setYtPlaying(false);
+            }}
+          />
+        </View>
+      ) : (
+        <View style={styles.playerFallback}>
+          <Text style={styles.playerFallbackText}>YouTube ID が取得できません</Text>
+        </View>
+      );
+    }
+
+    return (
+      <VideoView
+        player={urlPlayer}
+        style={landscape ? [styles.fsVideo, { width: fsVideoW }] : styles.video}
+        contentFit="contain"
+        nativeControls
+        fullscreenOptions={{ enabled: !landscape }}
+        allowsPictureInPicture
+      />
+    );
+  };
+
+  return (
+    <View style={styles.container}>
+      {!project ? null : (
+        <>
+          <StatusBar hidden={landscapeMode} />
+
+          {landscapeMode ? (
+            <View style={styles.fsRoot}>
+              <View style={styles.fsRow}>
+                <View style={[styles.fsVideoCol, { width: fsVideoW }]}>
+                  {renderPlayer({ landscape: true })}
+                </View>
+
+                <View style={styles.fsUiCol}>
+                  <FlatList
+                    data={playlist}
+                    keyExtractor={(c) => c.uid}
+                    renderItem={({ item, index }) => (
+                      <TouchableOpacity
+                        style={[styles.clipItem, index === currentIndex && styles.clipItemActive]}
+                        onPress={() => playFrom(index)}
+                      >
+                        <Text style={styles.clipText}>
+                          #{index + 1} [{item.startSec.toFixed(1)}s - {item.endSec.toFixed(1)}s]（{item.title}） {item.tagTypes?.join(', ')}
+                        </Text>
+                     </TouchableOpacity>
+                    )}
+                    ListHeaderComponent={
+                      <View style={styles.filterRow}>
+                        <View style={styles.filterHeader}>
+                          <Text style={styles.label}>タグで絞り込み（{matchMode}）</Text>
+                          <TouchableOpacity style={styles.modeBtn} onPress={() => setMatchMode((m) => (m === 'OR' ? 'AND' : 'OR'))}>
+                            <Text style={styles.modeBtnText}>切替</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity style={styles.clearBtn} onPress={() => setSelectedTags(new Set())}>
+                            <Text style={styles.clearBtnText}>クリア</Text>
+                          </TouchableOpacity>
+                        </View>
+
+                        <View style={styles.tagButtonsWrap}>
+                          {tags.length === 0 ? (
+                            <Text style={styles.small}>タグがありません（タグ付け画面で登録してください）</Text>
+                          ) : (
+                            tags.map((t) => {
+                              const name = t?.name;
+                              if (!name) return null;
+                              const on = selectedTags.has(name);
+                              return (
+                                <TouchableOpacity
+                                  key={t.id || name}
+                                  style={[styles.tagBtn, on ? styles.tagBtnActive : styles.tagBtnInactive]}
+                                  onPress={() => toggleSelectTag(name)}
+                                >
+                                  <Text style={[styles.tagBtnText, on ? styles.tagBtnTextActive : styles.tagBtnTextInactive]}>{name}</Text>
+                                </TouchableOpacity>
+                              );
+                            })
+                          )}
+                        </View>
+
+                        <Text style={styles.small}>一致: {playlist.length} 件 / 集約イベント: {allClips.length} 件</Text>
+                        <Text style={[styles.label, { marginTop: 8 }]}>クリップ一覧</Text>
+                      </View>
+                    }
+                    contentContainerStyle={{ paddingHorizontal: 8, paddingBottom: 12 }}
+                    ListEmptyComponent={<Text style={{ padding: 12 }}>タグを選択してください（または一致なし）</Text>}
+                  />
+                </View>
+              </View>
+
+              <TouchableOpacity style={styles.fsCloseBtn} onPress={closeLandscapeMode}>
+                <Text style={styles.fsCloseBtnText}>閉じる</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <>
+              <View style={styles.filterRow}>
+                <View style={styles.filterHeader}>
+                  <Text style={styles.label}>タグで絞り込み（{matchMode}）</Text>
+                  <TouchableOpacity style={styles.modeBtn} onPress={() => setMatchMode((m) => (m === 'OR' ? 'AND' : 'OR'))}>
+                    <Text style={styles.modeBtnText}>切替</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.clearBtn} onPress={() => setSelectedTags(new Set())}>
+                    <Text style={styles.clearBtnText}>クリア</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.landscapeBtn} onPress={openLandscapeMode}>
+                    <Text style={styles.landscapeBtnText}>横</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.tagButtonsWrap}>
+                  {tags.length === 0 ? (
+                    <Text style={styles.small}>タグがありません（タグ付け画面で登録してください）</Text>
+                  ) : (
+                    tags.map((t) => {
+                      const name = t?.name;
+                      if (!name) return null;
+                      const on = selectedTags.has(name);
+                      return (
+                        <TouchableOpacity
+                          key={t.id || name}
+                          style={[styles.tagBtn, on ? styles.tagBtnActive : styles.tagBtnInactive]}
+                          onPress={() => toggleSelectTag(name)}
+                        >
+                          <Text style={[styles.tagBtnText, on ? styles.tagBtnTextActive : styles.tagBtnTextInactive]}>{name}</Text>
+                        </TouchableOpacity>
+                      );
+                    })
+                  )}
+                </View>
+
+                <Text style={styles.small}>一致: {playlist.length} 件 / 集約イベント: {allClips.length} 件</Text>
+              </View>
+
+              {/* Player */}
+              <View style={styles.playerBox}>
+                {renderPlayer({ landscape: false })}
+              </View>
+
+              {/* Playlist */}
+              <FlatList
+                data={playlist}
+                keyExtractor={(c) => c.uid}
+                renderItem={({ item, index }) => (
+                  <TouchableOpacity
+                    style={[styles.clipItem, index === currentIndex && styles.clipItemActive]}
+                    onPress={() => playFrom(index)}
+                  >
+                    <Text style={styles.clipText}>
+                      #{index + 1} [{item.startSec.toFixed(1)}s - {item.endSec.toFixed(1)}s]（{item.title}） {item.tagTypes?.join(', ')}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+                contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 16 }}
+                ListEmptyComponent={<Text style={{ padding: 12 }}>タグを選択してください（または一致なし）</Text>}
+              />
+            </>
+          )}
+        </>
+      )}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#E0FFFF' },
+
+  filterRow: { padding: 12 },
+  label: { fontWeight: 'bold' },
+  small: { marginTop: 6, color: '#333' },
+  filterHeader: { flexDirection: 'row', alignItems: 'center' },
+  modeBtn: { marginLeft: 10, backgroundColor: '#fff', borderWidth: 1, borderColor: '#0077cc', borderRadius: 8, paddingVertical: 6, paddingHorizontal: 10 },
+  modeBtnText: { color: '#0077cc', fontWeight: 'bold' },
+  clearBtn: { marginLeft: 8, backgroundColor: '#fff', borderWidth: 1, borderColor: '#999', borderRadius: 8, paddingVertical: 6, paddingHorizontal: 10 },
+  clearBtnText: { color: '#333', fontWeight: 'bold' },
+  landscapeBtn: { marginLeft: 8, backgroundColor: '#fff', borderWidth: 1, borderColor: '#0077cc', borderRadius: 8, paddingVertical: 6, paddingHorizontal: 10 },
+  landscapeBtnText: { color: '#0077cc', fontWeight: 'bold' },
+
+  tagButtonsWrap: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 8 },
+  tagBtn: { paddingVertical: 8, paddingHorizontal: 10, borderRadius: 999, borderWidth: 1, marginRight: 8, marginBottom: 8 },
+  tagBtnActive: { backgroundColor: '#0077cc', borderColor: '#0077cc' },
+  tagBtnInactive: { backgroundColor: '#fff', borderColor: '#0077cc' },
+  tagBtnText: { fontWeight: 'bold' },
+  tagBtnTextActive: { color: '#fff' },
+  tagBtnTextInactive: { color: '#0077cc' },
+
+  playerBox: { backgroundColor: '#000', height: 220 },
+  video: { width: '100%', height: 220, backgroundColor: '#000' },
+  videoWrap: { width: '100%', height: 220, backgroundColor: '#000' },
+  playerFallback: { height: 220, justifyContent: 'center', alignItems: 'center' },
+  playerFallbackText: { color: '#fff', fontWeight: 'bold' },
+
+  clipItem: { backgroundColor: '#fff', padding: 10, borderRadius: 10, marginVertical: 6 },
+  clipItemActive: { borderWidth: 2, borderColor: '#0077cc' },
+  clipText: { color: '#333' },
+
+  // 横画面（疑似フルスクリーン）
+  fsRoot: { flex: 1, backgroundColor: '#000' },
+  fsRow: { flex: 1, flexDirection: 'row' },
+  fsVideoCol: { backgroundColor: '#000' },
+  fsUiCol: { flex: 1, backgroundColor: '#E0FFFF' },
+  fsVideo: { height: '100%', backgroundColor: '#000' },
+  fsVideoWrap: { height: '100%', backgroundColor: '#000' },
+  fsCloseBtn: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+  },
+  fsCloseBtnText: { color: '#fff', fontWeight: 'bold' },  
+});
+</file>
+
+<file path="App.js">
+// App.js
+import 'react-native-gesture-handler';
+import React from 'react';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { NavigationContainer } from '@react-navigation/native';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
+
+import VideoListScreen from './src/screens/VideoListScreen';
+import AddVideoScreen from './src/screens/AddVideoScreen'; 
+import TaggingScreen from './src/screens/TaggingScreen';
+import HighlightPlayerScreen from './src/screens/HighlightPlayerScreen';
+import ProjectListScreen from './src/screens/ProjectListScreen';
+import ProjectDetailScreen from './src/screens/ProjectDetailScreen';
+import ProjectVideoPickerScreen from './src/screens/ProjectVideoPickerScreen';
+import ProjectHighlightPlayerScreen from './src/screens/ProjectHighlightPlayerScreen';
+import AuthScreen from './src/screens/AuthScreen';
+import TeamSetupScreen from './src/screens/TeamSetupScreen';
+import { AuthProvider, useAuth } from './src/contexts/AuthContext';
+
+
+const Stack = createNativeStackNavigator();
+
+function RootNavigator() {
+  const { user, loading, activeTeamId } = useAuth();
+  if (loading) return null;
+
+  // 未ログイン
+  if (!user) {
+    return (
+      <Stack.Navigator>
+        <Stack.Screen name="Auth" component={AuthScreen} options={{ title: 'ログイン' }} />
+      </Stack.Navigator>
+    );
+  }
+
+  // ログイン済みだがチーム未設定
+  if (!activeTeamId) {
+    return (
+      <Stack.Navigator>
+        <Stack.Screen name="TeamSetup" component={TeamSetupScreen} options={{ title: 'チーム設定' }} />
+      </Stack.Navigator>
+    );
+  }
+
+  // メイン
+  return (
+    <Stack.Navigator initialRouteName="VideoList">
+      <Stack.Screen name="VideoList" component={VideoListScreen} options={{ title: '動画一覧' }} />
+      <Stack.Screen name="AddVideo" component={AddVideoScreen} options={{ title: '動画追加' }} />
+      <Stack.Screen name="Tagging" component={TaggingScreen} options={{ title: 'タグ付け' }} />
+      <Stack.Screen name="Highlights" component={HighlightPlayerScreen} options={{ title: 'ハイライト' }} />
+      <Stack.Screen name="Projects" component={ProjectListScreen} options={{ title: 'プロジェクト' }} />
+      <Stack.Screen name="ProjectDetail" component={ProjectDetailScreen} options={{ title: 'プロジェクト詳細' }} />
+      <Stack.Screen name="ProjectVideoPicker" component={ProjectVideoPickerScreen} options={{ title: '動画を追加' }} />
+      <Stack.Screen name="ProjectHighlights" component={ProjectHighlightPlayerScreen} options={{ title: 'プロジェクトハイライト' }} />
+    </Stack.Navigator>
+  );
+}
+
+
+export default function App() {
+  return (
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <AuthProvider>
+        <NavigationContainer>
+          <RootNavigator />
+        </NavigationContainer>
+      </AuthProvider>
+    </GestureHandlerRootView>
+  );
+}
+</file>
+
+<file path="src/firebase.js">
+// src/firebase.js
+import { initializeApp } from 'firebase/app';
+import { initializeFirestore } from 'firebase/firestore';
+import { initializeAuth, getReactNativePersistence } from 'firebase/auth';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import Constants from 'expo-constants';
+
+const extra =
+  (Constants.expoConfig && Constants.expoConfig.extra) ||
+  (Constants.manifest && Constants.manifest.extra) ||
+  {};
+
+const firebaseConfig = {
+  apiKey: extra.firebaseApiKey,
+  authDomain: extra.authDomain,
+  projectId: extra.projectId,
+  storageBucket: extra.storageBucket,
+  messagingSenderId: extra.messagingSenderId,
+  appId: extra.appId,
+  measurementId: extra.measurementId,
+};
+
+const app = initializeApp(firebaseConfig);
+
+// ✅ Auth（React Native永続化）
+export const auth = initializeAuth(app, {
+  persistence: getReactNativePersistence(AsyncStorage),
+});
+
+export const db = initializeFirestore(app, {
+  experimentalAutoDetectLongPolling: true,
+  // まだ WARN が出続ける場合は下も試すと改善することがあります
+  // useFetchStreams: false,
+});
+</file>
+
+<file path="src/screens/AddVideoScreen.js">
+// src/screens/AddVideoScreen.js
+import React, { useEffect, useRef, useState } from 'react';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, FlatList, KeyboardAvoidingView, Platform } from 'react-native';
+import { useEvent } from 'expo';
+import { useVideoPlayer, VideoView } from 'expo-video';
+import YoutubePlayer from 'react-native-youtube-iframe';
+
+import { addVideo, addEvent, subscribeEvents } from '../services/firestoreService';
+import { useAuth } from '../contexts/AuthContext';
+
+ function parseYouTubeId(rawUrl) {
+   const url = (rawUrl || '').trim();
+   if (!url) return null;
+ 
+   try {
+     // youtu.be/<id> / youtube.com/watch?v=<id> / shorts / embed / live などをサポート
+     const u = new URL(url);
+     const host = u.hostname.replace('www.', '');
+ 
+     if (host === 'youtu.be') {
+       const id = u.pathname.split('/').filter(Boolean)[0];
+       return id || null;
+     }
+ 
+     if (host.endsWith('youtube.com')) {
+       const v = u.searchParams.get('v');
+       if (v) return v;
+ 
+       const parts = u.pathname.split('/').filter(Boolean);
+       const idx = parts.findIndex((p) => ['shorts', 'embed', 'live'].includes(p));
+       if (idx >= 0 && parts[idx + 1]) return parts[idx + 1];
+     }
+   } catch {}
+   return null;
+ }
+
+function splitTags(text) {
+  return String(text || '')
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+ 
+export default function AddVideoScreen() {
+  const { activeTeamId, isAdmin, user } = useAuth();
+  const [title, setTitle] = useState('');
+  const [videoUrl, setVideoUrl] = useState('https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4');
+  const [savedVideoId, setSavedVideoId] = useState(null);
+  const [sourceType, setSourceType] = useState('url'); // 'url' | 'youtube'
+  const [ytId, setYtId] = useState(null);
+
+  // タグ付け用
+  const [tagText, setTagText] = useState('');
+  const [pendingStart, setPendingStart] = useState(null);
+  const [events, setEvents] = useState([]);
+  const [previewEndSec, setPreviewEndSec] = useState(null);
+
+  // 再生用
+  const ytRef = useRef(null);
+  const [playing, setPlaying] = useState(false);
+  const lastLoadedUrlRef = useRef(null);
+
+  // URL(MP4/HLS) 再生用（expo-video）
+  // nullソースで作っておいて、必要になったら replace() で差し替える方式（公式の推奨パターン）:contentReference[oaicite:3]{index=3}
+  const urlPlayer = useVideoPlayer(null);
+  const { isUrlPlaying } = useEvent(urlPlayer, 'playingChange', { isUrlPlaying: urlPlayer.playing });
+
+  const replaceUrlSource = async (url) => {
+    try {
+      if (typeof urlPlayer?.replaceAsync === 'function') {
+        await urlPlayer.replaceAsync(url);
+     } else {
+        urlPlayer.replace(url);
+      }
+    } catch {}
+  };  
+
+  // URL入力のたびに種別判定
+  useEffect(() => {
+   const trimmed = (videoUrl || '').trim();
+   const looksLikeYouTube = /youtu\.be|youtube\.com/.test(trimmed);
+   const id = parseYouTubeId(trimmed);
+
+   if (looksLikeYouTube) {
+     // YouTubeっぽいなら YouTube扱いに寄せる（ytIdが取れない場合は後段で警告表示）
+     setSourceType('youtube');
+     setYtId(id);
+     try { urlPlayer.pause(); } catch {}
+   } else {
+     setSourceType('url');
+     setYtId(null);
+   }
+  }, [videoUrl]);
+ 
+   // URL(MP4/HLS) のときだけ、player にソース反映
+   useEffect(() => {
+     if (sourceType !== 'url') return;
+     const url = (videoUrl || '').trim();
+     if (!url) return;
+     // 入力中に毎回読み込むのを避ける（特に iOS）
+     const t = setTimeout(() => {
+       if (lastLoadedUrlRef.current === url) return;
+       lastLoadedUrlRef.current = url;
+       replaceUrlSource(url);
+     }, 350);
+     return () => clearTimeout(t);
+   }, [sourceType, videoUrl]);
+
+  // 保存
+  const handleSave = async () => {
+    if (!isAdmin) {
+      Alert.alert('権限がありません', '動画追加は管理者のみ可能です');
+      return;
+    }
+    if (!title || !videoUrl) {
+      Alert.alert('未入力', 'タイトルと動画URLを入力してください');
+      return;
+    }
+    try {
+      const vid = await addVideo(activeTeamId, {
+        title,
+        videoUrl,
+        sourceType,
+        youtubeId: sourceType === 'youtube' ? ytId : null,
+        createdBy: user.uid,
+      });
+      setSavedVideoId(vid);
+      Alert.alert('保存成功', 'このページでそのまま再生・タグ付けできます');
+    } catch (e) {
+      console.error(e);
+      Alert.alert('保存失敗', 'もう一度お試しください');
+    }
+  };
+
+  // イベント購読（保存後）
+  useEffect(() => {
+    if (!savedVideoId) return;
+    const unsub = subscribeEvents(activeTeamId, savedVideoId, setEvents);
+    return () => unsub && unsub();
+  }, [activeTeamId, savedVideoId]);
+
+  // 現在秒取得（expo-video or YouTube）
+  const getCurrentSec = async () => {
+    if (sourceType === 'youtube') {
+      try {
+        const t = await ytRef.current?.getCurrentTime();
+        return t ?? 0;
+      } catch {
+        return 0;
+      }
+    } else {
+       return urlPlayer?.currentTime ?? 0;
+    }
+  };
+
+  const handleTagStart = async () => {
+    const t = await getCurrentSec();
+    setPendingStart(t);
+  };
+
+  const handleTagEnd = async () => {
+    if (!savedVideoId) {
+      Alert.alert('先に保存', 'タグ付けするには動画を保存してください');
+      return;
+    }
+    if (pendingStart == null) {
+      Alert.alert('開始が未記録', '「開始」ボタンを先に押してください');
+      return;
+    }
+    const tags = splitTags(tagText);
+    if (!tags.length) {
+      Alert.alert('タグ未入力', 'タグを入力してください（例：シュート,10番）');
+      return;
+    }
+    const endSec = await getCurrentSec();
+    if (endSec <= pendingStart) {
+      Alert.alert('範囲エラー', '終了時刻が開始より前です');
+      return;
+    }
+    await addEvent(activeTeamId, savedVideoId, {
+      tagTypes: tags,
+      startSec: pendingStart,
+      endSec,
+      note: '',
+      createdBy: user?.uid || 'anon',
+    });
+    setPendingStart(null);
+    setTagText('');
+  };
+
+  const playFullFromStart = async () => {
+    setPreviewEndSec(null);
+    if (sourceType === 'youtube') {
+      if (!ytId) return;
+      ytRef.current?.seekTo?.(0, true);
+      setPlaying(true);
+    } else {
+      try {
+        urlPlayer.currentTime = 0; // expo-video: currentTimeをセットでシーク可能
+        urlPlayer.play();
+      } catch {}
+    }
+  };
+
+  const playClip = async (startSec, endSec) => {
+    setPreviewEndSec(endSec);
+    if (sourceType === 'youtube') {
+      if (!ytId) return;
+      ytRef.current?.seekTo?.(Math.max(startSec, 0), true);
+      setPlaying(true);
+    } else {
+      try {
+        urlPlayer.currentTime = Math.max(startSec, 0);
+        urlPlayer.play();
+      } catch {}
+    }
+  };
+
+  // クリップ終端で自動停止（YouTube / URL共通）
+  useEffect(() => {
+    if (previewEndSec == null) return;
+    const timer = setInterval(async () => {
+      if (sourceType === 'youtube') {
+        if (!playing) return;
+        try {
+          const t = await ytRef.current?.getCurrentTime?.();
+          if (typeof t === 'number' && t >= previewEndSec) {
+            setPlaying(false);
+            setPreviewEndSec(null);
+          }
+        } catch {}
+      } else {
+        if (!isUrlPlaying) return;
+        try {
+          if ((urlPlayer?.currentTime ?? 0) >= previewEndSec) {
+            urlPlayer.pause();
+            setPreviewEndSec(null);
+          }
+        } catch {}
+      }
+    }, 200);
+    return () => clearInterval(timer);
+  }, [previewEndSec, sourceType, playing, isUrlPlaying]);
+
+  return (
+    <KeyboardAvoidingView
+      style={styles.container}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 80 : 0}
+    >
+      <FlatList
+        data={savedVideoId ? events : []}
+        keyExtractor={(e) => e.id}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        contentContainerStyle={styles.contentContainer}
+        ListHeaderComponent={
+          <View>
+            {/* 入力エリア */}
+            <Text style={styles.label}>タイトル</Text>
+            <TextInput style={styles.input} value={title} onChangeText={setTitle} placeholder="例）2025/12/11_練習" />
+
+            <Text style={styles.label}>動画URL（YouTube または MP4/HLS）</Text>
+            <TextInput
+              style={styles.input}
+              value={videoUrl}
+              onChangeText={(t) => setVideoUrl(t.trim())}
+              placeholder="https://..."
+            />
+
+            <View style={styles.row}>
+              <Text style={styles.small}>検出された種類: {sourceType === 'youtube' ? 'YouTube' : 'URL(MP4/HLS)'}</Text>
+            </View>
+
+            <TouchableOpacity style={styles.saveBtn} onPress={handleSave}>
+              <Text style={styles.saveBtnText}>{savedVideoId ? '上書き保存' : '保存'}</Text>
+            </TouchableOpacity>
+
+            {/* 再生エリア */}
+            <View style={{ height: 12 }} />
+            <Text style={styles.sectionTitle}>プレビュー & タグ付け</Text>
+
+            <View style={styles.playerBox}>
+              {sourceType === 'youtube' ? (
+                ytId ? (
+                  <>
+                    <YoutubePlayer
+                      ref={ytRef}
+                      height={220}
+                      videoId={ytId}
+                      play={playing}
+                      onChangeState={(s) => {
+                        if (s === 'ended') setPlaying(false);
+                      }}
+                    />
+                    <View style={styles.row}>
+                      <TouchableOpacity style={styles.playBtn} onPress={playFullFromStart}>
+                        <Text style={styles.playBtnText}>⟲ 最初から</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={styles.playBtn} onPress={() => setPlaying(true)}>
+                        <Text style={styles.playBtnText}>▶ 再生</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={styles.playBtn} onPress={() => setPlaying(false)}>
+                        <Text style={styles.playBtnText}>⏸ 一時停止</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </>
+                ) : (
+                  <View style={{ height: 220, justifyContent: 'center', alignItems: 'center', padding: 12 }}>
+                    <Text style={{ color: '#fff', fontWeight: 'bold' }}>YouTubeリンクを認識できません</Text>
+                    <Text style={{ color: '#fff', marginTop: 6, textAlign: 'center' }}>
+                      例）https://www.youtube.com/watch?v=XXXX または https://youtu.be/XXXX
+                    </Text>
+                  </View>
+                )
+              ) : (
+                <>
+                  <VideoView
+                    style={styles.video}
+                    player={urlPlayer}
+                    nativeControls
+                    contentFit="contain"
+                    fullscreenOptions={{ enabled: true }}
+                  />
+                  <View style={styles.row}>
+                    <TouchableOpacity style={styles.playBtn} onPress={playFullFromStart}>
+                      <Text style={styles.playBtnText}>⟲ 最初から</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.playBtn}
+                      onPress={() => {
+                        try {
+                          if (isUrlPlaying) urlPlayer.pause();
+                          else urlPlayer.play();
+                        } catch {}
+                      }}
+                    >
+                      <Text style={styles.playBtnText}>{isUrlPlaying ? '⏸ 一時停止' : '▶ 再生'}</Text>
+                    </TouchableOpacity>
+                  </View>
+                </>
+              )}
+            </View>
+
+            {/* タグUI（自由入力） */}
+            <Text style={styles.label}>タグ（カンマ区切りOK）</Text>
+            <TextInput
+              style={styles.input}
+              value={tagText}
+              onChangeText={setTagText}
+              placeholder="例）シュート,10番 / パスミス / GK"
+            />
+
+            <View style={styles.row}>
+              <TouchableOpacity style={styles.actionBtn} onPress={handleTagStart}>
+                <Text style={styles.actionBtnText}>タグ開始</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.actionBtn, styles.endBtn]} onPress={handleTagEnd}>
+                <Text style={styles.actionBtnText}>タグ終了</Text>
+              </TouchableOpacity>
+            </View>
+
+            {pendingStart != null && (
+              <Text style={styles.small}>開始記録: {pendingStart.toFixed(2)}s</Text>
+            )}
+
+            <Text style={styles.sectionTitle}>記録済みイベント</Text>
+          </View>
+        }
+        renderItem={({ item, index }) => (
+          <TouchableOpacity style={styles.eventItem} onPress={() => playClip(item.startSec, item.endSec)}>
+            <Text style={styles.eventText}>
+              #{index + 1} [{item.startSec.toFixed(1)}s - {item.endSec.toFixed(1)}s] {item.tagTypes?.join(', ')}
+            </Text>
+          </TouchableOpacity>
+        )}
+        ListEmptyComponent={
+          savedVideoId ? (
+            <Text style={{ paddingHorizontal: 8 }}>まだありません</Text>
+          ) : (
+            <Text style={{ paddingHorizontal: 8, color: '#555' }}>※ 保存するとイベント一覧が表示されます</Text>
+          )
+        }
+      />
+    </KeyboardAvoidingView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#E0FFFF' },
+  contentContainer: { padding: 16, paddingBottom: 80 },
+  label: { marginTop: 8, fontWeight: 'bold' },
+  input: { backgroundColor: '#fff', padding: 10, borderRadius: 8, marginTop: 4 },
+  row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8 },
+  small: { color: '#333' },
+
+  saveBtn: { marginTop: 8, backgroundColor: '#0077cc', padding: 12, borderRadius: 8, alignItems: 'center' },
+  saveBtnText: { color: '#fff', fontWeight: 'bold' },
+
+  sectionTitle: { marginVertical: 8, fontWeight: 'bold' },
+  playerBox: { backgroundColor: '#000', borderRadius: 8, overflow: 'hidden' },
+  video: { width: '100%', height: 220, backgroundColor: '#000' },
+
+
+  actionBtn: { flex: 1, marginHorizontal: 8, backgroundColor: '#0077cc', borderRadius: 8, alignItems: 'center', padding: 12 },
+  endBtn: { backgroundColor: '#cc3300' },
+  actionBtnText: { color: '#fff', fontWeight: 'bold' },
+
+  playBtn: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#0077cc', paddingVertical: 8, paddingHorizontal: 12, marginHorizontal: 6, borderRadius: 8 },
+  playBtnText: { color: '#0077cc', fontWeight: 'bold' },
+
+  eventItem: { backgroundColor: '#fff', padding: 8, borderRadius: 6, marginVertical: 4 },
+  eventText: { color: '#333' },
+});
+</file>
+
+<file path="src/screens/VideoListScreen.js">
+//VideoListScreen.js
+import React, { useEffect, useRef, useState, useCallback } from 'react';
+import { View, Text, FlatList, TouchableOpacity, StyleSheet, Alert, TextInput } from 'react-native';
+import Swipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
+import { subscribeVideos, deleteVideo, subscribeTags, upsertTag, deleteTag, removeTagFromAllEvents, createInvite } from '../services/firestoreService';
+import { useAuth } from '../contexts/AuthContext';
+
+function splitTags(text) {
+  return String(text || '')
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+
+export default function VideoListScreen({ navigation }) {
+  const { activeTeamId, isAdmin, user, signOut } = useAuth();
+  const [videos, setVideos] = useState([]);
+  const swipeRefs = useRef(new Map());
+
+  // ✅ 共通タグ（全動画に適用）
+  const [tagText, setTagText] = useState('');
+  const [tags, setTags] = useState([]);
+
+  useEffect(() => {
+    if (!activeTeamId) return;
+    const unsub = subscribeVideos(activeTeamId, setVideos);
+    return () => unsub();
+  }, [activeTeamId]);
+
+  useEffect(() => {
+    if (!activeTeamId) return;
+    const unsub = subscribeTags(activeTeamId, setTags);
+    return () => unsub?.();
+  }, [activeTeamId]);
+
+  const closeRow = useCallback((id) => {
+    swipeRefs.current.get(id)?.close();
+  }, []);
+
+  const confirmDelete = useCallback((video) => {
+    if (!isAdmin) {
+      Alert.alert('権限がありません', '動画の削除は管理者のみ可能です');
+      return;
+    }
+    Alert.alert(
+      '削除しますか？',
+      `「${video.title}」を削除します。\n（この動画のイベントは削除されます）`,
+      [
+        { text: 'キャンセル', style: 'cancel', onPress: () => closeRow(video.id) },
+        {
+          text: 'はい（削除）',
+          style: 'destructive',
+          onPress: async () => {
+            closeRow(video.id);
+            try {
+              await deleteVideo(activeTeamId, video.id);
+              // subscribeVideos が購読しているので一覧は自動で更新されます
+            } catch (e) {
+              console.error('delete failed:', e);
+              const msg =
+                (e?.code ? `code: ${e.code}\n` : '') +
+                (e?.message ? `message: ${e.message}\n` : '') +
+                (e?.name ? `name: ${e.name}\n` : '') +
+                `raw: ${String(e)}`;
+              Alert.alert('削除に失敗しました', msg);
+            }
+          },
+        },
+      ]
+    );
+  }, [closeRow, isAdmin, activeTeamId]);
+
+  const handleRegisterTags = useCallback(async () => {
+    if (!isAdmin) return;
+    const names = splitTags(tagText);
+    if (!names.length) {
+      Alert.alert('タグ未入力', 'タグを入力してください（例：シュート,10番）');
+      return;
+    }
+    try {
+      await Promise.all(names.map((n) => upsertTag(activeTeamId, n, user.uid)));
+      setTagText('');
+    } catch {
+      Alert.alert('エラー', 'タグ登録に失敗しました');
+    }
+  }, [tagText, isAdmin, activeTeamId, user?.uid]);
+
+  const confirmDeleteTag = useCallback((name) => {
+    if (!isAdmin) return;
+    Alert.alert('タグ削除（チーム共通）', `「${name}」を削除しますか？\n※このチームの全動画の記録からも削除されます`, [
+      { text: 'キャンセル', style: 'cancel' },
+      {
+        text: '削除',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await deleteTag(activeTeamId, name);
+            await removeTagFromAllEvents(activeTeamId, name);
+          } catch {
+            Alert.alert('エラー', 'タグ削除に失敗しました');
+          }
+        },
+      },
+    ]);
+  }, [isAdmin, activeTeamId]);
+
+  const handleCreateInvite = useCallback(async () => {
+    if (!isAdmin) return;
+    try {
+      const code = await createInvite({ teamId: activeTeamId, uid: user.uid });
+      Alert.alert('招待コード', `このコードを共有してください：\n\n${code}\n\n（TeamSetup画面で入力して参加）`);
+    } catch (e) {
+      Alert.alert('エラー', e?.message ? String(e.message) : String(e));
+    }
+  }, [isAdmin, activeTeamId, user?.uid]);
+
+
+  return (
+    <View style={styles.container}>
+      <View style={{ flexDirection: 'row', gap: 8, marginBottom: 10 }}>
+        <TouchableOpacity
+          style={[styles.addBtn, { flex: 1, opacity: isAdmin ? 1 : 0.5 }]}
+          onPress={() => (isAdmin ? navigation.navigate('AddVideo') : Alert.alert('権限がありません', '動画追加は管理者のみ可能です'))}
+        >
+          <Text style={styles.addBtnText}>＋ 動画追加</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[styles.addBtn, { flex: 1, backgroundColor: '#555' }]} onPress={signOut}>
+          <Text style={styles.addBtnText}>ログアウト</Text>
+        </TouchableOpacity>
+      </View>
+
+      <TouchableOpacity
+        style={[styles.addBtn, { backgroundColor: '#009966', marginBottom: 10 }]}
+        onPress={() => navigation.navigate('Projects')}
+      >
+        <Text style={styles.addBtnText}>📁 プロジェクト</Text>
+      </TouchableOpacity>
+
+
+      {isAdmin && (
+        <TouchableOpacity style={[styles.addBtn, { backgroundColor: '#0077cc', marginBottom: 10 }]} onPress={handleCreateInvite}>
+          <Text style={styles.addBtnText}>＋ 招待コードを発行</Text>
+        </TouchableOpacity>
+      )}
+
+      <FlatList
+        style={{ flex: 1 }}
+        data={videos}
+        keyExtractor={(item) => item.id}
+        renderItem={({ item }) => (
+          <Swipeable
+            ref={(ref) => {
+              if (ref) swipeRefs.current.set(item.id, ref);
+              else swipeRefs.current.delete(item.id);
+            }}
+            overshootRight={false}
+            rightThreshold={40}
+            renderRightActions={() => (
+              <TouchableOpacity
+                style={styles.deleteAction}
+                activeOpacity={0.8}
+                onPress={() => confirmDelete(item)}
+              >
+                <Text style={styles.deleteActionText}>削除</Text>
+              </TouchableOpacity>
+            )}
+            onSwipeableOpen={(direction) => {
+              if (direction === 'right') confirmDelete(item); // 右アクションが開いた時だけ
+            }}
+          >
+            <TouchableOpacity
+              style={styles.card}
+              onPress={() => navigation.navigate('Tagging', { videoId: item.id })}
+              onLongPress={() => navigation.navigate('Highlights', { videoId: item.id })}
+            >
+              <Text style={styles.title}>{item.title}</Text>
+              <Text style={styles.subtitle} numberOfLines={1}>{item.videoUrl}</Text>
+              <Text style={styles.hint}>タップ：タグ付け / 長押し：ハイライト再生</Text>
+            </TouchableOpacity>
+          </Swipeable>
+        )}
+        ListEmptyComponent={<Text>動画がありません（管理者が「＋動画追加」から登録できます）</Text>}
+      />
+
+      {/* ✅ 下部：タグ登録（管理者のみ） */}
+      <View style={styles.tagArea}>
+        <Text style={styles.label}>チーム共通タグ</Text>
+        {isAdmin ? (
+          <>
+            <Text style={styles.small}>（管理者のみ追加・削除できます）</Text>
+            <View style={styles.tagRegisterRow}>
+              <TextInput
+                style={[styles.input, { flex: 1 }]}
+                value={tagText}
+                onChangeText={setTagText}
+                placeholder="例）シュート,10番 / パスミス / GK"
+              />
+              <TouchableOpacity style={styles.confirmBtn} onPress={handleRegisterTags}>
+                <Text style={styles.confirmBtnText}>確定</Text>
+              </TouchableOpacity>
+            </View>
+          </>
+        ) : (
+          <Text style={styles.small}>（閲覧のみ）</Text>
+        )}
+
+        <View style={styles.tagButtonsWrap}>
+          {tags.length === 0 ? (
+            <Text style={styles.small}>まだタグが登録されていません</Text>
+          ) : (
+            tags.map((t) => {
+              const name = t?.name;
+              if (!name) return null;
+              return (
+                <TouchableOpacity
+                  key={t.id || name}
+                  style={[styles.tagBtn, styles.tagBtnInactive]}
+                  onLongPress={() => isAdmin && confirmDeleteTag(name)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={[styles.tagBtnText, styles.tagBtnTextInactive]}>{name}</Text>
+                </TouchableOpacity>
+              );
+            })
+          )}
+        </View>
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#E0FFFF', padding: 12 },
+  addBtn: { padding: 12, backgroundColor: '#0077cc', borderRadius: 8, alignItems: 'center', marginBottom: 10 },
+  addBtnText: { color: '#fff', fontWeight: 'bold' },
+  card: { backgroundColor: '#fff', padding: 12, borderRadius: 8, marginBottom: 10 },
+  title: { fontWeight: 'bold', fontSize: 16 },
+  subtitle: { color: '#555', marginTop: 4 },
+  hint: { marginTop: 8, color: '#0077cc' },
+  deleteAction: {
+    backgroundColor: '#d11a2a',
+    justifyContent: 'center',
+    alignItems: 'center',
+    width: 90,
+    borderRadius: 8,
+    marginBottom: 10,
+  },
+  deleteActionText: { color: '#fff', fontWeight: 'bold' },
+
+  tagArea: { paddingTop: 10, borderTopWidth: 1, borderTopColor: '#bfefff' },
+  label: { fontWeight: 'bold' },
+  small: { marginTop: 6, color: '#333' },
+  input: { backgroundColor: '#fff', padding: 10, borderRadius: 8, marginTop: 6 },
+  tagRegisterRow: { flexDirection: 'row', alignItems: 'center' },
+  confirmBtn: { marginTop: 6, marginLeft: 8, backgroundColor: '#0077cc', borderRadius: 8, alignItems: 'center', paddingVertical: 10, paddingHorizontal: 14 },
+  confirmBtnText: { color: '#fff', fontWeight: 'bold' },
+  tagButtonsWrap: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 8 },
+  tagBtn: { paddingVertical: 8, paddingHorizontal: 10, borderRadius: 999, borderWidth: 1, marginRight: 8, marginBottom: 8 },
+  tagBtnInactive: { backgroundColor: '#fff', borderColor: '#0077cc' },
+  tagBtnText: { fontWeight: 'bold' },
+  tagBtnTextInactive: { color: '#0077cc' },
+});
+</file>
+
+<file path="package.json">
+{
+  "name": "smrtbukatsu",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web"
+  },
+  "dependencies": {
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "@react-navigation/native": "^7.1.25",
+    "@react-navigation/native-stack": "^7.8.6",
+    "expo": "~54.0.30",
+    "expo-av": "~16.0.8",
+    "expo-screen-orientation": "~9.0.8",
+    "expo-status-bar": "~3.0.9",
+    "expo-video": "~3.0.15",
+    "firebase": "^12.6.0",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "react-native-gesture-handler": "~2.28.0",
+    "react-native-reanimated": "~4.1.1",
+    "react-native-safe-area-context": "~5.6.0",
+    "react-native-screens": "~4.16.0",
+    "react-native-webview": "13.15.0",
+    "react-native-worklets": "0.5.1",
+    "react-native-youtube-iframe": "^2.4.1"
+  },
+  "private": true,
+  "devDependencies": {
+    "dotenv-expand": "^12.0.3",
+    "dotenv-flow": "^4.1.0"
+  }
+}
+</file>
+
+<file path="src/services/firestoreService.js">
+//firestoreService.js
+import {
+  collection,
+  addDoc,
+  serverTimestamp,
+  doc,
+  setDoc,
+  deleteDoc,
+  getDoc,
+  getDocs,
+  query,
+  orderBy,
+  onSnapshot,
+  writeBatch,
+  where,
+  updateDoc,
+} from 'firebase/firestore';
+import { db } from '../firebase';
+
+// -----------------------------
+// Team helpers
+// -----------------------------
+const teamRef = (teamId) => doc(db, 'teams', teamId);
+const teamVideosCol = (teamId) => collection(db, 'teams', teamId, 'videos');
+const teamTagsCol = (teamId) => collection(db, 'teams', teamId, 'tags');
+const teamProjectsCol = (teamId) => collection(db, 'teams', teamId, 'projects');
+const videoRef = (teamId, videoId) => doc(db, 'teams', teamId, 'videos', videoId);
+const eventsCol = (teamId, videoId) => collection(db, 'teams', teamId, 'videos', videoId, 'events');
+const projectRef = (teamId, projectId) => doc(db, 'teams', teamId, 'projects', projectId);
+const projectVideosCol = (teamId, projectId) => collection(db, 'teams', teamId, 'projects', projectId, 'videos');
+const projectVideoRef = (teamId, projectId, videoId) => doc(db, 'teams', teamId, 'projects', projectId, 'videos', videoId);
+
+function tagDocId(name) {
+  return encodeURIComponent(String(name || '').trim());
+}
+
+// -----------------------------
+// Team / Invite
+// -----------------------------
+export async function createTeam({ name, uid }) {
+  const t = await addDoc(collection(db, 'teams'), {
+    name,
+    createdBy: uid,
+    createdAt: serverTimestamp(),
+  });
+  // 作成者は admin
+  await setDoc(doc(db, 'teams', t.id, 'members', uid), { role: 'admin', joinedAt: serverTimestamp() }, { merge: true });
+  // activeTeamId をセット
+  await setDoc(doc(db, 'users', uid), { activeTeamId: t.id, updatedAt: serverTimestamp() }, { merge: true });
+  return t.id;
+}
+
+function makeInviteCode() {
+  const a = Math.random().toString(36).slice(2, 6).toUpperCase();
+  const b = Math.random().toString(36).slice(2, 6).toUpperCase();
+  return `${a}${b}`;
+}
+
+// /invites/{CODE} -> { teamId, createdBy, active }
+export async function createInvite({ teamId, uid }) {
+  const code = makeInviteCode();
+  await setDoc(doc(db, 'invites', code), {
+    teamId,
+    createdBy: uid,
+    active: true,
+    createdAt: serverTimestamp(),
+  });
+  return code;
+}
+
+export async function joinTeamByInvite({ code, uid }) {
+  const ref = doc(db, 'invites', String(code || '').trim().toUpperCase());
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error('招待コードが見つかりません');
+  const data = snap.data() || {};
+  if (!data.active) throw new Error('この招待コードは無効です');
+  const teamId = data.teamId;
+  if (!teamId) throw new Error('招待データが不正です');
+
+  // 参加（招待コードを member に残してルールで検証できるようにする）
+  await setDoc(
+    doc(db, 'teams', teamId, 'members', uid),
+    { role: 'member', joinedAt: serverTimestamp(), inviteCode: ref.id },
+    { merge: true }
+  );
+  await setDoc(doc(db, 'users', uid), { activeTeamId: teamId, updatedAt: serverTimestamp() }, { merge: true });
+  return teamId;
+}
+
+// -----------------------------
+// videos: /teams/{teamId}/videos/{videoId}
+// -----------------------------
+export async function addVideo(teamId, { title, videoUrl, sourceType = 'url', youtubeId = null, createdBy }) {
+  const ref = await addDoc(teamVideosCol(teamId), {
+    title,
+    sourceType,
+    videoUrl,
+    ...(youtubeId ? { youtubeId } : {}),
+    createdBy,
+    createdAt: serverTimestamp(),
+  });
+  return ref.id;
+}
+
+export async function getVideo(teamId, videoId) {
+  const snap = await getDoc(videoRef(teamId, videoId));
+  return snap.exists() ? { id: snap.id, ...snap.data() } : null;
+}
+
+export function subscribeVideos(teamId, callback) {
+  const q = query(teamVideosCol(teamId), orderBy('createdAt', 'desc'));
+  return onSnapshot(q, (snap) => {
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+  });
+}
+
+// -----------------------------
+// projects: /teams/{teamId}/projects/{projectId}
+//          /teams/{teamId}/projects/{projectId}/videos/{videoId}
+// -----------------------------
+export async function createProject(teamId, { name, createdBy }) {
+  const trimmed = String(name || '').trim();
+  if (!trimmed) throw new Error('プロジェクト名を入力してください');
+  const ref = await addDoc(teamProjectsCol(teamId), {
+    name: trimmed,
+    createdBy,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+  return ref.id;
+}
+
+export async function getProject(teamId, projectId) {
+  const snap = await getDoc(projectRef(teamId, projectId));
+  return snap.exists() ? { id: snap.id, ...snap.data() } : null;
+}
+
+export function subscribeProjects(teamId, callback) {
+  const q = query(teamProjectsCol(teamId), orderBy('createdAt', 'desc'));
+  return onSnapshot(q, (snap) => {
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+  });
+}
+
+export function subscribeProjectVideos(teamId, projectId, callback) {
+  // order が無い場合もあるので、まずは order を入れる運用に寄せる（pickerで付与）
+  const q = query(projectVideosCol(teamId, projectId), orderBy('order', 'asc'));
+  return onSnapshot(q, (snap) => {
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() }))); // id === videoId
+  });
+}
+
+export async function getProjectVideos(teamId, projectId) {
+  const snap = await getDocs(projectVideosCol(teamId, projectId));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() })); // id === videoId
+}
+
+export async function addVideoToProject(teamId, projectId, videoId, { order = 0, offsetSec = 0, addedBy } = {}) {
+  await setDoc(
+    projectVideoRef(teamId, projectId, videoId),
+    {
+      order,
+      offsetSec,
+      addedBy,
+      addedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+  await setDoc(projectRef(teamId, projectId), { updatedAt: serverTimestamp() }, { merge: true });
+}
+
+export async function removeVideoFromProject(teamId, projectId, videoId) {
+  await deleteDoc(projectVideoRef(teamId, projectId, videoId));
+  await setDoc(projectRef(teamId, projectId), { updatedAt: serverTimestamp() }, { merge: true });
+}
+
+// -----------------------------
+// events: /teams/{teamId}/videos/{videoId}/events
+// -----------------------------
+export async function addEvent(teamId, videoId, event) {
+  return addDoc(eventsCol(teamId, videoId), { ...event, createdAt: serverTimestamp() });
+}
+
+export function subscribeEvents(teamId, videoId, callback) {
+  const q = query(eventsCol(teamId, videoId), orderBy('startSec', 'asc'));
+  return onSnapshot(q, (snap) => {
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+  });
+}
+
+// 一括集約用：購読ではなく「その時点の events を取得」
+export async function listEventsOnce(teamId, videoId) {
+  const q = query(eventsCol(teamId, videoId), orderBy('startSec', 'asc'));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
+
+// -----------------------------
+// tags: /teams/{teamId}/tags
+// -----------------------------
+export function subscribeTags(teamId, callback) {
+  const q = query(teamTagsCol(teamId), orderBy('createdAt', 'asc'));
+  return onSnapshot(q, (snap) => {
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+  });
+}
+
+export async function upsertTag(teamId, name, createdBy) {
+  const trimmed = String(name || '').trim();
+  if (!trimmed) return;
+  const ref = doc(db, 'teams', teamId, 'tags', tagDocId(trimmed));
+  await setDoc(ref, { name: trimmed, createdBy, createdAt: serverTimestamp() }, { merge: true });
+}
+
+export async function deleteTag(teamId, name) {
+  const trimmed = String(name || '').trim();
+  if (!trimmed) return;
+  await deleteDoc(doc(db, 'teams', teamId, 'tags', tagDocId(trimmed)));
+}
+
+// タグ削除時：チーム内の全動画イベントから除去（空になったらイベント削除）
+export async function removeTagFromAllEvents(teamId, tagName) {
+  const trimmed = String(tagName || '').trim();
+  if (!trimmed) return;
+
+  const vidsSnap = await getDocs(teamVideosCol(teamId));
+  if (vidsSnap.empty) return;
+
+  for (const v of vidsSnap.docs) {
+    const videoId = v.id;
+    const colRef = eventsCol(teamId, videoId);
+    const q = query(colRef, where('tagTypes', 'array-contains', trimmed));
+    const snap = await getDocs(q);
+    if (snap.empty) continue;
+
+    const docs = snap.docs;
+    const CHUNK = 450;
+    for (let i = 0; i < docs.length; i += CHUNK) {
+      const batch = writeBatch(db);
+      docs.slice(i, i + CHUNK).forEach((d) => {
+        const data = d.data() || {};
+        const tags = Array.isArray(data.tagTypes) ? data.tagTypes : [];
+        const next = tags.filter((t) => t !== trimmed);
+        if (next.length === 0) batch.delete(d.ref);
+        else batch.update(d.ref, { tagTypes: next });
+      });
+      await batch.commit();
+    }
+  }
+}
+
+// videos/{videoId} を削除（events も削除）
+async function deleteAllDocsInSubcollection(teamId, videoId, subcollectionName) {
+  const colRef = collection(db, 'teams', teamId, 'videos', videoId, subcollectionName);
+  const snap = await getDocs(colRef);
+  if (snap.empty) return;
+  const docs = snap.docs;
+  const CHUNK = 450;
+  for (let i = 0; i < docs.length; i += CHUNK) {
+    const batch = writeBatch(db);
+    docs.slice(i, i + CHUNK).forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+  }
+}
+
+export async function deleteVideo(teamId, videoId) {
+  await deleteAllDocsInSubcollection(teamId, videoId, 'events');
+  await deleteDoc(videoRef(teamId, videoId));
+}
+</file>
+
+<file path="src/screens/HighlightPlayerScreen.js">
+//HighlightPlayerScreen.js
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, FlatList, Alert, StatusBar, useWindowDimensions } from 'react-native';
+import { useEvent } from 'expo';
+import { useVideoPlayer, VideoView } from 'expo-video';
+import YoutubePlayer from 'react-native-youtube-iframe';
+import * as ScreenOrientation from 'expo-screen-orientation';
+import { getVideo, subscribeEvents, subscribeTags } from '../services/firestoreService';
+import { PLAYBACK_MARGIN_START, PLAYBACK_MARGIN_END } from '../constants';
+import { useAuth } from '../contexts/AuthContext';
+
+function parseYouTubeId(rawUrl) {
+  const url = (rawUrl || '').trim();
+  if (!url) return null;
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace('www.', '');
+    if (host === 'youtu.be') {
+      const id = u.pathname.split('/').filter(Boolean)[0];
+      return id || null;
+    }
+    if (host.endsWith('youtube.com')) {
+      const v = u.searchParams.get('v');
+      if (v) return v;
+      const parts = u.pathname.split('/').filter(Boolean);
+      const idx = parts.findIndex((p) => ['shorts', 'embed', 'live'].includes(p));
+      if (idx >= 0 && parts[idx + 1]) return parts[idx + 1];
+    }
+  } catch {}
+  return null;
+}
+
+export default function HighlightPlayerScreen({ route, navigation }) {
+  const { videoId } = route.params;
+  const { activeTeamId } = useAuth();
+  const { width, height } = useWindowDimensions();
+  const ytRef = useRef(null);
+  const ytStateRef = useRef('unstarted');
+  const remountedAfterFinishRef = useRef(false);
+  const finishedRef = useRef(false); // 最後まで到達して停止したか（再開しちゃう個体差対策）
+  const finishAtRef = useRef(null);  // 最終停止させたい時刻（秒）
+  const [finished, setFinished] = useState(false); // finished を state でも持ってタイマーを止める
+  const [video, setVideo] = useState(null);
+  const [events, setEvents] = useState([]);
+  const [tags, setTags] = useState([]);
+  const [selectedTags, setSelectedTags] = useState(new Set());
+  const [matchMode, setMatchMode] = useState('OR'); // 'OR' | 'AND'
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const currentIndexRef = useRef(0);
+  const [ytPlaying, setYtPlaying] = useState(false);
+  const [landscapeMode, setLandscapeMode] = useState(false);
+  const [playerKey, setPlayerKey] = useState(0); // YouTube強制停止用（再マウント）
+
+  const { fsVideoW } = useMemo(() => {
+    const uiMin = 280; // 右側はタグ＋一覧があるので少し広めに確保
+    const ideal = Math.round((height * 16) / 9);
+    let vw = ideal;
+    if (width - vw < uiMin) vw = width - uiMin;
+    vw = Math.max(240, Math.min(vw, Math.floor(width * 0.8)));
+    return { fsVideoW: vw };
+  }, [width, height]);
+
+  // URL(MP4/HLS) 再生用（expo-video）
+  const urlPlayer = useVideoPlayer(null);
+  const { isUrlPlaying } = useEvent(urlPlayer, 'playingChange', { isUrlPlaying: urlPlayer.playing });
+  
+  const isYoutube = video?.sourceType === 'youtube';
+  const youtubeId = useMemo(() => {
+    return video?.youtubeId || parseYouTubeId(video?.videoUrl);
+  }, [video]);
+
+  useEffect(() => {
+    (async () => {
+      if (!activeTeamId) return;
+      const v = await getVideo(activeTeamId, videoId);
+      if (!v) {
+        Alert.alert('エラー', '動画が見つかりません');
+        navigation.goBack();
+        return;
+      }
+      setVideo(v);
+      navigation.setOptions({ title: `ハイライト：${v.title}` });
+    })();
+  }, [activeTeamId, videoId]);
+
+  useEffect(() => {
+    return () => {
+      ScreenOrientation.unlockAsync().catch(() => {});
+    };
+  }, []);
+  
+  useEffect(() => {
+    if (!activeTeamId) return;
+    const unsub = subscribeEvents(activeTeamId, videoId, setEvents);
+    return () => unsub();
+  }, [activeTeamId, videoId]);
+
+  useEffect(() => {
+    if (!activeTeamId) return;
+    const unsub = subscribeTags(activeTeamId, setTags);
+    return () => unsub?.();
+  }, [activeTeamId]);
+  // URL(MP4/HLS) のときだけ player にソース反映（null player -> replace() が公式推奨）:contentReference[oaicite:2]{index=2}
+  useEffect(() => {
+    if (!video) return;
+    if (video.sourceType === 'youtube') {
+      try { urlPlayer.pause(); } catch {}
+      return;
+    }
+    const url = (video.videoUrl || '').trim();
+    if (!url) return;
+    try { urlPlayer.replace(url); } catch {}
+  }, [video]);
+
+  // tagsが更新されたら、selectedTagsを存在するタグだけに整理
+  useEffect(() => {
+    const exist = new Set(tags.map(t => t?.name).filter(Boolean));
+    setSelectedTags(prev => {
+      const next = new Set();
+      prev.forEach(n => { if (exist.has(n)) next.add(n); });
+      return next;
+    });
+  }, [tags]);
+
+  const selectedTagArray = useMemo(() => Array.from(selectedTags), [selectedTags]);
+
+  const playlist = useMemo(() => {
+    if (!selectedTagArray.length) return [];
+    const ok = events.filter(e => {
+      const t = Array.isArray(e.tagTypes) ? e.tagTypes : [];
+      if (matchMode === 'AND') return selectedTagArray.every(x => t.includes(x));
+      return selectedTagArray.some(x => t.includes(x)); // OR（デフォルト）
+    });
+    return ok.slice().sort((a, b) => a.startSec - b.startSec);
+  }, [events, selectedTagArray, matchMode]);
+
+  useEffect(() => {
+    setCurrentIndex(0);
+    currentIndexRef.current = 0;
+    finishedRef.current = false;
+    finishAtRef.current = null;
+    setFinished(false);
+    // 条件が変わって空になったら停止
+    if (playlist.length === 0) {
+      setYtPlaying(false);
+      try { urlPlayer.pause(); } catch {}
+    }
+  }, [playlist]);
+
+  useEffect(() => {
+    // クリップ変わったらシーク
+    const clip = playlist[currentIndex];
+    if (!clip) return;
+
+    finishedRef.current = false;
+    finishAtRef.current = null;
+    setFinished(false);
+    remountedAfterFinishRef.current = false;
+    currentIndexRef.current = currentIndex;
+
+    const startPos = Math.max(clip.startSec - PLAYBACK_MARGIN_START, 0);
+
+    if (isYoutube) {
+      if (!youtubeId) return;
+      ytRef.current?.seekTo?.(startPos, true);
+      setYtPlaying(true);
+      return;
+    }
+
+    try {
+      urlPlayer.currentTime = startPos;
+      urlPlayer.play();
+    } catch {}
+
+  }, [currentIndex, playlist, isYoutube, youtubeId]);
+
+  // 終端判定して次へ（YouTube / URL 共通）
+  useEffect(() => {
+    // finished ならこのタイマー自体を回さない（読み込み連打の原因を断つ）
+    if (finished) return;
+    const timer = setInterval(async () => {
+      const idx = currentIndexRef.current;
+      const clip = playlist[idx];
+      if (!clip) return;
+
+      const isLast = !playlist[idx + 1];
+      // 最後のクリップは endSec で止める（マージンは引かない）
+      const endLimit = isLast
+        ? clip.endSec
+        : Math.max(clip.endSec - PLAYBACK_MARGIN_END, clip.startSec);
+
+      if (isYoutube) {
+        // ズレてる時だけ seek（毎回 seek すると「読み込み」に見えやすい）
+        (async () => {
+          if (typeof fin === 'number') {
+            try {
+              const cur = await ytRef.current?.getCurrentTime?.();
+              if (typeof cur === 'number' && Math.abs(cur - fin) > 0.6) {
+                try { ytRef.current?.seekTo?.(fin, true); } catch {}
+              }
+            } catch {}
+          }
+        })();
+        try {
+          const t = await ytRef.current?.getCurrentTime?.();
+          if (typeof t !== 'number') return;
+          if (t >= endLimit) {
+            if (!isLast) {
+              const nextIndex = idx + 1;
+              currentIndexRef.current = nextIndex;
+              setCurrentIndex(nextIndex);
+            } else {
+              finishedRef.current = true;
+              finishAtRef.current = endLimit;
+              // まずは素直に止める（seekはしない：seekが再生復帰/バッファの原因になりやすい）
+              try { ytRef.current?.pauseVideo?.(); } catch {}
+              setYtPlaying(false);
+              setFinished(true);
+            }
+          }
+        } catch {}
+      } else {
+        if (!isUrlPlaying) return;
+        try {
+          const t = urlPlayer?.currentTime ?? 0;
+          if (t >= endLimit) {
+            if (!isLast) {
+              const nextIndex = idx + 1;
+              currentIndexRef.current = nextIndex;
+              setCurrentIndex(nextIndex);
+            } else {
+              finishedRef.current = true;
+              finishAtRef.current = endLimit;
+              try { urlPlayer.currentTime = endLimit; } catch {}
+              urlPlayer.pause();
+              setFinished(true);
+            }
+          }
+        } catch {}
+      }
+    }, 200);
+    return () => clearInterval(timer);
+  }, [isYoutube, ytPlaying, playlist, isUrlPlaying, finished]);
+
+  // finished になった瞬間に “もう一回だけ” 停止を押し込む（端末差対策）
+  useEffect(() => {
+    if (!finished) return;
+    const fin = finishAtRef.current;
+    const id = setTimeout(() => {
+      if (isYoutube) {
+        try { ytRef.current?.pauseVideo?.(); } catch {}
+        setYtPlaying(false);
+
+        // それでも “再生が復帰する端末” 用：まだ動いていたら1回だけ再マウントして止める
+        setTimeout(async () => {
+          if (remountedAfterFinishRef.current) return;
+          try {
+            const cur = await ytRef.current?.getCurrentTime?.();
+            // fin が取れていて、かつ fin より明らかに進んでるならまだ再生中
+            if (typeof fin === 'number' && typeof cur === 'number' && cur > fin + 0.8) {
+              remountedAfterFinishRef.current = true;
+              setPlayerKey(k => k + 1);
+            }
+          } catch {
+            // ref が不安定な端末もあるので、その場合も1回だけ再マウント
+            remountedAfterFinishRef.current = true;
+            setPlayerKey(k => k + 1);
+          }
+        }, 600);
+      } else {
+        if (typeof fin === 'number') { try { urlPlayer.currentTime = fin; } catch {} }
+        try { urlPlayer.pause(); } catch {}
+      }
+    }, 350);
+    return () => clearTimeout(id);
+  }, [finished, isYoutube]);  
+  const playFrom = (index) => {
+    if (!playlist[index]) return;
+    finishedRef.current = false;
+    finishAtRef.current = null;
+    setFinished(false);
+    remountedAfterFinishRef.current = false;
+    currentIndexRef.current = index;
+    setCurrentIndex(index);
+  };
+
+  const toggleSelectTag = (name) => {
+    setSelectedTags(prev => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }; 
+
+  const openLandscapeMode = async () => {
+    if (landscapeMode) return;
+    try {
+      setLandscapeMode(true);
+      await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+    } catch {}
+  };
+
+  const closeLandscapeMode = async () => {
+    setYtPlaying(false);
+    try { urlPlayer.pause(); } catch {}
+    setLandscapeMode(false);
+    try { await ScreenOrientation.unlockAsync(); } catch {}
+  };
+
+  const renderPlayer = ({ landscape = false } = {}) => {
+    if (isYoutube) {
+      return (
+        <View style={landscape ? [styles.fsVideoWrap, { width: fsVideoW }] : styles.videoWrap}>
+          <YoutubePlayer
+            key={`${youtubeId || 'yt'}-${playerKey}`}
+            ref={ytRef}
+            height={landscape ? Math.max(200, height) : 220}
+            width={landscape ? fsVideoW : undefined}
+            videoId={youtubeId || ''}
+            play={ytPlaying && !finished}
+            initialPlayerParams={landscape ? { preventFullScreen: true } : undefined}
+            onChangeState={(s) => {
+               ytStateRef.current = s;
+              // finished なのに再度 playing になる個体差対策（より強く）
+              // ※ state名は 'cued'（'video cued' ではない）
+              if (finishedRef.current && (s === 'playing' || s === 'buffering')) {
+                // ここでも “1回だけ” 再マウントで叩き潰す
+                if (!remountedAfterFinishRef.current) {
+                  remountedAfterFinishRef.current = true;
+                  setPlayerKey(k => k + 1);
+                }
+                try { ytRef.current?.pauseVideo?.(); } catch {}
+                setYtPlaying(false);
+                return;
+              }
+              if (s === 'ended') setYtPlaying(false);
+            }}
+          />
+        </View>
+      );
+    }
+    return (
+      <VideoView
+        player={urlPlayer}
+        style={landscape ? [styles.fsVideo, { width: fsVideoW }] : styles.video}
+        contentFit="contain"
+        nativeControls
+        fullscreenOptions={{ enabled: !landscape }}
+        allowsPictureInPicture
+      />
+    );
+  };
+
+  return (
+    <View style={styles.container}>
+      {video && (
+        <>
+          <StatusBar hidden={landscapeMode} />
+
+          {landscapeMode ? (
+            <View style={styles.fsRoot}>
+              <View style={styles.fsRow}>
+                <View style={[styles.fsVideoCol, { width: fsVideoW }]}>
+                  {renderPlayer({ landscape: true })}
+                </View>
+
+                <View style={styles.fsUiCol}>
+                  <FlatList
+                    data={playlist}
+                    keyExtractor={(e) => e.id}
+                    renderItem={({ item, index }) => (
+                      <TouchableOpacity
+                        style={[styles.clipItem, index === currentIndex && styles.clipItemActive]}
+                        onPress={() => playFrom(index)}
+                      >
+                        <Text style={styles.clipText}>
+                          #{index + 1} [{item.startSec.toFixed(1)}s - {item.endSec.toFixed(1)}s] {item.tagTypes?.join(', ')}
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                    ListHeaderComponent={
+                      <View style={styles.filterRow}>
+                        <View style={styles.filterHeader}>
+                          <Text style={styles.label}>タグで絞り込み（{matchMode}）</Text>
+                          <TouchableOpacity
+                            style={styles.modeBtn}
+                            onPress={() => setMatchMode(m => (m === 'OR' ? 'AND' : 'OR'))}
+                          >
+                            <Text style={styles.modeBtnText}>切替</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={styles.clearBtn}
+                            onPress={() => setSelectedTags(new Set())}
+                          >
+                            <Text style={styles.clearBtnText}>クリア</Text>
+                          </TouchableOpacity>
+                        </View>
+
+                        <View style={styles.tagButtonsWrap}>
+                          {tags.length === 0 ? (
+                            <Text style={styles.small}>タグがありません（タグ付け画面で登録してください）</Text>
+                          ) : (
+                            tags.map(t => {
+                              const name = t?.name;
+                              if (!name) return null;
+                              const on = selectedTags.has(name);
+                              return (
+                                <TouchableOpacity
+                                  key={t.id || name}
+                                  style={[styles.tagBtn, on ? styles.tagBtnActive : styles.tagBtnInactive]}
+                                  onPress={() => toggleSelectTag(name)}
+                                >
+                                  <Text style={[styles.tagBtnText, on ? styles.tagBtnTextActive : styles.tagBtnTextInactive]}>
+                                    {name}
+                                  </Text>
+                                </TouchableOpacity>
+                              );
+                            })
+                          )}
+                        </View>
+
+                        <Text style={styles.small}>一致: {playlist.length} 件</Text>
+                        <Text style={[styles.label, { marginTop: 8 }]}>クリップ一覧</Text>
+                      </View>
+                    }
+                    contentContainerStyle={{ paddingHorizontal: 8, paddingBottom: 12 }}
+                    ListEmptyComponent={<Text style={{ padding: 8 }}>タグを選択してください（または条件に一致するクリップがありません）</Text>}
+                  />
+                </View>
+              </View>
+
+              <TouchableOpacity style={styles.fsCloseBtn} onPress={closeLandscapeMode}>
+                <Text style={styles.fsCloseBtnText}>閉じる</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <>
+              {renderPlayer({ landscape: false })}
+
+              <View style={styles.filterRow}>
+                <View style={styles.filterHeader}>
+                  <Text style={styles.label}>タグで絞り込み（{matchMode}）</Text>
+                  <TouchableOpacity
+                    style={styles.modeBtn}
+                    onPress={() => setMatchMode(m => (m === 'OR' ? 'AND' : 'OR'))}
+                  >
+                    <Text style={styles.modeBtnText}>切替</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.clearBtn}
+                    onPress={() => setSelectedTags(new Set())}
+                  >
+                    <Text style={styles.clearBtnText}>クリア</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.landscapeBtn}
+                    onPress={openLandscapeMode}
+                  >
+                    <Text style={styles.landscapeBtnText}>横</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.tagButtonsWrap}>
+                  {tags.length === 0 ? (
+                    <Text style={styles.small}>タグがありません（タグ付け画面で登録してください）</Text>
+                  ) : (
+                    tags.map(t => {
+                      const name = t?.name;
+                      if (!name) return null;
+                      const on = selectedTags.has(name);
+                      return (
+                        <TouchableOpacity
+                          key={t.id || name}
+                          style={[styles.tagBtn, on ? styles.tagBtnActive : styles.tagBtnInactive]}
+                          onPress={() => toggleSelectTag(name)}
+                        >
+                          <Text style={[styles.tagBtnText, on ? styles.tagBtnTextActive : styles.tagBtnTextInactive]}>
+                            {name}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })
+                  )}
+                </View>
+
+                <Text style={styles.small}>一致: {playlist.length} 件</Text>
+              </View>
+
+              <FlatList
+                data={playlist}
+                keyExtractor={(e) => e.id}
+                renderItem={({ item, index }) => (
+                  <TouchableOpacity
+                    style={[styles.clipItem, index === currentIndex && styles.clipItemActive]}
+                    onPress={() => playFrom(index)}
+                  >
+                    <Text style={styles.clipText}>
+                      #{index + 1} [{item.startSec.toFixed(1)}s - {item.endSec.toFixed(1)}s] {item.tagTypes?.join(', ')}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+                contentContainerStyle={{ paddingHorizontal: 8, paddingBottom: 12 }}
+                ListEmptyComponent={<Text style={{ padding: 8 }}>タグを選択してください（または条件に一致するクリップがありません）</Text>}
+              />
+            </>
+          )}
+        </>
+      )}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#E0FFFF' },
+  videoWrap: { width: '100%', height: 220, backgroundColor: '#000' },
+  video: { width: '100%', height: 220, backgroundColor: '#000' },
+  filterRow: { padding: 12 },
+  label: { fontWeight: 'bold' },
+  small: { marginTop: 6, color: '#333' },
+  filterHeader: { flexDirection: 'row', alignItems: 'center' },
+  modeBtn: { marginLeft: 10, backgroundColor: '#fff', borderWidth: 1, borderColor: '#0077cc', borderRadius: 8, paddingVertical: 6, paddingHorizontal: 10 },
+  modeBtnText: { color: '#0077cc', fontWeight: 'bold' },
+  clearBtn: { marginLeft: 8, backgroundColor: '#fff', borderWidth: 1, borderColor: '#999', borderRadius: 8, paddingVertical: 6, paddingHorizontal: 10 },
+  clearBtnText: { color: '#333', fontWeight: 'bold' },
+  landscapeBtn: { marginLeft: 8, backgroundColor: '#fff', borderWidth: 1, borderColor: '#0077cc', borderRadius: 8, paddingVertical: 6, paddingHorizontal: 10 },
+  landscapeBtnText: { color: '#0077cc', fontWeight: 'bold' },
+  tagButtonsWrap: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 8 },
+  tagBtn: { paddingVertical: 8, paddingHorizontal: 10, borderRadius: 999, borderWidth: 1, marginRight: 8, marginBottom: 8 },
+  tagBtnActive: { backgroundColor: '#0077cc', borderColor: '#0077cc' },
+  tagBtnInactive: { backgroundColor: '#fff', borderColor: '#0077cc' },
+  tagBtnText: { fontWeight: 'bold' },
+  tagBtnTextActive: { color: '#fff' },
+  tagBtnTextInactive: { color: '#0077cc' },  
+  clipItem: { backgroundColor: '#fff', padding: 10, borderRadius: 6, marginVertical: 4 },
+  clipItemActive: { borderWidth: 2, borderColor: '#0077cc' },
+  clipText: { color: '#333' },
+
+  // 横画面（疑似フルスクリーン）
+  fsRoot: { flex: 1, backgroundColor: '#000' },
+  fsRow: { flex: 1, flexDirection: 'row' },
+  fsVideoCol: { backgroundColor: '#000' },
+  fsUiCol: { flex: 1, backgroundColor: '#E0FFFF' },
+  fsVideo: { height: '100%', backgroundColor: '#000' },
+  fsVideoWrap: { height: '100%', backgroundColor: '#000' },
+  fsCloseBtn: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+  },
+  fsCloseBtnText: { color: '#fff', fontWeight: 'bold' },  
+});
+</file>
+
+<file path="src/screens/TaggingScreen.js">
+//TaggingScreen.js
+import React, { useEffect, useRef, useState, useMemo } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, FlatList, Alert, TextInput, StatusBar, useWindowDimensions } from 'react-native';
+import { useEvent } from 'expo';
+import { useVideoPlayer, VideoView } from 'expo-video';
+import YoutubePlayer from 'react-native-youtube-iframe';
+import * as ScreenOrientation from 'expo-screen-orientation';
+import {
+  getVideo,
+  subscribeEvents,
+  addEvent,
+  subscribeTags,
+  upsertTag,
+  deleteTag,
+  removeTagFromAllEvents,
+} from '../services/firestoreService';
+import { useAuth } from '../contexts/AuthContext';
+
+function parseYouTubeId(rawUrl) {
+  const url = (rawUrl || '').trim();
+  if (!url) return null;
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace('www.', '');
+    if (host === 'youtu.be') {
+      const id = u.pathname.split('/').filter(Boolean)[0];
+      return id || null;
+    }
+    if (host.endsWith('youtube.com')) {
+      const v = u.searchParams.get('v');
+      if (v) return v;
+      const parts = u.pathname.split('/').filter(Boolean);
+      const idx = parts.findIndex((p) => ['shorts', 'embed', 'live'].includes(p));
+      if (idx >= 0 && parts[idx + 1]) return parts[idx + 1];
+    }
+  } catch {}
+  return null;
+}
+
+function splitTags(text) {
+  return String(text || '')
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+
+export default function TaggingScreen({ route, navigation }) {
+  const { videoId } = route.params;
+  const { activeTeamId, isAdmin, user } = useAuth();
+  const { width, height } = useWindowDimensions();
+  const [video, setVideo] = useState(null);
+  const [events, setEvents] = useState([]);
+  // タグ登録用
+  const [tagText, setTagText] = useState('');
+  // タグ一覧（Firestore）
+  const [tags, setTags] = useState([]);
+  // アクティブタグ
+  const [activeTags, setActiveTags] = useState(new Set());
+  // 疑似フルスクリーン（横画面固定）
+  const [landscapeMode, setLandscapeMode] = useState(false);
+
+  // 記録中（開始秒＋開始時点のタグスナップショット）
+  const [pendingStart, setPendingStart] = useState(null);
+  const [pendingTagTypes, setPendingTagTypes] = useState(null);
+  const ytRef = useRef(null);
+  const [ytPlaying, setYtPlaying] = useState(false);
+  const [previewEndSec, setPreviewEndSec] = useState(null);
+  const lastLoadedUrlRef = useRef(null);
+
+  // URL(MP4/HLS) 再生用（expo-video）
+  const urlPlayer = useVideoPlayer(null);
+  const { isUrlPlaying } = useEvent(urlPlayer, 'playingChange', { isUrlPlaying: urlPlayer.playing });
+  const { urlStatus } = useEvent(urlPlayer, 'statusChange', { urlStatus: urlPlayer.status });
+  
+  const isYoutube = video?.sourceType === 'youtube';
+  const youtubeId = useMemo(() => {
+    return video?.youtubeId || parseYouTubeId(video?.videoUrl);
+  }, [video]);
+
+  useEffect(() => {
+    (async () => {
+      if (!activeTeamId) return;
+      const v = await getVideo(activeTeamId, videoId);
+      if (!v) {
+        Alert.alert('エラー', '動画が見つかりませんでした');
+        navigation.goBack();
+        return;
+      }
+      setVideo(v);
+      navigation.setOptions({ title: `タグ付け：${v.title}` });
+    })();
+  }, [activeTeamId, videoId]);
+
+  // 画面離脱時にロック解除（念のため）
+  useEffect(() => {
+    return () => {
+      ScreenOrientation.unlockAsync().catch(() => {});
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!activeTeamId) return;
+    const unsub = subscribeEvents(activeTeamId, videoId, setEvents);
+    return () => unsub();
+  }, [activeTeamId, videoId]);
+
+  const replaceUrlSource = async (url) => {
+    try {
+      if (typeof urlPlayer?.replaceAsync === 'function') {
+        await urlPlayer.replaceAsync(url);
+      } else {
+        urlPlayer.replace(url);
+      }
+    } catch {}
+  };
+
+  // URL(MP4/HLS) のときだけ player にソース反映（null player -> replace() が公式推奨パターン）:contentReference[oaicite:1]{index=1}
+  useEffect(() => {
+    if (!video) return;
+    if (video.sourceType === 'youtube') {
+      try { urlPlayer.pause(); } catch {}
+      return;
+    }
+    const url = (video.videoUrl || '').trim();
+    if (!url) return;
+    if (lastLoadedUrlRef.current === url) return;
+    lastLoadedUrlRef.current = url;
+    replaceUrlSource(url);
+  }, [video]);
+
+
+  useEffect(() => {
+    if (!activeTeamId) return;
+    const unsub = subscribeTags(activeTeamId, setTags);
+    return () => unsub?.();
+  }, [activeTeamId]);
+
+  // tagsが更新されたら、activeTagsを存在するタグだけに整理
+  useEffect(() => {
+    const exist = new Set(tags.map(t => t?.name).filter(Boolean));
+    setActiveTags(prev => {
+      const next = new Set();
+      prev.forEach(n => { if (exist.has(n)) next.add(n); });
+      return next;
+    });
+  }, [tags]);
+
+  // クリップ再生時、終端を超えたら停止（YouTube / URL 共通）
+  useEffect(() => {
+    const timer = setInterval(async () => {
+      if (previewEndSec == null) return;
+      if (isYoutube) {
+        if (!ytPlaying) return;
+        try {
+          const t = await ytRef.current?.getCurrentTime?.();
+          if (typeof t === 'number' && t >= previewEndSec) {
+            setYtPlaying(false);
+            setPreviewEndSec(null);
+          }
+        } catch {}
+      } else {
+        if (!isUrlPlaying) return;
+        try {
+          const t = urlPlayer?.currentTime ?? 0;
+          if (t >= previewEndSec) {
+            urlPlayer.pause();
+            setPreviewEndSec(null);
+          }
+        } catch {}
+      }
+    }, 200);
+    return () => clearInterval(timer);
+  }, [isYoutube, ytPlaying, previewEndSec, isUrlPlaying]);
+
+  const getCurrentSec = async () => {
+    if (isYoutube) {
+      try {
+        const t = await ytRef.current?.getCurrentTime?.();
+        return typeof t === 'number' ? t : null;
+      } catch {
+        return null;
+      }
+    }
+    if (urlStatus !== 'readyToPlay') return null;
+    return urlPlayer?.currentTime ?? 0;
+  };
+
+  const handleRegisterTags = async () => {
+    if (!isAdmin) {
+      Alert.alert('権限がありません', 'タグ登録は管理者のみ可能です');
+      return;
+    }
+    const names = splitTags(tagText);
+    if (!names.length) {
+      Alert.alert('タグ未入力', 'タグを入力してください（例：シュート,10番）');
+      return;
+    }
+    try {
+      if (!activeTeamId) return;
+      await Promise.all(names.map(n => upsertTag(activeTeamId, n, user?.uid || 'anon')));
+      setTagText('');
+    } catch (e) {
+      Alert.alert('エラー', 'タグ登録に失敗しました');
+    }
+  };
+
+  const toggleTag = (name) => {
+    setActiveTags(prev => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
+
+  const confirmDeleteTag = (name) => {
+    if (!isAdmin) {
+      Alert.alert('権限がありません', 'タグ削除は管理者のみ可能です');
+      return;
+    }
+    Alert.alert('タグ削除（チーム共通）', `「${name}」を削除しますか？\n※このチームの全動画の記録からも削除されます`, [
+      { text: 'キャンセル', style: 'cancel' },
+      {
+        text: '削除',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            if (!activeTeamId) return;
+            await deleteTag(activeTeamId, name);
+            await removeTagFromAllEvents(activeTeamId, name);
+
+            // 記録中のスナップショットにも反映（空になったら記録を解除）
+            setPendingTagTypes(prev => {
+              if (!Array.isArray(prev)) return prev;
+              const next = prev.filter(t => t !== name);
+              if (next.length === 0) {
+                setPendingStart(null);
+                return null;
+              }
+              return next;
+            });
+
+            // アクティブ解除
+            setActiveTags(prev => {
+              const next = new Set(prev);
+              next.delete(name);
+              return next;
+            });
+          } catch (e) {
+            Alert.alert('エラー', 'タグ削除に失敗しました');
+          }
+        }
+      }
+    ]);
+  };
+
+  const handleRecordStart = async () => {
+    if (pendingStart != null) {
+      Alert.alert('記録中', 'すでに記録開始されています。先に「記録終了」してください。');
+      return;
+    }
+    const selected = Array.from(activeTags);
+    if (!selected.length) {
+      Alert.alert('タグ未選択', '記録するタグを1つ以上アクティブにしてください。');
+      return;
+    }
+    const t = await getCurrentSec();
+    if (t == null) return;
+    setPendingStart(t);
+    setPendingTagTypes(selected);
+  };
+
+  const handleRecordEnd = async () => {
+    const endSec = await getCurrentSec();
+    if (endSec == null || pendingStart == null) return;
+
+    if (endSec <= pendingStart) {
+      Alert.alert('範囲エラー', '終了時刻が開始時刻より前になっています');
+      return;
+    }
+
+    const tagsForThisRecord = Array.isArray(pendingTagTypes) ? pendingTagTypes : [];
+    if (!tagsForThisRecord.length) {
+      Alert.alert('タグ未選択', '記録開始時点のタグがありません。もう一度「記録開始」から行ってください。');
+      setPendingStart(null);
+      setPendingTagTypes(null);
+      return;
+    }
+
+    if (!activeTeamId) return;
+    await addEvent(activeTeamId, videoId, {
+      tagTypes: tagsForThisRecord,
+      startSec: pendingStart,
+      endSec,
+      note: '',
+      createdBy: user?.uid || 'anon',
+    });
+
+    setPendingStart(null);
+    setPendingTagTypes(null);
+  };
+
+  const goHighlights = () => {
+    navigation.navigate('Highlights', { videoId });
+  };
+
+  const playFullFromStart = async () => {
+    setPreviewEndSec(null);
+    if (isYoutube) {
+      if (!youtubeId) {
+        Alert.alert('エラー', 'YouTube動画IDが取得できませんでした');
+        return;
+      }
+      ytRef.current?.seekTo?.(0, true);
+      setYtPlaying(true);
+      return;
+    }
+    try {
+      urlPlayer.currentTime = 0;
+      urlPlayer.play();
+    } catch {}
+  };
+
+  const playClip = async (startSec, endSec) => {
+    setPreviewEndSec(endSec);
+    if (isYoutube) {
+      if (!youtubeId) {
+        Alert.alert('エラー', 'YouTube動画IDが取得できませんでした');
+        return;
+      }
+      ytRef.current?.seekTo?.(Math.max(startSec, 0), true);
+      setYtPlaying(true);
+      return;
+    }
+    try {
+      urlPlayer.currentTime = Math.max(startSec, 0);
+      urlPlayer.play();
+    } catch {}
+  };
+
+  const openLandscapeMode = async () => {
+    if (landscapeMode) return;
+    try {
+      setLandscapeMode(true);
+      await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+    } catch {}
+  };
+
+  const closeLandscapeMode = async () => {
+    // ここは好みで。閉じるときに停止しておくと事故が減る
+    setYtPlaying(false);
+    setPreviewEndSec(null);
+    try { urlPlayer.pause(); } catch {}
+
+    setLandscapeMode(false);
+    try { await ScreenOrientation.unlockAsync(); } catch {}
+  };
+
+  const renderPlayer = ({ landscape = false } = {}) => {
+    if (isYoutube) {
+      return (
+        <View style={landscape ? styles.fsVideoWrap : styles.videoWrap}>
+          <YoutubePlayer
+            ref={ytRef}
+            height={landscape ? Math.max(200, height) : 220}
+            width={landscape ? Math.floor(width * 0.68) : undefined}
+            videoId={youtubeId || ''}
+            play={landscape ? ytPlaying : ytPlaying}
+            initialPlayerParams={landscape ? { preventFullScreen: true } : undefined}
+            onChangeState={(s) => {
+              if (s === 'ended') setYtPlaying(false);
+            }}
+          />
+        </View>
+      );
+    }
+    return (
+      <VideoView
+        player={urlPlayer}
+        style={landscape ? styles.fsVideo : styles.video}
+        contentFit="contain"
+        nativeControls
+        fullscreenOptions={{ enabled: !landscape }}
+        allowsPictureInPicture
+      />
+    );
+  };
+  
+  return (
+    <View style={styles.container}>
+      {video && (
+        <>
+          <StatusBar hidden={landscapeMode} />
+
+          {landscapeMode ? (
+            <View style={styles.fsRoot}>
+              <View style={styles.fsRow}>
+                <View style={styles.fsVideoCol}>
+                  {renderPlayer({ landscape: true })}
+                </View>
+
+                <View style={styles.fsUiCol}>
+                  <FlatList
+                    data={events}
+                    keyExtractor={(e) => e.id}
+                    renderItem={({ item, index }) => (
+                      <TouchableOpacity
+                        style={styles.eventItem}
+                        onPress={() => playClip(item.startSec, item.endSec)}
+                      >
+                        <Text style={styles.eventText}>
+                          #{index + 1} [{item.startSec.toFixed(1)}s - {item.endSec.toFixed(1)}s] {item.tagTypes?.join(', ')}
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                    ListHeaderComponent={
+                      <View style={styles.tagArea}>
+                        <Text style={styles.label}>共通タグ登録（チーム共通 / カンマ区切りOK）</Text>
+                        {isAdmin ? (
+                          <View style={styles.tagRegisterRow}>
+                            <TextInput
+                              style={[styles.input, { flex: 1 }]}
+                              value={tagText}
+                              onChangeText={setTagText}
+                              placeholder="例）シュート,10番 / パスミス / GK"
+                            />
+                            <TouchableOpacity style={styles.confirmBtn} onPress={handleRegisterTags}>
+                              <Text style={styles.confirmBtnText}>確定</Text>
+                            </TouchableOpacity>
+                          </View>
+                        ) : (
+                          <Text style={styles.small}>※タグ登録/削除は管理者のみ</Text>
+                        )}
+
+                        <Text style={[styles.label, { marginTop: 10 }]}>共通タグボタン（押してON/OFF・長押しで削除）</Text>
+                        <View style={styles.tagButtonsWrap}>
+                          {tags.length === 0 ? (
+                            <Text style={styles.small}>まだタグが登録されていません</Text>
+                          ) : (
+                            tags.map((t) => {
+                              const name = t?.name;
+                              if (!name) return null;
+                              const isActive = activeTags.has(name);
+                              return (
+                                <TouchableOpacity
+                                  key={t.id || name}
+                                  style={[styles.tagBtn, isActive ? styles.tagBtnActive : styles.tagBtnInactive]}
+                                  onPress={() => toggleTag(name)}
+                                  onLongPress={() => isAdmin && confirmDeleteTag(name)}
+                                >
+                                  <Text style={[styles.tagBtnText, isActive ? styles.tagBtnTextActive : styles.tagBtnTextInactive]}>
+                                    {name}
+                                  </Text>
+                                </TouchableOpacity>
+                              );
+                            })
+                          )}
+                        </View>
+
+                        <Text style={styles.small}>
+                          {pendingStart == null
+                            ? '開始未記録'
+                            : `開始記録: ${pendingStart.toFixed(2)}s / タグ: ${(pendingTagTypes || []).join(', ')}`}
+                        </Text>
+
+                        <View style={styles.row}>
+                          <TouchableOpacity style={styles.actionBtn} onPress={handleRecordStart}>
+                            <Text style={styles.actionBtnText}>記録開始</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity style={[styles.actionBtn, styles.endBtn]} onPress={handleRecordEnd}>
+                            <Text style={styles.actionBtnText}>記録終了</Text>
+                          </TouchableOpacity>
+                        </View>
+
+                        <View style={styles.row}>
+                          <TouchableOpacity style={styles.secondaryBtn} onPress={playFullFromStart}>
+                            <Text style={styles.secondaryBtnText}>▶ 最初から再生</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity style={styles.secondaryBtn} onPress={goHighlights}>
+                            <Text style={styles.secondaryBtnText}>▶ ハイライト再生へ</Text>
+                          </TouchableOpacity>
+                        </View>
+
+                        <Text style={{ fontWeight: 'bold', marginBottom: 4 }}>記録済みイベント</Text>
+                      </View>
+                    }
+                    contentContainerStyle={{ paddingHorizontal: 8, paddingBottom: 12 }}
+                  />
+                </View>
+              </View>
+
+              <TouchableOpacity style={styles.fsCloseBtn} onPress={closeLandscapeMode}>
+                <Text style={styles.fsCloseBtnText}>閉じる</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <>
+              {renderPlayer({ landscape: false })}
+
+              <View style={styles.tagArea}>
+                <Text style={styles.label}>共通タグ登録（チーム共通 / カンマ区切りOK）</Text>
+                {isAdmin ? (
+                  <View style={styles.tagRegisterRow}>
+                    <TextInput
+                      style={[styles.input, { flex: 1 }]}
+                      value={tagText}
+                      onChangeText={setTagText}
+                      placeholder="例）シュート,10番 / パスミス / GK"
+                    />
+                    <TouchableOpacity style={styles.confirmBtn} onPress={handleRegisterTags}>
+                      <Text style={styles.confirmBtnText}>確定</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <Text style={styles.small}>※タグ登録/削除は管理者のみ</Text>
+                )}
+
+                <Text style={[styles.label, { marginTop: 10 }]}>共通タグボタン（押してON/OFF・長押しで削除）</Text>
+                <View style={styles.tagButtonsWrap}>
+                  {tags.length === 0 ? (
+                    <Text style={styles.small}>まだタグが登録されていません</Text>
+                  ) : (
+                    tags.map((t) => {
+                      const name = t?.name;
+                      if (!name) return null;
+                      const isActive = activeTags.has(name);
+                      return (
+                        <TouchableOpacity
+                          key={t.id || name}
+                          style={[styles.tagBtn, isActive ? styles.tagBtnActive : styles.tagBtnInactive]}
+                          onPress={() => toggleTag(name)}
+                          onLongPress={() => isAdmin && confirmDeleteTag(name)}
+                        >
+                          <Text style={[styles.tagBtnText, isActive ? styles.tagBtnTextActive : styles.tagBtnTextInactive]}>
+                            {name}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })
+                  )}
+                </View>
+
+                <Text style={styles.small}>
+                  {pendingStart == null
+                    ? '開始未記録'
+                    : `開始記録: ${pendingStart.toFixed(2)}s / タグ: ${(pendingTagTypes || []).join(', ')}`}
+                </Text>
+              </View>
+
+              <View style={styles.row}>
+                <TouchableOpacity style={styles.actionBtn} onPress={handleRecordStart}>
+                  <Text style={styles.actionBtnText}>記録開始</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.actionBtn, styles.endBtn]} onPress={handleRecordEnd}>
+                  <Text style={styles.actionBtnText}>記録終了</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.row}>
+                <TouchableOpacity style={styles.secondaryBtn} onPress={playFullFromStart}>
+                  <Text style={styles.secondaryBtnText}>▶ 最初から再生</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.secondaryBtn} onPress={goHighlights}>
+                  <Text style={styles.secondaryBtnText}>▶ ハイライト再生へ</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.row}>
+                <TouchableOpacity style={styles.secondaryBtn} onPress={openLandscapeMode}>
+                  <Text style={styles.secondaryBtnText}>⛶ 横画面でタグ付け</Text>
+                </TouchableOpacity>
+              </View>
+
+              <FlatList
+                data={events}
+                keyExtractor={(e) => e.id}
+                renderItem={({ item, index }) => (
+                  <TouchableOpacity
+                    style={styles.eventItem}
+                    onPress={() => playClip(item.startSec, item.endSec)}
+                  >
+                    <Text style={styles.eventText}>
+                      #{index + 1} [{item.startSec.toFixed(1)}s - {item.endSec.toFixed(1)}s] {item.tagTypes?.join(', ')}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+                ListHeaderComponent={<Text style={{ fontWeight: 'bold', marginBottom: 4 }}>記録済みイベント</Text>}
+                contentContainerStyle={{ paddingHorizontal: 8, paddingBottom: 12 }}
+              />
+            </>
+          )}
+        </>
+      )}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#E0FFFF' },
+  video: { width: '100%', height: 220, backgroundColor: '#000' },
+  videoWrap: { width: '100%', height: 220, backgroundColor: '#000' },
+  row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8, paddingHorizontal: 8 },
+  tagArea: { paddingHorizontal: 12, paddingTop: 10 },
+  label: { fontWeight: 'bold' },
+  input: { backgroundColor: '#fff', padding: 10, borderRadius: 8, marginTop: 6 },
+  small: { marginTop: 6, color: '#333' },
+  tagRegisterRow: { flexDirection: 'row', alignItems: 'center' },
+  confirmBtn: { marginTop: 6, marginLeft: 8, backgroundColor: '#0077cc', borderRadius: 8, alignItems: 'center', paddingVertical: 10, paddingHorizontal: 14 },
+  confirmBtnText: { color: '#fff', fontWeight: 'bold' },
+  tagButtonsWrap: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 8 },
+  tagBtn: { paddingVertical: 8, paddingHorizontal: 10, borderRadius: 999, borderWidth: 1, marginRight: 8, marginBottom: 8 },
+  tagBtnActive: { backgroundColor: '#0077cc', borderColor: '#0077cc' },
+  tagBtnInactive: { backgroundColor: '#fff', borderColor: '#0077cc' },
+  tagBtnText: { fontWeight: 'bold' },
+  tagBtnTextActive: { color: '#fff' },
+  tagBtnTextInactive: { color: '#0077cc' },
+  actionBtn: { flex: 1, marginHorizontal: 8, backgroundColor: '#0077cc', borderRadius: 8, alignItems: 'center', padding: 12 },
+  endBtn: { backgroundColor: '#cc3300' },
+  actionBtnText: { color: '#fff', fontWeight: 'bold' },
+  secondaryBtn: { flex: 1, marginHorizontal: 8, backgroundColor: '#fff', borderWidth: 1, borderColor: '#0077cc', borderRadius: 8, alignItems: 'center', padding: 12 },
+  secondaryBtnText: { color: '#0077cc', fontWeight: 'bold' },
+  eventItem: { backgroundColor: '#fff', padding: 8, borderRadius: 6, marginVertical: 4 },
+  eventText: { color: '#333' },
+
+  // 疑似フルスクリーン（横向き）
+  fsRoot: { flex: 1, backgroundColor: '#000' },
+  fsRow: { flex: 1, flexDirection: 'row' },
+  fsVideoCol: { flex: 0.68, backgroundColor: '#000' },
+  fsUiCol: { flex: 0.32, backgroundColor: '#E0FFFF' },
+  fsVideo: { flex: 1, backgroundColor: '#000' },
+  fsVideoWrap: { flex: 1, backgroundColor: '#000' },
+  fsCloseBtn: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+  },
+  fsCloseBtnText: { color: '#fff', fontWeight: 'bold' },
+});
+</file>
+
+</files>
