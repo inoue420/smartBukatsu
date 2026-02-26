@@ -5,14 +5,12 @@ import {
   TextInput,
   TouchableOpacity,
   StyleSheet,
-  SafeAreaView,
   Alert,
   KeyboardAvoidingView,
   Platform,
-  ScrollView,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
-// ★修正：固定の CLUB_MEMBERS を削除し、propsで clubMembers を受け取る
 const LoginScreen = ({
   navigation,
   setIsAdmin,
@@ -20,258 +18,313 @@ const LoginScreen = ({
   adminPassword,
   memberPassword,
   clubMembers,
+  setClubMembers,
+  userProfiles,
 }) => {
-  const [step, setStep] = useState("initial");
-  const [teamId, setTeamId] = useState("");
-  const [inputPassword, setInputPassword] = useState("");
+  const [selectedRole, setSelectedRole] = useState("member");
+  const [selectedMember, setSelectedMember] = useState("");
+  const [password, setPassword] = useState("");
 
-  const handleSelectRole = (role) => {
-    if (teamId.trim() === "") {
-      Alert.alert("エラー", "チームIDを入力してください。");
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [newMemberName, setNewMemberName] = useState("");
+
+  const handleLogin = () => {
+    if (selectedRole === "admin") {
+      if (password === adminPassword) {
+        setIsAdmin(true);
+        setCurrentUser("管理者");
+        navigation.replace("WorkspaceHome");
+      } else {
+        Alert.alert("エラー", "管理者のパスワードが間違っています。");
+      }
+    } else {
+      if (!selectedMember && !isRegistering) {
+        Alert.alert("エラー", "名前を選択するか、新規登録してください。");
+        return;
+      }
+
+      const personalPass =
+        userProfiles && userProfiles[selectedMember]?.password;
+      const expectedPass = personalPass ? personalPass : memberPassword;
+
+      if (password === expectedPass) {
+        setIsAdmin(false);
+        setCurrentUser(selectedMember);
+        navigation.replace("WorkspaceHome");
+      } else {
+        Alert.alert("エラー", "パスワードが間違っています。");
+      }
+    }
+  };
+
+  const handleRegister = () => {
+    const trimmed = newMemberName.trim();
+    if (!trimmed) {
+      Alert.alert("エラー", "名前を入力してください。");
       return;
     }
-    setStep(role === "admin" ? "admin_pass" : "member_pass");
-  };
-
-  const handleAdminLogin = () => {
-    if (inputPassword === adminPassword) {
-      setIsAdmin(true);
-      setCurrentUser("管理者");
-      navigation.reset({ index: 0, routes: [{ name: "WorkspaceHome" }] });
-    } else {
-      Alert.alert("認証失敗", "パスワードが間違っています。");
+    if (clubMembers.includes(trimmed)) {
+      Alert.alert(
+        "エラー",
+        "その名前は既に登録されています。リストから選択してください。",
+      );
+      return;
     }
-  };
-
-  const handleMemberPasswordCheck = () => {
-    if (inputPassword === memberPassword) {
-      setStep("member_select");
-      setInputPassword("");
-    } else {
-      Alert.alert("認証失敗", "パスワードが間違っています。");
-    }
-  };
-
-  const handleMemberLogin = (name) => {
-    setIsAdmin(false);
-    setCurrentUser(name);
-    navigation.reset({ index: 0, routes: [{ name: "WorkspaceHome" }] });
-  };
-
-  const goBack = () => {
-    if (step === "member_select") setStep("member_pass");
-    else {
-      setStep("initial");
-      setInputPassword("");
-    }
+    setClubMembers([...clubMembers, trimmed]);
+    setSelectedMember(trimmed);
+    setIsRegistering(false);
+    setNewMemberName("");
+    Alert.alert(
+      "登録完了",
+      "新しい部員として登録しました。初期パスワードを入力してログインしてください。",
+    );
   };
 
   return (
     <SafeAreaView style={styles.container}>
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : "height"}
-        style={styles.keyboardView}
+        style={styles.inner}
       >
-        <View style={styles.content}>
-          <View style={styles.headerBox}>
-            <Text style={styles.appTitle}>SMART BUKATSU</Text>
-            <Text style={styles.appSubTitle}>
-              チームコミュニケーションアプリ
+        <View style={styles.header}>
+          <Text style={styles.appTitle}>📱 スマート部活</Text>
+          <Text style={styles.subTitle}>ログイン</Text>
+        </View>
+
+        <View style={styles.roleContainer}>
+          <TouchableOpacity
+            style={[
+              styles.roleBtn,
+              selectedRole === "member" && styles.roleBtnActive,
+            ]}
+            onPress={() => {
+              setSelectedRole("member");
+              setPassword("");
+            }}
+          >
+            <Text
+              style={[
+                styles.roleBtnText,
+                selectedRole === "member" && styles.roleBtnTextActive,
+              ]}
+            >
+              部員
             </Text>
-          </View>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[
+              styles.roleBtn,
+              selectedRole === "admin" && styles.roleBtnActive,
+            ]}
+            onPress={() => {
+              setSelectedRole("admin");
+              setPassword("");
+            }}
+          >
+            <Text
+              style={[
+                styles.roleBtnText,
+                selectedRole === "admin" && styles.roleBtnTextActive,
+              ]}
+            >
+              管理者 (監督)
+            </Text>
+          </TouchableOpacity>
+        </View>
 
-          {step === "initial" && (
-            <View style={styles.formBox}>
-              <Text style={styles.label}>チームID</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="例: nonoichi-baseball"
-                value={teamId}
-                onChangeText={setTeamId}
-                autoCapitalize="none"
-              />
-              <Text style={styles.sectionTitle}>ログインする権限を選択</Text>
-              <TouchableOpacity
-                style={styles.memberBtn}
-                onPress={() => handleSelectRole("member")}
-              >
-                <Text style={styles.btnText}>👦 部員としてログイン</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.adminBtn}
-                onPress={() => handleSelectRole("admin")}
-              >
-                <Text style={styles.btnText}>👨‍🏫 管理者としてログイン</Text>
-              </TouchableOpacity>
-            </View>
-          )}
-
-          {step === "admin_pass" && (
-            <View style={styles.formBox}>
-              <Text style={styles.stepTitle}>👨‍🏫 管理者ログイン</Text>
-              <Text style={styles.label}>管理者パスワード</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="パスワードを入力"
-                secureTextEntry={true}
-                value={inputPassword}
-                onChangeText={setInputPassword}
-                autoFocus
-              />
-              <TouchableOpacity
-                style={styles.submitBtn}
-                onPress={handleAdminLogin}
-              >
-                <Text style={styles.btnText}>ログイン</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.backBtn} onPress={goBack}>
-                <Text style={styles.backBtnText}>戻る</Text>
-              </TouchableOpacity>
-            </View>
-          )}
-
-          {step === "member_pass" && (
-            <View style={styles.formBox}>
-              <Text style={styles.stepTitle}>👦 部員ログイン</Text>
-              <Text style={styles.label}>チーム共通パスワード</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="監督から教えられたパスワード"
-                secureTextEntry={true}
-                value={inputPassword}
-                onChangeText={setInputPassword}
-                autoFocus
-              />
-              <TouchableOpacity
-                style={styles.submitBtn}
-                onPress={handleMemberPasswordCheck}
-              >
-                <Text style={styles.btnText}>次へ (名前の選択)</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.backBtn} onPress={goBack}>
-                <Text style={styles.backBtnText}>戻る</Text>
-              </TouchableOpacity>
-            </View>
-          )}
-
-          {step === "member_select" && (
-            <View style={styles.formBox}>
-              <Text style={styles.stepTitle}>あなたの名前を選んでください</Text>
-              <ScrollView style={styles.memberList}>
-                {/* ★修正：propsで受け取った clubMembers をマッピング */}
-                {clubMembers.map((name) => (
-                  <TouchableOpacity
-                    key={name}
-                    style={styles.memberListItem}
-                    onPress={() => handleMemberLogin(name)}
+        {/* 既存の部員リスト選択UI */}
+        {selectedRole === "member" && !isRegistering && (
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>名前を選択</Text>
+            <View style={styles.memberList}>
+              {clubMembers.map((name) => (
+                <TouchableOpacity
+                  key={name}
+                  style={[
+                    styles.memberBadge,
+                    selectedMember === name && styles.memberBadgeActive,
+                  ]}
+                  onPress={() => setSelectedMember(name)}
+                >
+                  <Text
+                    style={[
+                      styles.memberBadgeText,
+                      selectedMember === name && styles.memberBadgeTextActive,
+                    ]}
                   >
-                    <Text style={styles.memberListName}>{name}</Text>
-                    <Text style={styles.memberListArrow}>→</Text>
-                  </TouchableOpacity>
-                ))}
-                {clubMembers.length === 0 && (
-                  <Text style={{ padding: 15, textAlign: "center" }}>
-                    登録されている部員がいません。
+                    {name}
                   </Text>
-                )}
-              </ScrollView>
-              <TouchableOpacity style={styles.backBtn} onPress={goBack}>
-                <Text style={styles.backBtnText}>戻る</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            {/* ★修正：ダサかったボタンを消し、スマートなテキストリンクにしました */}
+            <TouchableOpacity
+              style={styles.registerLink}
+              onPress={() => setIsRegistering(true)}
+            >
+              <Text style={styles.registerLinkText}>
+                ＋ 自分の名前がない場合はこちら (新規登録)
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* 新規登録入力UI */}
+        {selectedRole === "member" && isRegistering && (
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>新しい部員の名前を登録</Text>
+            <View style={styles.registerInputRow}>
+              <TextInput
+                style={styles.registerInput}
+                placeholder="名前を入力"
+                value={newMemberName}
+                onChangeText={setNewMemberName}
+              />
+              <TouchableOpacity
+                style={styles.registerAddBtn}
+                onPress={handleRegister}
+              >
+                <Text style={styles.registerAddBtnText}>追加</Text>
               </TouchableOpacity>
             </View>
+            <TouchableOpacity
+              style={styles.registerLink}
+              onPress={() => setIsRegistering(false)}
+            >
+              <Text style={styles.cancelLinkText}>◁ リスト選択に戻る</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        <View style={styles.inputGroup}>
+          <Text style={styles.label}>パスワード</Text>
+          <TextInput
+            style={styles.input}
+            secureTextEntry
+            placeholder="パスワードを入力"
+            value={password}
+            onChangeText={setPassword}
+          />
+
+          {selectedRole === "member" && (
+            <Text style={styles.hintText}>
+              ※個人パスワード未設定の場合は初期パスワード「{memberPassword}
+              」を使用してください
+            </Text>
+          )}
+          {selectedRole === "admin" && (
+            <Text style={styles.hintText}>
+              ※管理者の初期パスワードは「{adminPassword}」です
+            </Text>
           )}
         </View>
+
+        <TouchableOpacity style={styles.loginBtn} onPress={handleLogin}>
+          <Text style={styles.loginBtnText}>ログイン</Text>
+        </TouchableOpacity>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#f0f2f5" },
-  keyboardView: { flex: 1, justifyContent: "center" },
-  content: { padding: 20, alignItems: "center" },
-  headerBox: { alignItems: "center", marginBottom: 40 },
+  container: { flex: 1, backgroundColor: "#f0f2f5", justifyContent: "center" },
+  inner: { padding: 20, width: "100%", maxWidth: 400, alignSelf: "center" },
+  header: { alignItems: "center", marginBottom: 30 },
   appTitle: {
-    fontSize: 32,
+    fontSize: 28,
     fontWeight: "bold",
     color: "#0077cc",
-    letterSpacing: 1,
+    marginBottom: 5,
   },
-  appSubTitle: { fontSize: 14, color: "#666", marginTop: 5 },
-  formBox: {
-    width: "100%",
+  subTitle: { fontSize: 16, color: "#666" },
+  roleContainer: {
+    flexDirection: "row",
+    marginBottom: 20,
+    backgroundColor: "#e0e0e0",
+    borderRadius: 8,
+    padding: 4,
+  },
+  roleBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    alignItems: "center",
+    borderRadius: 6,
+  },
+  roleBtnActive: {
     backgroundColor: "#fff",
-    padding: 25,
-    borderRadius: 15,
-    elevation: 3,
     shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
+    shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.1,
-    shadowRadius: 4,
+    shadowRadius: 2,
+    elevation: 2,
   },
-  label: { fontSize: 14, fontWeight: "bold", color: "#333", marginBottom: 8 },
-  input: {
-    backgroundColor: "#f9f9f9",
+  roleBtnText: { fontSize: 16, fontWeight: "bold", color: "#888" },
+  roleBtnTextActive: { color: "#0077cc" },
+  inputGroup: { marginBottom: 20 },
+  label: { fontSize: 14, fontWeight: "bold", color: "#555", marginBottom: 8 },
+  memberList: { flexDirection: "row", flexWrap: "wrap" },
+  memberBadge: {
+    backgroundColor: "#fff",
     borderWidth: 1,
     borderColor: "#ddd",
-    padding: 15,
+    paddingVertical: 8,
+    paddingHorizontal: 15,
+    borderRadius: 20,
+    marginRight: 10,
+    marginBottom: 10,
+  },
+  memberBadgeActive: { backgroundColor: "#0077cc", borderColor: "#0077cc" },
+  memberBadgeText: { fontSize: 14, color: "#555", fontWeight: "bold" },
+  memberBadgeTextActive: { color: "#fff" },
+
+  // ★修正：新規登録UIをログイン画面に馴染むように調整
+  registerLink: { marginTop: 5, paddingVertical: 5 },
+  registerLinkText: { color: "#0077cc", fontSize: 13, fontWeight: "bold" },
+  cancelLinkText: { color: "#888", fontSize: 13, fontWeight: "bold" },
+  registerInputRow: { flexDirection: "row", alignItems: "center" },
+  registerInput: {
+    flex: 1,
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: "#ddd",
+    padding: 12,
     borderRadius: 8,
     fontSize: 16,
-    marginBottom: 20,
   },
-  sectionTitle: {
-    fontSize: 14,
-    color: "#888",
-    textAlign: "center",
-    marginTop: 10,
-    marginBottom: 15,
-  },
-  stepTitle: {
-    fontSize: 18,
-    fontWeight: "bold",
-    color: "#0077cc",
-    textAlign: "center",
-    marginBottom: 20,
-  },
-  memberBtn: {
-    backgroundColor: "#3498db",
-    paddingVertical: 15,
-    borderRadius: 10,
-    marginBottom: 15,
-    alignItems: "center",
-  },
-  adminBtn: {
-    backgroundColor: "#f39c12",
-    paddingVertical: 15,
-    borderRadius: 10,
-    alignItems: "center",
-  },
-  submitBtn: {
-    backgroundColor: "#2ecc71",
-    paddingVertical: 15,
-    borderRadius: 10,
-    alignItems: "center",
-    marginTop: 10,
-  },
-  btnText: { color: "#fff", fontSize: 16, fontWeight: "bold" },
-  backBtn: { marginTop: 20, padding: 10, alignItems: "center" },
-  backBtnText: { color: "#888", fontSize: 14, fontWeight: "bold" },
-  memberList: {
-    maxHeight: 250,
-    borderWidth: 1,
-    borderColor: "#eee",
+  registerAddBtn: {
+    backgroundColor: "#0077cc",
+    paddingHorizontal: 15,
+    paddingVertical: 12,
     borderRadius: 8,
+    marginLeft: 10,
+    justifyContent: "center",
   },
-  memberListItem: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    padding: 15,
-    borderBottomWidth: 1,
-    borderBottomColor: "#eee",
-    backgroundColor: "#fafafa",
+  registerAddBtnText: { color: "#fff", fontWeight: "bold", fontSize: 14 },
+
+  input: {
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: "#ddd",
+    padding: 12,
+    borderRadius: 8,
+    fontSize: 16,
   },
-  memberListName: { fontSize: 16, fontWeight: "bold", color: "#333" },
-  memberListArrow: { fontSize: 16, color: "#aaa" },
+  hintText: {
+    fontSize: 12,
+    color: "#e67e22",
+    marginTop: 5,
+    fontWeight: "bold",
+  },
+  loginBtn: {
+    backgroundColor: "#0077cc",
+    paddingVertical: 15,
+    borderRadius: 8,
+    alignItems: "center",
+    marginTop: 10,
+    elevation: 3,
+  },
+  loginBtnText: { color: "#fff", fontSize: 18, fontWeight: "bold" },
 });
 
 export default LoginScreen;

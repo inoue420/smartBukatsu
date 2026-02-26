@@ -9,6 +9,7 @@ import VideoListScreen from "./src/screens/VideoListScreen";
 import NoticeBoardScreen from "./src/screens/NoticeBoardScreen";
 import SettingsScreen from "./src/screens/SettingsScreen";
 import DiaryScreen from "./src/screens/DiaryScreen";
+import MedicalScreen from "./src/screens/MedicalScreen";
 
 const Stack = createNativeStackNavigator();
 
@@ -25,7 +26,6 @@ export default function App() {
     "田中",
     "伊藤",
   ]);
-
   const [grades, setGrades] = useState(["1年", "2年", "3年"]);
   const [positions, setPositions] = useState([
     "投手",
@@ -35,53 +35,73 @@ export default function App() {
     "マネ",
   ]);
 
+  // ★追加：部員ごとの個人プロフィール（パスワード、学年、ポジション）を管理
+  const [userProfiles, setUserProfiles] = useState({});
+
+  const [alertThresholds, setAlertThresholds] = useState({
+    fatigueWarning: 7,
+    fatigueDanger: 9,
+    painDanger: 7,
+    autoEscalate: true,
+  });
+
   const [isOffline, setIsOffline] = useState(false);
-
-  // ホーム画面の投稿データ
   const [posts, setPosts] = useState([]);
+  const [notices, setNotices] = useState([]);
+  const [diaries, setDiaries] = useState([]);
 
-  const [notices, setNotices] = useState([
+  const [medicalRecords, setMedicalRecords] = useState([
     {
-      id: "1",
-      title: "秋季大会のエントリーシート提出について",
-      content:
-        "今週末の練習時に、秋季大会のエントリーシートを必ず提出してください。",
-      author: "管理者(監督)",
-      date: "2026/02/19 18:00",
-      readBy: ["鈴木"],
-      status: "sent",
-    },
-  ]);
-
-  const [diaries, setDiaries] = useState([
-    {
-      id: "diary_1",
-      date: "2026/02/20",
+      id: "med_1",
+      date: "2026/02/26",
       author: "佐藤",
-      practiceContent: "フットワーク確認、紅白戦",
-      achievement: 4,
-      goodPoint: "最後まで走り切れた。声出しができた。",
-      badPoint: "疲れた時にパスの精度が落ちた。",
-      nextTask: "疲労時のフォームを意識する。",
-      images: [],
-      memo: "",
-      highlightLink: "",
+      condition: "普通",
+      fatigue: 7,
+      sleep: "6h",
+      isParticipating: "制限",
+      hasPain: true,
+      painDetails: {
+        part: "右肩",
+        level: 5,
+        memo: "投げる時にピキッとする",
+        sinceWhen: "3日前から",
+        treatment: "アイシングのみ",
+      },
       status: "sent",
-      isReviewed: true,
-      isStarred: false,
-      isFollowUp: false,
-      sharedWith: "staff",
-      createdAt: Date.now() - 3600000,
-      appendedTexts: [],
+      isReviewed: false,
+      createdAt: Date.now(),
       comments: [
         {
           id: "c1",
           user: "管理者(監督)",
-          text: "お疲れ様！後半のスタミナは今後の課題だね。",
-          time: "昨日 18:30",
+          text: "無理せず別メニューで調整しよう。",
+          time: "10:00",
           status: "sent",
         },
       ],
+      managementTags: ["👀 経過観察"],
+    },
+    {
+      id: "med_2",
+      date: "2026/02/25",
+      author: "佐藤",
+      condition: "良い",
+      fatigue: 5,
+      sleep: "7h",
+      isParticipating: "通常",
+      hasPain: true,
+      painDetails: {
+        part: "右肩",
+        level: 3,
+        memo: "少し違和感",
+        sinceWhen: "昨日から",
+        treatment: "",
+      },
+      status: "sent",
+      isReviewed: true,
+      createdAt: Date.now() - 86400000,
+      comments: [],
+      managementTags: [],
     },
   ]);
 
@@ -89,46 +109,7 @@ export default function App() {
     if (isOffline) {
       setIsOffline(false);
       let hasPending = false;
-      const updatedPosts = posts.map((p) => {
-        let updatedP = { ...p };
-        if (p.status === "pending") {
-          updatedP.status = "sent";
-          hasPending = true;
-        }
-        updatedP.replies = p.replies.map((r) => {
-          if (r.status === "pending") {
-            hasPending = true;
-            return { ...r, status: "sent" };
-          }
-          return r;
-        });
-        return updatedP;
-      });
-      setPosts(updatedPosts);
-      const updatedNotices = notices.map((n) => {
-        if (n.status === "pending") {
-          hasPending = true;
-          return { ...n, status: "sent" };
-        }
-        return n;
-      });
-      setNotices(updatedNotices);
-      const updatedDiaries = diaries.map((d) => {
-        let updatedD = { ...d };
-        if (d.status === "pending") {
-          updatedD.status = "sent";
-          hasPending = true;
-        }
-        updatedD.comments = d.comments.map((c) => {
-          if (c.status === "pending") {
-            hasPending = true;
-            return { ...c, status: "sent" };
-          }
-          return c;
-        });
-        return updatedD;
-      });
-      setDiaries(updatedDiaries);
+      if (posts.some((p) => p.status === "pending")) hasPending = true;
       if (hasPending)
         Alert.alert(
           "🌐 通信が復旧しました",
@@ -154,6 +135,10 @@ export default function App() {
               adminPassword={adminPassword}
               memberPassword={memberPassword}
               clubMembers={clubMembers}
+              setClubMembers={setClubMembers}
+              grades={grades}
+              positions={positions}
+              userProfiles={userProfiles}
             />
           )}
         </Stack.Screen>
@@ -169,6 +154,8 @@ export default function App() {
               isOffline={isOffline}
               toggleNetworkStatus={toggleNetworkStatus}
               clubMembers={clubMembers}
+              medicalRecords={medicalRecords}
+              alertThresholds={alertThresholds}
             />
           )}
         </Stack.Screen>
@@ -187,7 +174,6 @@ export default function App() {
           )}
         </Stack.Screen>
         <Stack.Screen name="Diary">
-          {/* ★修正：posts と setPosts を渡す */}
           {(props) => (
             <DiaryScreen
               {...props}
@@ -204,11 +190,29 @@ export default function App() {
             />
           )}
         </Stack.Screen>
+        <Stack.Screen name="Medical">
+          {(props) => (
+            <MedicalScreen
+              {...props}
+              isAdmin={isAdmin}
+              currentUser={currentUser}
+              medicalRecords={medicalRecords}
+              setMedicalRecords={setMedicalRecords}
+              isOffline={isOffline}
+              toggleNetworkStatus={toggleNetworkStatus}
+              alertThresholds={alertThresholds}
+            />
+          )}
+        </Stack.Screen>
         <Stack.Screen name="VideoList" component={VideoListScreen} />
         <Stack.Screen name="Settings">
+          {/* ★修正：userProfiles も渡すように変更 */}
           {(props) => (
             <SettingsScreen
               {...props}
+              isAdmin={isAdmin}
+              currentUser={currentUser}
+              setCurrentUser={setCurrentUser}
               adminPassword={adminPassword}
               setAdminPassword={setAdminPassword}
               memberPassword={memberPassword}
@@ -219,6 +223,10 @@ export default function App() {
               setGrades={setGrades}
               positions={positions}
               setPositions={setPositions}
+              alertThresholds={alertThresholds}
+              setAlertThresholds={setAlertThresholds}
+              userProfiles={userProfiles}
+              setUserProfiles={setUserProfiles}
             />
           )}
         </Stack.Screen>

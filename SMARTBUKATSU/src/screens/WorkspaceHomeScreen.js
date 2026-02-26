@@ -5,15 +5,15 @@ import {
   TextInput,
   StyleSheet,
   TouchableOpacity,
-  SafeAreaView,
   ScrollView,
+  Modal,
+  Switch,
   KeyboardAvoidingView,
   Platform,
   Keyboard,
   Alert,
-  Modal,
-  Switch,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 const REACTION_EMOJIS = ["👍", "❤️", "😂", "🔥", "👀", "🙏"];
 const REPORT_REASONS = ["暴言・誹謗中傷", "スパム・宣伝", "その他"];
@@ -28,15 +28,62 @@ const WorkspaceHomeScreen = ({
   isOffline,
   toggleNetworkStatus,
   clubMembers,
+  medicalRecords,
+  alertThresholds,
 }) => {
   const displayUserName = isAdmin ? "管理者(監督)" : `${currentUser}(あなた)`;
   const unreadNoticeCount = notices.filter(
     (n) => !n.readBy.includes(currentUser),
   ).length;
 
+  const getAlertLevel = (record, allRecords) => {
+    let level = "normal";
+    if (
+      record.condition === "不良" ||
+      record.isParticipating === "不可" ||
+      record.fatigue >= alertThresholds.fatigueDanger ||
+      (record.hasPain &&
+        record.painDetails?.level >= alertThresholds.painDanger)
+    ) {
+      return "danger";
+    }
+    if (
+      record.fatigue >= alertThresholds.fatigueWarning ||
+      record.isParticipating === "制限" ||
+      record.hasPain
+    ) {
+      level = "warning";
+    }
+    if (level === "warning" && alertThresholds.autoEscalate) {
+      const userHistory = allRecords
+        .filter(
+          (r) => r.author === record.author && r.createdAt < record.createdAt,
+        )
+        .sort((a, b) => b.createdAt - a.createdAt);
+      if (userHistory.length > 0) {
+        const lastRecord = userHistory[0];
+        const fatigueWorsened =
+          record.fatigue >= alertThresholds.fatigueWarning &&
+          record.fatigue > lastRecord.fatigue;
+        const painWorsened =
+          record.hasPain &&
+          lastRecord.hasPain &&
+          record.painDetails.level > lastRecord.painDetails.level;
+        if (fatigueWorsened || painWorsened) return "danger";
+      }
+    }
+    return level;
+  };
+
+  const unreadMedicalDangerCount = medicalRecords
+    ? medicalRecords.filter((r) => {
+        if (r.isReviewed) return false;
+        return getAlertLevel(r, medicalRecords) === "danger";
+      }).length
+    : 0;
+
   const [searchQuery, setSearchQuery] = useState("");
 
-  // ★修正：新しく「共有日記」チャンネルを追加
   const [channels, setChannels] = useState([
     { id: "ch_1", name: "全体連絡", isReadOnly: true, allowedMembers: ["all"] },
     {
@@ -718,6 +765,7 @@ const WorkspaceHomeScreen = ({
             >
               <Text style={styles.navIcon}>{isOffline ? "🚫" : "🌐"}</Text>
             </TouchableOpacity>
+
             <TouchableOpacity
               style={styles.navBtn}
               onPress={() => navigation.navigate("NoticeBoard")}
@@ -729,33 +777,50 @@ const WorkspaceHomeScreen = ({
                 </View>
               )}
             </TouchableOpacity>
+
             <TouchableOpacity
               style={styles.navBtn}
               onPress={() => navigation.navigate("Diary")}
             >
               <Text style={styles.navIcon}>📖</Text>
             </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.navBtn}
+              onPress={() => navigation.navigate("Medical")}
+            >
+              <Text style={styles.navIcon}>🏥</Text>
+              {isAdmin && unreadMedicalDangerCount > 0 && (
+                <View style={styles.badge}>
+                  <Text style={styles.badgeText}>
+                    {unreadMedicalDangerCount}
+                  </Text>
+                </View>
+              )}
+            </TouchableOpacity>
+
             {isAdmin && (
-              <>
-                <TouchableOpacity
-                  style={styles.navBtn}
-                  onPress={() => setIsDashboardVisible(true)}
-                >
-                  <Text style={styles.navIcon}>🔔</Text>
-                  {reportCount > 0 && (
-                    <View style={styles.badge}>
-                      <Text style={styles.badgeText}>{reportCount}</Text>
-                    </View>
-                  )}
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.navBtn}
-                  onPress={() => navigation.navigate("Settings")}
-                >
-                  <Text style={styles.navIcon}>⚙️</Text>
-                </TouchableOpacity>
-              </>
+              <TouchableOpacity
+                style={styles.navBtn}
+                onPress={() => setIsDashboardVisible(true)}
+              >
+                <Text style={styles.navIcon}>🔔</Text>
+                {reportCount > 0 && (
+                  <View style={styles.badge}>
+                    <Text style={styles.badgeText}>{reportCount}</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
             )}
+
+            {/* ★修正：SettingsボタンをisAdminの外に出し、部員も押せるようにしました */}
+            <TouchableOpacity
+              style={styles.navBtn}
+              onPress={() => navigation.navigate("Settings")}
+            >
+              <Text style={styles.navIcon}>⚙️</Text>
+            </TouchableOpacity>
+
             <TouchableOpacity
               style={styles.logoutBtn}
               onPress={() =>
@@ -1156,10 +1221,11 @@ const styles = StyleSheet.create({
     right: -5,
     backgroundColor: "#d9534f",
     borderRadius: 10,
-    width: 18,
+    minWidth: 18,
     height: 18,
     justifyContent: "center",
     alignItems: "center",
+    paddingHorizontal: 4,
   },
   badgeText: { color: "#fff", fontSize: 10, fontWeight: "bold" },
   logoutBtn: {

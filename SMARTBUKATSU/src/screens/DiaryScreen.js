@@ -5,7 +5,6 @@ import {
   TextInput,
   StyleSheet,
   TouchableOpacity,
-  SafeAreaView,
   ScrollView,
   Modal,
   Alert,
@@ -13,6 +12,8 @@ import {
   Platform,
   Keyboard,
 } from "react-native";
+// ★修正：SafeAreaViewの警告を消すための正しいインポート
+import { SafeAreaView } from "react-native-safe-area-context";
 
 const DiaryScreen = ({
   navigation,
@@ -55,6 +56,8 @@ const DiaryScreen = ({
   const [filterGrade, setFilterGrade] = useState("全て");
   const [filterPosition, setFilterPosition] = useState("全て");
   const [filterPeriod, setFilterPeriod] = useState("全て");
+
+  const [expandedDates, setExpandedDates] = useState({});
 
   const REPLY_TEMPLATES = [
     { label: "👍 励ます", text: "お疲れ様！その調子で引き続き頑張ろう。" },
@@ -105,6 +108,27 @@ const DiaryScreen = ({
     }
   }
 
+  const groupedDiaries = processedDiaries.reduce((acc, diary) => {
+    if (!acc[diary.date]) acc[diary.date] = [];
+    acc[diary.date].push(diary);
+    return acc;
+  }, {});
+  const sortedDates = Object.keys(groupedDiaries).sort(
+    (a, b) => new Date(b) - new Date(a),
+  );
+
+  const isExpanded = (date, index) => {
+    if (expandedDates[date] !== undefined) return expandedDates[date];
+    return index === 0;
+  };
+
+  const toggleDate = (date, index) => {
+    setExpandedDates((prev) => {
+      const currentState = prev[date] !== undefined ? prev[date] : index === 0;
+      return { ...prev, [date]: !currentState };
+    });
+  };
+
   const handleToggleStar = (diaryId) => {
     const newDiaries = diaries.map((d) =>
       d.id === diaryId ? { ...d, isStarred: !d.isStarred } : d,
@@ -129,7 +153,6 @@ const DiaryScreen = ({
       });
   };
 
-  // ★修正：全体公開時にHomeの「共有日記」にポストする
   const handleChangeShareScope = (diaryId) => {
     const diary = diaries.find((d) => d.id === diaryId);
     const isCurrentlyAll = diary?.sharedWith === "all";
@@ -158,7 +181,6 @@ const DiaryScreen = ({
           {
             text: "全体に公開する",
             onPress: () => {
-              // 1. 日記のフラグを更新
               const newDiaries = diaries.map((d) =>
                 d.id === diaryId ? { ...d, sharedWith: "all" } : d,
               );
@@ -166,7 +188,6 @@ const DiaryScreen = ({
               if (selectedDiary && selectedDiary.id === diaryId)
                 setSelectedDiary({ ...selectedDiary, sharedWith: "all" });
 
-              // 2. Home画面（posts）に共有通知を自動作成
               const sharedPost = {
                 id: "post_shared_" + Date.now().toString(),
                 channel: "共有日記",
@@ -183,7 +204,6 @@ const DiaryScreen = ({
                 status: isOffline ? "pending" : "sent",
               };
               setPosts([sharedPost, ...posts]);
-
               Alert.alert(
                 "変更完了",
                 "チーム全体に公開し、Home画面にも通知しました。",
@@ -199,6 +219,7 @@ const DiaryScreen = ({
     setImages([...images, `添付画像_${images.length + 1}.jpg`]);
   };
 
+  // ★修正：エラーの原因だった関数の定義を保証
   const handleDiscardDraft = () => {
     Alert.alert("確認", "下書きを破棄してリセットしますか？", [
       { text: "キャンセル", style: "cancel" },
@@ -227,7 +248,7 @@ const DiaryScreen = ({
     if (editingDiaryId) {
       const updatedDiaries = diaries.map((diary) => {
         if (diary.id === editingDiaryId) {
-          const edited = {
+          return {
             ...diary,
             practiceContent,
             achievement,
@@ -238,13 +259,11 @@ const DiaryScreen = ({
             memo,
             highlightLink,
           };
-          setSelectedDiary(edited);
-          return edited;
         }
         return diary;
       });
       setDiaries(updatedDiaries);
-      Alert.alert("編集完了", "日記を更新しました。");
+      Alert.alert("修正完了", "日記を修正しました。");
     } else {
       const today = new Date();
       const dateString = `${today.getFullYear()}/${String(today.getMonth() + 1).padStart(2, "0")}/${String(today.getDate()).padStart(2, "0")}`;
@@ -299,7 +318,9 @@ const DiaryScreen = ({
     setHighlightLink(selectedDiary.highlightLink || "");
     if (selectedDiary.memo) setShowMemoInput(true);
     if (selectedDiary.highlightLink) setShowLinkInput(true);
+
     setIsCreateModalVisible(true);
+    setSelectedDiary(null);
   };
 
   const handleSaveAppend = () => {
@@ -317,12 +338,18 @@ const DiaryScreen = ({
             { text: appendContent, time: timeString },
           ],
         };
-        setSelectedDiary(appended);
         return appended;
       }
       return diary;
     });
     setDiaries(newDiaries);
+    setSelectedDiary((prev) => ({
+      ...prev,
+      appendedTexts: [
+        ...(prev.appendedTexts || []),
+        { text: appendContent, time: timeString },
+      ],
+    }));
     setAppendContent("");
     setIsAppendModalVisible(false);
     Keyboard.dismiss();
@@ -330,27 +357,39 @@ const DiaryScreen = ({
 
   const handleSendComment = () => {
     if (commentText.trim() === "") return;
+    const newComment = {
+      id: "c_" + Date.now().toString(),
+      user: displayUserName,
+      text: commentText,
+      time: "たった今",
+      status: isOffline ? "pending" : "sent",
+    };
     const newDiaries = diaries.map((diary) => {
       if (diary.id === selectedDiary.id) {
-        const newComment = {
-          id: "c_" + Date.now().toString(),
-          user: displayUserName,
-          text: commentText,
-          time: "たった今",
-          status: isOffline ? "pending" : "sent",
-        };
-        const isNowReviewed = isAdmin ? true : diary.isReviewed;
-        const updatedDiary = {
+        // ★管理者がコメントした場合は自動的に確認済みにする
+        return {
           ...diary,
           comments: [...diary.comments, newComment],
-          isReviewed: isNowReviewed,
+          isReviewed: isAdmin ? true : diary.isReviewed,
         };
-        setSelectedDiary(updatedDiary);
-        return updatedDiary;
       }
       return diary;
     });
     setDiaries(newDiaries);
+
+    // ★即座に詳細画面の修正・追記ボタンを消すためにステートを同期
+    if (isAdmin) {
+      setSelectedDiary((prev) => ({
+        ...prev,
+        isReviewed: true,
+        comments: [...prev.comments, newComment],
+      }));
+    } else {
+      setSelectedDiary((prev) => ({
+        ...prev,
+        comments: [...prev.comments, newComment],
+      }));
+    }
     setCommentText("");
     Keyboard.dismiss();
   };
@@ -358,13 +397,13 @@ const DiaryScreen = ({
   const handleMarkAsReviewed = () => {
     const newDiaries = diaries.map((diary) => {
       if (diary.id === selectedDiary.id) {
-        const updatedDiary = { ...diary, isReviewed: true };
-        setSelectedDiary(updatedDiary);
-        return updatedDiary;
+        return { ...diary, isReviewed: true };
       }
       return diary;
     });
     setDiaries(newDiaries);
+    // ★即座に詳細画面の修正・追記ボタンを消すためにステートを同期
+    setSelectedDiary((prev) => ({ ...prev, isReviewed: true }));
   };
 
   const renderStars = (rating, onSelect = null) => {
@@ -564,78 +603,114 @@ const DiaryScreen = ({
         contentContainerStyle={{ paddingBottom: 100 }}
         keyboardShouldPersistTaps="handled"
       >
-        {processedDiaries.length === 0 ? (
+        {sortedDates.length === 0 ? (
           <Text style={styles.emptyText}>条件に一致する日記がありません。</Text>
         ) : (
-          processedDiaries.map((diary) => (
-            <TouchableOpacity
-              key={diary.id}
-              style={[
-                styles.card,
-                diary.status === "pending" && styles.pendingCard,
-              ]}
-              activeOpacity={0.9}
-              onPress={() => setSelectedDiary(diary)}
-            >
-              {diary.status === "pending" && (
-                <Text style={styles.pendingText}>🕒 送信待機中</Text>
-              )}
+          sortedDates.map((date, index) => {
+            const diariesInDate = groupedDiaries[date];
+            const expanded = isExpanded(date, index);
+            const hasUnreviewed = diariesInDate.some((d) => !d.isReviewed);
 
-              <View style={styles.cardHeader}>
-                <View>
-                  <Text style={styles.cardDate}>{diary.date}</Text>
-                  {(isAdmin || diary.author !== currentUser) && (
-                    <Text style={styles.cardAuthor}>👤 {diary.author}</Text>
-                  )}
-                </View>
-                <View
-                  style={[
-                    styles.badgeContainer,
-                    { flexDirection: "row", alignItems: "center" },
-                  ]}
+            return (
+              <View key={date} style={styles.dateGroupContainer}>
+                <TouchableOpacity
+                  style={styles.dateHeader}
+                  onPress={() => toggleDate(date, index)}
+                  activeOpacity={0.7}
                 >
-                  {diary.sharedWith === "all" && (
-                    <Text style={styles.badgeShared}>📢 チーム共有</Text>
-                  )}
-                  {diary.isFollowUp && (
-                    <Text style={{ fontSize: 16, marginRight: 5 }}>🎌</Text>
-                  )}
-                  {diary.isStarred && (
-                    <Text style={{ fontSize: 16, marginRight: 10 }}>⭐</Text>
-                  )}
-                  {diary.isReviewed ? (
-                    <Text style={styles.badgeReviewed}>✅ 確認済</Text>
-                  ) : (
-                    <Text style={styles.badgeUnreviewed}>未確認</Text>
-                  )}
-                </View>
-              </View>
-
-              <View style={styles.cardSection}>
-                <Text style={styles.sectionLabel}>🏃 練習内容</Text>
-                <Text style={styles.sectionText} numberOfLines={1}>
-                  {diary.practiceContent || "（未入力）"}
-                </Text>
-              </View>
-              {(diary.images?.length > 0 ||
-                diary.memo ||
-                diary.highlightLink) && (
-                <View style={styles.attachmentIndicatorRow}>
-                  <Text style={styles.attachmentIndicatorText}>
-                    📎 添付データあり
+                  <Text style={styles.dateHeaderText}>
+                    {expanded ? "▼" : "▶"} {date} ── [ {diariesInDate.length}件
+                    ]
                   </Text>
-                </View>
-              )}
-              <View style={styles.commentCountRow}>
-                <Text style={styles.commentCountText}>
-                  💬 コーチとのやり取り：{diary.comments.length}件
-                </Text>
+                  {hasUnreviewed && (
+                    <View style={styles.unreadAlertBadge}>
+                      <Text style={styles.unreadAlertBadgeText}>
+                        未確認あり
+                      </Text>
+                    </View>
+                  )}
+                </TouchableOpacity>
+
+                {expanded &&
+                  diariesInDate.map((diary) => (
+                    <TouchableOpacity
+                      key={diary.id}
+                      style={[
+                        styles.card,
+                        diary.status === "pending" && styles.pendingCard,
+                      ]}
+                      activeOpacity={0.9}
+                      onPress={() => setSelectedDiary(diary)}
+                    >
+                      {diary.status === "pending" && (
+                        <Text style={styles.pendingText}>🕒 送信待機中</Text>
+                      )}
+
+                      <View style={styles.cardHeader}>
+                        <View>
+                          <Text style={styles.cardAuthorLarge}>
+                            {isAdmin || diary.author !== currentUser
+                              ? `👤 ${diary.author}`
+                              : `👤 自分`}
+                          </Text>
+                        </View>
+                        <View
+                          style={[
+                            styles.badgeContainer,
+                            { flexDirection: "row", alignItems: "center" },
+                          ]}
+                        >
+                          {diary.sharedWith === "all" && (
+                            <Text style={styles.badgeShared}>
+                              📢 チーム共有
+                            </Text>
+                          )}
+                          {diary.isFollowUp && (
+                            <Text style={{ fontSize: 16, marginRight: 5 }}>
+                              🎌
+                            </Text>
+                          )}
+                          {diary.isStarred && (
+                            <Text style={{ fontSize: 16, marginRight: 10 }}>
+                              ⭐
+                            </Text>
+                          )}
+                          {diary.isReviewed ? (
+                            <Text style={styles.badgeReviewed}>✅ 確認済</Text>
+                          ) : (
+                            <Text style={styles.badgeUnreviewed}>未確認</Text>
+                          )}
+                        </View>
+                      </View>
+
+                      <View style={styles.cardSection}>
+                        <Text style={styles.sectionLabel}>🏃 練習内容</Text>
+                        <Text style={styles.sectionText} numberOfLines={1}>
+                          {diary.practiceContent || "（未入力）"}
+                        </Text>
+                      </View>
+                      {(diary.images?.length > 0 ||
+                        diary.memo ||
+                        diary.highlightLink) && (
+                        <View style={styles.attachmentIndicatorRow}>
+                          <Text style={styles.attachmentIndicatorText}>
+                            📎 添付データあり
+                          </Text>
+                        </View>
+                      )}
+                      <View style={styles.commentCountRow}>
+                        <Text style={styles.commentCountText}>
+                          💬 コーチとのやり取り：{diary.comments.length}件
+                        </Text>
+                      </View>
+                      <Text style={styles.clickHint}>
+                        タップして詳細・コーチからの返信を見る
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
               </View>
-              <Text style={styles.clickHint}>
-                タップして詳細・コーチからの返信を見る
-              </Text>
-            </TouchableOpacity>
-          ))
+            );
+          })
         )}
       </ScrollView>
 
@@ -672,7 +747,6 @@ const DiaryScreen = ({
                 <Text style={{ fontSize: 18, color: "#888" }}>✕</Text>
               </TouchableOpacity>
             </View>
-
             <Text style={styles.filterSectionTitle}>学年</Text>
             <View style={styles.filterOptionsRow}>
               {gradeOptions.map((opt) => (
@@ -695,7 +769,6 @@ const DiaryScreen = ({
                 </TouchableOpacity>
               ))}
             </View>
-
             <Text style={styles.filterSectionTitle}>ポジション・役割</Text>
             <View style={styles.filterOptionsRow}>
               {positionOptions.map((opt) => (
@@ -718,7 +791,6 @@ const DiaryScreen = ({
                 </TouchableOpacity>
               ))}
             </View>
-
             <Text style={styles.filterSectionTitle}>期間</Text>
             <View style={styles.filterOptionsRow}>
               {["全て", "今日", "過去7日", "今月"].map((opt) => (
@@ -741,7 +813,6 @@ const DiaryScreen = ({
                 </TouchableOpacity>
               ))}
             </View>
-
             <TouchableOpacity
               style={styles.filterApplyBtn}
               onPress={handleApplyFilter}
@@ -832,7 +903,9 @@ const DiaryScreen = ({
                   const isMyDiary =
                     currentUser === selectedDiary.author && !isAdmin;
                   const timeElapsed = currentTime - selectedDiary.createdAt;
-                  const isEditable = timeElapsed < 30 * 60 * 1000;
+                  // ★修正：確認済みの場合は修正不可（!selectedDiary.isReviewed）
+                  const isEditable =
+                    timeElapsed < 30 * 60 * 1000 && !selectedDiary.isReviewed;
                   const minutesLeft = Math.max(
                     0,
                     30 - Math.floor(timeElapsed / 60000),
@@ -892,7 +965,9 @@ const DiaryScreen = ({
                                 </Text>
                               </TouchableOpacity>
                             )}
-                            {isMyDiary && (
+
+                            {/* ★修正：isEditable（確認済ならfalseになる）に従って表示を消す */}
+                            {isMyDiary && !selectedDiary.isReviewed && (
                               <View style={styles.editActionRow}>
                                 {isEditable ? (
                                   <TouchableOpacity
@@ -900,7 +975,7 @@ const DiaryScreen = ({
                                     onPress={handleOpenEdit}
                                   >
                                     <Text style={styles.editBtnText}>
-                                      ✏️ 編集 (残り{minutesLeft}分)
+                                      ✏️ 修正 (残り{minutesLeft}分)
                                     </Text>
                                   </TouchableOpacity>
                                 ) : (
@@ -1244,13 +1319,18 @@ const DiaryScreen = ({
             <View style={styles.createContainer}>
               <View style={styles.detailHeader}>
                 <TouchableOpacity
-                  onPress={() => setIsCreateModalVisible(false)}
+                  onPress={() => {
+                    setIsCreateModalVisible(false);
+                    setEditingDiaryId(null);
+                  }}
                 >
                   <Text style={styles.closeBtn}>✕ 閉じる</Text>
                 </TouchableOpacity>
                 <Text style={styles.createHeaderTitle}>
-                  {editingDiaryId ? "日記の編集" : "本日の振り返り"}
+                  {editingDiaryId ? "日記の修正" : "本日の振り返り"}
                 </Text>
+
+                {/* ★修正：エラー解消済みのhandleDiscardDraftを使用 */}
                 {!editingDiaryId ? (
                   <TouchableOpacity onPress={handleDiscardDraft}>
                     <Text style={[styles.closeBtn, { color: "#e74c3c" }]}>
@@ -1388,7 +1468,7 @@ const DiaryScreen = ({
                 >
                   <Text style={styles.submitButtonText}>
                     {editingDiaryId
-                      ? "編集内容を保存"
+                      ? "修正内容を保存"
                       : isOffline
                         ? "待機リストに保存"
                         : "日記を送信する"}
@@ -1524,6 +1604,27 @@ const styles = StyleSheet.create({
 
   content: { padding: 15 },
   emptyText: { textAlign: "center", color: "#888", marginTop: 50 },
+
+  dateGroupContainer: { marginBottom: 15 },
+  dateHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#e0e0e0",
+    paddingVertical: 8,
+    paddingHorizontal: 15,
+    borderRadius: 8,
+    marginBottom: 10,
+  },
+  dateHeaderText: { fontSize: 14, fontWeight: "bold", color: "#555" },
+  unreadAlertBadge: {
+    backgroundColor: "#e74c3c",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 10,
+    marginLeft: 10,
+  },
+  unreadAlertBadgeText: { color: "#fff", fontSize: 10, fontWeight: "bold" },
+
   card: {
     backgroundColor: "#fff",
     borderRadius: 12,
@@ -1563,6 +1664,7 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     marginTop: 4,
   },
+  cardAuthorLarge: { fontSize: 16, color: "#0077cc", fontWeight: "bold" },
   badgeContainer: { justifyContent: "center" },
 
   badgeShared: {
@@ -1576,7 +1678,6 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     marginRight: 5,
   },
-
   badgeReviewed: {
     backgroundColor: "#e8f5e9",
     color: "#27ae60",
@@ -1934,6 +2035,7 @@ const styles = StyleSheet.create({
     color: "#e67e22",
     textAlign: "center",
     marginTop: 10,
+    marginBottom: 10,
   },
   createScroll: { padding: 20 },
   inputLabel: {
@@ -1956,7 +2058,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#ddd",
     borderRadius: 8,
-    padding: 12,
+    padding: 10,
     fontSize: 16,
     minHeight: 80,
     textAlignVertical: "top",
