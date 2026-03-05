@@ -12,7 +12,6 @@ import {
   Platform,
   Keyboard,
 } from "react-native";
-// ★修正：SafeAreaViewの警告を消すための正しいインポート
 import { SafeAreaView } from "react-native-safe-area-context";
 
 const OptionGroup = ({ options, selected, onSelect, color = "#0077cc" }) => (
@@ -70,8 +69,20 @@ const MedicalScreen = ({
   isOffline,
   toggleNetworkStatus,
   alertThresholds,
+  userProfiles = {},
 }) => {
-  const displayUserName = isAdmin ? "管理者(監督)" : currentUser;
+  // ★変更：テスト用スイッチャーを廃止し、実際の設定データからロールを取得
+  const currentUserProfile = userProfiles[currentUser] || {};
+  const userRole = isAdmin ? "owner" : currentUserProfile.role || "member";
+  const isStaffOrAbove = ["owner", "staff"].includes(userRole);
+
+  const roleNameMap = {
+    owner: "管理者(監督)",
+    staff: "コーチ(スタッフ)",
+    captain: `${currentUser}(キャプテン)`,
+    member: `${currentUser}(あなた)`,
+  };
+  const displayUserName = roleNameMap[userRole] || currentUser;
 
   const [isCreateModalVisible, setIsCreateModalVisible] = useState(false);
   const [selectedRecord, setSelectedRecord] = useState(null);
@@ -127,7 +138,7 @@ const MedicalScreen = ({
       record.isParticipating === "制限" ||
       record.hasPain
     ) {
-      level = "warning";
+      return "warning";
     }
 
     if (level === "warning" && alertThresholds.autoEscalate) {
@@ -155,11 +166,25 @@ const MedicalScreen = ({
     return level;
   };
 
-  let processedRecords = isAdmin
-    ? medicalRecords
-    : medicalRecords.filter((r) => r.author === currentUser);
+  // ★変更：権限と担当設定に基づいた厳密なフィルタリング
+  const staffScope = currentUserProfile.staffScope || "all";
 
-  if (isAdmin) {
+  let processedRecords = medicalRecords.filter((r) => {
+    if (userRole === "owner") return true;
+    if (userRole === "staff") {
+      if (staffScope === "all") return true;
+      if (staffScope === "assigned") {
+        const authorProfile = userProfiles[r.author] || {};
+        return authorProfile.assignedStaff === currentUser;
+      }
+    }
+    if (userRole === "member" || userRole === "captain") {
+      return r.author === currentUser;
+    }
+    return false;
+  });
+
+  if (isStaffOrAbove) {
     if (activeTab === "danger")
       processedRecords = processedRecords.filter(
         (r) => getAlertLevel(r, medicalRecords) === "danger",
@@ -341,6 +366,9 @@ const MedicalScreen = ({
 
   const handleSendComment = () => {
     if (commentText.trim() === "") return;
+
+    const isStaffComment = isStaffOrAbove;
+
     const newRecords = medicalRecords.map((r) => {
       if (r.id === selectedRecord.id) {
         const newComment = {
@@ -353,13 +381,14 @@ const MedicalScreen = ({
         return {
           ...r,
           comments: [...r.comments, newComment],
-          isReviewed: isAdmin ? true : r.isReviewed,
+          isReviewed: isStaffComment ? true : r.isReviewed,
         };
       }
       return r;
     });
     setMedicalRecords(newRecords);
-    if (isAdmin) {
+
+    if (isStaffComment) {
       setSelectedRecord((prev) => ({
         ...prev,
         isReviewed: true,
@@ -419,12 +448,16 @@ const MedicalScreen = ({
     setSelectedRecord((prev) => ({ ...prev, managementTags: newTags }));
   };
 
-  const dangerCount = medicalRecords.filter(
-    (r) => getAlertLevel(r, medicalRecords) === "danger",
-  ).length;
-  const warningCount = medicalRecords.filter(
-    (r) => getAlertLevel(r, medicalRecords) === "warning",
-  ).length;
+  let dangerCount = 0;
+  let warningCount = 0;
+  if (isStaffOrAbove) {
+    dangerCount = processedRecords.filter(
+      (r) => getAlertLevel(r, medicalRecords) === "danger",
+    ).length;
+    warningCount = processedRecords.filter(
+      (r) => getAlertLevel(r, medicalRecords) === "warning",
+    ).length;
+  }
 
   return (
     <SafeAreaView style={styles.container}>
@@ -445,7 +478,7 @@ const MedicalScreen = ({
         </View>
       </View>
 
-      {isAdmin && (
+      {isStaffOrAbove && (
         <View style={styles.adminDashboard}>
           <View style={styles.summaryRow}>
             <Text style={styles.summaryTitle}>📊 サマリー</Text>
@@ -627,7 +660,7 @@ const MedicalScreen = ({
                     {expanded ? "▼" : "▶"} {date} ── [ {recordsInDate.length}件
                     ]
                   </Text>
-                  {hasUnreviewed && (
+                  {hasUnreviewed && isStaffOrAbove && (
                     <View style={styles.unreadAlertBadge}>
                       <Text style={styles.unreadAlertBadgeText}>
                         未確認あり
@@ -645,8 +678,12 @@ const MedicalScreen = ({
                         style={[
                           styles.card,
                           record.status === "pending" && styles.pendingCard,
-                          isAdmin && level === "danger" && styles.dangerCard,
-                          isAdmin && level === "warning" && styles.warningCard,
+                          isStaffOrAbove &&
+                            level === "danger" &&
+                            styles.dangerCard,
+                          isStaffOrAbove &&
+                            level === "warning" &&
+                            styles.warningCard,
                         ]}
                         activeOpacity={0.9}
                         onPress={() => setSelectedRecord(record)}
@@ -658,7 +695,9 @@ const MedicalScreen = ({
                         <View style={styles.cardHeader}>
                           <View>
                             <Text style={styles.cardAuthorLarge}>
-                              {isAdmin ? `👤 ${record.author}` : `👤 自分`}
+                              {isStaffOrAbove || record.author !== currentUser
+                                ? `👤 ${record.author}`
+                                : `👤 自分`}
                             </Text>
                           </View>
                           <View style={{ alignItems: "flex-end" }}>
@@ -669,7 +708,7 @@ const MedicalScreen = ({
                             ) : (
                               <Text style={styles.badgeUnreviewed}>未確認</Text>
                             )}
-                            {isAdmin && level === "danger" && (
+                            {isStaffOrAbove && level === "danger" && (
                               <Text
                                 style={[
                                   styles.badgeWarningSmall,
@@ -679,7 +718,7 @@ const MedicalScreen = ({
                                 🚨 危険
                               </Text>
                             )}
-                            {isAdmin && level === "warning" && (
+                            {isStaffOrAbove && level === "warning" && (
                               <Text
                                 style={[
                                   styles.badgeWarningSmall,
@@ -692,15 +731,16 @@ const MedicalScreen = ({
                           </View>
                         </View>
 
-                        {isAdmin && record.managementTags?.length > 0 && (
-                          <View style={styles.tagDisplayRow}>
-                            {record.managementTags.map((t) => (
-                              <Text key={t} style={styles.tagDisplayBadge}>
-                                {t}
-                              </Text>
-                            ))}
-                          </View>
-                        )}
+                        {isStaffOrAbove &&
+                          record.managementTags?.length > 0 && (
+                            <View style={styles.tagDisplayRow}>
+                              {record.managementTags.map((t) => (
+                                <Text key={t} style={styles.tagDisplayBadge}>
+                                  {t}
+                                </Text>
+                              ))}
+                            </View>
+                          )}
 
                         <View style={styles.cardRow}>
                           <Text style={styles.infoLabel}>
@@ -728,7 +768,7 @@ const MedicalScreen = ({
         )}
       </ScrollView>
 
-      {!isAdmin && (
+      {["member", "captain"].includes(userRole) && (
         <TouchableOpacity
           style={[styles.fab, isOffline && { backgroundColor: "#f39c12" }]}
           onPress={() => {
@@ -761,7 +801,7 @@ const MedicalScreen = ({
                 <View style={{ width: 60 }} />
               </View>
 
-              {isAdmin && selectedRecord && (
+              {isStaffOrAbove && selectedRecord && (
                 <View style={styles.actionToolbarWrapper}>
                   <Text
                     style={{
@@ -803,9 +843,9 @@ const MedicalScreen = ({
               {selectedRecord &&
                 (() => {
                   const isMyRecord =
-                    currentUser === selectedRecord.author && !isAdmin;
+                    currentUser === selectedRecord.author &&
+                    ["member", "captain"].includes(userRole);
                   const timeElapsed = currentTime - selectedRecord.createdAt;
-                  // ★修正ロックの条件（確認済なら修正不可）
                   const isEditable =
                     timeElapsed < 30 * 60 * 1000 && !selectedRecord.isReviewed;
                   const minutesLeft = Math.max(
@@ -814,14 +854,17 @@ const MedicalScreen = ({
                   );
 
                   return (
-                    <ScrollView style={styles.detailScroll}>
+                    <ScrollView
+                      style={styles.detailScroll}
+                      keyboardShouldPersistTaps="handled"
+                    >
                       <View style={styles.detailCard}>
                         <View style={[styles.cardHeader, { marginBottom: 10 }]}>
                           <Text style={styles.cardDate}>
                             {selectedRecord.date}
                           </Text>
                           <View style={{ alignItems: "flex-end" }}>
-                            {isAdmin && !selectedRecord.isReviewed && (
+                            {isStaffOrAbove && !selectedRecord.isReviewed && (
                               <TouchableOpacity
                                 style={styles.markReviewedBtn}
                                 onPress={handleMarkAsReviewed}

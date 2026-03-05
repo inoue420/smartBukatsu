@@ -13,6 +13,8 @@ import {
   Alert,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { Video, ResizeMode } from "expo-av";
+import * as ImagePicker from "expo-image-picker";
 
 const QUICK_TAGS = [
   "👍 ナイスプレイ",
@@ -22,26 +24,42 @@ const QUICK_TAGS = [
   "⚠️ ピンチ",
 ];
 
-const ProjectDetailScreen = ({
-  route,
-  navigation,
-  isAdmin,
-  currentUser,
-  clubMembers,
-}) => {
-  const { project } = route.params || {};
+const ProjectDetailScreen = ({ route, navigation, clubMembers }) => {
+  // ★変更：List画面で選択されたロールを受け取る（デフォルトはmember）
+  const { project, userRole = "member" } = route.params || {};
   const projectTitle = project ? project.title : "未定のプロジェクト";
 
-  const displayUserName = isAdmin ? "管理者(監督)" : currentUser;
+  // ★追加：ロールに応じた権限定義と表示名
+  const canEditSettings = ["owner", "staff"].includes(userRole);
+  const canDeleteAnyTag = ["owner", "staff"].includes(userRole);
+
+  const roleNameMap = {
+    owner: "監督",
+    staff: "コーチ",
+    captain: "キャプテン",
+    member: "佐藤(自分)",
+  };
+  const displayUserName = roleNameMap[userRole];
+
+  // --- 動画プレイヤー用のステート ---
+  const [videoUri, setVideoUri] = useState(null);
+  const [inputUrl, setInputUrl] = useState("");
+  const [isUrlModalVisible, setIsUrlModalVisible] = useState(false);
+  const [videoDuration, setVideoDuration] = useState(15 * 60);
+  const videoRef = useRef(null);
 
   const [videoTime, setVideoTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [activeTab, setActiveTab] = useState("highlight"); // 確認しやすいよう初期タブをハイライトに設定
+  const [isMuted, setIsMuted] = useState(false);
+  const [activeTab, setActiveTab] = useState("highlight");
 
   const [isSettingsModalVisible, setIsSettingsModalVisible] = useState(false);
   const [shareScope, setShareScope] = useState("team");
 
-  // --- クイックタグ（ボタン）のステート ---
+  // --- ハイライト再生の設定用ステート ---
+  const [preRoll, setPreRoll] = useState(5);
+  const [postRoll, setPostRoll] = useState(5);
+
   const [quickTags, setQuickTags] = useState([
     "👍 ナイスプレイ",
     "🤔 要改善",
@@ -53,17 +71,16 @@ const ProjectDetailScreen = ({
     useState(false);
   const [newQuickTagName, setNewQuickTagName] = useState("");
 
-  // --- 各タブのステート ---
   const [chats, setChats] = useState([
     {
       id: "1",
-      user: "管理者(監督)",
+      user: "監督",
       text: "試合お疲れ様。[01:15] のディフェンスの動きについて確認してほしい。",
       time: "10:00",
     },
     {
       id: "2",
-      user: "佐藤",
+      user: "佐藤(自分)",
       text: "[01:15] の場面ですね。カバーが遅れてしまいました。",
       time: "10:15",
     },
@@ -72,10 +89,10 @@ const ProjectDetailScreen = ({
   const chatScrollRef = useRef(null);
 
   const [tags, setTags] = useState([
-    { id: "t1", videoTime: 15, label: "👍 ナイスプレイ", user: "管理者(監督)" },
-    { id: "t2", videoTime: 75, label: "🤔 要改善", user: "佐藤" },
-    { id: "t3", videoTime: 120, label: "👍 ナイスプレイ", user: "鈴木" },
-    { id: "t4", videoTime: 300, label: "🎯 チャンス", user: "管理者(監督)" },
+    { id: "t1", videoTime: 15, label: "👍 ナイスプレイ", user: "監督" },
+    { id: "t2", videoTime: 75, label: "🤔 要改善", user: "佐藤(自分)" },
+    { id: "t3", videoTime: 120, label: "👍 ナイスプレイ", user: "キャプテン" },
+    { id: "t4", videoTime: 300, label: "🎯 チャンス", user: "コーチ" },
   ]);
 
   const [memos, setMemos] = useState([
@@ -83,36 +100,205 @@ const ProjectDetailScreen = ({
       id: "m1",
       videoTime: 0,
       text: "立ち上がりのフォーメーションが全体的に低い。",
-      user: "管理者(監督)",
+      user: "監督",
     },
   ]);
   const [newMemoText, setNewMemoText] = useState("");
 
-  // ★追加：ハイライト用のフィルターステート
   const [highlightFilter, setHighlightFilter] = useState("all");
+
+  const uniqueTagLabels = Array.from(new Set(tags.map((t) => t.label)));
+  const filteredHighlights =
+    highlightFilter === "all"
+      ? tags
+      : tags.filter((t) => t.label === highlightFilter);
+
+  const [isPlaylistActive, setIsPlaylistActive] = useState(false);
+  const playlistRef = useRef({
+    active: false,
+    index: 0,
+    endTime: 0,
+    highlights: [],
+  });
+
+  // --- プレイリスト連続再生用ロジック ---
+  const startPlaylist = async () => {
+    if (filteredHighlights.length === 0) {
+      Alert.alert("エラー", "再生するハイライトがありません。");
+      return;
+    }
+    const firstClip = filteredHighlights[0];
+
+    const startTime = Math.max(firstClip.videoTime - preRoll, 0);
+    const endTime = firstClip.videoTime + postRoll;
+
+    playlistRef.current = {
+      active: true,
+      index: 0,
+      endTime: endTime,
+      highlights: filteredHighlights,
+    };
+    setIsPlaylistActive(true);
+
+    if (videoUri && videoRef.current) {
+      await videoRef.current.setPositionAsync(startTime * 1000);
+      await videoRef.current.playAsync();
+    } else {
+      setVideoTime(startTime);
+      setIsPlaying(true);
+    }
+  };
+
+  const stopPlaylist = () => {
+    playlistRef.current.active = false;
+    setIsPlaylistActive(false);
+    if (videoUri && videoRef.current) {
+      videoRef.current.pauseAsync();
+    } else {
+      setIsPlaying(false);
+    }
+  };
+
+  const cancelPlaylistIfActive = () => {
+    if (playlistRef.current.active) {
+      playlistRef.current.active = false;
+      setIsPlaylistActive(false);
+    }
+  };
 
   // --- 動画プレイヤー用ロジック ---
   useEffect(() => {
     let interval;
-    if (isPlaying) {
+    if (isPlaying && !videoUri) {
       interval = setInterval(() => {
-        setVideoTime((prev) => prev + 1);
+        setVideoTime((prev) => {
+          const nextTime = prev + 1;
+
+          if (playlistRef.current.active) {
+            if (nextTime >= playlistRef.current.endTime) {
+              const nextIndex = playlistRef.current.index + 1;
+              if (nextIndex < playlistRef.current.highlights.length) {
+                const nextClip = playlistRef.current.highlights[nextIndex];
+                playlistRef.current.index = nextIndex;
+                playlistRef.current.endTime = nextClip.videoTime + postRoll;
+                return Math.max(nextClip.videoTime - preRoll, 0);
+              } else {
+                playlistRef.current.active = false;
+                setIsPlaylistActive(false);
+                setIsPlaying(false);
+                Alert.alert(
+                  "プレイリスト終了",
+                  "すべてのハイライトの再生が完了しました。",
+                );
+                return prev;
+              }
+            }
+          }
+          return nextTime;
+        });
       }, 1000);
     }
     return () => clearInterval(interval);
-  }, [isPlaying]);
+  }, [isPlaying, videoUri, preRoll, postRoll]);
 
   const formatTime = (seconds) => {
     const m = Math.floor(seconds / 60)
       .toString()
       .padStart(2, "0");
-    const s = (seconds % 60).toString().padStart(2, "0");
+    const s = (Math.floor(seconds) % 60).toString().padStart(2, "0");
     return `${m}:${s}`;
   };
 
-  const jumpToTime = (seconds) => {
-    setVideoTime(seconds);
-    setIsPlaying(false);
+  const handlePlaybackStatusUpdate = (status) => {
+    if (status.isLoaded) {
+      const currentTime = Math.floor(status.positionMillis / 1000);
+      setVideoTime(currentTime);
+      setIsPlaying(status.isPlaying);
+      if (status.durationMillis) {
+        setVideoDuration(Math.floor(status.durationMillis / 1000));
+      }
+
+      if (playlistRef.current.active && status.isPlaying) {
+        if (currentTime >= playlistRef.current.endTime) {
+          const nextIndex = playlistRef.current.index + 1;
+          if (nextIndex < playlistRef.current.highlights.length) {
+            const nextClip = playlistRef.current.highlights[nextIndex];
+            const startTime = Math.max(nextClip.videoTime - preRoll, 0);
+            playlistRef.current.index = nextIndex;
+            playlistRef.current.endTime = nextClip.videoTime + postRoll;
+            videoRef.current.setPositionAsync(startTime * 1000);
+          } else {
+            playlistRef.current.active = false;
+            setIsPlaylistActive(false);
+            videoRef.current.pauseAsync();
+            Alert.alert(
+              "プレイリスト終了",
+              "すべてのハイライトの再生が完了しました。",
+            );
+          }
+        }
+      }
+    }
+  };
+
+  const togglePlay = async () => {
+    cancelPlaylistIfActive();
+    if (videoUri && videoRef.current) {
+      if (isPlaying) {
+        await videoRef.current.pauseAsync();
+      } else {
+        await videoRef.current.playAsync();
+      }
+    } else {
+      setIsPlaying(!isPlaying);
+    }
+  };
+
+  const jumpToTime = async (seconds) => {
+    cancelPlaylistIfActive();
+    if (videoUri && videoRef.current) {
+      await videoRef.current.setPositionAsync(seconds * 1000);
+      await videoRef.current.playAsync();
+    } else {
+      setVideoTime(seconds);
+      setIsPlaying(false);
+    }
+  };
+
+  const skipBackward = async () => {
+    cancelPlaylistIfActive();
+    if (videoUri && videoRef.current) {
+      const newTime = Math.max(videoTime - 5, 0);
+      await videoRef.current.setPositionAsync(newTime * 1000);
+      setVideoTime(newTime);
+    } else {
+      setVideoTime((prev) => Math.max(prev - 5, 0));
+    }
+  };
+
+  const skipForward = async () => {
+    cancelPlaylistIfActive();
+    if (videoUri && videoRef.current) {
+      const newTime = Math.min(videoTime + 5, videoDuration);
+      await videoRef.current.setPositionAsync(newTime * 1000);
+      setVideoTime(newTime);
+    } else {
+      setVideoTime((prev) => Math.min(prev + 5, videoDuration));
+    }
+  };
+
+  const pickVideoFromGallery = async () => {
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Videos,
+        allowsEditing: false,
+      });
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        setVideoUri(result.assets[0].uri);
+      }
+    } catch (error) {
+      Alert.alert("エラー", "動画の読み込みに失敗しました");
+    }
   };
 
   // --- チャット処理 ---
@@ -215,13 +401,6 @@ const ProjectDetailScreen = ({
     setMemos(memos.filter((m) => m.id !== id));
   };
 
-  // ★追加：ハイライト表示用のデータ抽出ロジック
-  const uniqueTagLabels = Array.from(new Set(tags.map((t) => t.label)));
-  const filteredHighlights =
-    highlightFilter === "all"
-      ? tags
-      : tags.filter((t) => t.label === highlightFilter);
-
   return (
     <SafeAreaView style={styles.container}>
       <KeyboardAvoidingView
@@ -238,7 +417,8 @@ const ProjectDetailScreen = ({
           <Text style={styles.headerTitle} numberOfLines={1}>
             {projectTitle}
           </Text>
-          {isAdmin ? (
+          {/* ★変更：設定ボタンは「監督・スタッフ」のみ表示（キャプテン・部員は非表示） */}
+          {canEditSettings ? (
             <TouchableOpacity
               style={styles.settingsBtn}
               onPress={() => setIsSettingsModalVisible(true)}
@@ -251,18 +431,60 @@ const ProjectDetailScreen = ({
         </View>
 
         <View style={styles.videoPlayerArea}>
-          <Text style={styles.videoPlaceholderText}>
-            ※ ここに動画が表示されます
-          </Text>
+          {videoUri ? (
+            <Video
+              ref={videoRef}
+              source={{ uri: videoUri }}
+              style={styles.videoComponent}
+              resizeMode={ResizeMode.CONTAIN}
+              onPlaybackStatusUpdate={handlePlaybackStatusUpdate}
+              useNativeControls={false}
+              isMuted={isMuted}
+            />
+          ) : (
+            <View style={styles.videoSetupContainer}>
+              <Text style={styles.videoPlaceholderText}>
+                ※ ここに動画が表示されます
+              </Text>
+              <View style={styles.setupBtnRow}>
+                <TouchableOpacity
+                  style={styles.setupBtn}
+                  onPress={pickVideoFromGallery}
+                >
+                  <Text style={styles.setupBtnText}>📸 カメラロール</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.setupBtn}
+                  onPress={() => setIsUrlModalVisible(true)}
+                >
+                  <Text style={styles.setupBtnText}>🔗 URL</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+
           <View style={styles.videoControls}>
-            <TouchableOpacity
-              style={styles.playBtn}
-              onPress={() => setIsPlaying(!isPlaying)}
-            >
+            <TouchableOpacity style={styles.skipBtn} onPress={skipBackward}>
+              <Text style={styles.skipBtnText}>⏪ 5s</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.playBtn} onPress={togglePlay}>
               <Text style={styles.playBtnText}>{isPlaying ? "⏸" : "▶"}</Text>
             </TouchableOpacity>
+
+            <TouchableOpacity style={styles.skipBtn} onPress={skipForward}>
+              <Text style={styles.skipBtnText}>5s ⏩</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.muteBtn}
+              onPress={() => setIsMuted(!isMuted)}
+            >
+              <Text style={styles.muteBtnText}>{isMuted ? "🔇" : "🔊"}</Text>
+            </TouchableOpacity>
+
             <Text style={styles.videoTimeDisplay}>
-              {formatTime(videoTime)} / 15:00
+              {formatTime(videoTime)} / {formatTime(videoDuration)}
             </Text>
           </View>
         </View>
@@ -292,12 +514,9 @@ const ProjectDetailScreen = ({
         </View>
 
         <View style={styles.tabContentArea}>
-          {/* ==============================================
-              ハイライトタブ（完成版）
-          ============================================== */}
+          {/* ハイライトタブ */}
           {activeTab === "highlight" && (
             <View style={{ flex: 1, backgroundColor: "#f0f2f5" }}>
-              {/* フィルターバー */}
               <View style={styles.highlightFilterArea}>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                   <TouchableOpacity
@@ -340,28 +559,26 @@ const ProjectDetailScreen = ({
                 </ScrollView>
               </View>
 
-              {/* 連続再生ボタン */}
               <View style={styles.playAllContainer}>
                 <TouchableOpacity
-                  style={styles.playAllBtn}
-                  onPress={() =>
-                    Alert.alert(
-                      "ハイライト再生",
-                      "抽出されたシーンを5秒前から順番に連続再生します。(プロトタイプ環境では画面の表示のみとなります)",
-                    )
-                  }
+                  style={[
+                    styles.playAllBtn,
+                    isPlaylistActive && styles.playAllBtnActive,
+                  ]}
+                  onPress={isPlaylistActive ? stopPlaylist : startPlaylist}
                 >
                   <Text style={styles.playAllBtnText}>
-                    ▶ プレイリストを連続再生 ({filteredHighlights.length}
-                    クリップ)
+                    {isPlaylistActive
+                      ? "⏹ 連続再生を停止"
+                      : `▶ プレイリストを連続再生 (${filteredHighlights.length} クリップ)`}
                   </Text>
                 </TouchableOpacity>
                 <Text style={styles.playAllHint}>
-                  ※タグ付けされた時間の5秒前から自動再生します
+                  ※タグ付けされた時間の{preRoll}秒前から{postRoll}
+                  秒後までを順に再生します
                 </Text>
               </View>
 
-              {/* プレイリスト一覧 */}
               <ScrollView style={styles.listScroll}>
                 {filteredHighlights.length === 0 ? (
                   <Text style={styles.emptyText}>
@@ -371,7 +588,12 @@ const ProjectDetailScreen = ({
                   filteredHighlights.map((highlight, index) => (
                     <TouchableOpacity
                       key={highlight.id}
-                      style={styles.highlightCard}
+                      style={[
+                        styles.highlightCard,
+                        isPlaylistActive &&
+                          playlistRef.current.index === index &&
+                          styles.highlightCardActive,
+                      ]}
                       activeOpacity={0.7}
                       onPress={() => jumpToTime(highlight.videoTime)}
                     >
@@ -396,9 +618,7 @@ const ProjectDetailScreen = ({
             </View>
           )}
 
-          {/* ==============================================
-              チャットタブ
-          ============================================== */}
+          {/* チャットタブ */}
           {activeTab === "chat" && (
             <>
               <ScrollView style={styles.chatScroll} ref={chatScrollRef}>
@@ -456,9 +676,7 @@ const ProjectDetailScreen = ({
             </>
           )}
 
-          {/* ==============================================
-              タグタブ
-          ============================================== */}
+          {/* タグタブ */}
           {activeTab === "tag" && (
             <>
               <View style={styles.quickTagArea}>
@@ -501,7 +719,8 @@ const ProjectDetailScreen = ({
                         <Text style={styles.listLabelText}>{tag.label}</Text>
                         <Text style={styles.listUserText}>by {tag.user}</Text>
                       </View>
-                      {(isAdmin || tag.user === displayUserName) && (
+                      {/* ★変更：自分が追加したタグ、または「監督・スタッフ」のみ消去可能 */}
+                      {(canDeleteAnyTag || tag.user === displayUserName) && (
                         <TouchableOpacity
                           style={styles.deleteAction}
                           onPress={() => handleDeleteTag(tag.id)}
@@ -516,9 +735,7 @@ const ProjectDetailScreen = ({
             </>
           )}
 
-          {/* ==============================================
-              メモタブ
-          ============================================== */}
+          {/* メモタブ */}
           {activeTab === "memo" && (
             <>
               <ScrollView style={styles.listScroll}>
@@ -539,7 +756,8 @@ const ProjectDetailScreen = ({
                         <Text style={styles.listContentText}>{memo.text}</Text>
                         <Text style={styles.listUserText}>by {memo.user}</Text>
                       </View>
-                      {(isAdmin || memo.user === displayUserName) && (
+                      {/* ★変更：自分が追加したメモ、または「監督・スタッフ」のみ消去可能 */}
+                      {(canDeleteAnyTag || memo.user === displayUserName) && (
                         <TouchableOpacity
                           style={styles.deleteAction}
                           onPress={() => handleDeleteMemo(memo.id)}
@@ -576,7 +794,50 @@ const ProjectDetailScreen = ({
         </View>
       </KeyboardAvoidingView>
 
-      {/* モーダル群（設定、タグ追加） */}
+      {/* URL入力モーダル */}
+      <Modal
+        visible={isUrlModalVisible}
+        transparent={true}
+        animationType="fade"
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>動画のURLを入力</Text>
+            <TextInput
+              style={styles.modalInputField}
+              placeholder="https://... (.mp4など)"
+              value={inputUrl}
+              onChangeText={setInputUrl}
+              autoCapitalize="none"
+            />
+            <View
+              style={{
+                flexDirection: "row",
+                justifyContent: "flex-end",
+                marginTop: 20,
+              }}
+            >
+              <TouchableOpacity
+                style={styles.cancelBtn}
+                onPress={() => setIsUrlModalVisible(false)}
+              >
+                <Text style={styles.cancelBtnText}>キャンセル</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.addBtn}
+                onPress={() => {
+                  if (inputUrl.trim()) setVideoUri(inputUrl.trim());
+                  setIsUrlModalVisible(false);
+                }}
+              >
+                <Text style={styles.addBtnText}>読み込む</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* 設定・共有モーダル */}
       <Modal
         visible={isSettingsModalVisible}
         transparent={true}
@@ -584,57 +845,83 @@ const ProjectDetailScreen = ({
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>プロジェクト共有設定</Text>
-            <Text style={styles.label}>誰がこのプロジェクトを見れますか？</Text>
+            <Text style={styles.modalTitle}>設定</Text>
 
-            <TouchableOpacity
-              style={[
-                styles.shareOption,
-                shareScope === "team" && styles.shareOptionActive,
-              ]}
-              onPress={() => setShareScope("team")}
-            >
-              <Text
-                style={[
-                  styles.shareOptionText,
-                  shareScope === "team" && styles.shareOptionTextActive,
-                ]}
-              >
-                👥 チーム全員
+            <View style={styles.settingSection}>
+              <Text style={styles.label}>プロジェクト共有設定</Text>
+              <Text style={styles.settingHint}>
+                誰がこのプロジェクトを見れますか？
               </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[
-                styles.shareOption,
-                shareScope === "selected" && styles.shareOptionActive,
-              ]}
-              onPress={() => setShareScope("selected")}
-            >
-              <Text
+              <TouchableOpacity
                 style={[
-                  styles.shareOptionText,
-                  shareScope === "selected" && styles.shareOptionTextActive,
+                  styles.shareOption,
+                  shareScope === "team" && styles.shareOptionActive,
                 ]}
+                onPress={() => setShareScope("team")}
               >
-                👤 選択したメンバーのみ
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[
-                styles.shareOption,
-                shareScope === "coach" && styles.shareOptionActive,
-              ]}
-              onPress={() => setShareScope("coach")}
-            >
-              <Text
+                <Text
+                  style={[
+                    styles.shareOptionText,
+                    shareScope === "team" && styles.shareOptionTextActive,
+                  ]}
+                >
+                  👥 チーム全員
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
                 style={[
-                  styles.shareOptionText,
-                  shareScope === "coach" && styles.shareOptionTextActive,
+                  styles.shareOption,
+                  shareScope === "selected" && styles.shareOptionActive,
                 ]}
+                onPress={() => setShareScope("selected")}
               >
-                🔒 指導者のみ
+                <Text
+                  style={[
+                    styles.shareOptionText,
+                    shareScope === "selected" && styles.shareOptionTextActive,
+                  ]}
+                >
+                  👤 選択したメンバーのみ
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.settingSection}>
+              <Text style={styles.label}>ハイライト再生設定</Text>
+              <Text style={styles.settingHint}>
+                タグが付けられた時間の前後何秒を再生するか設定します。
               </Text>
-            </TouchableOpacity>
+
+              <View style={styles.numberSettingRow}>
+                <Text style={styles.numberSettingLabel}>
+                  再生開始 (タグの何秒前か):
+                </Text>
+                <View style={styles.numberInputWrapper}>
+                  <TextInput
+                    style={styles.numberInput}
+                    value={String(preRoll)}
+                    keyboardType="numeric"
+                    onChangeText={(txt) => setPreRoll(Number(txt) || 0)}
+                  />
+                  <Text style={styles.numberInputUnit}>秒</Text>
+                </View>
+              </View>
+
+              <View style={styles.numberSettingRow}>
+                <Text style={styles.numberSettingLabel}>
+                  再生終了 (タグの何秒後か):
+                </Text>
+                <View style={styles.numberInputWrapper}>
+                  <TextInput
+                    style={styles.numberInput}
+                    value={String(postRoll)}
+                    keyboardType="numeric"
+                    onChangeText={(txt) => setPostRoll(Number(txt) || 0)}
+                  />
+                  <Text style={styles.numberInputUnit}>秒</Text>
+                </View>
+              </View>
+            </View>
 
             <TouchableOpacity
               style={styles.modalCloseBtn}
@@ -646,6 +933,7 @@ const ProjectDetailScreen = ({
         </View>
       </Modal>
 
+      {/* タグ追加モーダル */}
       <Modal
         visible={isAddQuickTagModalVisible}
         transparent={true}
@@ -658,7 +946,7 @@ const ProjectDetailScreen = ({
           >
             <Text style={styles.modalTitle}>新しいタグボタンを作成</Text>
             <TextInput
-              style={styles.inputField}
+              style={styles.modalInputField}
               placeholder="例: 🔥 ハイプレス"
               value={newQuickTagName}
               onChangeText={setNewQuickTagName}
@@ -726,7 +1014,34 @@ const styles = StyleSheet.create({
     alignItems: "center",
     position: "relative",
   },
-  videoPlaceholderText: { color: "#555", fontSize: 16, fontWeight: "bold" },
+  videoComponent: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    bottom: 0,
+    right: 0,
+  },
+  videoSetupContainer: {
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 10,
+  },
+  videoPlaceholderText: {
+    color: "#888",
+    fontSize: 14,
+    fontWeight: "bold",
+    marginBottom: 15,
+  },
+  setupBtnRow: { flexDirection: "row", gap: 10 },
+  setupBtn: {
+    backgroundColor: "rgba(255,255,255,0.8)",
+    paddingVertical: 10,
+    paddingHorizontal: 15,
+    borderRadius: 20,
+    marginHorizontal: 5,
+  },
+  setupBtnText: { color: "#333", fontWeight: "bold", fontSize: 12 },
+
   videoControls: {
     position: "absolute",
     bottom: 10,
@@ -737,14 +1052,22 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.6)",
     padding: 10,
     borderRadius: 8,
+    zIndex: 20,
   },
-  playBtn: { marginRight: 15 },
+  playBtn: { marginRight: 10 },
   playBtnText: { color: "#fff", fontSize: 24 },
+  skipBtn: { marginHorizontal: 10 },
+  skipBtnText: { color: "#fff", fontSize: 14, fontWeight: "bold" },
+
+  muteBtn: { marginLeft: 10 },
+  muteBtnText: { color: "#fff", fontSize: 20 },
+
   videoTimeDisplay: {
     color: "#fff",
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: "bold",
     fontFamily: "monospace",
+    marginLeft: "auto",
   },
 
   tabContainer: {
@@ -766,7 +1089,6 @@ const styles = StyleSheet.create({
 
   tabContentArea: { flex: 1 },
 
-  // --- ハイライトタブ専用スタイル ---
   highlightFilterArea: {
     backgroundColor: "#fff",
     padding: 10,
@@ -804,6 +1126,10 @@ const styles = StyleSheet.create({
     shadowRadius: 3,
     elevation: 3,
   },
+  playAllBtnActive: {
+    backgroundColor: "#555",
+    shadowColor: "#333",
+  },
   playAllBtnText: { color: "#fff", fontSize: 15, fontWeight: "bold" },
   playAllHint: { fontSize: 11, color: "#888", marginTop: 8 },
   highlightCard: {
@@ -821,6 +1147,11 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 2,
   },
+  highlightCardActive: {
+    borderColor: "#0077cc",
+    borderWidth: 2,
+    backgroundColor: "#e6f2ff",
+  },
   highlightIndex: {
     fontSize: 20,
     fontWeight: "bold",
@@ -836,7 +1167,6 @@ const styles = StyleSheet.create({
   },
   highlightTimeText: { fontSize: 12, color: "#888", fontWeight: "bold" },
 
-  // --- チャット用 ---
   chatScroll: { flex: 1, padding: 15 },
   chatBubbleWrapper: { marginBottom: 15, maxWidth: "85%" },
   chatRight: { alignSelf: "flex-end", alignItems: "flex-end" },
@@ -858,7 +1188,6 @@ const styles = StyleSheet.create({
     textDecorationLine: "underline",
   },
 
-  // --- 入力エリア共通 ---
   inputContainer: {
     backgroundColor: "#fff",
     padding: 10,
@@ -908,7 +1237,6 @@ const styles = StyleSheet.create({
   },
   sendBtnText: { color: "#fff", fontWeight: "bold", fontSize: 14 },
 
-  // --- タグ・メモリスト共通 ---
   listScroll: { flex: 1, padding: 15 },
   listItemCard: {
     flexDirection: "row",
@@ -946,7 +1274,6 @@ const styles = StyleSheet.create({
   deleteAction: { padding: 10 },
   deleteActionText: { color: "#aaa", fontSize: 16, fontWeight: "bold" },
 
-  // --- タグ用上部エリア ---
   quickTagArea: {
     backgroundColor: "#fff",
     padding: 10,
@@ -982,15 +1309,8 @@ const styles = StyleSheet.create({
   },
   addQuickTagBtnText: { fontSize: 13, color: "#0077cc", fontWeight: "bold" },
 
-  emptyTabText: {
-    fontSize: 16,
-    fontWeight: "bold",
-    color: "#555",
-    marginBottom: 10,
-  },
   emptyText: { textAlign: "center", color: "#888", marginTop: 30 },
 
-  // --- モーダル共通 ---
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.5)",
@@ -1002,31 +1322,75 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
     padding: 20,
     borderRadius: 12,
+    maxHeight: "80%",
   },
   modalTitle: {
     fontSize: 18,
     fontWeight: "bold",
     marginBottom: 15,
     color: "#333",
+    textAlign: "center",
   },
-  label: { fontSize: 14, fontWeight: "bold", color: "#555", marginBottom: 10 },
+  modalInputField: {
+    backgroundColor: "#f9f9f9",
+    borderWidth: 1,
+    borderColor: "#ddd",
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 16,
+  },
+
+  settingSection: {
+    marginBottom: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: "#eee",
+    paddingBottom: 15,
+  },
+  label: { fontSize: 15, fontWeight: "bold", color: "#333", marginBottom: 5 },
+  settingHint: { fontSize: 12, color: "#888", marginBottom: 10 },
   shareOption: {
-    padding: 15,
+    padding: 12,
     backgroundColor: "#f9f9f9",
     borderRadius: 8,
-    marginBottom: 10,
+    marginBottom: 8,
     borderWidth: 1,
     borderColor: "#eee",
   },
   shareOptionActive: { backgroundColor: "#e6f2ff", borderColor: "#0077cc" },
   shareOptionText: { fontSize: 14, color: "#555", fontWeight: "bold" },
   shareOptionTextActive: { color: "#0077cc" },
+
+  numberSettingRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 10,
+    backgroundColor: "#f9f9f9",
+    padding: 10,
+    borderRadius: 8,
+  },
+  numberSettingLabel: { fontSize: 14, color: "#555", fontWeight: "bold" },
+  numberInputWrapper: { flexDirection: "row", alignItems: "center" },
+  numberInput: {
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: "#ddd",
+    borderRadius: 6,
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    width: 50,
+    textAlign: "center",
+    fontSize: 16,
+    fontWeight: "bold",
+    color: "#333",
+  },
+  numberInputUnit: { fontSize: 14, color: "#555", marginLeft: 8 },
+
   modalCloseBtn: {
     backgroundColor: "#0077cc",
     padding: 12,
     borderRadius: 8,
     alignItems: "center",
-    marginTop: 10,
   },
   modalCloseBtnText: { color: "#fff", fontWeight: "bold", fontSize: 16 },
   cancelBtn: { paddingVertical: 10, paddingHorizontal: 15, marginRight: 10 },

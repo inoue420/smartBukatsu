@@ -10,10 +10,10 @@ import {
   KeyboardAvoidingView,
   Platform,
   Switch,
+  Modal,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-// ★修正：入力中にキーボードが閉じるのを防ぐため、部品をメイン関数の外側に移動
 const ThresholdSelector = ({ label, value, min, max, onChange }) => (
   <View style={styles.thresholdRow}>
     <Text style={styles.thresholdLabel}>{label}</Text>
@@ -90,6 +90,12 @@ const SettingsScreen = ({
   userProfiles,
   setUserProfiles,
 }) => {
+  // ★変更：テスト用ではなく、実際のユーザー情報からロールを取得
+  const currentUserProfile = userProfiles[currentUser] || {};
+  const userRole = isAdmin ? "owner" : currentUserProfile.role || "member";
+  // 監督（owner）またはスタッフ（staff）なら設定画面の操作を許可
+  const isStaffOrAbove = ["owner", "staff"].includes(userRole);
+
   const [newAdminPass, setNewAdminPass] = useState(adminPassword);
   const [newMemberPass, setNewMemberPass] = useState(memberPassword);
   const [showAdminPass, setShowAdminPass] = useState(false);
@@ -117,6 +123,29 @@ const SettingsScreen = ({
     userProfiles[currentUser]?.position || "",
   );
   const [myPassword, setMyPassword] = useState("");
+
+  const [isRoleModalVisible, setIsRoleModalVisible] = useState(false);
+  const [selectedMemberForRole, setSelectedMemberForRole] = useState(null);
+
+  const [isAssignStaffModalVisible, setIsAssignStaffModalVisible] =
+    useState(false);
+  const [selectedMemberForAssign, setSelectedMemberForAssign] = useState(null);
+
+  const [isStaffScopeModalVisible, setIsStaffScopeModalVisible] =
+    useState(false);
+  const [selectedStaffForScope, setSelectedStaffForScope] = useState(null);
+
+  const roleConfig = {
+    owner: { label: "監督(オーナー)", color: "#e74c3c", bg: "#fceeea" },
+    staff: { label: "スタッフ", color: "#9b59b6", bg: "#f5eef8" },
+    captain: { label: "キャプテン", color: "#e67e22", bg: "#fdf2e9" },
+    member: { label: "一般部員", color: "#3498db", bg: "#ebf5fb" },
+  };
+
+  const staffList = clubMembers.filter((m) => {
+    const r = userProfiles[m]?.role;
+    return r === "owner" || r === "staff";
+  });
 
   const toggleSection = (sectionKey) => {
     setExpanded((prev) => ({ ...prev, [sectionKey]: !prev[sectionKey] }));
@@ -210,6 +239,87 @@ const SettingsScreen = ({
     setMyPassword("");
   };
 
+  const handleOpenRoleModal = (memberName) => {
+    if (memberName === "管理者" || memberName === "監督") {
+      Alert.alert("エラー", "デフォルト管理者の権限は変更できません。");
+      return;
+    }
+    const targetRole = userProfiles[memberName]?.role || "member";
+    if (targetRole === "owner") {
+      Alert.alert("操作エラー", "監督(オーナー)の権限は変更できません。");
+      return;
+    }
+
+    // ★ハイブリッド型の安全ガード：スタッフは、他のスタッフの権限を落とせない
+    if (
+      userRole === "staff" &&
+      targetRole === "staff" &&
+      memberName !== currentUser
+    ) {
+      Alert.alert(
+        "操作制限",
+        "他のスタッフの権限は変更できません。監督に依頼してください。",
+      );
+      return;
+    }
+
+    setSelectedMemberForRole(memberName);
+    setIsRoleModalVisible(true);
+  };
+
+  const handleChangeRole = (newRole) => {
+    if (!selectedMemberForRole) return;
+    setUserProfiles((prev) => ({
+      ...prev,
+      [selectedMemberForRole]: {
+        ...(prev[selectedMemberForRole] || {}),
+        role: newRole,
+      },
+    }));
+    setIsRoleModalVisible(false);
+    Alert.alert(
+      "設定完了",
+      `${selectedMemberForRole} の権限を「${roleConfig[newRole].label}」に変更しました。`,
+    );
+    setSelectedMemberForRole(null);
+  };
+
+  const handleOpenAssignStaffModal = (memberName) => {
+    setSelectedMemberForAssign(memberName);
+    setIsAssignStaffModalVisible(true);
+  };
+
+  const handleAssignStaff = (staffName) => {
+    if (!selectedMemberForAssign) return;
+    setUserProfiles((prev) => ({
+      ...prev,
+      [selectedMemberForAssign]: {
+        ...(prev[selectedMemberForAssign] || {}),
+        assignedStaff: staffName === "未設定" ? null : staffName,
+      },
+    }));
+    setIsAssignStaffModalVisible(false);
+    setSelectedMemberForAssign(null);
+  };
+
+  const handleOpenStaffScopeModal = (staffName) => {
+    setSelectedStaffForScope(staffName);
+    setIsStaffScopeModalVisible(true);
+  };
+
+  const handleStaffScope = (scope) => {
+    if (!selectedStaffForScope) return;
+    setUserProfiles((prev) => ({
+      ...prev,
+      [selectedStaffForScope]: {
+        ...(prev[selectedStaffForScope] || {}),
+        staffScope: scope,
+      },
+    }));
+    setIsStaffScopeModalVisible(false);
+    setSelectedStaffForScope(null);
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <KeyboardAvoidingView
@@ -228,7 +338,8 @@ const SettingsScreen = ({
         </View>
 
         <ScrollView style={styles.content} keyboardShouldPersistTaps="handled">
-          {!isAdmin ? (
+          {/* 部員・キャプテン用画面（自分自身のプロフのみ） */}
+          {!isStaffOrAbove ? (
             <>
               <Text style={styles.sectionDescription}>
                 自分のプロフィールやパスワードを変更できます。
@@ -310,9 +421,10 @@ const SettingsScreen = ({
               </SectionCard>
             </>
           ) : (
+            // 監督・スタッフ用画面
             <>
               <Text style={styles.sectionDescription}>
-                ※この画面は管理者のみアクセス可能です。タップして設定項目を開いてください。
+                チームの管理・設定を行うことができます。
               </Text>
 
               <SectionCard
@@ -380,7 +492,7 @@ const SettingsScreen = ({
                 onToggle={() => toggleSection("password")}
                 title="🔑 チームパスワード設定"
               >
-                <Text style={styles.label}>管理者パスワード</Text>
+                <Text style={styles.label}>管理者・スタッフ用パスワード</Text>
                 <View style={styles.passwordRow}>
                   <TextInput
                     style={styles.passwordInput}
@@ -425,7 +537,7 @@ const SettingsScreen = ({
               <SectionCard
                 isExp={expanded.member}
                 onToggle={() => toggleSection("member")}
-                title="👥 部員リスト管理"
+                title="👥 部員リスト・権限・担当管理"
               >
                 <View style={styles.addMemberRow}>
                   <TextInput
@@ -450,23 +562,80 @@ const SettingsScreen = ({
                   </TouchableOpacity>
                 </View>
                 <View style={styles.memberList}>
-                  {clubMembers.map((name) => (
-                    <View key={name} style={styles.memberItem}>
-                      <Text style={styles.memberName}>{name}</Text>
-                      <TouchableOpacity
-                        onPress={() =>
-                          handleDeleteItem(
-                            name,
-                            clubMembers,
-                            setClubMembers,
-                            "部員",
-                          )
-                        }
-                      >
-                        <Text style={styles.deleteText}>削除</Text>
-                      </TouchableOpacity>
-                    </View>
-                  ))}
+                  {clubMembers.map((name) => {
+                    const profile = userProfiles[name] || {};
+                    const memberRole = profile.role || "member";
+                    const roleData = roleConfig[memberRole];
+                    const assignedStaff = profile.assignedStaff || "未設定";
+                    const staffScope = profile.staffScope || "all";
+
+                    return (
+                      <View key={name} style={styles.memberItem}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.memberName}>{name}</Text>
+                          <TouchableOpacity
+                            onPress={() =>
+                              handleDeleteItem(
+                                name,
+                                clubMembers,
+                                setClubMembers,
+                                "部員",
+                              )
+                            }
+                          >
+                            <Text style={styles.deleteText}>削除</Text>
+                          </TouchableOpacity>
+                        </View>
+
+                        <View style={{ alignItems: "flex-end" }}>
+                          <TouchableOpacity
+                            style={[
+                              styles.roleBadge,
+                              {
+                                backgroundColor: roleData.bg,
+                                borderColor: roleData.color,
+                                marginBottom: 6,
+                              },
+                            ]}
+                            onPress={() => handleOpenRoleModal(name)}
+                          >
+                            <Text
+                              style={[
+                                styles.roleBadgeText,
+                                { color: roleData.color },
+                              ]}
+                            >
+                              {roleData.label} ▾
+                            </Text>
+                          </TouchableOpacity>
+
+                          {(memberRole === "member" ||
+                            memberRole === "captain") && (
+                            <TouchableOpacity
+                              style={styles.subSettingBadge}
+                              onPress={() => handleOpenAssignStaffModal(name)}
+                            >
+                              <Text style={styles.subSettingText}>
+                                担当: {assignedStaff} ▾
+                              </Text>
+                            </TouchableOpacity>
+                          )}
+
+                          {memberRole === "staff" && (
+                            <TouchableOpacity
+                              style={styles.subSettingBadge}
+                              onPress={() => handleOpenStaffScopeModal(name)}
+                            >
+                              <Text style={styles.subSettingText}>
+                                閲覧:{" "}
+                                {staffScope === "all" ? "全体" : "担当のみ"} ▾
+                              </Text>
+                            </TouchableOpacity>
+                          )}
+                        </View>
+                      </View>
+                    );
+                  })}
                   {clubMembers.length === 0 && (
                     <Text style={styles.emptyText}>
                       登録されている部員がいません。
@@ -577,6 +746,176 @@ const SettingsScreen = ({
           <View style={{ height: 50 }} />
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* 権限変更用モーダル */}
+      <Modal
+        visible={isRoleModalVisible}
+        transparent={true}
+        animationType="fade"
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>
+              {selectedMemberForRole} の権限を変更
+            </Text>
+
+            {/* ★ハイブリッド型ガード：スタッフに昇格できるのはオーナーのみ */}
+            {userRole === "owner" && (
+              <TouchableOpacity
+                style={[
+                  styles.roleSelectBtn,
+                  userProfiles[selectedMemberForRole]?.role === "staff" &&
+                    styles.roleSelectBtnActive,
+                ]}
+                onPress={() => handleChangeRole("staff")}
+              >
+                <Text style={styles.roleSelectTitle}>🎓 スタッフ</Text>
+                <Text style={styles.roleSelectDesc}>
+                  監督と同等の権限を持ちます。通報の閲覧やメディカル管理、プロジェクトの消去が可能です。
+                </Text>
+              </TouchableOpacity>
+            )}
+
+            <TouchableOpacity
+              style={[
+                styles.roleSelectBtn,
+                userProfiles[selectedMemberForRole]?.role === "captain" &&
+                  styles.roleSelectBtnActive,
+              ]}
+              onPress={() => handleChangeRole("captain")}
+            >
+              <Text style={styles.roleSelectTitle}>⭐ キャプテン</Text>
+              <Text style={styles.roleSelectDesc}>
+                プロジェクトの作成や消去、全体への連絡が可能です。他メンバーの通報・メディカルは見られません。
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.roleSelectBtn,
+                (userProfiles[selectedMemberForRole]?.role === "member" ||
+                  !userProfiles[selectedMemberForRole]?.role) &&
+                  styles.roleSelectBtnActive,
+              ]}
+              onPress={() => handleChangeRole("member")}
+            >
+              <Text style={styles.roleSelectTitle}>👤 一般部員</Text>
+              <Text style={styles.roleSelectDesc}>
+                プロジェクトの閲覧やタグ付け、自身のメディカル入力のみが可能です。
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.cancelBtn}
+              onPress={() => setIsRoleModalVisible(false)}
+            >
+              <Text style={styles.cancelBtnText}>キャンセル</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* 担当スタッフ割り当てモーダル */}
+      <Modal
+        visible={isAssignStaffModalVisible}
+        transparent
+        animationType="fade"
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>
+              {selectedMemberForAssign} の担当スタッフを設定
+            </Text>
+            <ScrollView style={{ maxHeight: 200, marginBottom: 15 }}>
+              <TouchableOpacity
+                style={styles.optionBtnFull}
+                onPress={() => handleAssignStaff("未設定")}
+              >
+                <Text style={styles.optionTextFull}>未設定にする</Text>
+              </TouchableOpacity>
+              {staffList.length === 0 ? (
+                <Text style={styles.emptyText}>
+                  スタッフ権限のメンバーがいません
+                </Text>
+              ) : (
+                staffList.map((staff) => (
+                  <TouchableOpacity
+                    key={staff}
+                    style={styles.optionBtnFull}
+                    onPress={() => handleAssignStaff(staff)}
+                  >
+                    <Text style={styles.optionTextFull}>{staff}</Text>
+                  </TouchableOpacity>
+                ))
+              )}
+            </ScrollView>
+            <TouchableOpacity
+              style={styles.cancelBtn}
+              onPress={() => setIsAssignStaffModalVisible(false)}
+            >
+              <Text style={styles.cancelBtnText}>キャンセル</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* スタッフの閲覧範囲設定モーダル */}
+      <Modal
+        visible={isStaffScopeModalVisible}
+        transparent
+        animationType="fade"
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>
+              {selectedStaffForScope} の閲覧範囲を設定
+            </Text>
+            <Text style={styles.settingHint}>
+              日記やメディカル情報をどこまで閲覧できるか設定します。
+            </Text>
+
+            <TouchableOpacity
+              style={[
+                styles.roleSelectBtn,
+                (userProfiles[selectedStaffForScope]?.staffScope === "all" ||
+                  !userProfiles[selectedStaffForScope]?.staffScope) &&
+                  styles.roleSelectBtnActive,
+              ]}
+              onPress={() => handleStaffScope("all")}
+            >
+              <Text style={styles.roleSelectTitle}>
+                👀 全体閲覧 (Head Coach)
+              </Text>
+              <Text style={styles.roleSelectDesc}>
+                すべての部員の記録を閲覧できます。
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.roleSelectBtn,
+                userProfiles[selectedStaffForScope]?.staffScope ===
+                  "assigned" && styles.roleSelectBtnActive,
+              ]}
+              onPress={() => handleStaffScope("assigned")}
+            >
+              <Text style={styles.roleSelectTitle}>
+                👤 担当のみ (Assistant)
+              </Text>
+              <Text style={styles.roleSelectDesc}>
+                自分が担当に設定されている部員の記録のみ閲覧できます。
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.cancelBtn}
+              onPress={() => setIsStaffScopeModalVisible(false)}
+            >
+              <Text style={styles.cancelBtnText}>キャンセル</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -748,14 +1087,114 @@ const styles = StyleSheet.create({
   memberItem: {
     flexDirection: "row",
     justifyContent: "space-between",
+    alignItems: "center",
     padding: 15,
     borderBottomWidth: 1,
     borderBottomColor: "#eee",
     backgroundColor: "#fafafa",
   },
-  memberName: { fontSize: 16, color: "#333", fontWeight: "bold" },
-  deleteText: { color: "#e74c3c", fontWeight: "bold" },
+  memberName: {
+    fontSize: 16,
+    color: "#333",
+    fontWeight: "bold",
+    marginBottom: 4,
+  },
+  deleteText: { color: "#e74c3c", fontWeight: "bold", fontSize: 12 },
   emptyText: { padding: 15, textAlign: "center", color: "#888" },
+
+  roleBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 15,
+    borderWidth: 1,
+  },
+  roleBadgeText: { fontSize: 12, fontWeight: "bold" },
+
+  subSettingBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 4,
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: "#ccc",
+  },
+  subSettingText: {
+    fontSize: 10,
+    color: "#666",
+    fontWeight: "bold",
+  },
+
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  modalContent: {
+    width: "90%",
+    backgroundColor: "#fff",
+    padding: 20,
+    borderRadius: 12,
+  },
+  modalTitle: {
+    fontSize: 16,
+    fontWeight: "bold",
+    marginBottom: 20,
+    color: "#333",
+    textAlign: "center",
+  },
+  roleSelectBtn: {
+    padding: 15,
+    backgroundColor: "#f9f9f9",
+    borderWidth: 1,
+    borderColor: "#ddd",
+    borderRadius: 8,
+    marginBottom: 10,
+  },
+  roleSelectBtnActive: {
+    backgroundColor: "#ebf5fb",
+    borderColor: "#3498db",
+  },
+  roleSelectTitle: {
+    fontSize: 15,
+    fontWeight: "bold",
+    color: "#333",
+    marginBottom: 6,
+  },
+  roleSelectDesc: {
+    fontSize: 12,
+    color: "#666",
+    lineHeight: 18,
+  },
+
+  optionBtnFull: {
+    padding: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: "#eee",
+  },
+  optionTextFull: {
+    fontSize: 16,
+    color: "#333",
+    textAlign: "center",
+    fontWeight: "bold",
+  },
+  settingHint: {
+    fontSize: 13,
+    color: "#888",
+    marginBottom: 15,
+    textAlign: "center",
+  },
+
+  cancelBtn: {
+    marginTop: 10,
+    paddingVertical: 12,
+    alignItems: "center",
+  },
+  cancelBtnText: {
+    fontSize: 15,
+    fontWeight: "bold",
+    color: "#888",
+  },
 });
 
 export default SettingsScreen;

@@ -1,7 +1,10 @@
 import React, { useState } from "react";
 import { NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
-import { Alert } from "react-native";
+import { Alert, LogBox } from "react-native";
+
+// expo-avの非推奨警告を画面上で非表示にする
+LogBox.ignoreLogs(["[expo-av]"]);
 
 import LoginScreen from "./src/screens/LoginScreen";
 import WorkspaceHomeScreen from "./src/screens/WorkspaceHomeScreen";
@@ -9,7 +12,6 @@ import NoticeBoardScreen from "./src/screens/NoticeBoardScreen";
 import SettingsScreen from "./src/screens/SettingsScreen";
 import DiaryScreen from "./src/screens/DiaryScreen";
 import MedicalScreen from "./src/screens/MedicalScreen";
-// ★追加：一覧画面のインポート
 import ProjectListScreen from "./src/screens/ProjectListScreen";
 import ProjectDetailScreen from "./src/screens/ProjectDetailScreen";
 
@@ -51,7 +53,6 @@ export default function App() {
   const [diaries, setDiaries] = useState([]);
   const [medicalRecords, setMedicalRecords] = useState([]);
 
-  // ★追加：プロジェクト一覧のモックデータ
   const [projects, setProjects] = useState([
     {
       id: "p1",
@@ -60,6 +61,7 @@ export default function App() {
       type: "試合",
       status: "active",
       participants: "team",
+      pinned: false,
     },
     {
       id: "p2",
@@ -68,6 +70,7 @@ export default function App() {
       type: "練習",
       status: "closed",
       participants: "team",
+      pinned: false,
     },
   ]);
 
@@ -122,6 +125,7 @@ export default function App() {
               clubMembers={clubMembers}
               medicalRecords={medicalRecords}
               alertThresholds={alertThresholds}
+              userProfiles={userProfiles}
             />
           )}
         </Stack.Screen>
@@ -136,6 +140,7 @@ export default function App() {
               isOffline={isOffline}
               toggleNetworkStatus={toggleNetworkStatus}
               clubMembers={clubMembers}
+              userProfiles={userProfiles}
             />
           )}
         </Stack.Screen>
@@ -153,6 +158,7 @@ export default function App() {
               positions={positions}
               posts={posts}
               setPosts={setPosts}
+              userProfiles={userProfiles}
             />
           )}
         </Stack.Screen>
@@ -167,11 +173,10 @@ export default function App() {
               isOffline={isOffline}
               toggleNetworkStatus={toggleNetworkStatus}
               alertThresholds={alertThresholds}
+              userProfiles={userProfiles}
             />
           )}
         </Stack.Screen>
-
-        {/* ★追加：プロジェクト一覧画面 */}
         <Stack.Screen name="ProjectList">
           {(props) => (
             <ProjectListScreen
@@ -180,11 +185,10 @@ export default function App() {
               currentUser={currentUser}
               projects={projects}
               setProjects={setProjects}
+              userProfiles={userProfiles}
             />
           )}
         </Stack.Screen>
-
-        {/* 修正：プロジェクト詳細画面 */}
         <Stack.Screen name="ProjectDetail">
           {(props) => (
             <ProjectDetailScreen
@@ -192,10 +196,10 @@ export default function App() {
               isAdmin={isAdmin}
               currentUser={currentUser}
               clubMembers={clubMembers}
+              userProfiles={userProfiles}
             />
           )}
         </Stack.Screen>
-
         <Stack.Screen name="Settings">
           {(props) => (
             <SettingsScreen

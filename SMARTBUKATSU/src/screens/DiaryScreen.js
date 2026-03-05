@@ -12,7 +12,6 @@ import {
   Platform,
   Keyboard,
 } from "react-native";
-// ★修正：SafeAreaViewの警告を消すための正しいインポート
 import { SafeAreaView } from "react-native-safe-area-context";
 
 const DiaryScreen = ({
@@ -27,8 +26,21 @@ const DiaryScreen = ({
   positions,
   posts,
   setPosts,
+  userProfiles = {},
 }) => {
-  const displayUserName = isAdmin ? "管理者(監督)" : currentUser;
+  // ★変更：テスト用スイッチャーを廃止し、実際の設定データからロールを取得
+  const currentUserProfile = userProfiles[currentUser] || {};
+  const userRole = isAdmin ? "owner" : currentUserProfile.role || "member";
+  const isStaffOrAbove = ["owner", "staff"].includes(userRole);
+
+  // 表示名の切り替え
+  const roleNameMap = {
+    owner: "管理者(監督)",
+    staff: "コーチ(スタッフ)",
+    captain: `${currentUser}(キャプテン)`,
+    member: `${currentUser}(あなた)`,
+  };
+  const displayUserName = roleNameMap[userRole] || currentUser;
 
   const [isCreateModalVisible, setIsCreateModalVisible] = useState(false);
   const [selectedDiary, setSelectedDiary] = useState(null);
@@ -77,20 +89,48 @@ const DiaryScreen = ({
     return () => clearInterval(timer);
   }, []);
 
-  let processedDiaries = isAdmin
-    ? diaries
-    : diaries.filter((d) => d.author === currentUser || d.sharedWith === "all");
+  // ★変更：権限と担当設定に基づいた厳密なフィルタリング
+  const staffScope = currentUserProfile.staffScope || "all";
 
-  if (isAdmin) {
+  let processedDiaries = diaries.filter((d) => {
+    if (d.sharedWith === "all") return true;
+    if (userRole === "owner") return true;
+
+    if (userRole === "staff") {
+      if (staffScope === "all") return true;
+      if (staffScope === "assigned") {
+        const authorProfile = userProfiles[d.author] || {};
+        return authorProfile.assignedStaff === currentUser;
+      }
+    }
+
+    if (userRole === "member" || userRole === "captain") {
+      return d.author === currentUser;
+    }
+
+    return false;
+  });
+
+  if (isStaffOrAbove) {
     if (activeTab === "unread") {
       processedDiaries = processedDiaries.filter((d) => !d.isReviewed);
     } else if (activeTab === "needs_reply") {
       processedDiaries = processedDiaries.filter(
-        (d) => d.comments.filter((c) => c.user.includes("管理者")).length === 0,
+        (d) =>
+          d.comments.filter((c) =>
+            ["監督", "コーチ", "アシスタント", "管理者"].some((role) =>
+              c.user.includes(role),
+            ),
+          ).length === 0,
       );
     } else if (activeTab === "replied") {
       processedDiaries = processedDiaries.filter(
-        (d) => d.comments.filter((c) => c.user.includes("管理者")).length > 0,
+        (d) =>
+          d.comments.filter((c) =>
+            ["監督", "コーチ", "アシスタント", "管理者"].some((role) =>
+              c.user.includes(role),
+            ),
+          ).length > 0,
       );
     } else if (activeTab === "starred") {
       processedDiaries = processedDiaries.filter((d) => d.isStarred);
@@ -219,7 +259,6 @@ const DiaryScreen = ({
     setImages([...images, `添付画像_${images.length + 1}.jpg`]);
   };
 
-  // ★修正：エラーの原因だった関数の定義を保証
   const handleDiscardDraft = () => {
     Alert.alert("確認", "下書きを破棄してリセットしますか？", [
       { text: "キャンセル", style: "cancel" },
@@ -364,21 +403,22 @@ const DiaryScreen = ({
       time: "たった今",
       status: isOffline ? "pending" : "sent",
     };
+
+    const isStaffComment = isStaffOrAbove;
+
     const newDiaries = diaries.map((diary) => {
       if (diary.id === selectedDiary.id) {
-        // ★管理者がコメントした場合は自動的に確認済みにする
         return {
           ...diary,
           comments: [...diary.comments, newComment],
-          isReviewed: isAdmin ? true : diary.isReviewed,
+          isReviewed: isStaffComment ? true : diary.isReviewed,
         };
       }
       return diary;
     });
     setDiaries(newDiaries);
 
-    // ★即座に詳細画面の修正・追記ボタンを消すためにステートを同期
-    if (isAdmin) {
+    if (isStaffComment) {
       setSelectedDiary((prev) => ({
         ...prev,
         isReviewed: true,
@@ -402,7 +442,6 @@ const DiaryScreen = ({
       return diary;
     });
     setDiaries(newDiaries);
-    // ★即座に詳細画面の修正・追記ボタンを消すためにステートを同期
     setSelectedDiary((prev) => ({ ...prev, isReviewed: true }));
   };
 
@@ -438,10 +477,19 @@ const DiaryScreen = ({
     );
   };
 
-  const unreviewedCount = diaries.filter((d) => !d.isReviewed).length;
-  const needsReplyCount = diaries.filter(
-    (d) => d.comments.filter((c) => c.user.includes("管理者")).length === 0,
-  ).length;
+  let unreviewedCount = 0;
+  let needsReplyCount = 0;
+  if (isStaffOrAbove) {
+    unreviewedCount = processedDiaries.filter((d) => !d.isReviewed).length;
+    needsReplyCount = processedDiaries.filter(
+      (d) =>
+        d.comments.filter((c) =>
+          ["監督", "コーチ", "アシスタント", "管理者"].some((role) =>
+            c.user.includes(role),
+          ),
+        ).length === 0,
+    ).length;
+  }
 
   const gradeOptions = ["全て", ...(grades || [])];
   const positionOptions = ["全て", ...(positions || [])];
@@ -473,7 +521,7 @@ const DiaryScreen = ({
         </View>
       )}
 
-      {isAdmin && (
+      {isStaffOrAbove && (
         <View style={styles.adminDashboard}>
           <View style={styles.summaryRow}>
             <Text style={styles.summaryTitle}>📊 処理サマリー</Text>
@@ -622,7 +670,7 @@ const DiaryScreen = ({
                     {expanded ? "▼" : "▶"} {date} ── [ {diariesInDate.length}件
                     ]
                   </Text>
-                  {hasUnreviewed && (
+                  {hasUnreviewed && isStaffOrAbove && (
                     <View style={styles.unreadAlertBadge}>
                       <Text style={styles.unreadAlertBadgeText}>
                         未確認あり
@@ -649,7 +697,7 @@ const DiaryScreen = ({
                       <View style={styles.cardHeader}>
                         <View>
                           <Text style={styles.cardAuthorLarge}>
-                            {isAdmin || diary.author !== currentUser
+                            {isStaffOrAbove || diary.author !== currentUser
                               ? `👤 ${diary.author}`
                               : `👤 自分`}
                           </Text>
@@ -714,7 +762,7 @@ const DiaryScreen = ({
         )}
       </ScrollView>
 
-      {!isAdmin && (
+      {userRole === "member" && (
         <TouchableOpacity
           style={[styles.fab, isOffline && { backgroundColor: "#f39c12" }]}
           onPress={() => {
@@ -841,7 +889,7 @@ const DiaryScreen = ({
                 <Text style={styles.createHeaderTitle}>
                   {selectedDiary?.author}の日記
                 </Text>
-                {isAdmin ? (
+                {isStaffOrAbove ? (
                   <TouchableOpacity
                     onPress={() => handleToggleStar(selectedDiary.id)}
                   >
@@ -854,7 +902,7 @@ const DiaryScreen = ({
                 )}
               </View>
 
-              {isAdmin && selectedDiary && (
+              {isStaffOrAbove && selectedDiary && (
                 <View style={styles.actionToolbarWrapper}>
                   <TouchableOpacity
                     onPress={() => handleToggleStar(selectedDiary.id)}
@@ -901,9 +949,9 @@ const DiaryScreen = ({
               {selectedDiary &&
                 (() => {
                   const isMyDiary =
-                    currentUser === selectedDiary.author && !isAdmin;
+                    currentUser === selectedDiary.author &&
+                    userRole === "member";
                   const timeElapsed = currentTime - selectedDiary.createdAt;
-                  // ★修正：確認済みの場合は修正不可（!selectedDiary.isReviewed）
                   const isEditable =
                     timeElapsed < 30 * 60 * 1000 && !selectedDiary.isReviewed;
                   const minutesLeft = Math.max(
@@ -919,7 +967,7 @@ const DiaryScreen = ({
                     >
                       {selectedDiary.sharedWith === "all" &&
                         !isMyDiary &&
-                        !isAdmin && (
+                        !isStaffOrAbove && (
                           <View
                             style={{
                               backgroundColor: "#e8f0fe",
@@ -955,7 +1003,7 @@ const DiaryScreen = ({
                             )}
                           </View>
                           <View style={{ alignItems: "flex-end" }}>
-                            {isAdmin && !selectedDiary.isReviewed && (
+                            {isStaffOrAbove && !selectedDiary.isReviewed && (
                               <TouchableOpacity
                                 style={styles.markReviewedBtn}
                                 onPress={handleMarkAsReviewed}
@@ -966,7 +1014,6 @@ const DiaryScreen = ({
                               </TouchableOpacity>
                             )}
 
-                            {/* ★修正：isEditable（確認済ならfalseになる）に従って表示を消す */}
                             {isMyDiary && !selectedDiary.isReviewed && (
                               <View style={styles.editActionRow}>
                                 {isEditable ? (
@@ -1211,7 +1258,7 @@ const DiaryScreen = ({
                   borderTopColor: "#eee",
                 }}
               >
-                {isAdmin && (
+                {isStaffOrAbove && (
                   <ScrollView
                     horizontal
                     showsHorizontalScrollIndicator={false}
@@ -1235,7 +1282,7 @@ const DiaryScreen = ({
                   <TextInput
                     style={styles.commentInput}
                     placeholder={
-                      isAdmin
+                      isStaffOrAbove
                         ? "指導・アドバイスを入力..."
                         : "コーチに返信する..."
                     }
@@ -1330,7 +1377,6 @@ const DiaryScreen = ({
                   {editingDiaryId ? "日記の修正" : "本日の振り返り"}
                 </Text>
 
-                {/* ★修正：エラー解消済みのhandleDiscardDraftを使用 */}
                 {!editingDiaryId ? (
                   <TouchableOpacity onPress={handleDiscardDraft}>
                     <Text style={[styles.closeBtn, { color: "#e74c3c" }]}>
@@ -1506,6 +1552,7 @@ const styles = StyleSheet.create({
   headerRight: { position: "absolute", right: 15, flexDirection: "row" },
   navBtn: { padding: 5 },
   navIcon: { fontSize: 20 },
+
   offlineBanner: {
     backgroundColor: "#f39c12",
     padding: 8,

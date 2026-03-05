@@ -10,16 +10,56 @@ import {
   KeyboardAvoidingView,
   Platform,
   Keyboard,
+  Alert,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-const ProjectListScreen = ({ navigation, isAdmin, projects, setProjects }) => {
+const ProjectListScreen = ({
+  navigation,
+  isAdmin,
+  currentUser,
+  projects,
+  setProjects,
+  userProfiles = {},
+}) => {
   const [searchQuery, setSearchQuery] = useState("");
   const [isCreateModalVisible, setIsCreateModalVisible] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [newType, setNewType] = useState("試合");
+  const [newParticipants, setNewParticipants] = useState("team");
 
-  let filteredProjects = projects.filter((p) => p.title.includes(searchQuery));
+  const [activeLongPressProjectId, setActiveLongPressProjectId] =
+    useState(null);
+
+  // ★変更：テスト用スイッチャーを廃止し、実際の設定データからロールを取得
+  const currentUserProfile = userProfiles[currentUser] || {};
+  const userRole = isAdmin ? "owner" : currentUserProfile.role || "member";
+  const displayUserName = isAdmin ? "管理者(監督)" : currentUser;
+
+  // ロールに基づく権限の定義
+  const canCreateProject = ["owner", "staff", "captain"].includes(userRole);
+  const canDeleteProject = ["owner", "staff", "captain"].includes(userRole);
+  const canPinProject = ["owner", "staff", "captain"].includes(userRole);
+
+  // フィルタリング
+  let filteredProjects = projects.filter((p) => {
+    // ★変更：論理削除されたプロジェクトは画面に出さない
+    if (p.status === "deleted") return false;
+
+    if (!p.title.includes(searchQuery)) return false;
+
+    if (userRole === "member" || userRole === "captain") {
+      if (p.participants === "coach") return false;
+    }
+
+    return true;
+  });
+
+  filteredProjects.sort((a, b) => {
+    if (a.pinned && !b.pinned) return -1;
+    if (!a.pinned && b.pinned) return 1;
+    return 0;
+  });
 
   const handleCreateProject = () => {
     if (newTitle.trim() === "") return;
@@ -32,13 +72,60 @@ const ProjectListScreen = ({ navigation, isAdmin, projects, setProjects }) => {
       date: dateString,
       type: newType,
       status: "active",
-      participants: "team",
+      participants: newParticipants,
+      pinned: false,
     };
 
     setProjects([newProject, ...projects]);
     setIsCreateModalVisible(false);
     setNewTitle("");
+    setNewParticipants("team");
     Keyboard.dismiss();
+  };
+
+  const handleTogglePin = (projectId) => {
+    setProjects(
+      projects.map((p) =>
+        p.id === projectId ? { ...p, pinned: !p.pinned } : p,
+      ),
+    );
+    setActiveLongPressProjectId(null);
+  };
+
+  const confirmDeleteProject = (projectId) => {
+    Alert.alert(
+      "プロジェクトの消去",
+      "本当にこのプロジェクトを消去しますか？（データはゴミ箱に保持されます）",
+      [
+        { text: "キャンセル", style: "cancel" },
+        {
+          text: "消去",
+          style: "destructive",
+          onPress: () => {
+            // ★変更：論理削除
+            setProjects(
+              projects.map((p) =>
+                p.id === projectId
+                  ? {
+                      ...p,
+                      status: "deleted",
+                      deletedBy: displayUserName,
+                      deletedAt: new Date().toISOString(),
+                    }
+                  : p,
+              ),
+            );
+            setActiveLongPressProjectId(null);
+          },
+        },
+      ],
+    );
+  };
+
+  const getParticipantsLabel = (val) => {
+    if (val === "team") return "全体";
+    if (val === "coach") return "指導者のみ";
+    return "限定";
   };
 
   return (
@@ -66,16 +153,35 @@ const ProjectListScreen = ({ navigation, isAdmin, projects, setProjects }) => {
       <ScrollView
         style={styles.listContainer}
         contentContainerStyle={{ paddingBottom: 100 }}
+        onScrollBeginDrag={() => setActiveLongPressProjectId(null)}
       >
         {filteredProjects.length === 0 ? (
-          <Text style={styles.emptyText}>プロジェクトがありません。</Text>
+          <Text style={styles.emptyText}>
+            該当するプロジェクトがありません。
+          </Text>
         ) : (
           filteredProjects.map((project) => (
             <TouchableOpacity
               key={project.id}
-              style={styles.card}
-              activeOpacity={0.8}
-              onPress={() => navigation.navigate("ProjectDetail", { project })}
+              style={[
+                styles.card,
+                project.pinned && styles.cardPinned,
+                activeLongPressProjectId === project.id && { zIndex: 10 },
+              ]}
+              activeOpacity={0.9}
+              onLongPress={() => {
+                if (canPinProject || canDeleteProject) {
+                  setActiveLongPressProjectId(project.id);
+                }
+              }}
+              delayLongPress={300}
+              onPress={() => {
+                if (activeLongPressProjectId === project.id) {
+                  setActiveLongPressProjectId(null);
+                } else {
+                  navigation.navigate("ProjectDetail", { project, userRole });
+                }
+              }}
             >
               <View style={styles.cardHeader}>
                 <Text style={styles.dateText}>{project.date}</Text>
@@ -90,20 +196,59 @@ const ProjectListScreen = ({ navigation, isAdmin, projects, setProjects }) => {
                   <Text style={styles.badgeText}>{project.type}</Text>
                 </View>
               </View>
-              <Text style={styles.projectTitle}>{project.title}</Text>
+
+              <Text style={styles.projectTitle}>
+                {project.pinned ? "📌 " : ""}
+                {project.title}
+              </Text>
+
               <View style={styles.cardFooter}>
                 <Text style={styles.footerText}>
-                  👥 共有: {project.participants === "team" ? "全体" : "限定"}
+                  👥 共有: {getParticipantsLabel(project.participants)}
                 </Text>
                 <Text style={styles.footerText}>💬 チャット進行中</Text>
               </View>
+
+              {activeLongPressProjectId === project.id && (
+                <View style={styles.longPressMenu}>
+                  {canPinProject && (
+                    <TouchableOpacity
+                      style={styles.longPressMenuItem}
+                      onPress={() => handleTogglePin(project.id)}
+                    >
+                      <Text style={styles.longPressMenuText}>
+                        {project.pinned ? "📌 固定を解除" : "📌 固定する"}
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                  {canDeleteProject && (
+                    <TouchableOpacity
+                      style={styles.longPressMenuItem}
+                      onPress={() => confirmDeleteProject(project.id)}
+                    >
+                      <Text
+                        style={[styles.longPressMenuText, { color: "#d9534f" }]}
+                      >
+                        🗑 消去する
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                  <TouchableOpacity
+                    style={[styles.longPressMenuItem, { borderBottomWidth: 0 }]}
+                    onPress={() => setActiveLongPressProjectId(null)}
+                  >
+                    <Text style={[styles.longPressMenuText, { color: "#888" }]}>
+                      ✕ キャンセル
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              )}
             </TouchableOpacity>
           ))
         )}
       </ScrollView>
 
-      {/* 管理者のみ新規作成ボタンを表示 */}
-      {isAdmin && (
+      {canCreateProject && (
         <TouchableOpacity
           style={styles.fab}
           onPress={() => setIsCreateModalVisible(true)}
@@ -112,7 +257,6 @@ const ProjectListScreen = ({ navigation, isAdmin, projects, setProjects }) => {
         </TouchableOpacity>
       )}
 
-      {/* 新規作成モーダル */}
       <Modal
         visible={isCreateModalVisible}
         transparent={true}
@@ -168,6 +312,60 @@ const ProjectListScreen = ({ navigation, isAdmin, projects, setProjects }) => {
                   練習
                 </Text>
               </TouchableOpacity>
+            </View>
+
+            <Text style={styles.label}>共有範囲</Text>
+            <View style={styles.typeContainer}>
+              <TouchableOpacity
+                style={[
+                  styles.typeBtn,
+                  newParticipants === "team" && styles.typeBtnActive,
+                ]}
+                onPress={() => setNewParticipants("team")}
+              >
+                <Text
+                  style={[
+                    styles.typeBtnText,
+                    newParticipants === "team" && styles.typeBtnTextActive,
+                  ]}
+                >
+                  全体
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.typeBtn,
+                  newParticipants === "group" && styles.typeBtnActive,
+                ]}
+                onPress={() => setNewParticipants("group")}
+              >
+                <Text
+                  style={[
+                    styles.typeBtnText,
+                    newParticipants === "group" && styles.typeBtnTextActive,
+                  ]}
+                >
+                  限定
+                </Text>
+              </TouchableOpacity>
+              {["owner", "staff"].includes(userRole) && (
+                <TouchableOpacity
+                  style={[
+                    styles.typeBtn,
+                    newParticipants === "coach" && styles.typeBtnActive,
+                  ]}
+                  onPress={() => setNewParticipants("coach")}
+                >
+                  <Text
+                    style={[
+                      styles.typeBtnText,
+                      newParticipants === "coach" && styles.typeBtnTextActive,
+                    ]}
+                  >
+                    指導者のみ
+                  </Text>
+                </TouchableOpacity>
+              )}
             </View>
 
             <View style={styles.modalButtons}>
@@ -236,6 +434,12 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.1,
     shadowRadius: 3,
+    position: "relative",
+  },
+  cardPinned: {
+    borderWidth: 2,
+    borderColor: "#e6f2ff",
+    backgroundColor: "#fafcff",
   },
   cardHeader: {
     flexDirection: "row",
@@ -262,6 +466,29 @@ const styles = StyleSheet.create({
     paddingTop: 10,
   },
   footerText: { fontSize: 12, color: "#666", fontWeight: "bold" },
+
+  longPressMenu: {
+    position: "absolute",
+    top: 40,
+    right: 15,
+    backgroundColor: "#fff",
+    borderRadius: 8,
+    padding: 5,
+    elevation: 6,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    zIndex: 20,
+    minWidth: 140,
+  },
+  longPressMenuItem: {
+    paddingVertical: 12,
+    paddingHorizontal: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: "#f0f0f0",
+  },
+  longPressMenuText: { fontSize: 14, fontWeight: "bold", color: "#0077cc" },
 
   fab: {
     position: "absolute",
@@ -302,7 +529,7 @@ const styles = StyleSheet.create({
     marginBottom: 20,
   },
 
-  typeContainer: { flexDirection: "row", marginBottom: 30 },
+  typeContainer: { flexDirection: "row", marginBottom: 20 },
   typeBtn: {
     flex: 1,
     paddingVertical: 12,
@@ -313,7 +540,7 @@ const styles = StyleSheet.create({
     marginRight: 10,
   },
   typeBtnActive: { backgroundColor: "#e6f2ff", borderColor: "#0077cc" },
-  typeBtnText: { fontSize: 15, color: "#555", fontWeight: "bold" },
+  typeBtnText: { fontSize: 13, color: "#555", fontWeight: "bold" },
   typeBtnTextActive: { color: "#0077cc" },
 
   modalButtons: { flexDirection: "row", justifyContent: "flex-end" },

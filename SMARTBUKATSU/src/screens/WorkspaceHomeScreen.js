@@ -30,8 +30,25 @@ const WorkspaceHomeScreen = ({
   clubMembers,
   medicalRecords,
   alertThresholds,
+  userProfiles = {}, // ★追加
 }) => {
-  const displayUserName = isAdmin ? "管理者(監督)" : `${currentUser}(あなた)`;
+  // ★変更：テスト用スイッチャーを廃止し、実際の設定データからロールを取得
+  const currentUserProfile = userProfiles[currentUser] || {};
+  const userRole = isAdmin ? "owner" : currentUserProfile.role || "member";
+
+  // ロールに応じた表示名の切り替え
+  const roleNameMap = {
+    owner: "管理者(監督)",
+    staff: "コーチ(スタッフ)",
+    captain: `${currentUser}(キャプテン)`,
+    member: `${currentUser}(あなた)`,
+  };
+  const displayUserName = roleNameMap[userRole] || currentUser;
+
+  // ロールに基づく権限の定義
+  const isStaffOrAbove = ["owner", "staff"].includes(userRole);
+  const canCreateChannel = ["owner", "staff"].includes(userRole);
+
   const unreadNoticeCount = notices.filter(
     (n) => !n.readBy.includes(currentUser),
   ).length;
@@ -51,7 +68,7 @@ const WorkspaceHomeScreen = ({
       record.isParticipating === "制限" ||
       record.hasPain
     )
-      level = "warning";
+      return "warning";
     return level;
   };
 
@@ -63,36 +80,55 @@ const WorkspaceHomeScreen = ({
     : 0;
 
   const [searchQuery, setSearchQuery] = useState("");
+
   const [channels, setChannels] = useState([
-    { id: "ch_1", name: "全体連絡", isReadOnly: true, allowedMembers: ["all"] },
+    {
+      id: "ch_1",
+      name: "全体連絡",
+      isReadOnly: true,
+      shareScope: "team",
+      allowedMembers: ["all"],
+    },
     {
       id: "ch_diary",
       name: "共有日記",
       isReadOnly: true,
+      shareScope: "team",
       allowedMembers: ["all"],
     },
     {
       id: "ch_2",
       name: "トレーニング",
       isReadOnly: false,
+      shareScope: "team",
       allowedMembers: ["all"],
     },
     {
       id: "ch_3",
       name: "Aチーム限定",
       isReadOnly: false,
+      shareScope: "group",
       allowedMembers: ["佐藤", "鈴木"],
+    },
+    {
+      id: "ch_staff",
+      name: "スタッフ会議室",
+      isReadOnly: false,
+      shareScope: "coach",
+      allowedMembers: ["all"],
     },
   ]);
   const [activeChannelId, setActiveChannelId] = useState("ch_1");
 
   const visibleChannels = channels.filter((ch) => {
-    if (isAdmin) return true;
-    return (
-      ch.allowedMembers.includes("all") ||
-      ch.allowedMembers.includes(currentUser)
-    );
+    if (isStaffOrAbove) return true;
+    if (ch.shareScope === "coach") return false;
+    if (ch.shareScope === "group") {
+      return ch.allowedMembers.includes(currentUser);
+    }
+    return true;
   });
+
   const activeChannelObj =
     channels.find((c) => c.id === activeChannelId) || visibleChannels[0];
 
@@ -100,6 +136,7 @@ const WorkspaceHomeScreen = ({
     useState(false);
   const [newChannelName, setNewChannelName] = useState("");
   const [newChannelIsReadOnly, setNewChannelIsReadOnly] = useState(false);
+  const [newChannelScope, setNewChannelScope] = useState("team");
   const [selectedMembers, setSelectedMembers] = useState(["all"]);
 
   const [newPostText, setNewPostText] = useState("");
@@ -119,11 +156,15 @@ const WorkspaceHomeScreen = ({
   const mainInputRef = useRef(null);
   const replyInputRef = useRef(null);
 
+  // ★変更：論理削除されたものは通報一覧からも除外
   const reportedItems = [];
   posts.forEach((post) => {
+    if (post.status === "deleted") return;
     if (post.reported && post.reported.length > 0)
       reportedItems.push({ type: "post", item: post, postId: post.id });
+
     post.replies?.forEach((reply) => {
+      if (reply.status === "deleted") return;
       if (reply.reported && reply.reported.length > 0)
         reportedItems.push({
           type: "reply",
@@ -142,11 +183,17 @@ const WorkspaceHomeScreen = ({
       id: "ch_" + Date.now().toString(),
       name: trimmedName,
       isReadOnly: newChannelIsReadOnly,
-      allowedMembers: selectedMembers,
+      shareScope: newChannelScope,
+      allowedMembers: newChannelScope === "group" ? selectedMembers : ["all"],
     };
     setChannels([...channels, newCh]);
     setActiveChannelId(newCh.id);
     setIsAddChannelModalVisible(false);
+
+    setNewChannelName("");
+    setNewChannelIsReadOnly(false);
+    setNewChannelScope("team");
+    setSelectedMembers(["all"]);
   };
 
   const toggleMemberSelection = (m) => {
@@ -257,15 +304,41 @@ const WorkspaceHomeScreen = ({
 
   const handleResolveReport = (type, postId, replyId, action) => {
     if (action === "delete") {
-      if (type === "post") setPosts(posts.filter((p) => p.id !== postId));
-      else
+      // ★変更：論理削除
+      if (type === "post") {
         setPosts(
           posts.map((p) =>
             p.id === postId
-              ? { ...p, replies: p.replies.filter((r) => r.id !== replyId) }
+              ? {
+                  ...p,
+                  status: "deleted",
+                  deletedBy: displayUserName,
+                  deletedAt: new Date().toISOString(),
+                }
               : p,
           ),
         );
+      } else {
+        setPosts(
+          posts.map((p) =>
+            p.id === postId
+              ? {
+                  ...p,
+                  replies: p.replies.map((r) =>
+                    r.id === replyId
+                      ? {
+                          ...r,
+                          status: "deleted",
+                          deletedBy: displayUserName,
+                          deletedAt: new Date().toISOString(),
+                        }
+                      : r,
+                  ),
+                }
+              : p,
+          ),
+        );
+      }
     } else if (action === "ignore") {
       if (type === "post")
         setPosts(
@@ -313,17 +386,33 @@ const WorkspaceHomeScreen = ({
   };
 
   const handleDeletePost = (postId) => {
-    Alert.alert("削除", "削除しますか？", [
-      { text: "キャンセル" },
-      {
-        text: "削除",
-        style: "destructive",
-        onPress: () => {
-          setPosts(posts.filter((p) => p.id !== postId));
-          setActiveLongPressPostId(null);
+    Alert.alert(
+      "削除の確認",
+      "本当に削除しますか？\n（データはゴミ箱・監査ログに保持されます）",
+      [
+        { text: "キャンセル" },
+        {
+          text: "削除",
+          style: "destructive",
+          onPress: () => {
+            // ★変更：論理削除
+            setPosts(
+              posts.map((p) =>
+                p.id === postId
+                  ? {
+                      ...p,
+                      status: "deleted",
+                      deletedBy: displayUserName,
+                      deletedAt: new Date().toISOString(),
+                    }
+                  : p,
+              ),
+            );
+            setActiveLongPressPostId(null);
+          },
         },
-      },
-    ]);
+      ],
+    );
   };
 
   const renderContentWithMentions = (text) => {
@@ -353,9 +442,18 @@ const WorkspaceHomeScreen = ({
   const isReportedByMe = (item) =>
     item.reported?.some((r) => r.by === displayUserName);
 
-  const filteredPosts = posts.filter(
-    (post) => post.channel === activeChannelObj.name,
+  // ★変更：論理削除（status === 'deleted'）されたものを画面に出さない
+  let filteredPosts = posts.filter(
+    (post) =>
+      post.channel === activeChannelObj?.name && post.status !== "deleted",
   );
+  if (searchQuery.trim() !== "") {
+    filteredPosts = filteredPosts.filter(
+      (post) =>
+        post.content.includes(searchQuery) || post.user.includes(searchQuery),
+    );
+  }
+
   const pinnedPosts = filteredPosts.filter((p) => p.isPinned);
   const regularPosts = filteredPosts
     .filter((p) => !p.isPinned)
@@ -366,7 +464,7 @@ const WorkspaceHomeScreen = ({
     });
 
   const renderPostCard = (post, isPinnedArea = false) => {
-    if (isReportedByMe(post) && !isAdmin)
+    if (isReportedByMe(post) && !isStaffOrAbove)
       return (
         <View key={post.id} style={styles.reportedMaskCard}>
           <Text style={styles.reportedMaskText}>
@@ -375,13 +473,19 @@ const WorkspaceHomeScreen = ({
         </View>
       );
     const isPending = post.status === "pending";
+
+    // 論理削除されていない返信だけをカウント
+    const validReplies = post.replies.filter((r) => r.status !== "deleted");
+
     return (
       <TouchableOpacity
         key={post.id}
         style={[
           styles.postCard,
           isPinnedArea && styles.pinnedCard,
-          post.reported?.length > 0 && isAdmin && styles.adminReportedCard,
+          post.reported?.length > 0 &&
+            isStaffOrAbove &&
+            styles.adminReportedCard,
           isPending && styles.pendingCard,
           isPinnedArea && { marginBottom: 10 },
         ]}
@@ -394,7 +498,7 @@ const WorkspaceHomeScreen = ({
             <Text style={styles.pendingHeaderText}>🕒 送信待機中</Text>
           </View>
         )}
-        {post.reported?.length > 0 && isAdmin && !isPending && (
+        {post.reported?.length > 0 && isStaffOrAbove && !isPending && (
           <View style={styles.adminReportedHeader}>
             <Text style={styles.adminReportedHeaderText}>
               🚨 {post.reported.length}件の報告があります
@@ -434,8 +538,8 @@ const WorkspaceHomeScreen = ({
             >
               <Text style={styles.replyButtonText}>
                 💬{" "}
-                {post.replies.length > 0
-                  ? `${post.replies.length}件の返信`
+                {validReplies.length > 0
+                  ? `${validReplies.length}件の返信`
                   : "返信"}
               </Text>
             </TouchableOpacity>
@@ -482,7 +586,7 @@ const WorkspaceHomeScreen = ({
 
         {activeLongPressPostId === post.id && !isPending && (
           <View style={styles.longPressMenu}>
-            {isAdmin && (
+            {isStaffOrAbove && (
               <>
                 <TouchableOpacity
                   style={styles.longPressMenuItem}
@@ -564,9 +668,11 @@ const WorkspaceHomeScreen = ({
                 <Text style={styles.sendButtonText}>送信</Text>
               </TouchableOpacity>
             </View>
-            {post.replies.map((reply) => {
+
+            {/* ★変更：論理削除されていない返信のみを表示 */}
+            {validReplies.map((reply) => {
               const isReplyPending = reply.status === "pending";
-              if (isReportedByMe(reply) && !isAdmin)
+              if (isReportedByMe(reply) && !isStaffOrAbove)
                 return (
                   <View key={reply.id} style={styles.reportedMaskCard}>
                     <Text style={styles.reportedMaskText}>※報告済み</Text>
@@ -579,7 +685,7 @@ const WorkspaceHomeScreen = ({
                     styles.replyCard,
                     { position: "relative", zIndex: 1 },
                     reply.reported?.length > 0 &&
-                      isAdmin &&
+                      isStaffOrAbove &&
                       styles.adminReportedCard,
                     isReplyPending && styles.pendingCard,
                   ]}
@@ -614,17 +720,26 @@ const WorkspaceHomeScreen = ({
                       <View
                         style={[styles.longPressMenu, { top: 10, right: 10 }]}
                       >
-                        {isAdmin && (
+                        {isStaffOrAbove && (
                           <TouchableOpacity
                             style={styles.longPressMenuItem}
                             onPress={() => {
+                              // ★変更：返信の論理削除
                               setPosts(
                                 posts.map((p) =>
                                   p.id === post.id
                                     ? {
                                         ...p,
-                                        replies: p.replies.filter(
-                                          (r) => r.id !== reply.id,
+                                        replies: p.replies.map((r) =>
+                                          r.id === reply.id
+                                            ? {
+                                                ...r,
+                                                status: "deleted",
+                                                deletedBy: displayUserName,
+                                                deletedAt:
+                                                  new Date().toISOString(),
+                                              }
+                                            : r,
                                         ),
                                       }
                                     : p,
@@ -688,9 +803,6 @@ const WorkspaceHomeScreen = ({
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
-        {/* ==============================================================
-            ヘッダー（システム・設定系のボタンのみを配置してスッキリさせる）
-        ============================================================== */}
         <View style={[styles.header, isOffline && styles.headerOffline]}>
           <Text style={styles.headerTitle}>
             {isOffline ? "オフライン表示中" : "スマート部活"}
@@ -703,7 +815,7 @@ const WorkspaceHomeScreen = ({
               <Text style={styles.headerIcon}>{isOffline ? "🚫" : "🌐"}</Text>
             </TouchableOpacity>
 
-            {isAdmin && (
+            {isStaffOrAbove && (
               <TouchableOpacity
                 style={styles.headerIconBtn}
                 onPress={() => setIsDashboardVisible(true)}
@@ -735,9 +847,6 @@ const WorkspaceHomeScreen = ({
           </View>
         </View>
 
-        {/* ==============================================================
-            機能メニュー（横スクロールで配置し、画面幅が狭くてもあふれない）
-        ============================================================== */}
         <View style={styles.menuRow}>
           <ScrollView
             horizontal
@@ -750,7 +859,7 @@ const WorkspaceHomeScreen = ({
             >
               <View style={styles.menuIconContainer}>
                 <Text style={styles.menuIconText}>📋</Text>
-                {!isAdmin && unreadNoticeCount > 0 && (
+                {!isStaffOrAbove && unreadNoticeCount > 0 && (
                   <View style={styles.menuBadge}>
                     <Text style={styles.menuBadgeText}>
                       {unreadNoticeCount}
@@ -777,7 +886,7 @@ const WorkspaceHomeScreen = ({
             >
               <View style={styles.menuIconContainer}>
                 <Text style={styles.menuIconText}>🏥</Text>
-                {isAdmin && unreadMedicalDangerCount > 0 && (
+                {isStaffOrAbove && unreadMedicalDangerCount > 0 && (
                   <View style={styles.menuBadge}>
                     <Text style={styles.menuBadgeText}>
                       {unreadMedicalDangerCount}
@@ -788,7 +897,6 @@ const WorkspaceHomeScreen = ({
               <Text style={styles.menuLabel}>コンディション</Text>
             </TouchableOpacity>
 
-            {/* ★修正：遷移先を ProjectList に変更 */}
             <TouchableOpacity
               style={styles.menuItem}
               onPress={() => navigation.navigate("ProjectList")}
@@ -843,12 +951,12 @@ const WorkspaceHomeScreen = ({
                     activeChannelId === channel.id && styles.activeTabText,
                   ]}
                 >
-                  {channel.allowedMembers.includes("all") ? "# " : "🔐 "}
+                  {channel.shareScope === "team" ? "# " : "🔐 "}
                   {channel.name} {channel.isReadOnly && "🔒"}
                 </Text>
               </TouchableOpacity>
             ))}
-            {isAdmin && !isOffline && (
+            {canCreateChannel && !isOffline && (
               <TouchableOpacity
                 style={styles.addChannelButton}
                 onPress={() => setIsAddChannelModalVisible(true)}
@@ -892,9 +1000,9 @@ const WorkspaceHomeScreen = ({
           )}
         </ScrollView>
 
-        {!isReplyFocused && (
+        {!isReplyFocused && activeChannelObj && (
           <View style={styles.createPostContainer}>
-            {!isAdmin && activeChannelObj.isReadOnly ? (
+            {!isStaffOrAbove && activeChannelObj.isReadOnly ? (
               <View style={styles.readOnlyContainer}>
                 <Text style={styles.readOnlyText}>
                   ※「{activeChannelObj.name}」は管理者のみ投稿可能です。
@@ -958,6 +1066,7 @@ const WorkspaceHomeScreen = ({
         )}
       </KeyboardAvoidingView>
 
+      {/* チャンネル作成モーダル */}
       <Modal
         visible={isAddChannelModalVisible}
         transparent={true}
@@ -989,50 +1098,93 @@ const WorkspaceHomeScreen = ({
                 thumbColor={newChannelIsReadOnly ? "#0077cc" : "#f4f3f4"}
               />
             </View>
-            <Text style={styles.inputLabel}>参加メンバーを選択</Text>
-            <ScrollView
-              style={styles.memberSelector}
-              nestedScrollEnabled={true}
-            >
+
+            <Text style={styles.inputLabel}>共有範囲（アクセス権）</Text>
+            <View style={styles.typeContainer}>
               <TouchableOpacity
                 style={[
-                  styles.memberOption,
-                  selectedMembers.includes("all") &&
-                    styles.memberOptionSelected,
+                  styles.typeBtn,
+                  newChannelScope === "team" && styles.typeBtnActive,
                 ]}
-                onPress={() => toggleMemberSelection("all")}
+                onPress={() => setNewChannelScope("team")}
               >
                 <Text
-                  style={
-                    selectedMembers.includes("all")
-                      ? styles.memberOptionTextSelected
-                      : {}
-                  }
+                  style={[
+                    styles.typeBtnText,
+                    newChannelScope === "team" && styles.typeBtnTextActive,
+                  ]}
                 >
-                  全員参加
+                  全体
                 </Text>
               </TouchableOpacity>
-              {clubMembers.map((m) => (
-                <TouchableOpacity
-                  key={m}
+              <TouchableOpacity
+                style={[
+                  styles.typeBtn,
+                  newChannelScope === "group" && styles.typeBtnActive,
+                ]}
+                onPress={() => setNewChannelScope("group")}
+              >
+                <Text
                   style={[
-                    styles.memberOption,
-                    selectedMembers.includes(m) && styles.memberOptionSelected,
+                    styles.typeBtnText,
+                    newChannelScope === "group" && styles.typeBtnTextActive,
                   ]}
-                  onPress={() => toggleMemberSelection(m)}
                 >
-                  <Text
-                    style={
-                      selectedMembers.includes(m)
-                        ? styles.memberOptionTextSelected
-                        : {}
-                    }
-                  >
-                    {m}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
+                  限定
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.typeBtn,
+                  newChannelScope === "coach" && styles.typeBtnActive,
+                ]}
+                onPress={() => setNewChannelScope("coach")}
+              >
+                <Text
+                  style={[
+                    styles.typeBtnText,
+                    newChannelScope === "coach" && styles.typeBtnTextActive,
+                  ]}
+                >
+                  指導者のみ
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {newChannelScope === "group" && (
+              <>
+                <Text style={[styles.inputLabel, { marginTop: 10 }]}>
+                  参加メンバーを選択
+                </Text>
+                <ScrollView
+                  style={styles.memberSelector}
+                  nestedScrollEnabled={true}
+                >
+                  {clubMembers.map((m) => (
+                    <TouchableOpacity
+                      key={m}
+                      style={[
+                        styles.memberOption,
+                        selectedMembers.includes(m) &&
+                          styles.memberOptionSelected,
+                      ]}
+                      onPress={() => toggleMemberSelection(m)}
+                    >
+                      <Text
+                        style={
+                          selectedMembers.includes(m)
+                            ? styles.memberOptionTextSelected
+                            : {}
+                        }
+                      >
+                        {m}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </>
+            )}
+
             <View style={styles.modalButtons}>
               <TouchableOpacity
                 style={styles.modalCancelBtn}
@@ -1040,6 +1192,7 @@ const WorkspaceHomeScreen = ({
                   setIsAddChannelModalVisible(false);
                   setNewChannelName("");
                   setNewChannelIsReadOnly(false);
+                  setNewChannelScope("team");
                   setSelectedMembers(["all"]);
                 }}
               >
@@ -1580,11 +1733,26 @@ const styles = StyleSheet.create({
   },
   createPostButtonDisabled: { backgroundColor: "#b3d9ff" },
   createPostButtonText: { color: "#fff", fontWeight: "bold", fontSize: 14 },
+
+  typeContainer: { flexDirection: "row", marginBottom: 15 },
+  typeBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    alignItems: "center",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#ddd",
+    marginRight: 10,
+  },
+  typeBtnActive: { backgroundColor: "#e6f2ff", borderColor: "#0077cc" },
+  typeBtnText: { fontSize: 13, color: "#555", fontWeight: "bold" },
+  typeBtnTextActive: { color: "#0077cc" },
+
   switchContainer: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 25,
+    marginBottom: 20,
     backgroundColor: "#f9f9f9",
     padding: 15,
     borderRadius: 8,
@@ -1598,7 +1766,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   memberSelector: {
-    maxHeight: 150,
+    maxHeight: 120,
     borderWidth: 1,
     borderColor: "#eee",
     borderRadius: 8,
@@ -1635,7 +1803,7 @@ const styles = StyleSheet.create({
     padding: 12,
     borderRadius: 8,
     fontSize: 16,
-    marginBottom: 20,
+    marginBottom: 15,
     borderWidth: 1,
     borderColor: "#ddd",
   },
