@@ -44,34 +44,14 @@ const WorkspaceHomeScreen = ({
       record.fatigue >= alertThresholds.fatigueDanger ||
       (record.hasPain &&
         record.painDetails?.level >= alertThresholds.painDanger)
-    ) {
+    )
       return "danger";
-    }
     if (
       record.fatigue >= alertThresholds.fatigueWarning ||
       record.isParticipating === "制限" ||
       record.hasPain
-    ) {
+    )
       level = "warning";
-    }
-    if (level === "warning" && alertThresholds.autoEscalate) {
-      const userHistory = allRecords
-        .filter(
-          (r) => r.author === record.author && r.createdAt < record.createdAt,
-        )
-        .sort((a, b) => b.createdAt - a.createdAt);
-      if (userHistory.length > 0) {
-        const lastRecord = userHistory[0];
-        const fatigueWorsened =
-          record.fatigue >= alertThresholds.fatigueWarning &&
-          record.fatigue > lastRecord.fatigue;
-        const painWorsened =
-          record.hasPain &&
-          lastRecord.hasPain &&
-          record.painDetails.level > lastRecord.painDetails.level;
-        if (fatigueWorsened || painWorsened) return "danger";
-      }
-    }
     return level;
   };
 
@@ -83,7 +63,6 @@ const WorkspaceHomeScreen = ({
     : 0;
 
   const [searchQuery, setSearchQuery] = useState("");
-
   const [channels, setChannels] = useState([
     { id: "ch_1", name: "全体連絡", isReadOnly: true, allowedMembers: ["all"] },
     {
@@ -114,7 +93,6 @@ const WorkspaceHomeScreen = ({
       ch.allowedMembers.includes(currentUser)
     );
   });
-
   const activeChannelObj =
     channels.find((c) => c.id === activeChannelId) || visibleChannels[0];
 
@@ -159,14 +137,7 @@ const WorkspaceHomeScreen = ({
 
   const handleAddChannel = () => {
     const trimmedName = newChannelName.trim();
-    if (trimmedName === "") {
-      Alert.alert("エラー", "チャンネル名を入力してください。");
-      return;
-    }
-    if (channels.some((c) => c.name === trimmedName)) {
-      Alert.alert("エラー", "そのチャンネルは既に存在します。");
-      return;
-    }
+    if (trimmedName === "") return;
     const newCh = {
       id: "ch_" + Date.now().toString(),
       name: trimmedName,
@@ -176,9 +147,6 @@ const WorkspaceHomeScreen = ({
     setChannels([...channels, newCh]);
     setActiveChannelId(newCh.id);
     setIsAddChannelModalVisible(false);
-    setNewChannelName("");
-    setNewChannelIsReadOnly(false);
-    setSelectedMembers(["all"]);
   };
 
   const toggleMemberSelection = (m) => {
@@ -213,14 +181,13 @@ const WorkspaceHomeScreen = ({
     setPosts([newPost, ...posts]);
     setNewPostText("");
     setReplyingTo(null);
-    mainInputRef.current?.clear();
     Keyboard.dismiss();
   };
 
   const handleSendReply = (postId) => {
     if (replyText.trim() === "") return;
     const newPosts = posts.map((post) => {
-      if (post.id === postId) {
+      if (post.id === postId)
         return {
           ...post,
           replies: [
@@ -235,12 +202,10 @@ const WorkspaceHomeScreen = ({
             },
           ],
         };
-      }
       return post;
     });
     setPosts(newPosts);
     setReplyText("");
-    replyInputRef.current?.clear();
     Keyboard.dismiss();
     setIsReplyFocused(false);
   };
@@ -339,31 +304,26 @@ const WorkspaceHomeScreen = ({
   };
 
   const togglePin = (postId) => {
-    const newPosts = posts.map((post) => {
-      if (post.id === postId) return { ...post, isPinned: !post.isPinned };
-      return post;
-    });
-    setPosts(newPosts);
+    setPosts(
+      posts.map((post) =>
+        post.id === postId ? { ...post, isPinned: !post.isPinned } : post,
+      ),
+    );
     setActiveLongPressPostId(null);
   };
 
   const handleDeletePost = (postId) => {
-    Alert.alert("投稿の削除", "削除しますか？", [
-      { text: "キャンセル", style: "cancel" },
+    Alert.alert("削除", "削除しますか？", [
+      { text: "キャンセル" },
       {
-        text: "削除する",
+        text: "削除",
         style: "destructive",
         onPress: () => {
-          setPosts(posts.filter((post) => post.id !== postId));
+          setPosts(posts.filter((p) => p.id !== postId));
           setActiveLongPressPostId(null);
         },
       },
     ]);
-  };
-
-  const handleMutePost = () => {
-    Alert.alert("ミュート完了", "通知をオフにしました。");
-    setActiveLongPressPostId(null);
   };
 
   const renderContentWithMentions = (text) => {
@@ -383,7 +343,6 @@ const WorkspaceHomeScreen = ({
     setExpandedPostId(expandedPostId === postId ? null : postId);
     if (expandedPostId !== postId) {
       setReplyText("");
-      replyInputRef.current?.clear();
       setIsReplyFocused(false);
       setActiveLongPressReply(null);
     }
@@ -432,9 +391,7 @@ const WorkspaceHomeScreen = ({
       >
         {isPending && (
           <View style={styles.pendingHeader}>
-            <Text style={styles.pendingHeaderText}>
-              🕒 送信待機中（オフライン）
-            </Text>
+            <Text style={styles.pendingHeaderText}>🕒 送信待機中</Text>
           </View>
         )}
         {post.reported?.length > 0 && isAdmin && !isPending && (
@@ -479,7 +436,7 @@ const WorkspaceHomeScreen = ({
                 💬{" "}
                 {post.replies.length > 0
                   ? `${post.replies.length}件の返信`
-                  : "返信(スレッド)"}
+                  : "返信"}
               </Text>
             </TouchableOpacity>
             <View style={styles.actionRight}>
@@ -532,17 +489,7 @@ const WorkspaceHomeScreen = ({
                   onPress={() => togglePin(post.id)}
                 >
                   <Text style={styles.longPressMenuText}>
-                    {post.isPinned ? "📌 固定を解除する" : "📌 投稿を固定する"}
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.longPressMenuItem}
-                  onPress={() => handleMutePost(post.id)}
-                >
-                  <Text
-                    style={[styles.longPressMenuText, { color: "#f0ad4e" }]}
-                  >
-                    🔇 ミュートする
+                    {post.isPinned ? "📌 固定を解除" : "📌 固定する"}
                   </Text>
                 </TouchableOpacity>
                 <TouchableOpacity
@@ -552,7 +499,7 @@ const WorkspaceHomeScreen = ({
                   <Text
                     style={[styles.longPressMenuText, { color: "#d9534f" }]}
                   >
-                    🗑 投稿を削除する
+                    🗑 削除する
                   </Text>
                 </TouchableOpacity>
               </>
@@ -580,7 +527,7 @@ const WorkspaceHomeScreen = ({
               onPress={() => openReportModal("post", post.id)}
             >
               <Text style={[styles.longPressMenuText, { color: "#d9534f" }]}>
-                🚨 管理者に報告する
+                🚨 報告する
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -622,12 +569,9 @@ const WorkspaceHomeScreen = ({
               if (isReportedByMe(reply) && !isAdmin)
                 return (
                   <View key={reply.id} style={styles.reportedMaskCard}>
-                    <Text style={styles.reportedMaskText}>
-                      ※報告済みのため非表示
-                    </Text>
+                    <Text style={styles.reportedMaskText}>※報告済み</Text>
                   </View>
                 );
-
               return (
                 <TouchableOpacity
                   key={reply.id}
@@ -665,7 +609,6 @@ const WorkspaceHomeScreen = ({
                   <Text style={styles.replyContent}>
                     {renderContentWithMentions(reply.content)}
                   </Text>
-
                   {activeLongPressReply?.replyId === reply.id &&
                     !isReplyPending && (
                       <View
@@ -675,28 +618,19 @@ const WorkspaceHomeScreen = ({
                           <TouchableOpacity
                             style={styles.longPressMenuItem}
                             onPress={() => {
-                              Alert.alert("確認", "削除しますか？", [
-                                { text: "キャンセル" },
-                                {
-                                  text: "削除",
-                                  style: "destructive",
-                                  onPress: () => {
-                                    setPosts(
-                                      posts.map((p) =>
-                                        p.id === post.id
-                                          ? {
-                                              ...p,
-                                              replies: p.replies.filter(
-                                                (r) => r.id !== reply.id,
-                                              ),
-                                            }
-                                          : p,
-                                      ),
-                                    );
-                                    setActiveLongPressReply(null);
-                                  },
-                                },
-                              ]);
+                              setPosts(
+                                posts.map((p) =>
+                                  p.id === post.id
+                                    ? {
+                                        ...p,
+                                        replies: p.replies.filter(
+                                          (r) => r.id !== reply.id,
+                                        ),
+                                      }
+                                    : p,
+                                ),
+                              );
+                              setActiveLongPressReply(null);
                             }}
                           >
                             <Text
@@ -754,57 +688,27 @@ const WorkspaceHomeScreen = ({
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
+        {/* ==============================================================
+            ヘッダー（システム・設定系のボタンのみを配置してスッキリさせる）
+        ============================================================== */}
         <View style={[styles.header, isOffline && styles.headerOffline]}>
           <Text style={styles.headerTitle}>
-            {isOffline ? "オフライン表示中" : "ホーム"}
+            {isOffline ? "オフライン表示中" : "スマート部活"}
           </Text>
           <View style={styles.headerRight}>
             <TouchableOpacity
-              style={styles.navBtn}
+              style={styles.headerIconBtn}
               onPress={toggleNetworkStatus}
             >
-              <Text style={styles.navIcon}>{isOffline ? "🚫" : "🌐"}</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.navBtn}
-              onPress={() => navigation.navigate("NoticeBoard")}
-            >
-              <Text style={styles.navIcon}>📋</Text>
-              {!isAdmin && unreadNoticeCount > 0 && (
-                <View style={styles.badge}>
-                  <Text style={styles.badgeText}>{unreadNoticeCount}</Text>
-                </View>
-              )}
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.navBtn}
-              onPress={() => navigation.navigate("Diary")}
-            >
-              <Text style={styles.navIcon}>📖</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.navBtn}
-              onPress={() => navigation.navigate("Medical")}
-            >
-              <Text style={styles.navIcon}>🏥</Text>
-              {isAdmin && unreadMedicalDangerCount > 0 && (
-                <View style={styles.badge}>
-                  <Text style={styles.badgeText}>
-                    {unreadMedicalDangerCount}
-                  </Text>
-                </View>
-              )}
+              <Text style={styles.headerIcon}>{isOffline ? "🚫" : "🌐"}</Text>
             </TouchableOpacity>
 
             {isAdmin && (
               <TouchableOpacity
-                style={styles.navBtn}
+                style={styles.headerIconBtn}
                 onPress={() => setIsDashboardVisible(true)}
               >
-                <Text style={styles.navIcon}>🔔</Text>
+                <Text style={styles.headerIcon}>🔔</Text>
                 {reportCount > 0 && (
                   <View style={styles.badge}>
                     <Text style={styles.badgeText}>{reportCount}</Text>
@@ -813,12 +717,11 @@ const WorkspaceHomeScreen = ({
               </TouchableOpacity>
             )}
 
-            {/* ★修正：SettingsボタンをisAdminの外に出し、部員も押せるようにしました */}
             <TouchableOpacity
-              style={styles.navBtn}
+              style={styles.headerIconBtn}
               onPress={() => navigation.navigate("Settings")}
             >
-              <Text style={styles.navIcon}>⚙️</Text>
+              <Text style={styles.headerIcon}>⚙️</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -830,6 +733,72 @@ const WorkspaceHomeScreen = ({
               <Text style={styles.logoutBtnText}>ログアウト</Text>
             </TouchableOpacity>
           </View>
+        </View>
+
+        {/* ==============================================================
+            機能メニュー（横スクロールで配置し、画面幅が狭くてもあふれない）
+        ============================================================== */}
+        <View style={styles.menuRow}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.menuScroll}
+          >
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => navigation.navigate("NoticeBoard")}
+            >
+              <View style={styles.menuIconContainer}>
+                <Text style={styles.menuIconText}>📋</Text>
+                {!isAdmin && unreadNoticeCount > 0 && (
+                  <View style={styles.menuBadge}>
+                    <Text style={styles.menuBadgeText}>
+                      {unreadNoticeCount}
+                    </Text>
+                  </View>
+                )}
+              </View>
+              <Text style={styles.menuLabel}>掲示板</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => navigation.navigate("Diary")}
+            >
+              <View style={styles.menuIconContainer}>
+                <Text style={styles.menuIconText}>📖</Text>
+              </View>
+              <Text style={styles.menuLabel}>部活日記</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => navigation.navigate("Medical")}
+            >
+              <View style={styles.menuIconContainer}>
+                <Text style={styles.menuIconText}>🏥</Text>
+                {isAdmin && unreadMedicalDangerCount > 0 && (
+                  <View style={styles.menuBadge}>
+                    <Text style={styles.menuBadgeText}>
+                      {unreadMedicalDangerCount}
+                    </Text>
+                  </View>
+                )}
+              </View>
+              <Text style={styles.menuLabel}>コンディション</Text>
+            </TouchableOpacity>
+
+            {/* ★修正：遷移先を ProjectList に変更 */}
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => navigation.navigate("ProjectList")}
+            >
+              <View style={styles.menuIconContainer}>
+                <Text style={styles.menuIconText}>📁</Text>
+              </View>
+              <Text style={styles.menuLabel}>プロジェクト</Text>
+            </TouchableOpacity>
+          </ScrollView>
         </View>
 
         {isOffline && (
@@ -957,12 +926,6 @@ const WorkspaceHomeScreen = ({
                     onPress={() => insertText("@")}
                   >
                     <Text style={styles.toolbarBtnText}>@ メンション</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.toolbarBtn}
-                    onPress={() => insertText("\n[🎥添付: 新しい動画]")}
-                  >
-                    <Text style={styles.toolbarBtnText}>📎 動画を添付</Text>
                   </TouchableOpacity>
                 </View>
                 <View style={styles.inputRow}>
@@ -1197,6 +1160,7 @@ const WorkspaceHomeScreen = ({
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#f0f2f5" },
+
   header: {
     height: 60,
     backgroundColor: "#0077cc",
@@ -1210,11 +1174,11 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: "bold",
     flex: 1,
-    textAlign: "center",
+    textAlign: "left",
   },
   headerRight: { flexDirection: "row", alignItems: "center" },
-  navBtn: { position: "relative", marginRight: 15, padding: 5 },
-  navIcon: { fontSize: 20 },
+  headerIconBtn: { position: "relative", marginRight: 15, padding: 5 },
+  headerIcon: { fontSize: 20 },
   badge: {
     position: "absolute",
     top: -5,
@@ -1235,6 +1199,47 @@ const styles = StyleSheet.create({
     backgroundColor: "#e74c3c",
   },
   logoutBtnText: { color: "#fff", fontSize: 12, fontWeight: "bold" },
+
+  menuRow: {
+    backgroundColor: "#fff",
+    borderBottomWidth: 1,
+    borderBottomColor: "#eee",
+    paddingVertical: 15,
+  },
+  menuScroll: { paddingHorizontal: 15 },
+  menuItem: { alignItems: "center", marginRight: 25, width: 70 },
+  menuIconContainer: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: "#f0f4f8",
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 6,
+    position: "relative",
+  },
+  menuIconText: { fontSize: 24 },
+  menuLabel: {
+    fontSize: 11,
+    color: "#555",
+    fontWeight: "bold",
+    textAlign: "center",
+  },
+  menuBadge: {
+    position: "absolute",
+    top: -2,
+    right: -5,
+    backgroundColor: "#e74c3c",
+    borderRadius: 10,
+    minWidth: 18,
+    height: 18,
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: 4,
+    zIndex: 10,
+  },
+  menuBadgeText: { color: "#fff", fontSize: 10, fontWeight: "bold" },
+
   offlineBanner: {
     backgroundColor: "#f39c12",
     padding: 8,
@@ -1332,15 +1337,6 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
     elevation: 1,
   },
-  pinnedHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 10,
-    paddingBottom: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: "#f0f0f0",
-  },
-  pinnedHeaderText: { color: "#d4a000", fontSize: 12, fontWeight: "bold" },
   adminReportedCard: {
     borderWidth: 1,
     borderColor: "#d9534f",
@@ -1403,15 +1399,6 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   mentionText: { color: "#0077cc", fontWeight: "bold" },
-  attachmentsContainer: { marginBottom: 15 },
-  attachmentCard: {
-    backgroundColor: "#e6f2ff",
-    borderColor: "#0077cc",
-    borderWidth: 1,
-    padding: 10,
-    borderRadius: 8,
-  },
-  attachmentText: { color: "#0077cc", fontWeight: "bold", fontSize: 14 },
   actionBar: {
     flexDirection: "row",
     justifyContent: "space-between",

@@ -5,11 +5,13 @@ import { Alert } from "react-native";
 
 import LoginScreen from "./src/screens/LoginScreen";
 import WorkspaceHomeScreen from "./src/screens/WorkspaceHomeScreen";
-import VideoListScreen from "./src/screens/VideoListScreen";
 import NoticeBoardScreen from "./src/screens/NoticeBoardScreen";
 import SettingsScreen from "./src/screens/SettingsScreen";
 import DiaryScreen from "./src/screens/DiaryScreen";
 import MedicalScreen from "./src/screens/MedicalScreen";
+// ★追加：一覧画面のインポート
+import ProjectListScreen from "./src/screens/ProjectListScreen";
+import ProjectDetailScreen from "./src/screens/ProjectDetailScreen";
 
 const Stack = createNativeStackNavigator();
 
@@ -34,8 +36,6 @@ export default function App() {
     "外野",
     "マネ",
   ]);
-
-  // ★追加：部員ごとの個人プロフィール（パスワード、学年、ポジション）を管理
   const [userProfiles, setUserProfiles] = useState({});
 
   const [alertThresholds, setAlertThresholds] = useState({
@@ -49,59 +49,25 @@ export default function App() {
   const [posts, setPosts] = useState([]);
   const [notices, setNotices] = useState([]);
   const [diaries, setDiaries] = useState([]);
+  const [medicalRecords, setMedicalRecords] = useState([]);
 
-  const [medicalRecords, setMedicalRecords] = useState([
+  // ★追加：プロジェクト一覧のモックデータ
+  const [projects, setProjects] = useState([
     {
-      id: "med_1",
-      date: "2026/02/26",
-      author: "佐藤",
-      condition: "普通",
-      fatigue: 7,
-      sleep: "6h",
-      isParticipating: "制限",
-      hasPain: true,
-      painDetails: {
-        part: "右肩",
-        level: 5,
-        memo: "投げる時にピキッとする",
-        sinceWhen: "3日前から",
-        treatment: "アイシングのみ",
-      },
-      status: "sent",
-      isReviewed: false,
-      createdAt: Date.now(),
-      comments: [
-        {
-          id: "c1",
-          user: "管理者(監督)",
-          text: "無理せず別メニューで調整しよう。",
-          time: "10:00",
-          status: "sent",
-        },
-      ],
-      managementTags: ["👀 経過観察"],
+      id: "p1",
+      title: "秋季大会 vs 〇〇高校",
+      date: "2026/02/20",
+      type: "試合",
+      status: "active",
+      participants: "team",
     },
     {
-      id: "med_2",
-      date: "2026/02/25",
-      author: "佐藤",
-      condition: "良い",
-      fatigue: 5,
-      sleep: "7h",
-      isParticipating: "通常",
-      hasPain: true,
-      painDetails: {
-        part: "右肩",
-        level: 3,
-        memo: "少し違和感",
-        sinceWhen: "昨日から",
-        treatment: "",
-      },
-      status: "sent",
-      isReviewed: true,
-      createdAt: Date.now() - 86400000,
-      comments: [],
-      managementTags: [],
+      id: "p2",
+      title: "2月第3週 紅白戦",
+      date: "2026/02/15",
+      type: "練習",
+      status: "closed",
+      participants: "team",
     },
   ]);
 
@@ -204,9 +170,33 @@ export default function App() {
             />
           )}
         </Stack.Screen>
-        <Stack.Screen name="VideoList" component={VideoListScreen} />
+
+        {/* ★追加：プロジェクト一覧画面 */}
+        <Stack.Screen name="ProjectList">
+          {(props) => (
+            <ProjectListScreen
+              {...props}
+              isAdmin={isAdmin}
+              currentUser={currentUser}
+              projects={projects}
+              setProjects={setProjects}
+            />
+          )}
+        </Stack.Screen>
+
+        {/* 修正：プロジェクト詳細画面 */}
+        <Stack.Screen name="ProjectDetail">
+          {(props) => (
+            <ProjectDetailScreen
+              {...props}
+              isAdmin={isAdmin}
+              currentUser={currentUser}
+              clubMembers={clubMembers}
+            />
+          )}
+        </Stack.Screen>
+
         <Stack.Screen name="Settings">
-          {/* ★修正：userProfiles も渡すように変更 */}
           {(props) => (
             <SettingsScreen
               {...props}
