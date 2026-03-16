@@ -5,13 +5,15 @@ import {
   TextInput,
   StyleSheet,
   TouchableOpacity,
-  SafeAreaView,
   ScrollView,
   Modal,
   Alert,
+  KeyboardAvoidingView,
+  Platform,
+  Keyboard,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
-// ★修正：clubMembers を受け取る
 const NoticeBoardScreen = ({
   navigation,
   isAdmin,
@@ -19,67 +21,157 @@ const NoticeBoardScreen = ({
   notices,
   setNotices,
   isOffline,
-  toggleNetworkStatus,
-  clubMembers,
+  userProfiles = {},
 }) => {
-  const [selectedNotice, setSelectedNotice] = useState(null);
+  // 実際の設定データからロールを取得
+  const currentUserProfile = userProfiles[currentUser] || {};
+  const userRole = isAdmin ? "owner" : currentUserProfile.role || "member";
+
+  // 掲示板に投稿・削除できる権限（監督、スタッフ、キャプテン）
+  const canManageNotices = ["owner", "staff", "captain"].includes(userRole);
+
+  const roleNameMap = {
+    owner: "管理者(監督)",
+    staff: "コーチ(スタッフ)",
+    captain: `${currentUser}(キャプテン)`,
+    member: `${currentUser}(あなた)`,
+  };
+  const displayUserName = roleNameMap[userRole] || currentUser;
+
+  const [searchQuery, setSearchQuery] = useState("");
   const [isCreateModalVisible, setIsCreateModalVisible] = useState(false);
+  const [selectedNotice, setSelectedNotice] = useState(null);
+
+  // 投稿用のステート
   const [newTitle, setNewTitle] = useState("");
   const [newContent, setNewContent] = useState("");
+  const [isImportant, setIsImportant] = useState(false);
+  const [editingNoticeId, setEditingNoticeId] = useState(null);
 
-  const handleCreateNotice = () => {
+  // フィルタリングと論理削除の除外
+  let filteredNotices = notices.filter((n) => {
+    if (n.status === "deleted") return false;
+    if (searchQuery.trim() !== "") {
+      return (
+        n.title.includes(searchQuery) ||
+        n.content.includes(searchQuery) ||
+        n.author.includes(searchQuery)
+      );
+    }
+    return true;
+  });
+
+  // 重要なお知らせを上に、あとは日付順にソート
+  filteredNotices.sort((a, b) => {
+    if (a.isImportant && !b.isImportant) return -1;
+    if (!a.isImportant && b.isImportant) return 1;
+    return new Date(b.createdAt) - new Date(a.createdAt);
+  });
+
+  const handleOpenNotice = (notice) => {
+    setSelectedNotice(notice);
+
+    // 未読の場合は既読リストに追加
+    if (!notice.readBy.includes(currentUser)) {
+      const updatedNotices = notices.map((n) => {
+        if (n.id === notice.id) {
+          return { ...n, readBy: [...n.readBy, currentUser] };
+        }
+        return n;
+      });
+      setNotices(updatedNotices);
+    }
+  };
+
+  const handleSaveNotice = () => {
     if (newTitle.trim() === "" || newContent.trim() === "") {
       Alert.alert("エラー", "タイトルと本文を入力してください。");
       return;
     }
-    const newNotice = {
-      id: Date.now().toString(),
-      title: newTitle,
-      content: newContent,
-      author: isAdmin ? "管理者(監督)" : `${currentUser}(あなた)`,
-      date: "たった今",
-      readBy: [],
-      status: isOffline ? "pending" : "sent",
-    };
-    setNotices([newNotice, ...notices]);
+
+    if (editingNoticeId) {
+      // 編集処理
+      const updatedNotices = notices.map((n) => {
+        if (n.id === editingNoticeId) {
+          return {
+            ...n,
+            title: newTitle,
+            content: newContent,
+            isImportant: isImportant,
+          };
+        }
+        return n;
+      });
+      setNotices(updatedNotices);
+      Alert.alert("修正完了", "お知らせを更新しました。");
+    } else {
+      // 新規作成処理
+      const today = new Date();
+      const dateString = `${today.getFullYear()}/${String(today.getMonth() + 1).padStart(2, "0")}/${String(today.getDate()).padStart(2, "0")}`;
+
+      const newNotice = {
+        id: "notice_" + Date.now().toString(),
+        title: newTitle,
+        content: newContent,
+        author: displayUserName,
+        date: dateString,
+        createdAt: Date.now(),
+        isImportant: isImportant,
+        readBy: [currentUser], // 作成者は最初から既読
+        status: isOffline ? "pending" : "sent",
+      };
+      setNotices([newNotice, ...notices]);
+    }
+
     setIsCreateModalVisible(false);
+    resetForm();
+    Keyboard.dismiss();
+  };
+
+  const handleDeleteNotice = (noticeId) => {
+    Alert.alert(
+      "削除の確認",
+      "このお知らせを削除しますか？\n（データはゴミ箱に保持されます）",
+      [
+        { text: "キャンセル", style: "cancel" },
+        {
+          text: "削除",
+          style: "destructive",
+          onPress: () => {
+            // 論理削除
+            const updatedNotices = notices.map((n) =>
+              n.id === noticeId
+                ? {
+                    ...n,
+                    status: "deleted",
+                    deletedBy: displayUserName,
+                    deletedAt: new Date().toISOString(),
+                  }
+                : n,
+            );
+            setNotices(updatedNotices);
+            setSelectedNotice(null);
+          },
+        },
+      ],
+    );
+  };
+
+  const openEditModal = (notice) => {
+    setEditingNoticeId(notice.id);
+    setNewTitle(notice.title);
+    setNewContent(notice.content);
+    setIsImportant(notice.isImportant);
+    setSelectedNotice(null);
+    setIsCreateModalVisible(true);
+  };
+
+  const resetForm = () => {
+    setEditingNoticeId(null);
     setNewTitle("");
     setNewContent("");
+    setIsImportant(false);
   };
-
-  const handleDeleteNotice = (id) => {
-    Alert.alert("削除の確認", "この連絡を削除しますか？", [
-      { text: "キャンセル", style: "cancel" },
-      {
-        text: "削除する",
-        style: "destructive",
-        onPress: () => {
-          setNotices(notices.filter((n) => n.id !== id));
-          setSelectedNotice(null);
-        },
-      },
-    ]);
-  };
-
-  const handleConfirmRead = (noticeId) => {
-    if (isOffline) {
-      Alert.alert(
-        "通信エラー",
-        "現在オフラインのため、確認操作を送信できません。オンラインになってから再度お試しください。",
-      );
-      return;
-    }
-    const updatedNotices = notices.map((notice) => {
-      if (notice.id === noticeId) {
-        return { ...notice, readBy: [...notice.readBy, currentUser] };
-      }
-      return notice;
-    });
-    setNotices(updatedNotices);
-    setSelectedNotice(updatedNotices.find((n) => n.id === noticeId));
-  };
-
-  const totalMembers = clubMembers.length; // ★修正：全メンバー数を計算
 
   return (
     <SafeAreaView style={styles.container}>
@@ -88,282 +180,253 @@ const NoticeBoardScreen = ({
           style={styles.backButton}
           onPress={() => navigation.goBack()}
         >
-          <Text style={styles.backButtonText}>◁ 戻る</Text>
+          <Text style={styles.backButtonText}>◁ ホーム</Text>
         </TouchableOpacity>
-
         <Text style={styles.headerTitle}>
-          {isOffline ? "オフライン表示中" : "重要連絡 (掲示板)"}
+          {isOffline ? "オフライン表示中" : "📋 掲示板"}
         </Text>
-
         <View style={styles.headerRight}>
-          <TouchableOpacity style={styles.navBtn} onPress={toggleNetworkStatus}>
-            <Text style={styles.navIcon}>{isOffline ? "🚫" : "🌐"}</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.logoutBtn}
-            onPress={() =>
-              navigation.reset({ index: 0, routes: [{ name: "Login" }] })
-            }
-          >
-            <Text style={styles.logoutBtnText}>ログアウト</Text>
-          </TouchableOpacity>
+          {/* 手動のオフラインボタン等は完全に撤去済 */}
         </View>
       </View>
 
       {isOffline && (
         <View style={styles.offlineBanner}>
           <Text style={styles.offlineBannerText}>
-            現在オフラインです。一部の操作が制限されます。
+            現在オフラインです。投稿は通信復旧時に送信されます。
           </Text>
         </View>
       )}
 
-      <ScrollView style={styles.content}>
-        {notices.map((notice) => {
-          const readCount = notice.readBy.length;
-          // 全メンバー数が0の場合は100%にする等のエラー回避
-          const progressPercent =
-            totalMembers === 0 ? 0 : (readCount / totalMembers) * 100;
-          const isReadByMe = notice.readBy.includes(currentUser);
-          const isPending = notice.status === "pending";
+      <View style={styles.searchContainer}>
+        <TextInput
+          style={styles.searchInput}
+          placeholder="お知らせを検索..."
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+        />
+      </View>
 
-          return (
-            <TouchableOpacity
-              key={notice.id}
-              style={[styles.card, isPending && styles.pendingCard]}
-              activeOpacity={0.8}
-              onPress={() => setSelectedNotice(notice)}
-            >
-              {isPending && (
-                <View style={styles.pendingHeader}>
-                  <Text style={styles.pendingHeaderText}>
-                    🕒 送信待機中（オフライン）
-                  </Text>
-                </View>
-              )}
+      <ScrollView
+        style={styles.listContainer}
+        contentContainerStyle={{ paddingBottom: 100 }}
+      >
+        {filteredNotices.length === 0 ? (
+          <Text style={styles.emptyText}>お知らせはありません。</Text>
+        ) : (
+          filteredNotices.map((notice) => {
+            const isUnread = !notice.readBy.includes(currentUser);
+            const isPending = notice.status === "pending";
 
-              <View style={styles.cardHeader}>
-                <Text style={styles.cardTitle}>{notice.title}</Text>
-                {!isAdmin && !isPending && (
-                  <View
-                    style={[
-                      styles.statusBadge,
-                      isReadByMe ? styles.badgeRead : styles.badgeUnread,
-                    ]}
-                  >
-                    <Text style={styles.statusBadgeText}>
-                      {isReadByMe ? "✅ 既読" : "🔴 未読"}
-                    </Text>
-                  </View>
+            return (
+              <TouchableOpacity
+                key={notice.id}
+                style={[
+                  styles.card,
+                  notice.isImportant && styles.importantCard,
+                  isPending && styles.pendingCard,
+                ]}
+                activeOpacity={0.8}
+                onPress={() => handleOpenNotice(notice)}
+              >
+                {isPending && (
+                  <Text style={styles.pendingText}>🕒 送信待機中</Text>
                 )}
-              </View>
-              <Text style={styles.cardMeta}>
-                {isPending ? "待機中..." : notice.date} • {notice.author}
-              </Text>
-
-              {!isPending && (
-                <View style={styles.progressContainer}>
-                  <View style={styles.progressHeader}>
-                    <Text style={styles.progressText}>確認状況</Text>
-                    <Text style={styles.progressText}>
-                      {readCount} / {totalMembers}人
+                <View style={styles.cardHeader}>
+                  <View
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      flex: 1,
+                    }}
+                  >
+                    {notice.isImportant && (
+                      <Text style={styles.importantBadge}>重要</Text>
+                    )}
+                    <Text
+                      style={[styles.cardTitle, isUnread && styles.unreadText]}
+                      numberOfLines={1}
+                    >
+                      {notice.title}
                     </Text>
                   </View>
-                  <View style={styles.progressBarBg}>
-                    <View
-                      style={[
-                        styles.progressBarFill,
-                        { width: `${progressPercent}%` },
-                        progressPercent === 100 && {
-                          backgroundColor: "#5cb85c",
-                        },
-                      ]}
-                    />
-                  </View>
+                  {isUnread && <View style={styles.unreadDot} />}
                 </View>
-              )}
-            </TouchableOpacity>
-          );
-        })}
+                <Text style={styles.cardContent} numberOfLines={2}>
+                  {notice.content}
+                </Text>
+                <View style={styles.cardFooter}>
+                  <Text style={styles.cardAuthor}>✍️ {notice.author}</Text>
+                  <Text style={styles.cardDate}>{notice.date}</Text>
+                </View>
+              </TouchableOpacity>
+            );
+          })
+        )}
       </ScrollView>
 
-      {isAdmin && (
+      {/* 投稿権限があるユーザーのみFABを表示 */}
+      {canManageNotices && (
         <TouchableOpacity
           style={[styles.fab, isOffline && { backgroundColor: "#f39c12" }]}
-          onPress={() => setIsCreateModalVisible(true)}
+          onPress={() => {
+            resetForm();
+            setIsCreateModalVisible(true);
+          }}
         >
           <Text style={styles.fabIcon}>＋</Text>
         </TouchableOpacity>
       )}
 
+      {/* お知らせ詳細モーダル */}
       <Modal
         visible={selectedNotice !== null}
         transparent={true}
-        animationType="slide"
+        animationType="fade"
       >
         <SafeAreaView style={styles.modalSafeArea}>
           <View style={styles.detailContainer}>
-            {selectedNotice && (
-              <>
-                <View style={styles.detailHeader}>
-                  <TouchableOpacity onPress={() => setSelectedNotice(null)}>
-                    <Text style={styles.closeBtn}>✕ 閉じる</Text>
-                  </TouchableOpacity>
-                  {isAdmin && (
-                    <TouchableOpacity
-                      onPress={() => handleDeleteNotice(selectedNotice.id)}
-                    >
-                      <Text style={styles.deleteBtn}>🗑 削除</Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
+            <View style={styles.detailHeader}>
+              <TouchableOpacity onPress={() => setSelectedNotice(null)}>
+                <Text style={styles.closeBtn}>✕ 閉じる</Text>
+              </TouchableOpacity>
+              <Text style={styles.detailHeaderTitle}>お知らせ詳細</Text>
+              <View style={{ width: 60 }} />
+            </View>
 
-                <ScrollView style={styles.detailScroll}>
-                  {selectedNotice.status === "pending" && (
-                    <Text
-                      style={[styles.pendingHeaderText, { marginBottom: 10 }]}
-                    >
-                      🕒 この連絡は送信待機中です
+            {selectedNotice && (
+              <ScrollView style={styles.detailScroll}>
+                <View style={styles.detailContentBox}>
+                  {selectedNotice.isImportant && (
+                    <Text style={styles.importantBadgeLarge}>
+                      🚨 重要なお知らせ
                     </Text>
                   )}
                   <Text style={styles.detailTitle}>{selectedNotice.title}</Text>
-                  <Text style={styles.detailMeta}>
-                    {selectedNotice.status === "pending"
-                      ? "待機中..."
-                      : selectedNotice.date}{" "}
-                    • {selectedNotice.author}
-                  </Text>
-                  <View style={styles.detailContentBox}>
-                    <Text style={styles.detailContent}>
-                      {selectedNotice.content}
+
+                  <View style={styles.detailMetaRow}>
+                    <Text style={styles.detailAuthor}>
+                      ✍️ {selectedNotice.author}
                     </Text>
+                    <Text style={styles.detailDate}>{selectedNotice.date}</Text>
                   </View>
 
-                  {isAdmin ? (
-                    <View style={styles.adminStatusArea}>
-                      <Text style={styles.adminStatusTitle}>
-                        📊 確認状況詳細 ({selectedNotice.readBy.length}/
-                        {totalMembers})
-                      </Text>
-                      <View style={styles.statusListRow}>
-                        <View style={styles.statusColumn}>
-                          <Text
-                            style={[
-                              styles.statusListHeader,
-                              { color: "#d9534f" },
-                            ]}
-                          >
-                            🔴 未読者
-                          </Text>
-                          {/* ★修正：clubMembersを使用 */}
-                          {clubMembers
-                            .filter((m) => !selectedNotice.readBy.includes(m))
-                            .map((m) => (
-                              <Text key={m} style={styles.statusName}>
-                                ・{m}
-                              </Text>
-                            ))}
-                          {clubMembers.filter(
-                            (m) => !selectedNotice.readBy.includes(m),
-                          ).length === 0 && (
-                            <Text style={styles.statusNameEmpty}>
-                              全員確認済みです🎉
-                            </Text>
-                          )}
-                        </View>
-                        <View style={styles.statusColumn}>
-                          <Text
-                            style={[
-                              styles.statusListHeader,
-                              { color: "#5cb85c" },
-                            ]}
-                          >
-                            ✅ 確認済み
-                          </Text>
-                          {selectedNotice.readBy.map((m) => (
-                            <Text key={m} style={styles.statusName}>
-                              ・{m}
-                            </Text>
-                          ))}
-                        </View>
-                      </View>
-                    </View>
-                  ) : (
-                    <View style={styles.memberActionArea}>
-                      {selectedNotice.readBy.includes(currentUser) ? (
-                        <View style={styles.confirmedBox}>
-                          <Text style={styles.confirmedText}>
-                            ✅ 内容を確認しました
-                          </Text>
-                        </View>
-                      ) : (
-                        <TouchableOpacity
-                          style={[
-                            styles.confirmButton,
-                            isOffline && { backgroundColor: "#aaa" },
-                          ]}
-                          onPress={() => handleConfirmRead(selectedNotice.id)}
-                        >
-                          <Text style={styles.confirmButtonText}>
-                            ✅ 確認しました
-                          </Text>
-                        </TouchableOpacity>
-                      )}
+                  <Text style={styles.detailBody}>
+                    {selectedNotice.content}
+                  </Text>
+
+                  <View style={styles.readByContainer}>
+                    <Text style={styles.readByText}>
+                      👁️ 既読: {selectedNotice.readBy.length}人
+                    </Text>
+                  </View>
+                </View>
+
+                {/* 自分が作成した投稿、または管理者なら編集・削除が可能 */}
+                {canManageNotices &&
+                  (selectedNotice.author === displayUserName ||
+                    ["owner", "staff"].includes(userRole)) && (
+                    <View style={styles.adminActionRow}>
+                      <TouchableOpacity
+                        style={styles.editBtn}
+                        onPress={() => openEditModal(selectedNotice)}
+                      >
+                        <Text style={styles.editBtnText}>✏️ 修正する</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.deleteBtn}
+                        onPress={() => handleDeleteNotice(selectedNotice.id)}
+                      >
+                        <Text style={styles.deleteBtnText}>🗑 削除する</Text>
+                      </TouchableOpacity>
                     </View>
                   )}
-                </ScrollView>
-              </>
+              </ScrollView>
             )}
           </View>
         </SafeAreaView>
       </Modal>
 
+      {/* お知らせ作成・編集モーダル */}
       <Modal
         visible={isCreateModalVisible}
         transparent={true}
         animationType="slide"
       >
         <SafeAreaView style={styles.modalSafeArea}>
-          <View style={styles.createContainer}>
-            <View style={styles.detailHeader}>
-              <TouchableOpacity onPress={() => setIsCreateModalVisible(false)}>
-                <Text style={styles.closeBtn}>✕ キャンセル</Text>
-              </TouchableOpacity>
-              <Text style={styles.createHeaderTitle}>
-                {isOffline ? "新規連絡(待機)" : "新規連絡の作成"}
-              </Text>
-              <View style={{ width: 60 }} />
-            </View>
-            <ScrollView style={styles.createScroll}>
-              <Text style={styles.inputLabel}>タイトル</Text>
-              <TextInput
-                style={styles.titleInput}
-                placeholder="例: 夏季合宿のスケジュール"
-                value={newTitle}
-                onChangeText={setNewTitle}
-              />
-              <Text style={styles.inputLabel}>本文</Text>
-              <TextInput
-                style={styles.contentInput}
-                placeholder="連絡事項を詳しく入力してください"
-                value={newContent}
-                onChangeText={setNewContent}
-                multiline
-                textAlignVertical="top"
-              />
-              <TouchableOpacity
-                style={[
-                  styles.submitButton,
-                  isOffline && { backgroundColor: "#f39c12" },
-                ]}
-                onPress={handleCreateNotice}
-              >
-                <Text style={styles.submitButtonText}>
-                  {isOffline ? "待機リストに入れる" : "掲示板に投稿する"}
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            style={{ flex: 1 }}
+          >
+            <View style={styles.createContainer}>
+              <View style={styles.detailHeader}>
+                <TouchableOpacity
+                  onPress={() => setIsCreateModalVisible(false)}
+                >
+                  <Text style={styles.closeBtn}>キャンセル</Text>
+                </TouchableOpacity>
+                <Text style={styles.detailHeaderTitle}>
+                  {editingNoticeId ? "お知らせの修正" : "新規お知らせ作成"}
                 </Text>
-              </TouchableOpacity>
-            </ScrollView>
-          </View>
+                <View style={{ width: 60 }} />
+              </View>
+
+              <ScrollView style={styles.createScroll}>
+                <Text style={styles.inputLabel}>タイトル</Text>
+                <TextInput
+                  style={styles.inputSingle}
+                  placeholder="例: 明日の練習時間について"
+                  value={newTitle}
+                  onChangeText={setNewTitle}
+                />
+
+                <Text style={styles.inputLabel}>本文</Text>
+                <TextInput
+                  style={styles.inputMulti}
+                  placeholder="連絡事項を入力してください..."
+                  value={newContent}
+                  onChangeText={setNewContent}
+                  multiline
+                />
+
+                <TouchableOpacity
+                  style={[
+                    styles.importantToggle,
+                    isImportant && styles.importantToggleActive,
+                  ]}
+                  onPress={() => setIsImportant(!isImportant)}
+                >
+                  <Text
+                    style={[
+                      styles.importantToggleText,
+                      isImportant && styles.importantToggleTextActive,
+                    ]}
+                  >
+                    {isImportant
+                      ? "🚨 重要なお知らせに設定中"
+                      : "通常のお知らせとして投稿"}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.submitButton,
+                    isOffline && { backgroundColor: "#f39c12" },
+                  ]}
+                  onPress={handleSaveNotice}
+                >
+                  <Text style={styles.submitButtonText}>
+                    {editingNoticeId
+                      ? "修正を保存"
+                      : isOffline
+                        ? "待機リストに保存"
+                        : "チームに送信"}
+                  </Text>
+                </TouchableOpacity>
+                <View style={{ height: 50 }} />
+              </ScrollView>
+            </View>
+          </KeyboardAvoidingView>
         </SafeAreaView>
       </Modal>
     </SafeAreaView>
@@ -374,13 +437,13 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#f0f2f5" },
   header: {
     height: 60,
-    backgroundColor: "#34495e",
+    backgroundColor: "#2980b9",
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 15,
   },
   headerOffline: { backgroundColor: "#7f8c8d" },
-  backButton: { position: "absolute", left: 15, zIndex: 10 },
+  backButton: { width: 60 },
   backButtonText: { color: "#fff", fontSize: 14, fontWeight: "bold" },
   headerTitle: {
     color: "#fff",
@@ -389,104 +452,127 @@ const styles = StyleSheet.create({
     flex: 1,
     textAlign: "center",
   },
-  headerRight: { flexDirection: "row", alignItems: "center" },
-  navBtn: { marginRight: 15 },
-  navIcon: { fontSize: 20 },
-  logoutBtn: {
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 15,
-    backgroundColor: "#e74c3c",
-  },
-  logoutBtnText: { color: "#fff", fontSize: 12, fontWeight: "bold" },
+  headerRight: { width: 60 },
+
   offlineBanner: {
     backgroundColor: "#f39c12",
     padding: 8,
     alignItems: "center",
   },
   offlineBannerText: { color: "#fff", fontSize: 12, fontWeight: "bold" },
-  content: { padding: 15 },
+
+  searchContainer: {
+    padding: 15,
+    backgroundColor: "#fff",
+    borderBottomWidth: 1,
+    borderBottomColor: "#eee",
+  },
+  searchInput: {
+    backgroundColor: "#f0f0f0",
+    borderRadius: 8,
+    padding: 10,
+    fontSize: 15,
+  },
+
+  listContainer: { padding: 15 },
+  emptyText: { textAlign: "center", color: "#888", marginTop: 50 },
+
   card: {
     backgroundColor: "#fff",
-    padding: 15,
     borderRadius: 12,
+    padding: 15,
     marginBottom: 15,
     elevation: 2,
+    borderLeftWidth: 4,
+    borderLeftColor: "#3498db",
   },
+  importantCard: { borderLeftColor: "#e74c3c", backgroundColor: "#fffafa" },
   pendingCard: {
-    opacity: 0.6,
-    backgroundColor: "#fdfdfd",
+    opacity: 0.7,
     borderStyle: "dashed",
     borderWidth: 1,
-    borderColor: "#ccc",
+    borderColor: "#f39c12",
   },
-  pendingHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 10,
-    paddingBottom: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: "#f0f0f0",
+  pendingText: {
+    color: "#f39c12",
+    fontSize: 12,
+    fontWeight: "bold",
+    marginBottom: 8,
   },
-  pendingHeaderText: { color: "#e67e22", fontSize: 12, fontWeight: "bold" },
+
   cardHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "flex-start",
-    marginBottom: 5,
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  importantBadge: {
+    backgroundColor: "#e74c3c",
+    color: "#fff",
+    fontSize: 10,
+    fontWeight: "bold",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    marginRight: 8,
+    overflow: "hidden",
   },
   cardTitle: {
     fontSize: 16,
     fontWeight: "bold",
     color: "#333",
     flex: 1,
-    marginRight: 10,
+    paddingRight: 10,
   },
-  statusBadge: { paddingVertical: 4, paddingHorizontal: 8, borderRadius: 12 },
-  badgeUnread: { backgroundColor: "#ffebee" },
-  badgeRead: { backgroundColor: "#e8f5e9" },
-  statusBadgeText: { fontSize: 12, fontWeight: "bold", color: "#333" },
-  cardMeta: { fontSize: 12, color: "#888", marginBottom: 15 },
-  progressContainer: {
-    backgroundColor: "#f9f9f9",
-    padding: 10,
-    borderRadius: 8,
+  unreadText: { color: "#000" },
+  unreadDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: "#e74c3c",
   },
-  progressHeader: {
+
+  cardContent: {
+    fontSize: 14,
+    color: "#666",
+    lineHeight: 20,
+    marginBottom: 12,
+  },
+  cardFooter: {
     flexDirection: "row",
     justifyContent: "space-between",
-    marginBottom: 5,
+    alignItems: "center",
   },
-  progressText: { fontSize: 12, color: "#555", fontWeight: "bold" },
-  progressBarBg: {
-    height: 8,
-    backgroundColor: "#e0e0e0",
-    borderRadius: 4,
-    overflow: "hidden",
-  },
-  progressBarFill: {
-    height: "100%",
-    backgroundColor: "#0077cc",
-    borderRadius: 4,
-  },
+  cardAuthor: { fontSize: 12, color: "#888", fontWeight: "bold" },
+  cardDate: { fontSize: 12, color: "#aaa" },
+
   fab: {
     position: "absolute",
     bottom: 30,
     right: 20,
     width: 60,
     height: 60,
-    backgroundColor: "#e67e22",
+    backgroundColor: "#2980b9",
     borderRadius: 30,
     justifyContent: "center",
     alignItems: "center",
     elevation: 5,
   },
   fabIcon: { fontSize: 30, color: "#fff", fontWeight: "bold" },
+
   modalSafeArea: { flex: 1, backgroundColor: "rgba(0,0,0,0.5)" },
   detailContainer: {
     flex: 1,
+    backgroundColor: "#f9f9f9",
+    marginTop: 40,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    overflow: "hidden",
+  },
+  createContainer: {
+    flex: 1,
     backgroundColor: "#fff",
-    marginTop: 50,
+    marginTop: 40,
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     overflow: "hidden",
@@ -494,119 +580,123 @@ const styles = StyleSheet.create({
   detailHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
+    alignItems: "center",
     padding: 15,
+    backgroundColor: "#fff",
     borderBottomWidth: 1,
     borderBottomColor: "#eee",
-    backgroundColor: "#fafafa",
   },
-  closeBtn: { fontSize: 16, color: "#0077cc", fontWeight: "bold" },
-  deleteBtn: { fontSize: 16, color: "#d9534f", fontWeight: "bold" },
-  detailScroll: { padding: 20 },
-  detailTitle: {
-    fontSize: 22,
+  detailHeaderTitle: { fontSize: 16, fontWeight: "bold", color: "#333" },
+  closeBtn: { fontSize: 16, color: "#2980b9", fontWeight: "bold" },
+
+  detailScroll: { padding: 15 },
+  detailContentBox: {
+    backgroundColor: "#fff",
+    padding: 20,
+    borderRadius: 12,
+    marginBottom: 20,
+    elevation: 1,
+  },
+  importantBadgeLarge: {
+    color: "#e74c3c",
     fontWeight: "bold",
-    color: "#333",
+    fontSize: 14,
     marginBottom: 10,
   },
-  detailMeta: { fontSize: 14, color: "#888", marginBottom: 20 },
-  detailContentBox: {
-    backgroundColor: "#f9f9f9",
-    padding: 15,
-    borderRadius: 10,
-    marginBottom: 30,
-  },
-  detailContent: { fontSize: 16, color: "#444", lineHeight: 24 },
-  adminStatusArea: { marginTop: 10, paddingBottom: 50 },
-  adminStatusTitle: {
-    fontSize: 18,
+  detailTitle: {
+    fontSize: 20,
     fontWeight: "bold",
     color: "#333",
     marginBottom: 15,
   },
-  statusListRow: { flexDirection: "row", justifyContent: "space-between" },
-  statusColumn: {
-    flex: 1,
-    backgroundColor: "#fff",
-    borderWidth: 1,
-    borderColor: "#eee",
-    borderRadius: 8,
-    padding: 10,
-    marginHorizontal: 5,
-  },
-  statusListHeader: {
-    fontSize: 14,
-    fontWeight: "bold",
-    marginBottom: 10,
-    textAlign: "center",
+  detailMetaRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
     borderBottomWidth: 1,
     borderBottomColor: "#eee",
-    paddingBottom: 5,
+    paddingBottom: 10,
+    marginBottom: 15,
   },
-  statusName: { fontSize: 14, color: "#555", marginBottom: 5 },
-  statusNameEmpty: {
-    fontSize: 12,
-    color: "#888",
-    fontStyle: "italic",
-    textAlign: "center",
-    marginTop: 10,
+  detailAuthor: { fontSize: 13, color: "#555", fontWeight: "bold" },
+  detailDate: { fontSize: 13, color: "#888" },
+  detailBody: { fontSize: 16, color: "#333", lineHeight: 26, minHeight: 150 },
+  readByContainer: {
+    marginTop: 20,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: "#f0f0f0",
   },
-  memberActionArea: { marginTop: 10, paddingBottom: 50 },
-  confirmButton: {
-    backgroundColor: "#e67e22",
-    paddingVertical: 15,
-    borderRadius: 10,
-    alignItems: "center",
-    elevation: 2,
+  readByText: { fontSize: 12, color: "#888", textAlign: "right" },
+
+  adminActionRow: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    marginBottom: 30,
   },
-  confirmButtonText: { color: "#fff", fontSize: 18, fontWeight: "bold" },
-  confirmedBox: {
-    backgroundColor: "#e8f5e9",
-    paddingVertical: 15,
-    borderRadius: 10,
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: "#5cb85c",
+  editBtn: {
+    backgroundColor: "#f39c12",
+    paddingVertical: 10,
+    paddingHorizontal: 15,
+    borderRadius: 8,
+    marginRight: 10,
   },
-  confirmedText: { color: "#5cb85c", fontSize: 16, fontWeight: "bold" },
-  createContainer: {
-    flex: 1,
-    backgroundColor: "#fff",
-    marginTop: 50,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
+  editBtnText: { color: "#fff", fontWeight: "bold", fontSize: 14 },
+  deleteBtn: {
+    backgroundColor: "#e74c3c",
+    paddingVertical: 10,
+    paddingHorizontal: 15,
+    borderRadius: 8,
   },
-  createHeaderTitle: { fontSize: 18, fontWeight: "bold", color: "#333" },
+  deleteBtnText: { color: "#fff", fontWeight: "bold", fontSize: 14 },
+
   createScroll: { padding: 20 },
   inputLabel: {
     fontSize: 14,
     fontWeight: "bold",
-    color: "#555",
+    color: "#333",
     marginBottom: 8,
+    marginTop: 10,
   },
-  titleInput: {
+  inputSingle: {
     backgroundColor: "#f5f5f5",
     borderWidth: 1,
     borderColor: "#ddd",
     borderRadius: 8,
     padding: 12,
     fontSize: 16,
-    marginBottom: 20,
   },
-  contentInput: {
+  inputMulti: {
     backgroundColor: "#f5f5f5",
     borderWidth: 1,
     borderColor: "#ddd",
     borderRadius: 8,
     padding: 12,
     fontSize: 16,
-    height: 200,
-    marginBottom: 30,
+    minHeight: 150,
+    textAlignVertical: "top",
   },
+  importantToggle: {
+    marginTop: 20,
+    padding: 15,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#ddd",
+    alignItems: "center",
+    backgroundColor: "#f9f9f9",
+  },
+  importantToggleActive: {
+    backgroundColor: "#fff5f5",
+    borderColor: "#e74c3c",
+  },
+  importantToggleText: { fontSize: 14, color: "#666", fontWeight: "bold" },
+  importantToggleTextActive: { color: "#e74c3c" },
+
   submitButton: {
-    backgroundColor: "#e67e22",
+    backgroundColor: "#2980b9",
     paddingVertical: 15,
     borderRadius: 10,
     alignItems: "center",
+    marginTop: 30,
   },
   submitButtonText: { color: "#fff", fontSize: 18, fontWeight: "bold" },
 });

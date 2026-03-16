@@ -28,12 +28,10 @@ const DiaryScreen = ({
   setPosts,
   userProfiles = {},
 }) => {
-  // ★変更：テスト用スイッチャーを廃止し、実際の設定データからロールを取得
   const currentUserProfile = userProfiles[currentUser] || {};
   const userRole = isAdmin ? "owner" : currentUserProfile.role || "member";
   const isStaffOrAbove = ["owner", "staff"].includes(userRole);
 
-  // 表示名の切り替え
   const roleNameMap = {
     owner: "管理者(監督)",
     staff: "コーチ(スタッフ)",
@@ -89,7 +87,6 @@ const DiaryScreen = ({
     return () => clearInterval(timer);
   }, []);
 
-  // ★変更：権限と担当設定に基づいた厳密なフィルタリング
   const staffScope = currentUserProfile.staffScope || "all";
 
   let processedDiaries = diaries.filter((d) => {
@@ -506,11 +503,7 @@ const DiaryScreen = ({
         <Text style={styles.headerTitle}>
           {isOffline ? "オフライン表示中" : "📖 部活日記"}
         </Text>
-        <View style={styles.headerRight}>
-          <TouchableOpacity style={styles.navBtn} onPress={toggleNetworkStatus}>
-            <Text style={styles.navIcon}>{isOffline ? "🚫" : "🌐"}</Text>
-          </TouchableOpacity>
-        </View>
+        {/* ★変更：不要なオフラインボタン（navBtn）を撤去しました */}
       </View>
 
       {isOffline && (
@@ -1549,10 +1542,6 @@ const styles = StyleSheet.create({
     flex: 1,
     textAlign: "center",
   },
-  headerRight: { position: "absolute", right: 15, flexDirection: "row" },
-  navBtn: { padding: 5 },
-  navIcon: { fontSize: 20 },
-
   offlineBanner: {
     backgroundColor: "#f39c12",
     padding: 8,

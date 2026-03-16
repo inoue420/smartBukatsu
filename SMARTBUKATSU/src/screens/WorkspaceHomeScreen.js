@@ -30,13 +30,11 @@ const WorkspaceHomeScreen = ({
   clubMembers,
   medicalRecords,
   alertThresholds,
-  userProfiles = {}, // ★追加
+  userProfiles = {},
 }) => {
-  // ★変更：テスト用スイッチャーを廃止し、実際の設定データからロールを取得
   const currentUserProfile = userProfiles[currentUser] || {};
   const userRole = isAdmin ? "owner" : currentUserProfile.role || "member";
 
-  // ロールに応じた表示名の切り替え
   const roleNameMap = {
     owner: "管理者(監督)",
     staff: "コーチ(スタッフ)",
@@ -45,7 +43,6 @@ const WorkspaceHomeScreen = ({
   };
   const displayUserName = roleNameMap[userRole] || currentUser;
 
-  // ロールに基づく権限の定義
   const isStaffOrAbove = ["owner", "staff"].includes(userRole);
   const canCreateChannel = ["owner", "staff"].includes(userRole);
 
@@ -108,7 +105,7 @@ const WorkspaceHomeScreen = ({
       name: "Aチーム限定",
       isReadOnly: false,
       shareScope: "group",
-      allowedMembers: ["佐藤", "鈴木"],
+      allowedMembers: ["キャプテン"],
     },
     {
       id: "ch_staff",
@@ -156,7 +153,6 @@ const WorkspaceHomeScreen = ({
   const mainInputRef = useRef(null);
   const replyInputRef = useRef(null);
 
-  // ★変更：論理削除されたものは通報一覧からも除外
   const reportedItems = [];
   posts.forEach((post) => {
     if (post.status === "deleted") return;
@@ -304,7 +300,6 @@ const WorkspaceHomeScreen = ({
 
   const handleResolveReport = (type, postId, replyId, action) => {
     if (action === "delete") {
-      // ★変更：論理削除
       if (type === "post") {
         setPosts(
           posts.map((p) =>
@@ -395,7 +390,6 @@ const WorkspaceHomeScreen = ({
           text: "削除",
           style: "destructive",
           onPress: () => {
-            // ★変更：論理削除
             setPosts(
               posts.map((p) =>
                 p.id === postId
@@ -442,7 +436,6 @@ const WorkspaceHomeScreen = ({
   const isReportedByMe = (item) =>
     item.reported?.some((r) => r.by === displayUserName);
 
-  // ★変更：論理削除（status === 'deleted'）されたものを画面に出さない
   let filteredPosts = posts.filter(
     (post) =>
       post.channel === activeChannelObj?.name && post.status !== "deleted",
@@ -474,7 +467,6 @@ const WorkspaceHomeScreen = ({
       );
     const isPending = post.status === "pending";
 
-    // 論理削除されていない返信だけをカウント
     const validReplies = post.replies.filter((r) => r.status !== "deleted");
 
     return (
@@ -669,7 +661,6 @@ const WorkspaceHomeScreen = ({
               </TouchableOpacity>
             </View>
 
-            {/* ★変更：論理削除されていない返信のみを表示 */}
             {validReplies.map((reply) => {
               const isReplyPending = reply.status === "pending";
               if (isReportedByMe(reply) && !isStaffOrAbove)
@@ -724,7 +715,6 @@ const WorkspaceHomeScreen = ({
                           <TouchableOpacity
                             style={styles.longPressMenuItem}
                             onPress={() => {
-                              // ★変更：返信の論理削除
                               setPosts(
                                 posts.map((p) =>
                                   p.id === post.id
@@ -808,12 +798,7 @@ const WorkspaceHomeScreen = ({
             {isOffline ? "オフライン表示中" : "スマート部活"}
           </Text>
           <View style={styles.headerRight}>
-            <TouchableOpacity
-              style={styles.headerIconBtn}
-              onPress={toggleNetworkStatus}
-            >
-              <Text style={styles.headerIcon}>{isOffline ? "🚫" : "🌐"}</Text>
-            </TouchableOpacity>
+            {/* ★変更：オフラインインジケーター（アイコン）を完全に撤去しました */}
 
             {isStaffOrAbove && (
               <TouchableOpacity
@@ -1066,7 +1051,6 @@ const WorkspaceHomeScreen = ({
         )}
       </KeyboardAvoidingView>
 
-      {/* チャンネル作成モーダル */}
       <Modal
         visible={isAddChannelModalVisible}
         transparent={true}
@@ -1832,7 +1816,9 @@ const styles = StyleSheet.create({
   dashboardHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
-    padding: 20,
+    paddingTop: Platform.OS === "ios" ? 60 : 30, // ★ノッチ・ステータスバー対応
+    paddingBottom: 20,
+    paddingHorizontal: 20,
     backgroundColor: "#fff",
     borderBottomWidth: 1,
     borderBottomColor: "#ddd",

@@ -90,10 +90,8 @@ const SettingsScreen = ({
   userProfiles,
   setUserProfiles,
 }) => {
-  // ★変更：テスト用ではなく、実際のユーザー情報からロールを取得
   const currentUserProfile = userProfiles[currentUser] || {};
   const userRole = isAdmin ? "owner" : currentUserProfile.role || "member";
-  // 監督（owner）またはスタッフ（staff）なら設定画面の操作を許可
   const isStaffOrAbove = ["owner", "staff"].includes(userRole);
 
   const [newAdminPass, setNewAdminPass] = useState(adminPassword);
@@ -122,7 +120,13 @@ const SettingsScreen = ({
   const [myPosition, setMyPosition] = useState(
     userProfiles[currentUser]?.position || "",
   );
-  const [myPassword, setMyPassword] = useState("");
+
+  // ★修正：初期値として設定済みのパスワードを読み込む
+  const [myPassword, setMyPassword] = useState(
+    userProfiles[currentUser]?.password || "",
+  );
+  // ★追加：自分専用パスワードの表示/非表示ステート
+  const [showMyPassword, setShowMyPassword] = useState(false);
 
   const [isRoleModalVisible, setIsRoleModalVisible] = useState(false);
   const [selectedMemberForRole, setSelectedMemberForRole] = useState(null);
@@ -225,7 +229,7 @@ const SettingsScreen = ({
 
   const handleSaveMemberPassword = () => {
     if (myPassword.trim() === "") {
-      Alert.alert("エラー", "新しいパスワードを入力してください。");
+      Alert.alert("エラー", "パスワードは空にできません。");
       return;
     }
     setUserProfiles((prev) => ({
@@ -236,7 +240,6 @@ const SettingsScreen = ({
       "保存完了",
       "自分専用のパスワードを設定しました。次回のログインから使用できます。",
     );
-    setMyPassword("");
   };
 
   const handleOpenRoleModal = (memberName) => {
@@ -250,7 +253,6 @@ const SettingsScreen = ({
       return;
     }
 
-    // ★ハイブリッド型の安全ガード：スタッフは、他のスタッフの権限を落とせない
     if (
       userRole === "staff" &&
       targetRole === "staff" &&
@@ -338,7 +340,6 @@ const SettingsScreen = ({
         </View>
 
         <ScrollView style={styles.content} keyboardShouldPersistTaps="handled">
-          {/* 部員・キャプテン用画面（自分自身のプロフのみ） */}
           {!isStaffOrAbove ? (
             <>
               <Text style={styles.sectionDescription}>
@@ -397,6 +398,7 @@ const SettingsScreen = ({
                 </TouchableOpacity>
               </SectionCard>
 
+              {/* ★修正：自分専用パスワードの表示/非表示ボタンを追加 */}
               <SectionCard
                 isExp={expanded.myPassword}
                 onToggle={() => toggleSection("myPassword")}
@@ -405,15 +407,29 @@ const SettingsScreen = ({
                 <Text style={styles.subText}>
                   チーム共通パスワードの代わりに、自分だけがログインできる秘密のパスワードを設定します。
                 </Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="新しいパスワード"
-                  secureTextEntry
-                  value={myPassword}
-                  onChangeText={setMyPassword}
-                />
+                <Text style={styles.label}>自分専用パスワード</Text>
+                <View style={styles.passwordRow}>
+                  <TextInput
+                    style={styles.passwordInput}
+                    placeholder="未設定"
+                    secureTextEntry={!showMyPassword}
+                    value={myPassword}
+                    onChangeText={setMyPassword}
+                  />
+                  <TouchableOpacity
+                    style={styles.toggleBtn}
+                    onPress={() => setShowMyPassword(!showMyPassword)}
+                  >
+                    <Text style={styles.toggleBtnText}>
+                      {showMyPassword ? "隠す" : "表示"}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
                 <TouchableOpacity
-                  style={[styles.saveBtn, { backgroundColor: "#3498db" }]}
+                  style={[
+                    styles.saveBtn,
+                    { backgroundColor: "#3498db", marginTop: 5 },
+                  ]}
                   onPress={handleSaveMemberPassword}
                 >
                   <Text style={styles.saveBtnText}>パスワードを設定</Text>
@@ -421,7 +437,6 @@ const SettingsScreen = ({
               </SectionCard>
             </>
           ) : (
-            // 監督・スタッフ用画面
             <>
               <Text style={styles.sectionDescription}>
                 チームの管理・設定を行うことができます。
@@ -747,7 +762,6 @@ const SettingsScreen = ({
         </ScrollView>
       </KeyboardAvoidingView>
 
-      {/* 権限変更用モーダル */}
       <Modal
         visible={isRoleModalVisible}
         transparent={true}
@@ -759,7 +773,6 @@ const SettingsScreen = ({
               {selectedMemberForRole} の権限を変更
             </Text>
 
-            {/* ★ハイブリッド型ガード：スタッフに昇格できるのはオーナーのみ */}
             {userRole === "owner" && (
               <TouchableOpacity
                 style={[
@@ -815,7 +828,6 @@ const SettingsScreen = ({
         </View>
       </Modal>
 
-      {/* 担当スタッフ割り当てモーダル */}
       <Modal
         visible={isAssignStaffModalVisible}
         transparent
@@ -859,7 +871,6 @@ const SettingsScreen = ({
         </View>
       </Modal>
 
-      {/* スタッフの閲覧範囲設定モーダル */}
       <Modal
         visible={isStaffScopeModalVisible}
         transparent

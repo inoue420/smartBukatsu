@@ -71,7 +71,6 @@ const MedicalScreen = ({
   alertThresholds,
   userProfiles = {},
 }) => {
-  // ★変更：テスト用スイッチャーを廃止し、実際の設定データからロールを取得
   const currentUserProfile = userProfiles[currentUser] || {};
   const userRole = isAdmin ? "owner" : currentUserProfile.role || "member";
   const isStaffOrAbove = ["owner", "staff"].includes(userRole);
@@ -166,7 +165,6 @@ const MedicalScreen = ({
     return level;
   };
 
-  // ★変更：権限と担当設定に基づいた厳密なフィルタリング
   const staffScope = currentUserProfile.staffScope || "all";
 
   let processedRecords = medicalRecords.filter((r) => {
@@ -471,12 +469,16 @@ const MedicalScreen = ({
         <Text style={styles.headerTitle}>
           {isOffline ? "オフライン" : "🏥 コンディション"}
         </Text>
-        <View style={styles.headerRight}>
-          <TouchableOpacity style={styles.navBtn} onPress={toggleNetworkStatus}>
-            <Text style={styles.navIcon}>{isOffline ? "🚫" : "🌐"}</Text>
-          </TouchableOpacity>
-        </View>
+        {/* ★変更：不要なオフラインボタン（navBtn）を撤去しました */}
       </View>
+
+      {isOffline && (
+        <View style={styles.offlineBanner}>
+          <Text style={styles.offlineBannerText}>
+            現在オフラインです。一部の操作が制限されます。
+          </Text>
+        </View>
+      )}
 
       {isStaffOrAbove && (
         <View style={styles.adminDashboard}>
@@ -1225,9 +1227,6 @@ const styles = StyleSheet.create({
     flex: 1,
     textAlign: "center",
   },
-  headerRight: { position: "absolute", right: 15, flexDirection: "row" },
-  navBtn: { padding: 5 },
-  navIcon: { fontSize: 20 },
   adminDashboard: {
     backgroundColor: "#fff",
     borderBottomWidth: 1,

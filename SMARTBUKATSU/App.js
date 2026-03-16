@@ -1,7 +1,9 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { Alert, LogBox } from "react-native";
+// ★追加：本番用ネットワーク監視ライブラリ
+import NetInfo from "@react-native-community/netinfo";
 
 // expo-avの非推奨警告を画面上で非表示にする
 LogBox.ignoreLogs(["[expo-av]"]);
@@ -23,22 +25,15 @@ export default function App() {
 
   const [adminPassword, setAdminPassword] = useState("1952");
   const [memberPassword, setMemberPassword] = useState("1234");
-  const [clubMembers, setClubMembers] = useState([
-    "佐藤",
-    "鈴木",
-    "高橋",
-    "田中",
-    "伊藤",
-  ]);
+
+  const [clubMembers, setClubMembers] = useState(["キャプテン", "部員1"]);
   const [grades, setGrades] = useState(["1年", "2年", "3年"]);
-  const [positions, setPositions] = useState([
-    "投手",
-    "捕手",
-    "内野",
-    "外野",
-    "マネ",
-  ]);
-  const [userProfiles, setUserProfiles] = useState({});
+  const [positions, setPositions] = useState(["CP", "GK", "マネージャー"]);
+
+  const [userProfiles, setUserProfiles] = useState({
+    キャプテン: { role: "captain" },
+    部員1: { role: "member" },
+  });
 
   const [alertThresholds, setAlertThresholds] = useState({
     fatigueWarning: 7,
@@ -74,19 +69,121 @@ export default function App() {
     },
   ]);
 
+  // ★追加：ネットワーク状態の自動監視と復旧時の全データ一括送信処理
+  useEffect(() => {
+    const unsubscribe = NetInfo.addEventListener((state) => {
+      // ネットワークに繋がっていない場合をオフラインとする
+      const currentlyOffline = !state.isConnected;
+
+      setIsOffline((prevOffline) => {
+        // オフラインからオンラインに復旧した瞬間
+        if (prevOffline && !currentlyOffline) {
+          let hasPending = false;
+
+          // 1. 投稿と返信の待機データを一括処理
+          setPosts((prev) => {
+            let changed = false;
+            const newPosts = prev.map((p) => {
+              let postChanged = false;
+              let newP = { ...p };
+              if (newP.status === "pending") {
+                newP.status = "sent";
+                postChanged = true;
+                changed = true;
+              }
+              if (
+                newP.replies &&
+                newP.replies.some((r) => r.status === "pending")
+              ) {
+                newP.replies = newP.replies.map((r) =>
+                  r.status === "pending" ? { ...r, status: "sent" } : r,
+                );
+                postChanged = true;
+                changed = true;
+              }
+              return postChanged ? newP : p;
+            });
+            if (changed) hasPending = true;
+            return newPosts;
+          });
+
+          // 2. 日記とコメントの待機データを一括処理
+          setDiaries((prev) => {
+            let changed = false;
+            const newDiaries = prev.map((d) => {
+              let diaryChanged = false;
+              let newD = { ...d };
+              if (newD.status === "pending") {
+                newD.status = "sent";
+                diaryChanged = true;
+                changed = true;
+              }
+              if (
+                newD.comments &&
+                newD.comments.some((c) => c.status === "pending")
+              ) {
+                newD.comments = newD.comments.map((c) =>
+                  c.status === "pending" ? { ...c, status: "sent" } : c,
+                );
+                diaryChanged = true;
+                changed = true;
+              }
+              return diaryChanged ? newD : d;
+            });
+            if (changed) hasPending = true;
+            return newDiaries;
+          });
+
+          // 3. メディカルとコメントの待機データを一括処理
+          setMedicalRecords((prev) => {
+            let changed = false;
+            const newRecords = prev.map((r) => {
+              let recordChanged = false;
+              let newR = { ...r };
+              if (newR.status === "pending") {
+                newR.status = "sent";
+                recordChanged = true;
+                changed = true;
+              }
+              if (
+                newR.comments &&
+                newR.comments.some((c) => c.status === "pending")
+              ) {
+                newR.comments = newR.comments.map((c) =>
+                  c.status === "pending" ? { ...c, status: "sent" } : c,
+                );
+                recordChanged = true;
+                changed = true;
+              }
+              return recordChanged ? newR : r;
+            });
+            if (changed) hasPending = true;
+            return newRecords;
+          });
+
+          // いずれかの待機データが送信された場合のみ通知
+          if (hasPending) {
+            setTimeout(() => {
+              Alert.alert(
+                "🌐 通信が復旧しました",
+                "オフライン時の待機データをすべて自動送信しました。",
+              );
+            }, 500);
+          }
+        }
+        return currentlyOffline;
+      });
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // ★変更：手動ボタンの無効化（エラーを防ぐための安全ガード）
   const toggleNetworkStatus = () => {
-    if (isOffline) {
-      setIsOffline(false);
-      let hasPending = false;
-      if (posts.some((p) => p.status === "pending")) hasPending = true;
-      if (hasPending)
-        Alert.alert(
-          "🌐 通信が復旧しました",
-          "オフライン時の待機データをすべて送信しました。",
-        );
-    } else {
-      setIsOffline(true);
-    }
+    Alert.alert(
+      "自動判定中",
+      "現在は端末のネットワーク状態を自動で監視しています。\n（※スマホの機内モードをON/OFFにしてテストできます）",
+    );
   };
 
   return (

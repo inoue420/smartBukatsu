@@ -31,7 +31,7 @@ const ProjectListScreen = ({
   const [activeLongPressProjectId, setActiveLongPressProjectId] =
     useState(null);
 
-  // ★変更：テスト用スイッチャーを廃止し、実際の設定データからロールを取得
+  // 実際の設定データからロールを取得
   const currentUserProfile = userProfiles[currentUser] || {};
   const userRole = isAdmin ? "owner" : currentUserProfile.role || "member";
   const displayUserName = isAdmin ? "管理者(監督)" : currentUser;
@@ -43,7 +43,7 @@ const ProjectListScreen = ({
 
   // フィルタリング
   let filteredProjects = projects.filter((p) => {
-    // ★変更：論理削除されたプロジェクトは画面に出さない
+    // 論理削除されたプロジェクトは画面に出さない
     if (p.status === "deleted") return false;
 
     if (!p.title.includes(searchQuery)) return false;
@@ -102,7 +102,7 @@ const ProjectListScreen = ({
           text: "消去",
           style: "destructive",
           onPress: () => {
-            // ★変更：論理削除
+            // 論理削除（statusをdeletedに変更し、誰がいつ消したか記録）
             setProjects(
               projects.map((p) =>
                 p.id === projectId
