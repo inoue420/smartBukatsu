@@ -22,6 +22,9 @@ const ProjectListScreen = ({
   setProjects,
   userProfiles = {},
 }) => {
+  // ★追加：タブ切り替え用のステート ("summary" = まとめ, "tagging" = タグ付け)
+  const [activeTab, setActiveTab] = useState("tagging");
+
   const [searchQuery, setSearchQuery] = useState("");
   const [isCreateModalVisible, setIsCreateModalVisible] = useState(false);
   const [newTitle, setNewTitle] = useState("");
@@ -31,27 +34,20 @@ const ProjectListScreen = ({
   const [activeLongPressProjectId, setActiveLongPressProjectId] =
     useState(null);
 
-  // 実際の設定データからロールを取得
   const currentUserProfile = userProfiles[currentUser] || {};
   const userRole = isAdmin ? "owner" : currentUserProfile.role || "member";
   const displayUserName = isAdmin ? "管理者(監督)" : currentUser;
 
-  // ロールに基づく権限の定義
   const canCreateProject = ["owner", "staff", "captain"].includes(userRole);
   const canDeleteProject = ["owner", "staff", "captain"].includes(userRole);
   const canPinProject = ["owner", "staff", "captain"].includes(userRole);
 
-  // フィルタリング
   let filteredProjects = projects.filter((p) => {
-    // 論理削除されたプロジェクトは画面に出さない
     if (p.status === "deleted") return false;
-
     if (!p.title.includes(searchQuery)) return false;
-
     if (userRole === "member" || userRole === "captain") {
       if (p.participants === "coach") return false;
     }
-
     return true;
   });
 
@@ -102,7 +98,6 @@ const ProjectListScreen = ({
           text: "消去",
           style: "destructive",
           onPress: () => {
-            // 論理削除（statusをdeletedに変更し、誰がいつ消したか記録）
             setProjects(
               projects.map((p) =>
                 p.id === projectId
@@ -137,124 +132,184 @@ const ProjectListScreen = ({
         >
           <Text style={styles.backButtonText}>◁ ホーム</Text>
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>📁 プロジェクト一覧</Text>
+        <Text style={styles.headerTitle}>📁 プロジェクト</Text>
         <View style={{ width: 60 }} />
       </View>
 
-      <View style={styles.searchContainer}>
-        <TextInput
-          style={styles.searchInput}
-          placeholder="プロジェクトを検索..."
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-        />
+      {/* ★追加：画面上部のタブ切り替え */}
+      <View style={styles.topTabContainer}>
+        <TouchableOpacity
+          style={[
+            styles.topTabBtn,
+            activeTab === "summary" && styles.topTabBtnActive,
+          ]}
+          onPress={() => setActiveTab("summary")}
+        >
+          <Text
+            style={[
+              styles.topTabText,
+              activeTab === "summary" && styles.topTabTextActive,
+            ]}
+          >
+            📊 まとめ
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[
+            styles.topTabBtn,
+            activeTab === "tagging" && styles.topTabBtnActive,
+          ]}
+          onPress={() => setActiveTab("tagging")}
+        >
+          <Text
+            style={[
+              styles.topTabText,
+              activeTab === "tagging" && styles.topTabTextActive,
+            ]}
+          >
+            🏷️ タグ付け
+          </Text>
+        </TouchableOpacity>
       </View>
 
-      <ScrollView
-        style={styles.listContainer}
-        contentContainerStyle={{ paddingBottom: 100 }}
-        onScrollBeginDrag={() => setActiveLongPressProjectId(null)}
-      >
-        {filteredProjects.length === 0 ? (
-          <Text style={styles.emptyText}>
-            該当するプロジェクトがありません。
+      {/* ★追加：タブに応じた表示の出し分け */}
+      {activeTab === "summary" ? (
+        <View style={styles.summaryContainer}>
+          <Text style={styles.summaryIcon}>🚧</Text>
+          <Text style={styles.summaryTitle}>次に実装！</Text>
+          <Text style={styles.summaryDesc}>
+            ここにチームの強み・弱みの集計や、全体的なスタッツをまとめたダッシュボードが入ります。
           </Text>
-        ) : (
-          filteredProjects.map((project) => (
-            <TouchableOpacity
-              key={project.id}
-              style={[
-                styles.card,
-                project.pinned && styles.cardPinned,
-                activeLongPressProjectId === project.id && { zIndex: 10 },
-              ]}
-              activeOpacity={0.9}
-              onLongPress={() => {
-                if (canPinProject || canDeleteProject) {
-                  setActiveLongPressProjectId(project.id);
-                }
-              }}
-              delayLongPress={300}
-              onPress={() => {
-                if (activeLongPressProjectId === project.id) {
-                  setActiveLongPressProjectId(null);
-                } else {
-                  navigation.navigate("ProjectDetail", { project, userRole });
-                }
-              }}
-            >
-              <View style={styles.cardHeader}>
-                <Text style={styles.dateText}>{project.date}</Text>
-                <View
-                  style={[
-                    styles.badge,
-                    project.type === "試合"
-                      ? styles.badgeMatch
-                      : styles.badgePractice,
-                  ]}
-                >
-                  <Text style={styles.badgeText}>{project.type}</Text>
-                </View>
-              </View>
+        </View>
+      ) : (
+        <>
+          <View style={styles.searchContainer}>
+            <TextInput
+              style={styles.searchInput}
+              placeholder="プロジェクトを検索..."
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+            />
+          </View>
 
-              <Text style={styles.projectTitle}>
-                {project.pinned ? "📌 " : ""}
-                {project.title}
+          <ScrollView
+            style={styles.listContainer}
+            contentContainerStyle={{ paddingBottom: 100 }}
+            onScrollBeginDrag={() => setActiveLongPressProjectId(null)}
+          >
+            {filteredProjects.length === 0 ? (
+              <Text style={styles.emptyText}>
+                該当するプロジェクトがありません。
               </Text>
-
-              <View style={styles.cardFooter}>
-                <Text style={styles.footerText}>
-                  👥 共有: {getParticipantsLabel(project.participants)}
-                </Text>
-                <Text style={styles.footerText}>💬 チャット進行中</Text>
-              </View>
-
-              {activeLongPressProjectId === project.id && (
-                <View style={styles.longPressMenu}>
-                  {canPinProject && (
-                    <TouchableOpacity
-                      style={styles.longPressMenuItem}
-                      onPress={() => handleTogglePin(project.id)}
+            ) : (
+              filteredProjects.map((project) => (
+                <TouchableOpacity
+                  key={project.id}
+                  style={[
+                    styles.card,
+                    project.pinned && styles.cardPinned,
+                    activeLongPressProjectId === project.id && { zIndex: 10 },
+                  ]}
+                  activeOpacity={0.9}
+                  onLongPress={() => {
+                    if (canPinProject || canDeleteProject) {
+                      setActiveLongPressProjectId(project.id);
+                    }
+                  }}
+                  delayLongPress={300}
+                  onPress={() => {
+                    if (activeLongPressProjectId === project.id) {
+                      setActiveLongPressProjectId(null);
+                    } else {
+                      navigation.navigate("ProjectDetail", {
+                        project,
+                        userRole,
+                      });
+                    }
+                  }}
+                >
+                  <View style={styles.cardHeader}>
+                    <Text style={styles.dateText}>{project.date}</Text>
+                    <View
+                      style={[
+                        styles.badge,
+                        project.type === "試合"
+                          ? styles.badgeMatch
+                          : styles.badgePractice,
+                      ]}
                     >
-                      <Text style={styles.longPressMenuText}>
-                        {project.pinned ? "📌 固定を解除" : "📌 固定する"}
-                      </Text>
-                    </TouchableOpacity>
-                  )}
-                  {canDeleteProject && (
-                    <TouchableOpacity
-                      style={styles.longPressMenuItem}
-                      onPress={() => confirmDeleteProject(project.id)}
-                    >
-                      <Text
-                        style={[styles.longPressMenuText, { color: "#d9534f" }]}
-                      >
-                        🗑 消去する
-                      </Text>
-                    </TouchableOpacity>
-                  )}
-                  <TouchableOpacity
-                    style={[styles.longPressMenuItem, { borderBottomWidth: 0 }]}
-                    onPress={() => setActiveLongPressProjectId(null)}
-                  >
-                    <Text style={[styles.longPressMenuText, { color: "#888" }]}>
-                      ✕ キャンセル
+                      <Text style={styles.badgeText}>{project.type}</Text>
+                    </View>
+                  </View>
+
+                  <Text style={styles.projectTitle}>
+                    {project.pinned ? "📌 " : ""}
+                    {project.title}
+                  </Text>
+
+                  <View style={styles.cardFooter}>
+                    <Text style={styles.footerText}>
+                      👥 共有: {getParticipantsLabel(project.participants)}
                     </Text>
-                  </TouchableOpacity>
-                </View>
-              )}
-            </TouchableOpacity>
-          ))
-        )}
-      </ScrollView>
+                    <Text style={styles.footerText}>💬 チャット進行中</Text>
+                  </View>
 
-      {canCreateProject && (
-        <TouchableOpacity
-          style={styles.fab}
-          onPress={() => setIsCreateModalVisible(true)}
-        >
-          <Text style={styles.fabIcon}>＋</Text>
-        </TouchableOpacity>
+                  {activeLongPressProjectId === project.id && (
+                    <View style={styles.longPressMenu}>
+                      {canPinProject && (
+                        <TouchableOpacity
+                          style={styles.longPressMenuItem}
+                          onPress={() => handleTogglePin(project.id)}
+                        >
+                          <Text style={styles.longPressMenuText}>
+                            {project.pinned ? "📌 固定を解除" : "📌 固定する"}
+                          </Text>
+                        </TouchableOpacity>
+                      )}
+                      {canDeleteProject && (
+                        <TouchableOpacity
+                          style={styles.longPressMenuItem}
+                          onPress={() => confirmDeleteProject(project.id)}
+                        >
+                          <Text
+                            style={[
+                              styles.longPressMenuText,
+                              { color: "#d9534f" },
+                            ]}
+                          >
+                            🗑 消去する
+                          </Text>
+                        </TouchableOpacity>
+                      )}
+                      <TouchableOpacity
+                        style={[
+                          styles.longPressMenuItem,
+                          { borderBottomWidth: 0 },
+                        ]}
+                        onPress={() => setActiveLongPressProjectId(null)}
+                      >
+                        <Text
+                          style={[styles.longPressMenuText, { color: "#888" }]}
+                        >
+                          ✕ キャンセル
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                </TouchableOpacity>
+              ))
+            )}
+          </ScrollView>
+
+          {canCreateProject && (
+            <TouchableOpacity
+              style={styles.fab}
+              onPress={() => setIsCreateModalVisible(true)}
+            >
+              <Text style={styles.fabIcon}>＋</Text>
+            </TouchableOpacity>
+          )}
+        </>
       )}
 
       <Modal
@@ -406,6 +461,56 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: "bold",
     textAlign: "center",
+  },
+
+  // ★追加：上部タブのスタイル
+  topTabContainer: {
+    flexDirection: "row",
+    backgroundColor: "#fff",
+    borderBottomWidth: 1,
+    borderBottomColor: "#eee",
+  },
+  topTabBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    alignItems: "center",
+    borderBottomWidth: 3,
+    borderBottomColor: "transparent",
+  },
+  topTabBtnActive: {
+    borderBottomColor: "#2c3e50",
+  },
+  topTabText: {
+    fontSize: 15,
+    fontWeight: "bold",
+    color: "#888",
+  },
+  topTabTextActive: {
+    color: "#2c3e50",
+  },
+
+  // ★追加：まとめタブ専用のスタイル
+  summaryContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 30,
+  },
+  summaryIcon: {
+    fontSize: 60,
+    marginBottom: 20,
+  },
+  summaryTitle: {
+    fontSize: 22,
+    fontWeight: "bold",
+    color: "#333",
+    marginBottom: 10,
+  },
+  summaryDesc: {
+    fontSize: 14,
+    color: "#666",
+    textAlign: "center",
+    lineHeight: 22,
   },
 
   searchContainer: {

@@ -2,7 +2,6 @@ import React, { useState, useEffect } from "react";
 import { NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { Alert, LogBox } from "react-native";
-// ★追加：本番用ネットワーク監視ライブラリ
 import NetInfo from "@react-native-community/netinfo";
 
 // expo-avの非推奨警告を画面上で非表示にする
@@ -13,9 +12,9 @@ import WorkspaceHomeScreen from "./src/screens/WorkspaceHomeScreen";
 import NoticeBoardScreen from "./src/screens/NoticeBoardScreen";
 import SettingsScreen from "./src/screens/SettingsScreen";
 import DiaryScreen from "./src/screens/DiaryScreen";
-import MedicalScreen from "./src/screens/MedicalScreen";
 import ProjectListScreen from "./src/screens/ProjectListScreen";
 import ProjectDetailScreen from "./src/screens/ProjectDetailScreen";
+import CalendarScreen from "./src/screens/CalendarScreen";
 
 const Stack = createNativeStackNavigator();
 
@@ -45,7 +44,7 @@ export default function App() {
   const [isOffline, setIsOffline] = useState(false);
   const [posts, setPosts] = useState([]);
   const [notices, setNotices] = useState([]);
-  const [diaries, setDiaries] = useState([]);
+  const [dailyReports, setDailyReports] = useState([]);
   const [medicalRecords, setMedicalRecords] = useState([]);
 
   const [projects, setProjects] = useState([
@@ -69,18 +68,14 @@ export default function App() {
     },
   ]);
 
-  // ★追加：ネットワーク状態の自動監視と復旧時の全データ一括送信処理
   useEffect(() => {
     const unsubscribe = NetInfo.addEventListener((state) => {
-      // ネットワークに繋がっていない場合をオフラインとする
       const currentlyOffline = !state.isConnected;
 
       setIsOffline((prevOffline) => {
-        // オフラインからオンラインに復旧した瞬間
         if (prevOffline && !currentlyOffline) {
           let hasPending = false;
 
-          // 1. 投稿と返信の待機データを一括処理
           setPosts((prev) => {
             let changed = false;
             const newPosts = prev.map((p) => {
@@ -107,42 +102,14 @@ export default function App() {
             return newPosts;
           });
 
-          // 2. 日記とコメントの待機データを一括処理
-          setDiaries((prev) => {
+          setDailyReports((prev) => {
             let changed = false;
-            const newDiaries = prev.map((d) => {
-              let diaryChanged = false;
-              let newD = { ...d };
-              if (newD.status === "pending") {
-                newD.status = "sent";
-                diaryChanged = true;
-                changed = true;
-              }
-              if (
-                newD.comments &&
-                newD.comments.some((c) => c.status === "pending")
-              ) {
-                newD.comments = newD.comments.map((c) =>
-                  c.status === "pending" ? { ...c, status: "sent" } : c,
-                );
-                diaryChanged = true;
-                changed = true;
-              }
-              return diaryChanged ? newD : d;
-            });
-            if (changed) hasPending = true;
-            return newDiaries;
-          });
-
-          // 3. メディカルとコメントの待機データを一括処理
-          setMedicalRecords((prev) => {
-            let changed = false;
-            const newRecords = prev.map((r) => {
-              let recordChanged = false;
+            const newReports = prev.map((r) => {
+              let reportChanged = false;
               let newR = { ...r };
               if (newR.status === "pending") {
                 newR.status = "sent";
-                recordChanged = true;
+                reportChanged = true;
                 changed = true;
               }
               if (
@@ -152,16 +119,15 @@ export default function App() {
                 newR.comments = newR.comments.map((c) =>
                   c.status === "pending" ? { ...c, status: "sent" } : c,
                 );
-                recordChanged = true;
+                reportChanged = true;
                 changed = true;
               }
-              return recordChanged ? newR : r;
+              return reportChanged ? newR : r;
             });
             if (changed) hasPending = true;
-            return newRecords;
+            return newReports;
           });
 
-          // いずれかの待機データが送信された場合のみ通知
           if (hasPending) {
             setTimeout(() => {
               Alert.alert(
@@ -178,11 +144,10 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // ★変更：手動ボタンの無効化（エラーを防ぐための安全ガード）
   const toggleNetworkStatus = () => {
     Alert.alert(
       "自動判定中",
-      "現在は端末のネットワーク状態を自動で監視しています。\n（※スマホの機内モードをON/OFFにしてテストできます）",
+      "現在は端末のネットワーク状態を自動で監視しています。",
     );
   };
 
@@ -220,9 +185,9 @@ export default function App() {
               isOffline={isOffline}
               toggleNetworkStatus={toggleNetworkStatus}
               clubMembers={clubMembers}
-              medicalRecords={medicalRecords}
               alertThresholds={alertThresholds}
               userProfiles={userProfiles}
+              dailyReports={dailyReports}
             />
           )}
         </Stack.Screen>
@@ -235,8 +200,6 @@ export default function App() {
               notices={notices}
               setNotices={setNotices}
               isOffline={isOffline}
-              toggleNetworkStatus={toggleNetworkStatus}
-              clubMembers={clubMembers}
               userProfiles={userProfiles}
             />
           )}
@@ -247,30 +210,29 @@ export default function App() {
               {...props}
               isAdmin={isAdmin}
               currentUser={currentUser}
-              diaries={diaries}
-              setDiaries={setDiaries}
               isOffline={isOffline}
-              toggleNetworkStatus={toggleNetworkStatus}
               grades={grades}
               positions={positions}
               posts={posts}
               setPosts={setPosts}
               userProfiles={userProfiles}
+              dailyReports={dailyReports}
+              setDailyReports={setDailyReports}
+              alertThresholds={alertThresholds}
             />
           )}
         </Stack.Screen>
-        <Stack.Screen name="Medical">
+        <Stack.Screen name="Calendar">
           {(props) => (
-            <MedicalScreen
+            <CalendarScreen
               {...props}
               isAdmin={isAdmin}
               currentUser={currentUser}
-              medicalRecords={medicalRecords}
-              setMedicalRecords={setMedicalRecords}
-              isOffline={isOffline}
-              toggleNetworkStatus={toggleNetworkStatus}
-              alertThresholds={alertThresholds}
+              projects={projects}
+              setProjects={setProjects} // ★追加：カレンダーから予定を編集できるように
+              dailyReports={dailyReports}
               userProfiles={userProfiles}
+              alertThresholds={alertThresholds}
             />
           )}
         </Stack.Screen>

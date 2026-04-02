@@ -14,19 +14,70 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+const OptionGroup = ({ options, selected, onSelect, color = "#0077cc" }) => (
+  <View style={styles.optionGroup}>
+    {options.map((opt) => (
+      <TouchableOpacity
+        key={opt}
+        style={[
+          styles.optionBtn,
+          selected === opt && { backgroundColor: color, borderColor: color },
+        ]}
+        onPress={() => onSelect(opt)}
+      >
+        <Text
+          style={[styles.optionBtnText, selected === opt && { color: "#fff" }]}
+        >
+          {opt}
+        </Text>
+      </TouchableOpacity>
+    ))}
+  </View>
+);
+
+const ScaleSelector = ({ selected, onSelect, color }) => (
+  <ScrollView
+    horizontal
+    showsHorizontalScrollIndicator={false}
+    style={styles.scaleScroll}
+  >
+    {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((num) => (
+      <TouchableOpacity
+        key={num}
+        style={[
+          styles.scaleBtn,
+          selected === num && { backgroundColor: color, borderColor: color },
+        ]}
+        onPress={() => onSelect(num)}
+      >
+        <Text
+          style={[styles.scaleBtnText, selected === num && { color: "#fff" }]}
+        >
+          {num}
+        </Text>
+      </TouchableOpacity>
+    ))}
+  </ScrollView>
+);
+
 const DiaryScreen = ({
   navigation,
   isAdmin,
   currentUser,
-  diaries,
-  setDiaries,
   isOffline,
-  toggleNetworkStatus,
   grades,
   positions,
   posts,
   setPosts,
   userProfiles = {},
+  dailyReports = [],
+  setDailyReports,
+  alertThresholds = {
+    fatigueWarning: 7,
+    fatigueDanger: 9,
+    painDanger: 7,
+    autoEscalate: true,
+  },
 }) => {
   const currentUserProfile = userProfiles[currentUser] || {};
   const userRole = isAdmin ? "owner" : currentUserProfile.role || "member";
@@ -41,32 +92,37 @@ const DiaryScreen = ({
   const displayUserName = roleNameMap[userRole] || currentUser;
 
   const [isCreateModalVisible, setIsCreateModalVisible] = useState(false);
-  const [selectedDiary, setSelectedDiary] = useState(null);
+  const [selectedReport, setSelectedReport] = useState(null);
   const [commentText, setCommentText] = useState("");
+  const [editingReportId, setEditingReportId] = useState(null);
 
-  const [editingDiaryId, setEditingDiaryId] = useState(null);
-  const [isAppendModalVisible, setIsAppendModalVisible] = useState(false);
-  const [appendContent, setAppendContent] = useState("");
+  // === 入力ステート（メディカル ＋ 日記） ===
+  const [condition, setCondition] = useState("良い");
+  const [fatigue, setFatigue] = useState(5);
+  const [sleep, setSleep] = useState("7h");
+  const [isParticipating, setIsParticipating] = useState("通常");
+  const [hasPain, setHasPain] = useState(false);
+  const [painPart, setPainPart] = useState("");
+  const [painLevel, setPainLevel] = useState(5);
+  const [sinceWhen, setSinceWhen] = useState("");
+  const [treatment, setTreatment] = useState("");
 
   const [practiceContent, setPracticeContent] = useState("");
   const [achievement, setAchievement] = useState(3);
   const [goodPoint, setGoodPoint] = useState("");
   const [badPoint, setBadPoint] = useState("");
   const [nextTask, setNextTask] = useState("");
+
   const [images, setImages] = useState([]);
   const [memo, setMemo] = useState("");
   const [highlightLink, setHighlightLink] = useState("");
   const [showMemoInput, setShowMemoInput] = useState(false);
   const [showLinkInput, setShowLinkInput] = useState(false);
+  // ========================================
 
   const [activeTab, setActiveTab] = useState("unread");
   const [searchQuery, setSearchQuery] = useState("");
-
   const [isFilterModalVisible, setIsFilterModalVisible] = useState(false);
-  const [filterGrade, setFilterGrade] = useState("全て");
-  const [filterPosition, setFilterPosition] = useState("全て");
-  const [filterPeriod, setFilterPeriod] = useState("全て");
-
   const [expandedDates, setExpandedDates] = useState({});
 
   const REPLY_TEMPLATES = [
@@ -79,20 +135,38 @@ const DiaryScreen = ({
       label: "👀 次回確認",
       text: "次回の練習で実際の動き（フォーム）を直接確認するね。",
     },
+    {
+      label: "🏥 メディカル",
+      text: "無理せず、明日は別メニューで様子を見ましょう。",
+    },
   ];
 
-  const [currentTime, setCurrentTime] = useState(Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setCurrentTime(Date.now()), 60000);
-    return () => clearInterval(timer);
-  }, []);
+  const getAlertLevel = (record) => {
+    let level = "normal";
+    if (!record.condition) return "normal";
+    if (
+      record.condition === "不良" ||
+      record.isParticipating === "不可" ||
+      record.fatigue >= alertThresholds.fatigueDanger ||
+      (record.hasPain &&
+        record.painDetails?.level >= alertThresholds.painDanger)
+    )
+      return "danger";
+    if (
+      record.fatigue >= alertThresholds.fatigueWarning ||
+      record.isParticipating === "制限" ||
+      record.hasPain
+    )
+      return "warning";
+    return level;
+  };
 
   const staffScope = currentUserProfile.staffScope || "all";
 
-  let processedDiaries = diaries.filter((d) => {
+  let processedReports = dailyReports.filter((d) => {
+    if (d.status === "deleted") return false;
     if (d.sharedWith === "all") return true;
     if (userRole === "owner") return true;
-
     if (userRole === "staff") {
       if (staffScope === "all") return true;
       if (staffScope === "assigned") {
@@ -100,19 +174,17 @@ const DiaryScreen = ({
         return authorProfile.assignedStaff === currentUser;
       }
     }
-
     if (userRole === "member" || userRole === "captain") {
       return d.author === currentUser;
     }
-
     return false;
   });
 
   if (isStaffOrAbove) {
     if (activeTab === "unread") {
-      processedDiaries = processedDiaries.filter((d) => !d.isReviewed);
+      processedReports = processedReports.filter((d) => !d.isReviewed);
     } else if (activeTab === "needs_reply") {
-      processedDiaries = processedDiaries.filter(
+      processedReports = processedReports.filter(
         (d) =>
           d.comments.filter((c) =>
             ["監督", "コーチ", "アシスタント", "管理者"].some((role) =>
@@ -121,7 +193,7 @@ const DiaryScreen = ({
           ).length === 0,
       );
     } else if (activeTab === "replied") {
-      processedDiaries = processedDiaries.filter(
+      processedReports = processedReports.filter(
         (d) =>
           d.comments.filter((c) =>
             ["監督", "コーチ", "アシスタント", "管理者"].some((role) =>
@@ -129,28 +201,31 @@ const DiaryScreen = ({
             ),
           ).length > 0,
       );
+    } else if (activeTab === "danger") {
+      processedReports = processedReports.filter(
+        (d) => getAlertLevel(d) === "danger",
+      );
     } else if (activeTab === "starred") {
-      processedDiaries = processedDiaries.filter((d) => d.isStarred);
+      processedReports = processedReports.filter((d) => d.isStarred);
     }
 
     if (searchQuery.trim() !== "") {
       const lowerQ = searchQuery.toLowerCase();
-      processedDiaries = processedDiaries.filter(
+      processedReports = processedReports.filter(
         (d) =>
           d.author.toLowerCase().includes(lowerQ) ||
           (d.practiceContent &&
-            d.practiceContent.toLowerCase().includes(lowerQ)) ||
-          (d.goodPoint && d.goodPoint.toLowerCase().includes(lowerQ)),
+            d.practiceContent.toLowerCase().includes(lowerQ)),
       );
     }
   }
 
-  const groupedDiaries = processedDiaries.reduce((acc, diary) => {
-    if (!acc[diary.date]) acc[diary.date] = [];
-    acc[diary.date].push(diary);
+  const groupedReports = processedReports.reduce((acc, report) => {
+    if (!acc[report.date]) acc[report.date] = [];
+    acc[report.date].push(report);
     return acc;
   }, {});
-  const sortedDates = Object.keys(groupedDiaries).sort(
+  const sortedDates = Object.keys(groupedReports).sort(
     (a, b) => new Date(b) - new Date(a),
   );
 
@@ -166,33 +241,33 @@ const DiaryScreen = ({
     });
   };
 
-  const handleToggleStar = (diaryId) => {
-    const newDiaries = diaries.map((d) =>
-      d.id === diaryId ? { ...d, isStarred: !d.isStarred } : d,
+  const handleToggleStar = (reportId) => {
+    const newReports = dailyReports.map((d) =>
+      d.id === reportId ? { ...d, isStarred: !d.isStarred } : d,
     );
-    setDiaries(newDiaries);
-    if (selectedDiary && selectedDiary.id === diaryId)
-      setSelectedDiary({
-        ...selectedDiary,
-        isStarred: !selectedDiary.isStarred,
+    setDailyReports(newReports);
+    if (selectedReport && selectedReport.id === reportId)
+      setSelectedReport({
+        ...selectedReport,
+        isStarred: !selectedReport.isStarred,
       });
   };
 
-  const handleToggleFollowUp = (diaryId) => {
-    const newDiaries = diaries.map((d) =>
-      d.id === diaryId ? { ...d, isFollowUp: !d.isFollowUp } : d,
+  const handleToggleFollowUp = (reportId) => {
+    const newReports = dailyReports.map((d) =>
+      d.id === reportId ? { ...d, isFollowUp: !d.isFollowUp } : d,
     );
-    setDiaries(newDiaries);
-    if (selectedDiary && selectedDiary.id === diaryId)
-      setSelectedDiary({
-        ...selectedDiary,
-        isFollowUp: !selectedDiary.isFollowUp,
+    setDailyReports(newReports);
+    if (selectedReport && selectedReport.id === reportId)
+      setSelectedReport({
+        ...selectedReport,
+        isFollowUp: !selectedReport.isFollowUp,
       });
   };
 
-  const handleChangeShareScope = (diaryId) => {
-    const diary = diaries.find((d) => d.id === diaryId);
-    const isCurrentlyAll = diary?.sharedWith === "all";
+  const handleChangeShareScope = (reportId) => {
+    const report = dailyReports.find((d) => d.id === reportId);
+    const isCurrentlyAll = report?.sharedWith === "all";
 
     if (isCurrentlyAll) {
       Alert.alert("共有範囲の変更", "スタッフのみの公開に戻しますか？", [
@@ -200,36 +275,36 @@ const DiaryScreen = ({
         {
           text: "戻す",
           onPress: () => {
-            const newDiaries = diaries.map((d) =>
-              d.id === diaryId ? { ...d, sharedWith: "staff" } : d,
+            const newReports = dailyReports.map((d) =>
+              d.id === reportId ? { ...d, sharedWith: "staff" } : d,
             );
-            setDiaries(newDiaries);
-            if (selectedDiary && selectedDiary.id === diaryId)
-              setSelectedDiary({ ...selectedDiary, sharedWith: "staff" });
+            setDailyReports(newReports);
+            if (selectedReport && selectedReport.id === reportId)
+              setSelectedReport({ ...selectedReport, sharedWith: "staff" });
           },
         },
       ]);
     } else {
       Alert.alert(
         "共有範囲の変更",
-        "この日記をチーム全体に公開し、Home画面の「# 共有日記」に通知しますか？",
+        "チーム全体に公開し、Home画面の「# 共有日記」に通知しますか？\n（※メディカル情報は非公開になります）",
         [
           { text: "キャンセル", style: "cancel" },
           {
-            text: "全体に公開する",
+            text: "公開する",
             onPress: () => {
-              const newDiaries = diaries.map((d) =>
-                d.id === diaryId ? { ...d, sharedWith: "all" } : d,
+              const newReports = dailyReports.map((d) =>
+                d.id === reportId ? { ...d, sharedWith: "all" } : d,
               );
-              setDiaries(newDiaries);
-              if (selectedDiary && selectedDiary.id === diaryId)
-                setSelectedDiary({ ...selectedDiary, sharedWith: "all" });
+              setDailyReports(newReports);
+              if (selectedReport && selectedReport.id === reportId)
+                setSelectedReport({ ...selectedReport, sharedWith: "all" });
 
               const sharedPost = {
                 id: "post_shared_" + Date.now().toString(),
                 channel: "共有日記",
                 user: displayUserName,
-                content: `📢 ${diary.author} の素晴らしい振り返りをチームに共有します！\n\n【練習内容】\n${diary.practiceContent || "未入力"}\n\n【良かった点】\n${diary.goodPoint || "未入力"}\n\n※詳細は日記画面から確認できます。`,
+                content: `📢 ${report.author} の振り返りを共有します！\n\n【練習内容】\n${report.practiceContent || "未入力"}\n\n【良かった点】\n${report.goodPoint || "未入力"}\n\n※詳細は振り返り画面から確認できます。`,
                 time: "たった今",
                 replyTo: null,
                 reactions: {},
@@ -241,19 +316,11 @@ const DiaryScreen = ({
                 status: isOffline ? "pending" : "sent",
               };
               setPosts([sharedPost, ...posts]);
-              Alert.alert(
-                "変更完了",
-                "チーム全体に公開し、Home画面にも通知しました。",
-              );
             },
           },
         ],
       );
     }
-  };
-
-  const handleAddDummyImage = () => {
-    setImages([...images, `添付画像_${images.length + 1}.jpg`]);
   };
 
   const handleDiscardDraft = () => {
@@ -263,29 +330,56 @@ const DiaryScreen = ({
         text: "破棄する",
         style: "destructive",
         onPress: () => {
-          setPracticeContent("");
-          setAchievement(3);
-          setGoodPoint("");
-          setBadPoint("");
-          setNextTask("");
-          setImages([]);
-          setMemo("");
-          setHighlightLink("");
-          setShowMemoInput(false);
-          setShowLinkInput(false);
-          setEditingDiaryId(null);
+          resetForm();
           setIsCreateModalVisible(false);
         },
       },
     ]);
   };
 
-  const handleCreateOrEditDiary = () => {
-    if (editingDiaryId) {
-      const updatedDiaries = diaries.map((diary) => {
-        if (diary.id === editingDiaryId) {
+  const resetForm = () => {
+    setEditingReportId(null);
+    setCondition("良い");
+    setFatigue(5);
+    setSleep("7h");
+    setIsParticipating("通常");
+    setHasPain(false);
+    setPainPart("");
+    setPainLevel(5);
+    setSinceWhen("");
+    setTreatment("");
+
+    setPracticeContent("");
+    setAchievement(3);
+    setGoodPoint("");
+    setBadPoint("");
+    setNextTask("");
+    setImages([]);
+    setMemo("");
+    setHighlightLink("");
+    setShowMemoInput(false);
+    setShowLinkInput(false);
+  };
+
+  const handleCreateOrEditReport = () => {
+    if (hasPain && !painPart.trim()) {
+      Alert.alert("入力エラー", "痛む部位を入力してください。");
+      return;
+    }
+
+    if (editingReportId) {
+      const updated = dailyReports.map((r) => {
+        if (r.id === editingReportId) {
           return {
-            ...diary,
+            ...r,
+            condition,
+            fatigue,
+            sleep,
+            isParticipating,
+            hasPain,
+            painDetails: hasPain
+              ? { part: painPart, level: painLevel, sinceWhen, treatment }
+              : null,
             practiceContent,
             achievement,
             goodPoint,
@@ -296,17 +390,25 @@ const DiaryScreen = ({
             highlightLink,
           };
         }
-        return diary;
+        return r;
       });
-      setDiaries(updatedDiaries);
-      Alert.alert("修正完了", "日記を修正しました。");
+      setDailyReports(updated);
+      Alert.alert("修正完了", "振り返りを修正しました。");
     } else {
       const today = new Date();
       const dateString = `${today.getFullYear()}/${String(today.getMonth() + 1).padStart(2, "0")}/${String(today.getDate()).padStart(2, "0")}`;
-      const newDiary = {
-        id: "diary_" + Date.now().toString(),
+      const newReport = {
+        id: "rep_" + Date.now().toString(),
         date: dateString,
         author: currentUser,
+        condition,
+        fatigue,
+        sleep,
+        isParticipating,
+        hasPain,
+        painDetails: hasPain
+          ? { part: painPart, level: painLevel, sinceWhen, treatment }
+          : null,
         practiceContent,
         achievement,
         goodPoint,
@@ -321,74 +423,46 @@ const DiaryScreen = ({
         isFollowUp: false,
         sharedWith: "staff",
         createdAt: Date.now(),
-        appendedTexts: [],
         comments: [],
       };
-      setDiaries([newDiary, ...diaries]);
+      setDailyReports([newReport, ...dailyReports]);
     }
     setIsCreateModalVisible(false);
-    setEditingDiaryId(null);
-    setPracticeContent("");
-    setAchievement(3);
-    setGoodPoint("");
-    setBadPoint("");
-    setNextTask("");
-    setImages([]);
-    setMemo("");
-    setHighlightLink("");
-    setShowMemoInput(false);
-    setShowLinkInput(false);
+    resetForm();
     Keyboard.dismiss();
   };
 
   const handleOpenEdit = () => {
-    if (!selectedDiary) return;
-    setEditingDiaryId(selectedDiary.id);
-    setPracticeContent(selectedDiary.practiceContent);
-    setAchievement(selectedDiary.achievement);
-    setGoodPoint(selectedDiary.goodPoint);
-    setBadPoint(selectedDiary.badPoint || "");
-    setNextTask(selectedDiary.nextTask);
-    setImages(selectedDiary.images || []);
-    setMemo(selectedDiary.memo || "");
-    setHighlightLink(selectedDiary.highlightLink || "");
-    if (selectedDiary.memo) setShowMemoInput(true);
-    if (selectedDiary.highlightLink) setShowLinkInput(true);
+    if (!selectedReport) return;
+    setEditingReportId(selectedReport.id);
+
+    setCondition(selectedReport.condition || "良い");
+    setFatigue(
+      selectedReport.fatigue !== undefined ? selectedReport.fatigue : 5,
+    );
+    setSleep(selectedReport.sleep || "7h");
+    setIsParticipating(selectedReport.isParticipating || "通常");
+    setHasPain(selectedReport.hasPain || false);
+    if (selectedReport.painDetails) {
+      setPainPart(selectedReport.painDetails.part || "");
+      setPainLevel(selectedReport.painDetails.level || 5);
+      setSinceWhen(selectedReport.painDetails.sinceWhen || "");
+      setTreatment(selectedReport.painDetails.treatment || "");
+    }
+
+    setPracticeContent(selectedReport.practiceContent || "");
+    setAchievement(selectedReport.achievement || 3);
+    setGoodPoint(selectedReport.goodPoint || "");
+    setBadPoint(selectedReport.badPoint || "");
+    setNextTask(selectedReport.nextTask || "");
+    setImages(selectedReport.images || []);
+    setMemo(selectedReport.memo || "");
+    setHighlightLink(selectedReport.highlightLink || "");
+    if (selectedReport.memo) setShowMemoInput(true);
+    if (selectedReport.highlightLink) setShowLinkInput(true);
 
     setIsCreateModalVisible(true);
-    setSelectedDiary(null);
-  };
-
-  const handleSaveAppend = () => {
-    if (appendContent.trim() === "") return;
-    const timeString = new Date().toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-    const newDiaries = diaries.map((diary) => {
-      if (diary.id === selectedDiary.id) {
-        const appended = {
-          ...diary,
-          appendedTexts: [
-            ...(diary.appendedTexts || []),
-            { text: appendContent, time: timeString },
-          ],
-        };
-        return appended;
-      }
-      return diary;
-    });
-    setDiaries(newDiaries);
-    setSelectedDiary((prev) => ({
-      ...prev,
-      appendedTexts: [
-        ...(prev.appendedTexts || []),
-        { text: appendContent, time: timeString },
-      ],
-    }));
-    setAppendContent("");
-    setIsAppendModalVisible(false);
-    Keyboard.dismiss();
+    setSelectedReport(null);
   };
 
   const handleSendComment = () => {
@@ -403,43 +477,35 @@ const DiaryScreen = ({
 
     const isStaffComment = isStaffOrAbove;
 
-    const newDiaries = diaries.map((diary) => {
-      if (diary.id === selectedDiary.id) {
+    const updated = dailyReports.map((r) => {
+      if (r.id === selectedReport.id) {
         return {
-          ...diary,
-          comments: [...diary.comments, newComment],
-          isReviewed: isStaffComment ? true : diary.isReviewed,
+          ...r,
+          comments: [...r.comments, newComment],
+          isReviewed: isStaffComment ? true : r.isReviewed,
         };
       }
-      return diary;
+      return r;
     });
-    setDiaries(newDiaries);
+    setDailyReports(updated);
 
-    if (isStaffComment) {
-      setSelectedDiary((prev) => ({
-        ...prev,
-        isReviewed: true,
-        comments: [...prev.comments, newComment],
-      }));
-    } else {
-      setSelectedDiary((prev) => ({
-        ...prev,
-        comments: [...prev.comments, newComment],
-      }));
-    }
+    setSelectedReport((prev) => ({
+      ...prev,
+      isReviewed: isStaffComment ? true : prev.isReviewed,
+      comments: [...prev.comments, newComment],
+    }));
+
     setCommentText("");
     Keyboard.dismiss();
   };
 
   const handleMarkAsReviewed = () => {
-    const newDiaries = diaries.map((diary) => {
-      if (diary.id === selectedDiary.id) {
-        return { ...diary, isReviewed: true };
-      }
-      return diary;
+    const updated = dailyReports.map((r) => {
+      if (r.id === selectedReport.id) return { ...r, isReviewed: true };
+      return r;
     });
-    setDiaries(newDiaries);
-    setSelectedDiary((prev) => ({ ...prev, isReviewed: true }));
+    setDailyReports(updated);
+    setSelectedReport((prev) => ({ ...prev, isReviewed: true }));
   };
 
   const renderStars = (rating, onSelect = null) => {
@@ -465,31 +531,19 @@ const DiaryScreen = ({
     );
   };
 
-  const handleApplyFilter = () => {
-    setIsFilterModalVisible(false);
-    Alert.alert(
-      "プロトタイプ環境",
-      "「学年・ポジション」による高度な絞り込み機能は、本番環境で選手データベースと連携した後に有効になります。",
-      [{ text: "OK" }],
-    );
-  };
-
-  let unreviewedCount = 0;
-  let needsReplyCount = 0;
-  if (isStaffOrAbove) {
-    unreviewedCount = processedDiaries.filter((d) => !d.isReviewed).length;
-    needsReplyCount = processedDiaries.filter(
-      (d) =>
-        d.comments.filter((c) =>
-          ["監督", "コーチ", "アシスタント", "管理者"].some((role) =>
-            c.user.includes(role),
-          ),
-        ).length === 0,
-    ).length;
-  }
-
-  const gradeOptions = ["全て", ...(grades || [])];
-  const positionOptions = ["全て", ...(positions || [])];
+  const unreviewedCount = isStaffOrAbove
+    ? processedReports.filter((d) => !d.isReviewed).length
+    : 0;
+  const needsReplyCount = isStaffOrAbove
+    ? processedReports.filter(
+        (d) =>
+          d.comments.filter((c) =>
+            ["監督", "コーチ", "アシスタント", "管理者"].some((role) =>
+              c.user.includes(role),
+            ),
+          ).length === 0,
+      ).length
+    : 0;
 
   return (
     <SafeAreaView style={styles.container}>
@@ -498,45 +552,16 @@ const DiaryScreen = ({
           style={styles.backButton}
           onPress={() => navigation.goBack()}
         >
-          <Text style={styles.backButtonText}>◁ 戻る</Text>
+          <Text style={styles.backButtonText}>◁ ホーム</Text>
         </TouchableOpacity>
         <Text style={styles.headerTitle}>
-          {isOffline ? "オフライン表示中" : "📖 部活日記"}
+          {isOffline ? "オフライン" : "📝 振り返り（日報）"}
         </Text>
-        {/* ★変更：不要なオフラインボタン（navBtn）を撤去しました */}
+        <View style={styles.headerRight} />
       </View>
-
-      {isOffline && (
-        <View style={styles.offlineBanner}>
-          <Text style={styles.offlineBannerText}>
-            現在オフラインです。一部の操作が制限されます。
-          </Text>
-        </View>
-      )}
 
       {isStaffOrAbove && (
         <View style={styles.adminDashboard}>
-          <View style={styles.summaryRow}>
-            <Text style={styles.summaryTitle}>📊 処理サマリー</Text>
-            <View style={{ flexDirection: "row" }}>
-              <View style={styles.summaryBadgeUnread}>
-                <Text style={styles.summaryBadgeTextUnread}>
-                  未読 {unreviewedCount}
-                </Text>
-              </View>
-              <View
-                style={[
-                  styles.summaryBadgeUnread,
-                  { backgroundColor: "#e67e22" },
-                ]}
-              >
-                <Text style={styles.summaryBadgeTextUnread}>
-                  要返信 {needsReplyCount}
-                </Text>
-              </View>
-            </View>
-          </View>
-
           <View style={styles.searchRow}>
             <TextInput
               style={styles.searchInputFlex}
@@ -544,12 +569,6 @@ const DiaryScreen = ({
               value={searchQuery}
               onChangeText={setSearchQuery}
             />
-            <TouchableOpacity
-              style={styles.filterBtn}
-              onPress={() => setIsFilterModalVisible(true)}
-            >
-              <Text style={styles.filterBtnIcon}>⚙️ 詳細条件</Text>
-            </TouchableOpacity>
           </View>
 
           <ScrollView
@@ -571,7 +590,23 @@ const DiaryScreen = ({
                   activeTab === "unread" && styles.tabTextActive,
                 ]}
               >
-                未読
+                未読 ({unreviewedCount})
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => setActiveTab("danger")}
+              style={[
+                styles.tabBtn,
+                activeTab === "danger" && { borderBottomColor: "#c0392b" },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.tabText,
+                  activeTab === "danger" && { color: "#c0392b" },
+                ]}
+              >
+                🚨 危険
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -587,23 +622,7 @@ const DiaryScreen = ({
                   activeTab === "needs_reply" && styles.tabTextActive,
                 ]}
               >
-                要返信
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={() => setActiveTab("replied")}
-              style={[
-                styles.tabBtn,
-                activeTab === "replied" && styles.tabActive,
-              ]}
-            >
-              <Text
-                style={[
-                  styles.tabText,
-                  activeTab === "replied" && styles.tabTextActive,
-                ]}
-              >
-                返信済
+                要返信 ({needsReplyCount})
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -642,15 +661,14 @@ const DiaryScreen = ({
       <ScrollView
         style={styles.content}
         contentContainerStyle={{ paddingBottom: 100 }}
-        keyboardShouldPersistTaps="handled"
       >
         {sortedDates.length === 0 ? (
-          <Text style={styles.emptyText}>条件に一致する日記がありません。</Text>
+          <Text style={styles.emptyText}>データがありません。</Text>
         ) : (
           sortedDates.map((date, index) => {
-            const diariesInDate = groupedDiaries[date];
+            const reportsInDate = groupedReports[date];
             const expanded = isExpanded(date, index);
-            const hasUnreviewed = diariesInDate.some((d) => !d.isReviewed);
+            const hasUnreviewed = reportsInDate.some((d) => !d.isReviewed);
 
             return (
               <View key={date} style={styles.dateGroupContainer}>
@@ -660,106 +678,107 @@ const DiaryScreen = ({
                   activeOpacity={0.7}
                 >
                   <Text style={styles.dateHeaderText}>
-                    {expanded ? "▼" : "▶"} {date} ── [ {diariesInDate.length}件
+                    {expanded ? "▼" : "▶"} {date} ── [ {reportsInDate.length}件
                     ]
                   </Text>
                   {hasUnreviewed && isStaffOrAbove && (
                     <View style={styles.unreadAlertBadge}>
-                      <Text style={styles.unreadAlertBadgeText}>
-                        未確認あり
-                      </Text>
+                      <Text style={styles.unreadAlertBadgeText}>未確認</Text>
                     </View>
                   )}
                 </TouchableOpacity>
 
                 {expanded &&
-                  diariesInDate.map((diary) => (
-                    <TouchableOpacity
-                      key={diary.id}
-                      style={[
-                        styles.card,
-                        diary.status === "pending" && styles.pendingCard,
-                      ]}
-                      activeOpacity={0.9}
-                      onPress={() => setSelectedDiary(diary)}
-                    >
-                      {diary.status === "pending" && (
-                        <Text style={styles.pendingText}>🕒 送信待機中</Text>
-                      )}
-
-                      <View style={styles.cardHeader}>
-                        <View>
+                  reportsInDate.map((report) => {
+                    const alertLevel = getAlertLevel(report);
+                    return (
+                      <TouchableOpacity
+                        key={report.id}
+                        style={[
+                          styles.card,
+                          report.status === "pending" && styles.pendingCard,
+                          isStaffOrAbove &&
+                            alertLevel === "danger" &&
+                            styles.dangerCard,
+                          isStaffOrAbove &&
+                            alertLevel === "warning" &&
+                            styles.warningCard,
+                        ]}
+                        activeOpacity={0.9}
+                        onPress={() => setSelectedReport(report)}
+                      >
+                        <View style={styles.cardHeader}>
                           <Text style={styles.cardAuthorLarge}>
-                            {isStaffOrAbove || diary.author !== currentUser
-                              ? `👤 ${diary.author}`
+                            {isStaffOrAbove || report.author !== currentUser
+                              ? `👤 ${report.author}`
                               : `👤 自分`}
                           </Text>
+                          <View
+                            style={{
+                              flexDirection: "row",
+                              alignItems: "center",
+                            }}
+                          >
+                            {report.sharedWith === "all" && (
+                              <Text style={styles.badgeShared}>📢 共有</Text>
+                            )}
+                            {report.isStarred && (
+                              <Text style={{ fontSize: 14, marginRight: 5 }}>
+                                ⭐
+                              </Text>
+                            )}
+                            {report.isReviewed ? (
+                              <Text style={styles.badgeReviewed}>✅</Text>
+                            ) : (
+                              <Text style={styles.badgeUnreviewed}>未確認</Text>
+                            )}
+                          </View>
                         </View>
-                        <View
-                          style={[
-                            styles.badgeContainer,
-                            { flexDirection: "row", alignItems: "center" },
-                          ]}
-                        >
-                          {diary.sharedWith === "all" && (
-                            <Text style={styles.badgeShared}>
-                              📢 チーム共有
-                            </Text>
-                          )}
-                          {diary.isFollowUp && (
-                            <Text style={{ fontSize: 16, marginRight: 5 }}>
-                              🎌
-                            </Text>
-                          )}
-                          {diary.isStarred && (
-                            <Text style={{ fontSize: 16, marginRight: 10 }}>
-                              ⭐
-                            </Text>
-                          )}
-                          {diary.isReviewed ? (
-                            <Text style={styles.badgeReviewed}>✅ 確認済</Text>
-                          ) : (
-                            <Text style={styles.badgeUnreviewed}>未確認</Text>
-                          )}
-                        </View>
-                      </View>
 
-                      <View style={styles.cardSection}>
-                        <Text style={styles.sectionLabel}>🏃 練習内容</Text>
-                        <Text style={styles.sectionText} numberOfLines={1}>
-                          {diary.practiceContent || "（未入力）"}
-                        </Text>
-                      </View>
-                      {(diary.images?.length > 0 ||
-                        diary.memo ||
-                        diary.highlightLink) && (
-                        <View style={styles.attachmentIndicatorRow}>
-                          <Text style={styles.attachmentIndicatorText}>
-                            📎 添付データあり
+                        {/* メディカルサマリー部分 */}
+                        {report.condition && (
+                          <View style={styles.miniMedicalRow}>
+                            <Text style={styles.miniMedicalText}>
+                              体調: {report.condition}
+                            </Text>
+                            <Text style={styles.miniMedicalText}>
+                              疲労: {report.fatigue}/10
+                            </Text>
+                            <Text
+                              style={[
+                                styles.miniMedicalText,
+                                report.hasPain && { color: "#c0392b" },
+                              ]}
+                            >
+                              ケガ: {report.hasPain ? "あり" : "なし"}
+                            </Text>
+                          </View>
+                        )}
+
+                        <View style={styles.cardSection}>
+                          <Text style={styles.sectionLabel}>🏃 練習内容</Text>
+                          <Text style={styles.sectionText} numberOfLines={1}>
+                            {report.practiceContent || "（未入力）"}
                           </Text>
                         </View>
-                      )}
-                      <View style={styles.commentCountRow}>
+
                         <Text style={styles.commentCountText}>
-                          💬 コーチとのやり取り：{diary.comments.length}件
+                          💬 やり取り：{report.comments?.length || 0}件
                         </Text>
-                      </View>
-                      <Text style={styles.clickHint}>
-                        タップして詳細・コーチからの返信を見る
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
+                      </TouchableOpacity>
+                    );
+                  })}
               </View>
             );
           })
         )}
       </ScrollView>
 
-      {userRole === "member" && (
+      {["member", "captain"].includes(userRole) && (
         <TouchableOpacity
           style={[styles.fab, isOffline && { backgroundColor: "#f39c12" }]}
           onPress={() => {
-            setEditingDiaryId(null);
+            resetForm();
             setIsCreateModalVisible(true);
           }}
         >
@@ -767,105 +786,9 @@ const DiaryScreen = ({
         </TouchableOpacity>
       )}
 
+      {/* 詳細表示モーダル */}
       <Modal
-        visible={isFilterModalVisible}
-        transparent={true}
-        animationType="fade"
-      >
-        <View style={styles.appendOverlay}>
-          <View style={[styles.appendModalContent, { padding: 15 }]}>
-            <View
-              style={{
-                flexDirection: "row",
-                justifyContent: "space-between",
-                marginBottom: 15,
-              }}
-            >
-              <Text style={{ fontSize: 18, fontWeight: "bold", color: "#333" }}>
-                🔍 詳細条件で絞り込む
-              </Text>
-              <TouchableOpacity onPress={() => setIsFilterModalVisible(false)}>
-                <Text style={{ fontSize: 18, color: "#888" }}>✕</Text>
-              </TouchableOpacity>
-            </View>
-            <Text style={styles.filterSectionTitle}>学年</Text>
-            <View style={styles.filterOptionsRow}>
-              {gradeOptions.map((opt) => (
-                <TouchableOpacity
-                  key={opt}
-                  style={[
-                    styles.filterOptionBtn,
-                    filterGrade === opt && styles.filterOptionActive,
-                  ]}
-                  onPress={() => setFilterGrade(opt)}
-                >
-                  <Text
-                    style={[
-                      styles.filterOptionText,
-                      filterGrade === opt && styles.filterOptionTextActive,
-                    ]}
-                  >
-                    {opt}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-            <Text style={styles.filterSectionTitle}>ポジション・役割</Text>
-            <View style={styles.filterOptionsRow}>
-              {positionOptions.map((opt) => (
-                <TouchableOpacity
-                  key={opt}
-                  style={[
-                    styles.filterOptionBtn,
-                    filterPosition === opt && styles.filterOptionActive,
-                  ]}
-                  onPress={() => setFilterPosition(opt)}
-                >
-                  <Text
-                    style={[
-                      styles.filterOptionText,
-                      filterPosition === opt && styles.filterOptionTextActive,
-                    ]}
-                  >
-                    {opt}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-            <Text style={styles.filterSectionTitle}>期間</Text>
-            <View style={styles.filterOptionsRow}>
-              {["全て", "今日", "過去7日", "今月"].map((opt) => (
-                <TouchableOpacity
-                  key={opt}
-                  style={[
-                    styles.filterOptionBtn,
-                    filterPeriod === opt && styles.filterOptionActive,
-                  ]}
-                  onPress={() => setFilterPeriod(opt)}
-                >
-                  <Text
-                    style={[
-                      styles.filterOptionText,
-                      filterPeriod === opt && styles.filterOptionTextActive,
-                    ]}
-                  >
-                    {opt}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-            <TouchableOpacity
-              style={styles.filterApplyBtn}
-              onPress={handleApplyFilter}
-            >
-              <Text style={styles.filterApplyBtnText}>この条件で適用する</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-
-      <Modal
-        visible={selectedDiary !== null}
+        visible={selectedReport !== null}
         transparent={true}
         animationType="slide"
       >
@@ -876,18 +799,18 @@ const DiaryScreen = ({
           >
             <View style={styles.detailContainer}>
               <View style={styles.detailHeader}>
-                <TouchableOpacity onPress={() => setSelectedDiary(null)}>
+                <TouchableOpacity onPress={() => setSelectedReport(null)}>
                   <Text style={styles.closeBtn}>◁ 戻る</Text>
                 </TouchableOpacity>
                 <Text style={styles.createHeaderTitle}>
-                  {selectedDiary?.author}の日記
+                  {selectedReport?.author} の日報
                 </Text>
                 {isStaffOrAbove ? (
                   <TouchableOpacity
-                    onPress={() => handleToggleStar(selectedDiary.id)}
+                    onPress={() => handleToggleStar(selectedReport.id)}
                   >
                     <Text style={{ fontSize: 20 }}>
-                      {selectedDiary?.isStarred ? "⭐" : "☆"}
+                      {selectedReport?.isStarred ? "⭐" : "☆"}
                     </Text>
                   </TouchableOpacity>
                 ) : (
@@ -895,43 +818,43 @@ const DiaryScreen = ({
                 )}
               </View>
 
-              {isStaffOrAbove && selectedDiary && (
+              {isStaffOrAbove && selectedReport && (
                 <View style={styles.actionToolbarWrapper}>
                   <TouchableOpacity
-                    onPress={() => handleToggleStar(selectedDiary.id)}
+                    onPress={() => handleToggleStar(selectedReport.id)}
                     style={[
                       styles.actionBtn,
-                      selectedDiary.isStarred && styles.actionBtnActive,
+                      selectedReport.isStarred && styles.actionBtnActive,
                     ]}
                   >
                     <Text style={styles.actionBtnText}>
-                      {selectedDiary.isStarred ? "⭐ スター済" : "☆ スター"}
+                      {selectedReport.isStarred ? "⭐ スター済" : "☆ スター"}
                     </Text>
                   </TouchableOpacity>
                   <TouchableOpacity
-                    onPress={() => handleToggleFollowUp(selectedDiary.id)}
+                    onPress={() => handleToggleFollowUp(selectedReport.id)}
                     style={[
                       styles.actionBtn,
-                      selectedDiary.isFollowUp && styles.actionBtnActive,
+                      selectedReport.isFollowUp && styles.actionBtnActive,
                     ]}
                   >
                     <Text style={styles.actionBtnText}>
-                      {selectedDiary.isFollowUp
+                      {selectedReport.isFollowUp
                         ? "🎌 フォロー中"
                         : "🚩 要フォロー"}
                     </Text>
                   </TouchableOpacity>
                   <TouchableOpacity
-                    onPress={() => handleChangeShareScope(selectedDiary.id)}
+                    onPress={() => handleChangeShareScope(selectedReport.id)}
                     style={[
                       styles.actionBtn,
-                      selectedDiary.sharedWith === "all" &&
+                      selectedReport.sharedWith === "all" &&
                         styles.actionBtnActive,
                     ]}
                   >
                     <Text style={styles.actionBtnText}>
                       👁️ 共有:{" "}
-                      {selectedDiary.sharedWith === "all"
+                      {selectedReport.sharedWith === "all"
                         ? "全体"
                         : "スタッフのみ"}
                     </Text>
@@ -939,113 +862,69 @@ const DiaryScreen = ({
                 </View>
               )}
 
-              {selectedDiary &&
+              {selectedReport &&
                 (() => {
-                  const isMyDiary =
-                    currentUser === selectedDiary.author &&
-                    userRole === "member";
-                  const timeElapsed = currentTime - selectedDiary.createdAt;
+                  const isMyReport =
+                    currentUser === selectedReport.author &&
+                    ["member", "captain"].includes(userRole);
+                  const timeElapsed = Date.now() - selectedReport.createdAt;
                   const isEditable =
-                    timeElapsed < 30 * 60 * 1000 && !selectedDiary.isReviewed;
-                  const minutesLeft = Math.max(
-                    0,
-                    30 - Math.floor(timeElapsed / 60000),
-                  );
+                    timeElapsed < 30 * 60 * 1000 && !selectedReport.isReviewed;
 
                   return (
                     <ScrollView
                       style={styles.detailScroll}
                       contentContainerStyle={{ paddingBottom: 30 }}
-                      keyboardShouldPersistTaps="handled"
                     >
-                      {selectedDiary.sharedWith === "all" &&
-                        !isMyDiary &&
+                      {selectedReport.sharedWith === "all" &&
+                        !isMyReport &&
                         !isStaffOrAbove && (
-                          <View
-                            style={{
-                              backgroundColor: "#e8f0fe",
-                              padding: 10,
-                              borderRadius: 8,
-                              marginBottom: 15,
-                              alignItems: "center",
-                            }}
-                          >
-                            <Text
-                              style={{
-                                color: "#2980b9",
-                                fontWeight: "bold",
-                                fontSize: 12,
-                              }}
-                            >
-                              📢
-                              この日記は監督によってチーム全体に共有されています
+                          <View style={styles.sharedBanner}>
+                            <Text style={styles.sharedBannerText}>
+                              📢 この振り返りはチーム全体に共有されています
                             </Text>
                           </View>
                         )}
 
                       <View style={styles.detailCard}>
                         <View style={styles.cardHeader}>
-                          <View>
-                            <Text style={styles.cardDate}>
-                              {selectedDiary.date}
-                            </Text>
-                            {!isMyDiary && (
-                              <Text style={styles.cardAuthor}>
-                                👤 {selectedDiary.author}
-                              </Text>
-                            )}
-                          </View>
-                          <View style={{ alignItems: "flex-end" }}>
-                            {isStaffOrAbove && !selectedDiary.isReviewed && (
+                          <Text style={styles.cardDate}>
+                            {selectedReport.date}
+                          </Text>
+                          <View style={{ flexDirection: "row" }}>
+                            {isStaffOrAbove && !selectedReport.isReviewed && (
                               <TouchableOpacity
                                 style={styles.markReviewedBtn}
                                 onPress={handleMarkAsReviewed}
                               >
                                 <Text style={styles.markReviewedBtnText}>
-                                  ✅ 確認済みにする
+                                  ✅ 確認済にする
                                 </Text>
                               </TouchableOpacity>
                             )}
-
-                            {isMyDiary && !selectedDiary.isReviewed && (
-                              <View style={styles.editActionRow}>
-                                {isEditable ? (
-                                  <TouchableOpacity
-                                    style={styles.editBtn}
-                                    onPress={handleOpenEdit}
-                                  >
-                                    <Text style={styles.editBtnText}>
-                                      ✏️ 修正 (残り{minutesLeft}分)
-                                    </Text>
-                                  </TouchableOpacity>
-                                ) : (
-                                  <TouchableOpacity
-                                    style={styles.appendBtn}
-                                    onPress={() =>
-                                      setIsAppendModalVisible(true)
-                                    }
-                                  >
-                                    <Text style={styles.appendBtnText}>
-                                      ➕ 追記する
-                                    </Text>
-                                  </TouchableOpacity>
-                                )}
-                              </View>
+                            {isMyReport && isEditable && (
+                              <TouchableOpacity
+                                style={styles.editBtn}
+                                onPress={handleOpenEdit}
+                              >
+                                <Text style={styles.editBtnText}>✏️ 修正</Text>
+                              </TouchableOpacity>
                             )}
                           </View>
                         </View>
 
+                        {/* 日記詳細エリア */}
                         <View style={styles.cardSection}>
                           <Text style={styles.sectionLabel}>🏃 練習内容</Text>
                           <Text style={styles.sectionText}>
-                            {selectedDiary.practiceContent || "（未入力）"}
+                            {selectedReport.practiceContent || "（未入力）"}
                           </Text>
                         </View>
                         <View style={styles.cardSection}>
                           <Text style={styles.sectionLabel}>
                             📈 今日の達成度
                           </Text>
-                          {renderStars(selectedDiary.achievement)}
+                          {renderStars(selectedReport.achievement)}
                         </View>
                         <View
                           style={[
@@ -1059,7 +938,7 @@ const DiaryScreen = ({
                             ✨ 良かった点
                           </Text>
                           <Text style={styles.sectionText}>
-                            {selectedDiary.goodPoint || "（未入力）"}
+                            {selectedReport.goodPoint || "（未入力）"}
                           </Text>
                         </View>
                         <View
@@ -1074,7 +953,7 @@ const DiaryScreen = ({
                             🤔 改善点
                           </Text>
                           <Text style={styles.sectionText}>
-                            {selectedDiary.badPoint || "（未入力）"}
+                            {selectedReport.badPoint || "（未入力）"}
                           </Text>
                         </View>
                         <View
@@ -1089,156 +968,145 @@ const DiaryScreen = ({
                             🎯 明日の課題
                           </Text>
                           <Text style={styles.sectionText}>
-                            {selectedDiary.nextTask || "（未入力）"}
+                            {selectedReport.nextTask || "（未入力）"}
                           </Text>
                         </View>
 
-                        {(selectedDiary.images?.length > 0 ||
-                          selectedDiary.memo ||
-                          selectedDiary.highlightLink) && (
-                          <View
-                            style={[
-                              styles.cardSection,
-                              {
-                                backgroundColor: "#fdfbf7",
-                                borderColor: "#f1c40f",
-                                borderWidth: 1,
-                              },
-                            ]}
-                          >
+                        {(selectedReport.memo ||
+                          selectedReport.images?.length > 0 ||
+                          selectedReport.highlightLink) && (
+                          <View style={styles.cardSection}>
                             <Text
                               style={[
                                 styles.sectionLabel,
                                 { color: "#f39c12" },
                               ]}
                             >
-                              📎 添付データ
+                              📎 添付・メモ
                             </Text>
-                            {selectedDiary.images?.map((img, idx) => (
-                              <Text key={idx} style={styles.attachedItemText}>
-                                📷 {img}
+                            {selectedReport.memo ? (
+                              <Text style={styles.sectionText}>
+                                {selectedReport.memo}
                               </Text>
-                            ))}
-                            {selectedDiary.highlightLink ? (
-                              <View style={styles.videoPlayerMock}>
-                                <View style={styles.videoPlayIcon}>
-                                  <Text
-                                    style={{
-                                      color: "#fff",
-                                      fontSize: 24,
-                                      marginLeft: 4,
-                                    }}
-                                  >
-                                    ▶
-                                  </Text>
-                                </View>
-                                <Text
-                                  style={styles.videoLinkText}
-                                  numberOfLines={1}
-                                >
-                                  {selectedDiary.highlightLink}
-                                </Text>
-                              </View>
-                            ) : null}
-                            {selectedDiary.memo ? (
-                              <View style={styles.memoBox}>
-                                <Text style={styles.memoBoxTitle}>
-                                  📝 補足メモ
-                                </Text>
-                                <Text style={styles.memoBoxText}>
-                                  {selectedDiary.memo}
-                                </Text>
-                              </View>
                             ) : null}
                           </View>
                         )}
 
-                        {selectedDiary.appendedTexts &&
-                          selectedDiary.appendedTexts.length > 0 && (
-                            <View style={styles.appendedArea}>
-                              {selectedDiary.appendedTexts.map((app, idx) => (
-                                <View key={idx} style={styles.appendedBox}>
-                                  <Text style={styles.appendedLabel}>
-                                    ➕ 追記 ({app.time})
+                        {/* メディカル詳細エリア */}
+                        {selectedReport.condition && (
+                          <View style={styles.medicalDetailBox}>
+                            <Text style={styles.medicalDetailTitle}>
+                              🏥 コンディション
+                            </Text>
+                            <View style={styles.detailGrid}>
+                              <View style={styles.gridItem}>
+                                <Text style={styles.gridTitle}>体調</Text>
+                                <Text style={styles.gridValue}>
+                                  {selectedReport.condition}
+                                </Text>
+                              </View>
+                              <View style={styles.gridItem}>
+                                <Text style={styles.gridTitle}>疲労度</Text>
+                                <Text style={styles.gridValue}>
+                                  {selectedReport.fatigue} / 10
+                                </Text>
+                              </View>
+                              <View style={styles.gridItem}>
+                                <Text style={styles.gridTitle}>睡眠時間</Text>
+                                <Text style={styles.gridValue}>
+                                  {selectedReport.sleep}
+                                </Text>
+                              </View>
+                              <View style={styles.gridItem}>
+                                <Text style={styles.gridTitle}>練習可否</Text>
+                                <Text
+                                  style={[
+                                    styles.gridValue,
+                                    selectedReport.isParticipating !==
+                                      "通常" && { color: "#e74c3c" },
+                                  ]}
+                                >
+                                  {selectedReport.isParticipating}
+                                </Text>
+                              </View>
+                            </View>
+                            {selectedReport.hasPain &&
+                              selectedReport.painDetails && (
+                                <View style={styles.painDetailBox}>
+                                  <Text style={styles.painDetailTitle}>
+                                    🤕 ケガ・痛みの詳細
                                   </Text>
-                                  <Text style={styles.appendedText}>
-                                    {app.text}
+                                  <Text style={styles.painDetailText}>
+                                    部位：{selectedReport.painDetails.part}{" "}
+                                    (痛さ: {selectedReport.painDetails.level}
+                                    /10)
+                                  </Text>
+                                  <Text style={styles.painDetailText}>
+                                    いつから：
+                                    {selectedReport.painDetails.sinceWhen ||
+                                      "未入力"}
+                                  </Text>
+                                  <Text style={styles.painDetailText}>
+                                    処置：
+                                    {selectedReport.painDetails.treatment ||
+                                      "未入力"}
                                   </Text>
                                 </View>
-                              ))}
-                            </View>
-                          )}
+                              )}
+                          </View>
+                        )}
                       </View>
 
                       <Text style={styles.threadTitle}>
                         💬 コーチとのやり取り
                       </Text>
                       <View style={styles.threadArea}>
-                        {selectedDiary.comments.length === 0 ? (
-                          <Text style={styles.emptyCommentText}>
-                            まだメッセージはありません。
-                          </Text>
-                        ) : (
-                          selectedDiary.comments.map((comment) => {
-                            const isMe = comment.user === displayUserName;
-                            return (
-                              <View
-                                key={comment.id}
-                                style={[
-                                  styles.commentBubbleWrapper,
-                                  isMe
-                                    ? styles.commentBubbleRight
-                                    : styles.commentBubbleLeft,
-                                ]}
-                              >
+                        {selectedReport.comments.map((c) => {
+                          const isMe = c.user === displayUserName;
+                          return (
+                            <View
+                              key={c.id}
+                              style={[
+                                styles.commentBubbleWrapper,
+                                isMe
+                                  ? styles.commentBubbleRight
+                                  : styles.commentBubbleLeft,
+                              ]}
+                            >
+                              {!isMe && (
+                                <View style={styles.commentAvatar}>
+                                  <Text style={styles.commentAvatarText}>
+                                    {c.user.charAt(0)}
+                                  </Text>
+                                </View>
+                              )}
+                              <View style={styles.commentContentBox}>
                                 {!isMe && (
-                                  <View style={styles.commentAvatar}>
-                                    <Text style={styles.commentAvatarText}>
-                                      {comment.user.charAt(0)}
-                                    </Text>
-                                  </View>
+                                  <Text style={styles.commentUserName}>
+                                    {c.user}
+                                  </Text>
                                 )}
-                                <View style={styles.commentContentBox}>
-                                  {!isMe && (
-                                    <Text style={styles.commentUserName}>
-                                      {comment.user}
-                                    </Text>
-                                  )}
-                                  <View
-                                    style={[
-                                      styles.commentBubble,
-                                      isMe
-                                        ? styles.commentBubbleMe
-                                        : styles.commentBubbleOther,
-                                      comment.status === "pending" && {
-                                        opacity: 0.6,
-                                      },
-                                    ]}
-                                  >
-                                    <Text
-                                      style={[
-                                        styles.commentText,
-                                        isMe && { color: "#fff" },
-                                      ]}
-                                    >
-                                      {comment.text}
-                                    </Text>
-                                  </View>
+                                <View
+                                  style={[
+                                    styles.commentBubble,
+                                    isMe
+                                      ? styles.commentBubbleMe
+                                      : styles.commentBubbleOther,
+                                  ]}
+                                >
                                   <Text
                                     style={[
-                                      styles.commentTime,
-                                      isMe && { textAlign: "right" },
+                                      styles.commentText,
+                                      isMe && { color: "#fff" },
                                     ]}
                                   >
-                                    {comment.status === "pending"
-                                      ? "待機中..."
-                                      : comment.time}
+                                    {c.text}
                                   </Text>
                                 </View>
                               </View>
-                            );
-                          })
-                        )}
+                            </View>
+                          );
+                        })}
                       </View>
                     </ScrollView>
                   );
@@ -1274,78 +1142,25 @@ const DiaryScreen = ({
                 <View style={[styles.commentInputArea, { borderTopWidth: 0 }]}>
                   <TextInput
                     style={styles.commentInput}
-                    placeholder={
-                      isStaffOrAbove
-                        ? "指導・アドバイスを入力..."
-                        : "コーチに返信する..."
-                    }
+                    placeholder="メッセージを入力..."
                     value={commentText}
                     onChangeText={setCommentText}
                     multiline
                   />
                   <TouchableOpacity
-                    style={[
-                      styles.sendButton,
-                      isOffline && { backgroundColor: "#f39c12" },
-                    ]}
+                    style={styles.sendButton}
                     onPress={handleSendComment}
                   >
                     <Text style={styles.sendButtonText}>送信</Text>
                   </TouchableOpacity>
                 </View>
               </View>
-
-              {isAppendModalVisible && (
-                <View style={styles.appendOverlay}>
-                  <KeyboardAvoidingView
-                    behavior={Platform.OS === "ios" ? "padding" : "height"}
-                    style={styles.appendKeyboardContainer}
-                  >
-                    <View style={styles.appendModalContent}>
-                      <Text style={styles.appendModalTitle}>
-                        日記に追記する
-                      </Text>
-                      <Text style={styles.appendModalSubTitle}>
-                        ※投稿から30分経過したため、元の文章は編集できません。
-                      </Text>
-                      <TextInput
-                        style={styles.appendInput}
-                        placeholder="追記内容を入力してください..."
-                        value={appendContent}
-                        onChangeText={setAppendContent}
-                        multiline
-                        autoFocus
-                      />
-                      <View style={styles.appendModalButtons}>
-                        <TouchableOpacity
-                          style={styles.appendCancelBtn}
-                          onPress={() => {
-                            setIsAppendModalVisible(false);
-                            setAppendContent("");
-                          }}
-                        >
-                          <Text style={styles.appendCancelText}>
-                            キャンセル
-                          </Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                          style={styles.appendSubmitBtn}
-                          onPress={handleSaveAppend}
-                        >
-                          <Text style={styles.appendSubmitText}>
-                            追記を保存
-                          </Text>
-                        </TouchableOpacity>
-                      </View>
-                    </View>
-                  </KeyboardAvoidingView>
-                </View>
-              )}
             </View>
           </KeyboardAvoidingView>
         </SafeAreaView>
       </Modal>
 
+      {/* 新規作成・編集モーダル（統合フォーム） */}
       <Modal
         visible={isCreateModalVisible}
         transparent={true}
@@ -1359,18 +1174,14 @@ const DiaryScreen = ({
             <View style={styles.createContainer}>
               <View style={styles.detailHeader}>
                 <TouchableOpacity
-                  onPress={() => {
-                    setIsCreateModalVisible(false);
-                    setEditingDiaryId(null);
-                  }}
+                  onPress={() => setIsCreateModalVisible(false)}
                 >
                   <Text style={styles.closeBtn}>✕ 閉じる</Text>
                 </TouchableOpacity>
                 <Text style={styles.createHeaderTitle}>
-                  {editingDiaryId ? "日記の修正" : "本日の振り返り"}
+                  {editingReportId ? "振り返りの修正" : "本日の振り返り"}
                 </Text>
-
-                {!editingDiaryId ? (
+                {!editingReportId ? (
                   <TouchableOpacity onPress={handleDiscardDraft}>
                     <Text style={[styles.closeBtn, { color: "#e74c3c" }]}>
                       破棄
@@ -1380,140 +1191,190 @@ const DiaryScreen = ({
                   <View style={{ width: 60 }} />
                 )}
               </View>
+
               <ScrollView
                 style={styles.createScroll}
                 keyboardShouldPersistTaps="handled"
               >
-                {!editingDiaryId && (
-                  <Text style={styles.draftNotice}>
-                    ※入力内容は自動で下書き保存されます。
-                  </Text>
-                )}
-                <Text style={styles.inputLabel}>🏃 練習内容</Text>
-                <TextInput
-                  style={styles.inputSingle}
-                  placeholder="例：サーブ練習、紅白戦"
-                  value={practiceContent}
-                  onChangeText={setPracticeContent}
-                />
-                <Text style={styles.inputLabel}>📈 今日の達成度・自己評価</Text>
-                <View style={styles.ratingContainer}>
-                  {renderStars(achievement, setAchievement)}
-                  <Text style={styles.ratingText}>{achievement} / 5</Text>
-                </View>
-                <Text style={[styles.inputLabel, { color: "#27ae60" }]}>
-                  ✨ 良かった点・できたこと
-                </Text>
-                <TextInput
-                  style={styles.inputMulti}
-                  placeholder="例：サーブの確率が上がった"
-                  value={goodPoint}
-                  onChangeText={setGoodPoint}
-                  multiline
-                />
-                <Text style={[styles.inputLabel, { color: "#c0392b" }]}>
-                  🤔 改善点・気になったこと
-                </Text>
-                <TextInput
-                  style={styles.inputMulti}
-                  placeholder="例：後半バテて足が動かなかった"
-                  value={badPoint}
-                  onChangeText={setBadPoint}
-                  multiline
-                />
-                <Text style={[styles.inputLabel, { color: "#2980b9" }]}>
-                  🎯 明日の課題・目標
-                </Text>
-                <TextInput
-                  style={styles.inputMulti}
-                  placeholder="例：疲れた時こそ声を出す"
-                  value={nextTask}
-                  onChangeText={setNextTask}
-                  multiline
-                />
-
-                <Text style={styles.inputLabel}>📎 添付 (オプション)</Text>
-                <View style={styles.attachmentToolbar}>
-                  <TouchableOpacity
-                    style={styles.attachBtn}
-                    onPress={handleAddDummyImage}
-                  >
-                    <Text style={styles.attachBtnText}>📷 画像</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[
-                      styles.attachBtn,
-                      showMemoInput && styles.attachBtnActive,
-                    ]}
-                    onPress={() => setShowMemoInput(!showMemoInput)}
-                  >
-                    <Text style={styles.attachBtnText}>📝 メモ</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[
-                      styles.attachBtn,
-                      showLinkInput && styles.attachBtnActive,
-                    ]}
-                    onPress={() => setShowLinkInput(!showLinkInput)}
-                  >
-                    <Text style={styles.attachBtnText}>🔗 ハイライト</Text>
-                  </TouchableOpacity>
-                </View>
-                {images.length > 0 && (
-                  <View style={styles.attachmentPreview}>
-                    {images.map((img, idx) => (
-                      <Text key={idx} style={styles.attachedItemText}>
-                        📷 {img}
-                      </Text>
-                    ))}
-                  </View>
-                )}
-                {showMemoInput && (
+                {/* === 日記入力部分（先に表示） === */}
+                <View style={styles.formSection}>
+                  <Text style={styles.formSectionTitle}>📝 練習の振り返り</Text>
+                  <Text style={styles.inputLabel}>🏃 練習内容</Text>
                   <TextInput
-                    style={[
-                      styles.inputMulti,
-                      { marginTop: 10, borderColor: "#f1c40f" },
-                    ]}
-                    placeholder="自由なメモや気づきを記入..."
+                    style={styles.inputSingle}
+                    placeholder="例：サーブ練習、紅白戦"
+                    value={practiceContent}
+                    onChangeText={setPracticeContent}
+                  />
+
+                  <Text style={styles.inputLabel}>
+                    📈 今日の達成度・自己評価
+                  </Text>
+                  <View style={styles.ratingContainer}>
+                    {renderStars(achievement, setAchievement)}
+                    <Text style={styles.ratingText}>{achievement} / 5</Text>
+                  </View>
+
+                  <Text style={[styles.inputLabel, { color: "#27ae60" }]}>
+                    ✨ 良かった点
+                  </Text>
+                  <TextInput
+                    style={styles.inputMulti}
+                    placeholder="できたこと"
+                    value={goodPoint}
+                    onChangeText={setGoodPoint}
+                    multiline
+                  />
+
+                  <Text style={[styles.inputLabel, { color: "#c0392b" }]}>
+                    🤔 改善点
+                  </Text>
+                  <TextInput
+                    style={styles.inputMulti}
+                    placeholder="気になったこと"
+                    value={badPoint}
+                    onChangeText={setBadPoint}
+                    multiline
+                  />
+
+                  <Text style={[styles.inputLabel, { color: "#2980b9" }]}>
+                    🎯 明日の課題
+                  </Text>
+                  <TextInput
+                    style={styles.inputMulti}
+                    placeholder="明日の目標"
+                    value={nextTask}
+                    onChangeText={setNextTask}
+                    multiline
+                  />
+
+                  <Text style={styles.inputLabel}>
+                    📎 補足メモ・添付 (任意)
+                  </Text>
+                  <TextInput
+                    style={styles.inputMulti}
+                    placeholder="自由なメモや気づき..."
                     value={memo}
                     onChangeText={setMemo}
                     multiline
                   />
-                )}
-                {showLinkInput && (
-                  <TextInput
-                    style={[
-                      styles.inputSingle,
-                      { marginTop: 10, borderColor: "#f1c40f" },
-                    ]}
-                    placeholder="プロジェクトや動画のリンクURLを貼り付け"
-                    value={highlightLink}
-                    onChangeText={setHighlightLink}
-                    autoCapitalize="none"
-                  />
-                )}
-
-                <View style={styles.privacyNote}>
-                  <Text style={styles.privacyNoteText}>
-                    🔒 公開範囲：本人 ＋ スタッフのみ
-                  </Text>
                 </View>
+
+                {/* === メディカル入力部分（後に表示） === */}
+                <View style={[styles.formSection, { marginTop: 20 }]}>
+                  <Text style={styles.formSectionTitle}>🏥 コンディション</Text>
+                  <Text style={styles.inputLabel}>😀 全体的な体調</Text>
+                  <OptionGroup
+                    options={["良い", "普通", "不良"]}
+                    selected={condition}
+                    onSelect={setCondition}
+                    color="#2ecc71"
+                  />
+                  <Text style={styles.inputLabel}>
+                    🔋 疲労度 (0:なし 〜 10:限界)
+                  </Text>
+                  <ScaleSelector
+                    selected={fatigue}
+                    onSelect={setFatigue}
+                    color="#f39c12"
+                  />
+                  <Text style={styles.inputLabel}>🛌 昨晩の睡眠時間</Text>
+                  <OptionGroup
+                    options={["5h未満", "6h", "7h", "8h", "9h以上"]}
+                    selected={sleep}
+                    onSelect={setSleep}
+                    color="#9b59b6"
+                  />
+                  <Text style={styles.inputLabel}>🏃 今日の練習可否</Text>
+                  <OptionGroup
+                    options={["通常", "制限", "不可"]}
+                    selected={isParticipating}
+                    onSelect={setIsParticipating}
+                    color="#e74c3c"
+                  />
+
+                  <View style={styles.painToggleRow}>
+                    <Text style={styles.inputLabel}>
+                      🤕 痛いところ・ケガはありますか？
+                    </Text>
+                    <View style={styles.toggleBtnGroup}>
+                      <TouchableOpacity
+                        style={[
+                          styles.toggleBtnItem,
+                          !hasPain && styles.toggleBtnItemActive,
+                        ]}
+                        onPress={() => setHasPain(false)}
+                      >
+                        <Text
+                          style={[
+                            styles.toggleText,
+                            !hasPain && { color: "#fff" },
+                          ]}
+                        >
+                          なし
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[
+                          styles.toggleBtnItem,
+                          hasPain && { backgroundColor: "#e74c3c" },
+                        ]}
+                        onPress={() => setHasPain(true)}
+                      >
+                        <Text
+                          style={[
+                            styles.toggleText,
+                            hasPain && { color: "#fff" },
+                          ]}
+                        >
+                          あり
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+
+                  {hasPain && (
+                    <View style={styles.painDetailSection}>
+                      <Text style={styles.subLabel}>痛む部位</Text>
+                      <TextInput
+                        style={styles.inputSingle}
+                        placeholder="例: 右肩、左足首 など"
+                        value={painPart}
+                        onChangeText={setPainPart}
+                      />
+                      <Text style={styles.subLabel}>痛みの強さ (0〜10)</Text>
+                      <ScaleSelector
+                        selected={painLevel}
+                        onSelect={setPainLevel}
+                        color="#e74c3c"
+                      />
+                      <Text style={styles.subLabel}>
+                        いつから？ / 処置 (任意)
+                      </Text>
+                      <TextInput
+                        style={styles.inputSingle}
+                        placeholder="例: 昨日から、アイシング中"
+                        value={treatment}
+                        onChangeText={setTreatment}
+                      />
+                    </View>
+                  )}
+                </View>
+
                 <TouchableOpacity
                   style={[
                     styles.submitButton,
                     isOffline && { backgroundColor: "#f39c12" },
                   ]}
-                  onPress={handleCreateOrEditDiary}
+                  onPress={handleCreateOrEditReport}
                 >
                   <Text style={styles.submitButtonText}>
-                    {editingDiaryId
+                    {editingReportId
                       ? "修正内容を保存"
-                      : isOffline
-                        ? "待機リストに保存"
-                        : "日記を送信する"}
+                      : "この内容で1日の日報を提出する"}
                   </Text>
                 </TouchableOpacity>
-                <View style={{ height: 40 }} />
+                <View style={{ height: 60 }} />
               </ScrollView>
             </View>
           </KeyboardAvoidingView>
@@ -1542,12 +1403,7 @@ const styles = StyleSheet.create({
     flex: 1,
     textAlign: "center",
   },
-  offlineBanner: {
-    backgroundColor: "#f39c12",
-    padding: 8,
-    alignItems: "center",
-  },
-  offlineBannerText: { color: "#fff", fontSize: 12, fontWeight: "bold" },
+  headerRight: { position: "absolute", right: 15, flexDirection: "row" },
 
   adminDashboard: {
     backgroundColor: "#fff",
@@ -1555,45 +1411,13 @@ const styles = StyleSheet.create({
     borderBottomColor: "#ddd",
     paddingBottom: 5,
   },
-  summaryRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    padding: 15,
-    backgroundColor: "#e8f5e9",
-  },
-  summaryTitle: { fontSize: 15, fontWeight: "bold", color: "#27ae60" },
-  summaryBadgeUnread: {
-    backgroundColor: "#c0392b",
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
-    marginRight: 8,
-  },
-  summaryBadgeTextUnread: { color: "#fff", fontSize: 11, fontWeight: "bold" },
-
-  searchRow: {
-    flexDirection: "row",
-    paddingHorizontal: 15,
-    marginBottom: 10,
-    alignItems: "center",
-  },
+  searchRow: { padding: 10 },
   searchInputFlex: {
-    flex: 1,
     backgroundColor: "#f0f2f5",
     borderRadius: 8,
     padding: 10,
     fontSize: 14,
-    marginRight: 10,
   },
-  filterBtn: {
-    backgroundColor: "#f0f2f5",
-    padding: 10,
-    borderRadius: 8,
-    justifyContent: "center",
-  },
-  filterBtnIcon: { fontSize: 14, fontWeight: "bold", color: "#555" },
-
   tabScroll: { borderBottomWidth: 1, borderBottomColor: "#eee" },
   tabBtn: {
     paddingVertical: 8,
@@ -1605,38 +1429,6 @@ const styles = StyleSheet.create({
   tabActive: { borderBottomColor: "#27ae60" },
   tabText: { fontSize: 14, color: "#666", fontWeight: "bold" },
   tabTextActive: { color: "#27ae60" },
-
-  filterSectionTitle: {
-    fontSize: 14,
-    fontWeight: "bold",
-    color: "#555",
-    marginBottom: 10,
-    marginTop: 15,
-  },
-  filterOptionsRow: { flexDirection: "row", flexWrap: "wrap" },
-  filterOptionBtn: {
-    backgroundColor: "#f0f0f0",
-    paddingHorizontal: 15,
-    paddingVertical: 8,
-    borderRadius: 20,
-    marginRight: 10,
-    marginBottom: 10,
-  },
-  filterOptionActive: {
-    backgroundColor: "#e2f0d9",
-    borderWidth: 1,
-    borderColor: "#27ae60",
-  },
-  filterOptionText: { fontSize: 13, color: "#555" },
-  filterOptionTextActive: { color: "#27ae60", fontWeight: "bold" },
-  filterApplyBtn: {
-    backgroundColor: "#27ae60",
-    paddingVertical: 15,
-    borderRadius: 8,
-    alignItems: "center",
-    marginTop: 30,
-  },
-  filterApplyBtnText: { color: "#fff", fontSize: 16, fontWeight: "bold" },
 
   content: { padding: 15 },
   emptyText: { textAlign: "center", color: "#888", marginTop: 50 },
@@ -1667,60 +1459,35 @@ const styles = StyleSheet.create({
     padding: 15,
     marginBottom: 15,
     elevation: 2,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
+    borderLeftWidth: 4,
+    borderLeftColor: "#2ecc71",
   },
+  warningCard: { borderLeftColor: "#f39c12", backgroundColor: "#fffdf5" },
+  dangerCard: { borderLeftColor: "#c0392b", backgroundColor: "#fff5f5" },
   pendingCard: {
     opacity: 0.7,
+    borderStyle: "dashed",
     borderWidth: 1,
     borderColor: "#f39c12",
-    borderStyle: "dashed",
   },
-  pendingText: {
-    color: "#f39c12",
-    fontSize: 12,
-    fontWeight: "bold",
-    marginBottom: 5,
-  },
+
   cardHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "flex-start",
-    marginBottom: 15,
+    marginBottom: 10,
+    paddingBottom: 10,
     borderBottomWidth: 1,
     borderBottomColor: "#eee",
-    paddingBottom: 10,
-  },
-  cardDate: { fontSize: 16, fontWeight: "bold", color: "#333" },
-  cardAuthor: {
-    fontSize: 14,
-    color: "#0077cc",
-    fontWeight: "bold",
-    marginTop: 4,
   },
   cardAuthorLarge: { fontSize: 16, color: "#0077cc", fontWeight: "bold" },
-  badgeContainer: { justifyContent: "center" },
-
-  badgeShared: {
-    backgroundColor: "#e8f0fe",
-    color: "#2980b9",
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
-    fontSize: 12,
-    fontWeight: "bold",
-    overflow: "hidden",
-    marginRight: 5,
-  },
   badgeReviewed: {
     backgroundColor: "#e8f5e9",
     color: "#27ae60",
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 12,
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: "bold",
     overflow: "hidden",
   },
@@ -1730,17 +1497,38 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 12,
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: "bold",
     overflow: "hidden",
   },
+  badgeShared: {
+    backgroundColor: "#e8f0fe",
+    color: "#2980b9",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+    fontSize: 11,
+    fontWeight: "bold",
+    marginRight: 5,
+    overflow: "hidden",
+  },
+
+  miniMedicalRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    backgroundColor: "#f9f9f9",
+    padding: 8,
+    borderRadius: 8,
+    marginBottom: 10,
+  },
+  miniMedicalText: { fontSize: 12, color: "#555", fontWeight: "bold" },
+
   cardSection: {
     backgroundColor: "#f9f9f9",
     padding: 10,
     borderRadius: 8,
     marginBottom: 10,
   },
-  cardSectionRow: { flexDirection: "row", justifyContent: "space-between" },
   sectionLabel: {
     fontSize: 12,
     fontWeight: "bold",
@@ -1748,27 +1536,14 @@ const styles = StyleSheet.create({
     marginBottom: 5,
   },
   sectionText: { fontSize: 14, color: "#333", lineHeight: 20 },
-  starsRow: { flexDirection: "row" },
-  star: { fontSize: 24, marginRight: 2 },
-  attachmentIndicatorRow: { marginTop: 5, paddingVertical: 5 },
-  attachmentIndicatorText: {
+  commentCountText: {
     fontSize: 12,
-    color: "#e67e22",
+    color: "#888",
+    marginTop: 5,
+    textAlign: "right",
     fontWeight: "bold",
   },
-  commentCountRow: {
-    marginTop: 5,
-    paddingVertical: 5,
-    borderTopWidth: 1,
-    borderTopColor: "#f0f0f0",
-  },
-  commentCountText: { fontSize: 13, color: "#0077cc", fontWeight: "bold" },
-  clickHint: {
-    textAlign: "center",
-    fontSize: 12,
-    color: "#aaa",
-    marginTop: 10,
-  },
+
   fab: {
     position: "absolute",
     bottom: 30,
@@ -1784,6 +1559,14 @@ const styles = StyleSheet.create({
   fabIcon: { fontSize: 30, color: "#fff", fontWeight: "bold" },
 
   modalSafeArea: { flex: 1, backgroundColor: "rgba(0,0,0,0.5)" },
+  detailContainer: {
+    flex: 1,
+    backgroundColor: "#f0f2f5",
+    marginTop: 40,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    overflow: "hidden",
+  },
   detailHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -1791,8 +1574,10 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "#eee",
     backgroundColor: "#fafafa",
+    alignItems: "center",
   },
   closeBtn: { fontSize: 16, color: "#0077cc", fontWeight: "bold" },
+  createHeaderTitle: { fontSize: 16, fontWeight: "bold", color: "#333" },
 
   actionToolbarWrapper: {
     flexDirection: "row",
@@ -1815,29 +1600,32 @@ const styles = StyleSheet.create({
   actionBtnActive: { backgroundColor: "#e2f0d9", borderColor: "#27ae60" },
   actionBtnText: { fontSize: 12, fontWeight: "bold", color: "#333" },
 
-  detailContainer: {
-    flex: 1,
-    backgroundColor: "#f0f2f5",
-    marginTop: 40,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    overflow: "hidden",
-  },
   detailScroll: { padding: 15 },
+  sharedBanner: {
+    backgroundColor: "#e8f0fe",
+    padding: 10,
+    borderRadius: 8,
+    marginBottom: 15,
+    alignItems: "center",
+  },
+  sharedBannerText: { color: "#2980b9", fontWeight: "bold", fontSize: 12 },
+
   detailCard: {
     backgroundColor: "#fff",
     borderRadius: 12,
     padding: 15,
     marginBottom: 20,
   },
+  cardDate: { fontSize: 16, fontWeight: "bold", color: "#333" },
   markReviewedBtn: {
     backgroundColor: "#27ae60",
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 20,
+    marginRight: 5,
   },
   markReviewedBtnText: { color: "#fff", fontSize: 12, fontWeight: "bold" },
-  editActionRow: { marginTop: 5 },
+  editActionRow: { flexDirection: "row" },
   editBtn: {
     backgroundColor: "#f39c12",
     paddingHorizontal: 10,
@@ -1845,80 +1633,43 @@ const styles = StyleSheet.create({
     borderRadius: 15,
   },
   editBtnText: { color: "#fff", fontSize: 12, fontWeight: "bold" },
-  appendBtn: {
-    backgroundColor: "#3498db",
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 15,
-  },
-  appendBtnText: { color: "#fff", fontSize: 12, fontWeight: "bold" },
-  attachedItemText: { fontSize: 13, color: "#555", marginBottom: 3 },
 
-  videoPlayerMock: {
-    backgroundColor: "#000",
-    height: 120,
+  medicalDetailBox: {
+    backgroundColor: "#f8f9fa",
+    padding: 15,
     borderRadius: 8,
-    marginTop: 10,
-    justifyContent: "center",
-    alignItems: "center",
-    position: "relative",
-  },
-  videoPlayIcon: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    backgroundColor: "rgba(255,255,255,0.3)",
-    justifyContent: "center",
-    alignItems: "center",
-    borderWidth: 2,
-    borderColor: "#fff",
-  },
-  videoLinkText: {
-    position: "absolute",
-    bottom: 10,
-    left: 10,
-    right: 10,
-    color: "#fff",
-    fontSize: 10,
-    opacity: 0.8,
-  },
-
-  memoBox: {
-    backgroundColor: "#fff",
-    padding: 8,
-    borderRadius: 6,
-    marginTop: 8,
+    marginBottom: 15,
     borderWidth: 1,
-    borderColor: "#eee",
+    borderColor: "#e0e0e0",
   },
-  memoBoxTitle: {
-    fontSize: 11,
+  medicalDetailTitle: {
+    fontSize: 14,
     fontWeight: "bold",
-    color: "#888",
-    marginBottom: 4,
+    color: "#2c3e50",
+    marginBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: "#ddd",
+    paddingBottom: 5,
   },
-  memoBoxText: { fontSize: 13, color: "#444" },
-  appendedArea: {
-    marginTop: 15,
-    borderTopWidth: 1,
-    borderTopColor: "#eee",
-    paddingTop: 10,
-  },
-  appendedBox: {
-    backgroundColor: "#eef2f5",
+  detailGrid: { flexDirection: "row", flexWrap: "wrap" },
+  gridItem: { width: "50%", marginBottom: 10 },
+  gridTitle: { fontSize: 11, color: "#888", marginBottom: 2 },
+  gridValue: { fontSize: 15, fontWeight: "bold", color: "#333" },
+  painDetailBox: {
+    backgroundColor: "#fff5f5",
     padding: 10,
     borderRadius: 8,
-    marginBottom: 8,
-    borderLeftWidth: 3,
-    borderLeftColor: "#3498db",
+    marginTop: 5,
+    borderWidth: 1,
+    borderColor: "#ffcccc",
   },
-  appendedLabel: {
-    fontSize: 11,
-    color: "#3498db",
+  painDetailTitle: {
+    fontSize: 13,
     fontWeight: "bold",
-    marginBottom: 4,
+    color: "#c0392b",
+    marginBottom: 5,
   },
-  appendedText: { fontSize: 14, color: "#333" },
+  painDetailText: { fontSize: 12, color: "#444", marginBottom: 2 },
 
   threadTitle: {
     fontSize: 16,
@@ -1928,12 +1679,6 @@ const styles = StyleSheet.create({
     marginLeft: 5,
   },
   threadArea: { paddingBottom: 20 },
-  emptyCommentText: {
-    textAlign: "center",
-    color: "#888",
-    fontStyle: "italic",
-    marginTop: 20,
-  },
   commentBubbleWrapper: {
     flexDirection: "row",
     marginBottom: 15,
@@ -1962,7 +1707,6 @@ const styles = StyleSheet.create({
   commentBubbleOther: { backgroundColor: "#fff", borderBottomLeftRadius: 0 },
   commentBubbleMe: { backgroundColor: "#0077cc", borderBottomRightRadius: 0 },
   commentText: { fontSize: 15, color: "#333", lineHeight: 20 },
-  commentTime: { fontSize: 10, color: "#aaa", marginTop: 4 },
 
   templateScroll: { maxHeight: 50 },
   templateBtn: {
@@ -1975,13 +1719,10 @@ const styles = StyleSheet.create({
     borderColor: "#a9dfbf",
   },
   templateBtnText: { color: "#27ae60", fontSize: 12, fontWeight: "bold" },
-
   commentInputArea: {
     flexDirection: "row",
     padding: 10,
     backgroundColor: "#fff",
-    borderTopWidth: 1,
-    borderTopColor: "#eee",
     alignItems: "flex-end",
   },
   commentInput: {
@@ -2003,77 +1744,36 @@ const styles = StyleSheet.create({
     paddingHorizontal: 15,
     justifyContent: "center",
   },
-
-  appendOverlay: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: "rgba(0,0,0,0.6)",
-    justifyContent: "center",
-    alignItems: "center",
-    padding: 20,
-    zIndex: 1000,
-  },
-  appendKeyboardContainer: { width: "100%", alignItems: "center" },
-  appendModalContent: {
-    width: "100%",
-    backgroundColor: "#fff",
-    borderRadius: 12,
-    padding: 20,
-    elevation: 5,
-  },
-  appendModalTitle: {
-    fontSize: 18,
-    fontWeight: "bold",
-    color: "#333",
-    marginBottom: 5,
-  },
-  appendModalSubTitle: { fontSize: 12, color: "#e74c3c", marginBottom: 15 },
-  appendInput: {
-    backgroundColor: "#f9f9f9",
-    borderWidth: 1,
-    borderColor: "#ddd",
-    borderRadius: 8,
-    padding: 12,
-    fontSize: 16,
-    minHeight: 100,
-    textAlignVertical: "top",
-    marginBottom: 20,
-  },
-  appendModalButtons: { flexDirection: "row", justifyContent: "flex-end" },
-  appendCancelBtn: {
-    paddingVertical: 10,
-    paddingHorizontal: 15,
-    marginRight: 10,
-  },
-  appendCancelText: { color: "#888", fontWeight: "bold", fontSize: 15 },
-  appendSubmitBtn: {
-    backgroundColor: "#3498db",
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-    borderRadius: 8,
-  },
-  appendSubmitText: { color: "#fff", fontWeight: "bold", fontSize: 15 },
+  sendButtonText: { color: "#fff", fontWeight: "bold", fontSize: 14 },
 
   createContainer: {
     flex: 1,
-    backgroundColor: "#fff",
+    backgroundColor: "#f9f9f9",
     marginTop: 40,
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     overflow: "hidden",
   },
-  createHeaderTitle: { fontSize: 16, fontWeight: "bold", color: "#333" },
-  draftNotice: {
-    fontSize: 12,
-    color: "#e67e22",
-    textAlign: "center",
-    marginTop: 10,
-    marginBottom: 10,
+  createScroll: { padding: 15 },
+  formSection: {
+    backgroundColor: "#fff",
+    padding: 15,
+    borderRadius: 12,
+    shadowColor: "#000",
+    shadowOpacity: 0.05,
+    shadowRadius: 3,
+    elevation: 2,
   },
-  createScroll: { padding: 20 },
+  formSectionTitle: {
+    fontSize: 16,
+    fontWeight: "bold",
+    color: "#333",
+    marginBottom: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: "#eee",
+    paddingBottom: 8,
+  },
+
   inputLabel: {
     fontSize: 14,
     fontWeight: "bold",
@@ -2099,6 +1799,70 @@ const styles = StyleSheet.create({
     minHeight: 80,
     textAlignVertical: "top",
   },
+
+  optionGroup: { flexDirection: "row", flexWrap: "wrap", marginBottom: 5 },
+  optionBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "#ccc",
+    marginRight: 8,
+    marginBottom: 8,
+    backgroundColor: "#fff",
+  },
+  optionBtnText: { fontSize: 13, fontWeight: "bold", color: "#555" },
+  scaleScroll: { flexDirection: "row", marginBottom: 5 },
+  scaleBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "#ccc",
+    justifyContent: "center",
+    alignItems: "center",
+    marginRight: 8,
+    backgroundColor: "#fff",
+  },
+  scaleBtnText: { fontSize: 14, fontWeight: "bold", color: "#555" },
+
+  painToggleRow: {
+    marginTop: 15,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: "#eee",
+  },
+  toggleBtnGroup: {
+    flexDirection: "row",
+    backgroundColor: "#f0f0f0",
+    borderRadius: 8,
+    padding: 4,
+    width: 160,
+  },
+  toggleBtnItem: {
+    flex: 1,
+    paddingVertical: 8,
+    alignItems: "center",
+    borderRadius: 6,
+  },
+  toggleBtnItemActive: { backgroundColor: "#0077cc" },
+  toggleText: { fontWeight: "bold", color: "#888", fontSize: 13 },
+  painDetailSection: {
+    backgroundColor: "#fff5f5",
+    padding: 12,
+    borderRadius: 8,
+    marginTop: 10,
+    borderWidth: 1,
+    borderColor: "#ffcccc",
+  },
+  subLabel: {
+    fontSize: 12,
+    fontWeight: "bold",
+    color: "#555",
+    marginTop: 10,
+    marginBottom: 5,
+  },
+
   ratingContainer: {
     flexDirection: "row",
     alignItems: "center",
@@ -2110,40 +1874,17 @@ const styles = StyleSheet.create({
     color: "#555",
     marginLeft: 15,
   },
-  attachmentToolbar: { flexDirection: "row", marginBottom: 10 },
-  attachBtn: {
-    backgroundColor: "#f0f0f0",
-    paddingHorizontal: 15,
-    paddingVertical: 8,
-    borderRadius: 20,
-    marginRight: 10,
-    borderWidth: 1,
-    borderColor: "#ddd",
-  },
-  attachBtnActive: { backgroundColor: "#fff3cd", borderColor: "#f1c40f" },
-  attachBtnText: { fontSize: 13, color: "#555", fontWeight: "bold" },
-  attachmentPreview: {
-    backgroundColor: "#f9f9f9",
-    padding: 10,
-    borderRadius: 8,
-    marginTop: 5,
-  },
-  privacyNote: {
-    backgroundColor: "#e6f2ff",
-    padding: 10,
-    borderRadius: 8,
-    marginTop: 20,
-    marginBottom: 20,
-    alignItems: "center",
-  },
-  privacyNoteText: { color: "#0077cc", fontSize: 12, fontWeight: "bold" },
+  starsRow: { flexDirection: "row" },
+  star: { fontSize: 28, marginRight: 2 },
+
   submitButton: {
     backgroundColor: "#27ae60",
     paddingVertical: 15,
     borderRadius: 10,
     alignItems: "center",
+    marginTop: 25,
   },
-  submitButtonText: { color: "#fff", fontSize: 18, fontWeight: "bold" },
+  submitButtonText: { color: "#fff", fontSize: 16, fontWeight: "bold" },
 });
 
 export default DiaryScreen;

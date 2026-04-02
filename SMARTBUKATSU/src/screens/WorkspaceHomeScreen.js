@@ -26,7 +26,6 @@ const WorkspaceHomeScreen = ({
   posts,
   setPosts,
   isOffline,
-  toggleNetworkStatus,
   clubMembers,
   medicalRecords,
   alertThresholds,
@@ -69,6 +68,7 @@ const WorkspaceHomeScreen = ({
     return level;
   };
 
+  // カレンダーアイコンに表示する危険アラートの数
   const unreadMedicalDangerCount = medicalRecords
     ? medicalRecords.filter((r) => {
         if (r.isReviewed) return false;
@@ -798,8 +798,6 @@ const WorkspaceHomeScreen = ({
             {isOffline ? "オフライン表示中" : "スマート部活"}
           </Text>
           <View style={styles.headerRight}>
-            {/* ★変更：オフラインインジケーター（アイコン）を完全に撤去しました */}
-
             {isStaffOrAbove && (
               <TouchableOpacity
                 style={styles.headerIconBtn}
@@ -855,22 +853,23 @@ const WorkspaceHomeScreen = ({
               <Text style={styles.menuLabel}>掲示板</Text>
             </TouchableOpacity>
 
+            {/* ★変更：「部活日記」「メディカル」から「振り返り」「カレンダー」に変更 */}
             <TouchableOpacity
               style={styles.menuItem}
               onPress={() => navigation.navigate("Diary")}
             >
               <View style={styles.menuIconContainer}>
-                <Text style={styles.menuIconText}>📖</Text>
+                <Text style={styles.menuIconText}>📝</Text>
               </View>
-              <Text style={styles.menuLabel}>部活日記</Text>
+              <Text style={styles.menuLabel}>振り返り</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
               style={styles.menuItem}
-              onPress={() => navigation.navigate("Medical")}
+              onPress={() => navigation.navigate("Calendar")}
             >
               <View style={styles.menuIconContainer}>
-                <Text style={styles.menuIconText}>🏥</Text>
+                <Text style={styles.menuIconText}>📅</Text>
                 {isStaffOrAbove && unreadMedicalDangerCount > 0 && (
                   <View style={styles.menuBadge}>
                     <Text style={styles.menuBadgeText}>
@@ -879,7 +878,7 @@ const WorkspaceHomeScreen = ({
                   </View>
                 )}
               </View>
-              <Text style={styles.menuLabel}>コンディション</Text>
+              <Text style={styles.menuLabel}>カレンダー</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
