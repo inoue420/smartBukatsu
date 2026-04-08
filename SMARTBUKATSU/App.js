@@ -4,6 +4,8 @@ import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { Alert, LogBox } from "react-native";
 import NetInfo from "@react-native-community/netinfo";
 
+import { AuthProvider } from "./src/AuthContext";
+
 // expo-avの非推奨警告を画面上で非表示にする
 LogBox.ignoreLogs(["[expo-av]"]);
 
@@ -47,6 +49,7 @@ export default function App() {
   const [dailyReports, setDailyReports] = useState([]);
   const [medicalRecords, setMedicalRecords] = useState([]);
 
+  // ★変更：初期データに動画URLとタグ(tags)の入れ物を追加
   const [projects, setProjects] = useState([
     {
       id: "p1",
@@ -56,6 +59,12 @@ export default function App() {
       status: "active",
       participants: "team",
       pinned: false,
+      videoUrl: "https://d23dyxeqlo5psv.cloudfront.net/big_buck_bunny.mp4",
+      tags: [
+        { id: "t1", videoTime: 15, label: "👍 ナイスプレイ", user: "監督" },
+        { id: "t2", videoTime: 30, label: "🎯 チャンス", user: "キャプテン" },
+      ],
+      memos: [],
     },
     {
       id: "p2",
@@ -65,8 +74,13 @@ export default function App() {
       status: "closed",
       participants: "team",
       pinned: false,
+      videoUrl: "https://d23dyxeqlo5psv.cloudfront.net/big_buck_bunny.mp4",
+      tags: [{ id: "t3", videoTime: 10, label: "🤔 要改善", user: "監督" }],
+      memos: [],
     },
   ]);
+
+  const [personalEvents, setPersonalEvents] = useState([]);
 
   useEffect(() => {
     const unsubscribe = NetInfo.addEventListener((state) => {
@@ -102,32 +116,6 @@ export default function App() {
             return newPosts;
           });
 
-          setDailyReports((prev) => {
-            let changed = false;
-            const newReports = prev.map((r) => {
-              let reportChanged = false;
-              let newR = { ...r };
-              if (newR.status === "pending") {
-                newR.status = "sent";
-                reportChanged = true;
-                changed = true;
-              }
-              if (
-                newR.comments &&
-                newR.comments.some((c) => c.status === "pending")
-              ) {
-                newR.comments = newR.comments.map((c) =>
-                  c.status === "pending" ? { ...c, status: "sent" } : c,
-                );
-                reportChanged = true;
-                changed = true;
-              }
-              return reportChanged ? newR : r;
-            });
-            if (changed) hasPending = true;
-            return newReports;
-          });
-
           if (hasPending) {
             setTimeout(() => {
               Alert.alert(
@@ -152,138 +140,145 @@ export default function App() {
   };
 
   return (
-    <NavigationContainer>
-      <Stack.Navigator
-        initialRouteName="Login"
-        screenOptions={{ headerShown: false }}
-      >
-        <Stack.Screen name="Login">
-          {(props) => (
-            <LoginScreen
-              {...props}
-              setIsAdmin={setIsAdmin}
-              setCurrentUser={setCurrentUser}
-              adminPassword={adminPassword}
-              memberPassword={memberPassword}
-              clubMembers={clubMembers}
-              setClubMembers={setClubMembers}
-              grades={grades}
-              positions={positions}
-              userProfiles={userProfiles}
-            />
-          )}
-        </Stack.Screen>
-        <Stack.Screen name="WorkspaceHome">
-          {(props) => (
-            <WorkspaceHomeScreen
-              {...props}
-              isAdmin={isAdmin}
-              currentUser={currentUser}
-              notices={notices}
-              posts={posts}
-              setPosts={setPosts}
-              isOffline={isOffline}
-              toggleNetworkStatus={toggleNetworkStatus}
-              clubMembers={clubMembers}
-              alertThresholds={alertThresholds}
-              userProfiles={userProfiles}
-              dailyReports={dailyReports}
-            />
-          )}
-        </Stack.Screen>
-        <Stack.Screen name="NoticeBoard">
-          {(props) => (
-            <NoticeBoardScreen
-              {...props}
-              isAdmin={isAdmin}
-              currentUser={currentUser}
-              notices={notices}
-              setNotices={setNotices}
-              isOffline={isOffline}
-              userProfiles={userProfiles}
-            />
-          )}
-        </Stack.Screen>
-        <Stack.Screen name="Diary">
-          {(props) => (
-            <DiaryScreen
-              {...props}
-              isAdmin={isAdmin}
-              currentUser={currentUser}
-              isOffline={isOffline}
-              grades={grades}
-              positions={positions}
-              posts={posts}
-              setPosts={setPosts}
-              userProfiles={userProfiles}
-              dailyReports={dailyReports}
-              setDailyReports={setDailyReports}
-              alertThresholds={alertThresholds}
-            />
-          )}
-        </Stack.Screen>
-        <Stack.Screen name="Calendar">
-          {(props) => (
-            <CalendarScreen
-              {...props}
-              isAdmin={isAdmin}
-              currentUser={currentUser}
-              projects={projects}
-              setProjects={setProjects} // ★追加：カレンダーから予定を編集できるように
-              dailyReports={dailyReports}
-              userProfiles={userProfiles}
-              alertThresholds={alertThresholds}
-            />
-          )}
-        </Stack.Screen>
-        <Stack.Screen name="ProjectList">
-          {(props) => (
-            <ProjectListScreen
-              {...props}
-              isAdmin={isAdmin}
-              currentUser={currentUser}
-              projects={projects}
-              setProjects={setProjects}
-              userProfiles={userProfiles}
-            />
-          )}
-        </Stack.Screen>
-        <Stack.Screen name="ProjectDetail">
-          {(props) => (
-            <ProjectDetailScreen
-              {...props}
-              isAdmin={isAdmin}
-              currentUser={currentUser}
-              clubMembers={clubMembers}
-              userProfiles={userProfiles}
-            />
-          )}
-        </Stack.Screen>
-        <Stack.Screen name="Settings">
-          {(props) => (
-            <SettingsScreen
-              {...props}
-              isAdmin={isAdmin}
-              currentUser={currentUser}
-              setCurrentUser={setCurrentUser}
-              adminPassword={adminPassword}
-              setAdminPassword={setAdminPassword}
-              memberPassword={memberPassword}
-              setMemberPassword={setMemberPassword}
-              clubMembers={clubMembers}
-              setClubMembers={setClubMembers}
-              grades={grades}
-              setGrades={setGrades}
-              positions={positions}
-              setPositions={setPositions}
-              alertThresholds={alertThresholds}
-              setAlertThresholds={setAlertThresholds}
-              userProfiles={userProfiles}
-              setUserProfiles={setUserProfiles}
-            />
-          )}
-        </Stack.Screen>
-      </Stack.Navigator>
-    </NavigationContainer>
+    <AuthProvider isAdmin={isAdmin} currentUser={currentUser}>
+      <NavigationContainer>
+        <Stack.Navigator
+          initialRouteName="Login"
+          screenOptions={{ headerShown: false }}
+        >
+          <Stack.Screen name="Login">
+            {(props) => (
+              <LoginScreen
+                {...props}
+                setIsAdmin={setIsAdmin}
+                setCurrentUser={setCurrentUser}
+                adminPassword={adminPassword}
+                memberPassword={memberPassword}
+                clubMembers={clubMembers}
+                setClubMembers={setClubMembers}
+                grades={grades}
+                positions={positions}
+                userProfiles={userProfiles}
+              />
+            )}
+          </Stack.Screen>
+          <Stack.Screen name="WorkspaceHome">
+            {(props) => (
+              <WorkspaceHomeScreen
+                {...props}
+                isAdmin={isAdmin}
+                currentUser={currentUser}
+                notices={notices}
+                posts={posts}
+                setPosts={setPosts}
+                isOffline={isOffline}
+                toggleNetworkStatus={toggleNetworkStatus}
+                clubMembers={clubMembers}
+                alertThresholds={alertThresholds}
+                userProfiles={userProfiles}
+                dailyReports={dailyReports}
+              />
+            )}
+          </Stack.Screen>
+          <Stack.Screen name="NoticeBoard">
+            {(props) => (
+              <NoticeBoardScreen
+                {...props}
+                isAdmin={isAdmin}
+                currentUser={currentUser}
+                notices={notices}
+                setNotices={setNotices}
+                isOffline={isOffline}
+                userProfiles={userProfiles}
+              />
+            )}
+          </Stack.Screen>
+          <Stack.Screen name="Diary">
+            {(props) => (
+              <DiaryScreen
+                {...props}
+                isAdmin={isAdmin}
+                currentUser={currentUser}
+                isOffline={isOffline}
+                grades={grades}
+                positions={positions}
+                posts={posts}
+                setPosts={setPosts}
+                userProfiles={userProfiles}
+                dailyReports={dailyReports}
+                setDailyReports={setDailyReports}
+                alertThresholds={alertThresholds}
+              />
+            )}
+          </Stack.Screen>
+          <Stack.Screen name="Calendar">
+            {(props) => (
+              <CalendarScreen
+                {...props}
+                isAdmin={isAdmin}
+                currentUser={currentUser}
+                projects={projects}
+                setProjects={setProjects}
+                dailyReports={dailyReports}
+                userProfiles={userProfiles}
+                alertThresholds={alertThresholds}
+                personalEvents={personalEvents}
+                setPersonalEvents={setPersonalEvents}
+              />
+            )}
+          </Stack.Screen>
+          <Stack.Screen name="ProjectList">
+            {(props) => (
+              <ProjectListScreen
+                {...props}
+                isAdmin={isAdmin}
+                currentUser={currentUser}
+                projects={projects}
+                setProjects={setProjects}
+                userProfiles={userProfiles}
+              />
+            )}
+          </Stack.Screen>
+          <Stack.Screen name="ProjectDetail">
+            {(props) => (
+              <ProjectDetailScreen
+                {...props}
+                isAdmin={isAdmin}
+                currentUser={currentUser}
+                clubMembers={clubMembers}
+                userProfiles={userProfiles}
+                // ★追加：タグとメモを保存・読み込みするために projects と setProjects を渡す
+                projects={projects}
+                setProjects={setProjects}
+              />
+            )}
+          </Stack.Screen>
+          <Stack.Screen name="Settings">
+            {(props) => (
+              <SettingsScreen
+                {...props}
+                isAdmin={isAdmin}
+                currentUser={currentUser}
+                setCurrentUser={setCurrentUser}
+                adminPassword={adminPassword}
+                setAdminPassword={setAdminPassword}
+                memberPassword={memberPassword}
+                setMemberPassword={setMemberPassword}
+                clubMembers={clubMembers}
+                setClubMembers={setClubMembers}
+                grades={grades}
+                setGrades={setGrades}
+                positions={positions}
+                setPositions={setPositions}
+                alertThresholds={alertThresholds}
+                setAlertThresholds={setAlertThresholds}
+                userProfiles={userProfiles}
+                setUserProfiles={setUserProfiles}
+              />
+            )}
+          </Stack.Screen>
+        </Stack.Navigator>
+      </NavigationContainer>
+    </AuthProvider>
   );
 }

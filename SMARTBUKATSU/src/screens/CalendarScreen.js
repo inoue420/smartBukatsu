@@ -22,6 +22,8 @@ const CalendarScreen = ({
   setProjects,
   dailyReports,
   userProfiles = {},
+  personalEvents = [], // ★追加: 個人の予定
+  setPersonalEvents, // ★追加: 個人の予定更新用関数
   alertThresholds = {
     fatigueWarning: 7,
     fatigueDanger: 9,
@@ -43,14 +45,19 @@ const CalendarScreen = ({
   );
   const [selectedDate, setSelectedDate] = useState(todayString);
 
-  // === 予定（イベント）追加・編集用のステート ===
+  // === 部活の予定用ステート ===
   const [isEventModalVisible, setIsEventModalVisible] = useState(false);
   const [editingEventId, setEditingEventId] = useState(null);
   const [eventTitle, setEventTitle] = useState("");
   const [eventType, setEventType] = useState("練習");
   const [eventParticipants, setEventParticipants] = useState("team");
-  // ★追加：備考欄用のステート
   const [eventMemo, setEventMemo] = useState("");
+
+  // === ★新規追加：個人の予定用ステート ===
+  const [isPersonalModalVisible, setIsPersonalModalVisible] = useState(false);
+  const [editingPersonalId, setEditingPersonalId] = useState(null);
+  const [personalTitle, setPersonalTitle] = useState("");
+  const [personalMemo, setPersonalMemo] = useState("");
 
   // カレンダー移動処理
   const handlePrevMonth = () => {
@@ -107,15 +114,28 @@ const CalendarScreen = ({
     return false;
   });
 
-  // 日付ごとのイベントマッピング
+  // ★追加：自分自身の個人の予定だけを抽出
+  const myPersonalEvents = personalEvents.filter((e) => {
+    if (e.status === "deleted") return false;
+    return e.author === currentUser;
+  });
+
+  // 日付ごとのマッピング（★personal を追加）
   const eventsMap = {};
   visibleProjects.forEach((p) => {
-    if (!eventsMap[p.date]) eventsMap[p.date] = { projects: [], reports: [] };
+    if (!eventsMap[p.date])
+      eventsMap[p.date] = { projects: [], reports: [], personal: [] };
     eventsMap[p.date].projects.push(p);
   });
   visibleReports.forEach((r) => {
-    if (!eventsMap[r.date]) eventsMap[r.date] = { projects: [], reports: [] };
+    if (!eventsMap[r.date])
+      eventsMap[r.date] = { projects: [], reports: [], personal: [] };
     eventsMap[r.date].reports.push(r);
+  });
+  myPersonalEvents.forEach((pe) => {
+    if (!eventsMap[pe.date])
+      eventsMap[pe.date] = { projects: [], reports: [], personal: [] };
+    eventsMap[pe.date].personal.push(pe);
   });
 
   const year = currentMonth.getFullYear();
@@ -134,22 +154,23 @@ const CalendarScreen = ({
   const selectedEvents = eventsMap[selectedDate] || {
     projects: [],
     reports: [],
+    personal: [],
   };
 
-  // === 予定の操作ロジック ===
+  // === 部活の予定の操作ロジック ===
   const openEventModal = (event = null) => {
     if (event) {
       setEditingEventId(event.id);
       setEventTitle(event.title);
       setEventType(event.type);
       setEventParticipants(event.participants);
-      setEventMemo(event.memo || ""); // ★追加：既存の備考欄を読み込み
+      setEventMemo(event.memo || "");
     } else {
       setEditingEventId(null);
       setEventTitle("");
       setEventType("練習");
       setEventParticipants("team");
-      setEventMemo(""); // ★追加：リセット
+      setEventMemo("");
     }
     setIsEventModalVisible(true);
   };
@@ -159,7 +180,6 @@ const CalendarScreen = ({
       Alert.alert("エラー", "予定のタイトルを入力してください。");
       return;
     }
-
     if (editingEventId) {
       setProjects(
         projects.map((p) =>
@@ -170,7 +190,7 @@ const CalendarScreen = ({
                 type: eventType,
                 participants: eventParticipants,
                 memo: eventMemo,
-              } // ★追加：memoを保存
+              }
             : p,
         ),
       );
@@ -178,12 +198,12 @@ const CalendarScreen = ({
       const newEvent = {
         id: "p_" + Date.now().toString(),
         title: eventTitle,
-        date: selectedDate, // 選択中の日付に登録
+        date: selectedDate,
         type: eventType,
         status: "active",
         participants: eventParticipants,
         pinned: false,
-        memo: eventMemo, // ★追加：memoを保存
+        memo: eventMemo,
       };
       setProjects([...projects, newEvent]);
     }
@@ -211,6 +231,72 @@ const CalendarScreen = ({
             ),
           );
           setIsEventModalVisible(false);
+        },
+      },
+    ]);
+  };
+
+  // === ★追加：個人の予定の操作ロジック ===
+  const openPersonalModal = (event = null) => {
+    if (event) {
+      setEditingPersonalId(event.id);
+      setPersonalTitle(event.title);
+      setPersonalMemo(event.memo || "");
+    } else {
+      setEditingPersonalId(null);
+      setPersonalTitle("");
+      setPersonalMemo("");
+    }
+    setIsPersonalModalVisible(true);
+  };
+
+  const handleSavePersonal = () => {
+    if (personalTitle.trim() === "") {
+      Alert.alert("エラー", "予定のタイトルを入力してください。");
+      return;
+    }
+    if (editingPersonalId) {
+      setPersonalEvents(
+        personalEvents.map((p) =>
+          p.id === editingPersonalId
+            ? { ...p, title: personalTitle, memo: personalMemo }
+            : p,
+        ),
+      );
+    } else {
+      const newPersonalEvent = {
+        id: "pe_" + Date.now().toString(),
+        title: personalTitle,
+        date: selectedDate,
+        author: currentUser, // このユーザー専用
+        status: "active",
+        memo: personalMemo,
+      };
+      setPersonalEvents([...personalEvents, newPersonalEvent]);
+    }
+    setIsPersonalModalVisible(false);
+    Keyboard.dismiss();
+  };
+
+  const handleDeletePersonal = () => {
+    Alert.alert("削除の確認", "この個人の予定を削除しますか？", [
+      { text: "キャンセル", style: "cancel" },
+      {
+        text: "削除",
+        style: "destructive",
+        onPress: () => {
+          setPersonalEvents(
+            personalEvents.map((p) =>
+              p.id === editingPersonalId
+                ? {
+                    ...p,
+                    status: "deleted",
+                    deletedAt: new Date().toISOString(),
+                  }
+                : p,
+            ),
+          );
+          setIsPersonalModalVisible(false);
         },
       },
     ]);
@@ -271,6 +357,7 @@ const CalendarScreen = ({
             const dayEvents = eventsMap[dateStr] || {
               projects: [],
               reports: [],
+              personal: [],
             };
 
             // アラートのサマリー
@@ -311,14 +398,22 @@ const CalendarScreen = ({
                 </View>
 
                 <View style={styles.markerRow}>
+                  {/* 部活の予定ドット（青） */}
                   {dayEvents.projects.length > 0 && (
                     <View
                       style={[styles.dot, { backgroundColor: "#3498db" }]}
                     />
                   )}
+                  {/* コンディションドット（赤・黄・緑） */}
                   {reportDotColor && (
                     <View
                       style={[styles.dot, { backgroundColor: reportDotColor }]}
+                    />
+                  )}
+                  {/* ★個人の予定ドット（紫） */}
+                  {dayEvents.personal.length > 0 && (
+                    <View
+                      style={[styles.dot, { backgroundColor: "#9b59b6" }]}
                     />
                   )}
                 </View>
@@ -329,10 +424,9 @@ const CalendarScreen = ({
 
         <View style={styles.divider} />
 
-        {/* 選択日の詳細エリア */}
         <Text style={styles.detailTitle}>{selectedDate} の予定・記録</Text>
 
-        {/* 部活の予定エリア */}
+        {/* 1. 部活の予定エリア */}
         <View style={styles.detailSection}>
           <View style={styles.sectionHeaderRow}>
             <Text style={styles.sectionSubtitle}>
@@ -346,7 +440,7 @@ const CalendarScreen = ({
           </View>
 
           {selectedEvents.projects.length === 0 ? (
-            <Text style={styles.emptyText}>予定はありません。</Text>
+            <Text style={styles.emptyText}>部活の予定はありません。</Text>
           ) : (
             selectedEvents.projects.map((p) => (
               <TouchableOpacity
@@ -377,7 +471,6 @@ const CalendarScreen = ({
                     <Text style={{ fontSize: 16, color: "#888" }}>✏️</Text>
                   )}
                 </View>
-                {/* ★追加：備考欄がある場合のみ表示 */}
                 {p.memo ? (
                   <Text style={styles.eventMemoText}>{p.memo}</Text>
                 ) : null}
@@ -386,7 +479,47 @@ const CalendarScreen = ({
           )}
         </View>
 
-        {/* 振り返りエリア */}
+        {/* ★追加 2. 個人の予定エリア (自分だけ見える) */}
+        <View style={styles.detailSection}>
+          <View style={styles.sectionHeaderRow}>
+            <Text style={styles.sectionSubtitle}>
+              🔒 個人の予定 ({selectedEvents.personal.length})
+            </Text>
+            <TouchableOpacity onPress={() => openPersonalModal()}>
+              <Text style={[styles.jumpLink, { color: "#9b59b6" }]}>
+                ＋ 個人の予定
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {selectedEvents.personal.length === 0 ? (
+            <Text style={styles.emptyText}>個人の予定はありません。</Text>
+          ) : (
+            selectedEvents.personal.map((pe) => (
+              <TouchableOpacity
+                key={pe.id}
+                style={styles.personalEventCard}
+                onPress={() => openPersonalModal(pe)}
+                activeOpacity={0.7}
+              >
+                <View style={styles.eventCardHeader}>
+                  <View style={styles.badgePersonal}>
+                    <Text style={[styles.badgeText, { color: "#fff" }]}>
+                      個人
+                    </Text>
+                  </View>
+                  <Text style={styles.eventTitle}>{pe.title}</Text>
+                  <Text style={{ fontSize: 16, color: "#888" }}>✏️</Text>
+                </View>
+                {pe.memo ? (
+                  <Text style={styles.eventMemoText}>{pe.memo}</Text>
+                ) : null}
+              </TouchableOpacity>
+            ))
+          )}
+        </View>
+
+        {/* 3. 振り返りエリア */}
         <View style={styles.detailSection}>
           <View style={styles.sectionHeaderRow}>
             <Text style={styles.sectionSubtitle}>
@@ -432,7 +565,7 @@ const CalendarScreen = ({
         <View style={{ height: 50 }} />
       </ScrollView>
 
-      {/* カレンダー用 予定追加・編集モーダル */}
+      {/* --- モーダル 1: 部活の予定用 --- */}
       <Modal
         visible={isEventModalVisible}
         transparent={true}
@@ -494,7 +627,6 @@ const CalendarScreen = ({
                     練習
                   </Text>
                 </TouchableOpacity>
-                {/* ★変更：OFFからその他に変更 */}
                 <TouchableOpacity
                   style={[
                     styles.typeBtn,
@@ -552,7 +684,6 @@ const CalendarScreen = ({
                 )}
               </View>
 
-              {/* ★追加：備考欄入力 */}
               <Text style={styles.label}>備考欄 (任意)</Text>
               <TextInput
                 style={styles.inputMulti}
@@ -583,6 +714,77 @@ const CalendarScreen = ({
                 <TouchableOpacity
                   style={styles.submitBtn}
                   onPress={handleSaveEvent}
+                >
+                  <Text style={styles.submitBtnText}>保存する</Text>
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
+
+      {/* --- ★新規追加 モーダル 2: 個人の予定用 --- */}
+      <Modal
+        visible={isPersonalModalVisible}
+        transparent={true}
+        animationType="fade"
+      >
+        <View style={styles.modalOverlay}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            style={styles.modalContent}
+          >
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>
+                {editingPersonalId ? "個人の予定を編集" : "個人の予定を追加"}
+              </Text>
+              <Text style={styles.modalDateText}>📅 {selectedDate}</Text>
+            </View>
+
+            <ScrollView showsVerticalScrollIndicator={false}>
+              <Text style={styles.label}>予定のタイトル</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="例: 筋トレ、通院、バイト など"
+                value={personalTitle}
+                onChangeText={setPersonalTitle}
+                autoFocus={!editingPersonalId}
+              />
+
+              <Text style={styles.label}>メモ (任意)</Text>
+              <TextInput
+                style={styles.inputMulti}
+                placeholder="時間や詳細なメモ..."
+                value={personalMemo}
+                onChangeText={setPersonalMemo}
+                multiline
+              />
+
+              <Text style={styles.privateNotice}>
+                ※個人の予定はあなた以外のチームメンバー（監督含む）には見えません。
+              </Text>
+
+              <View style={styles.modalButtons}>
+                {editingPersonalId && (
+                  <TouchableOpacity
+                    style={[
+                      styles.submitBtn,
+                      { backgroundColor: "#e74c3c", marginRight: "auto" },
+                    ]}
+                    onPress={handleDeletePersonal}
+                  >
+                    <Text style={styles.submitBtnText}>削除</Text>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity
+                  style={styles.cancelBtn}
+                  onPress={() => setIsPersonalModalVisible(false)}
+                >
+                  <Text style={styles.cancelBtnText}>キャンセル</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.submitBtn, { backgroundColor: "#9b59b6" }]}
+                  onPress={handleSavePersonal}
                 >
                   <Text style={styles.submitBtnText}>保存する</Text>
                 </TouchableOpacity>
@@ -708,6 +910,14 @@ const styles = StyleSheet.create({
     borderLeftWidth: 3,
     borderLeftColor: "#3498db",
   },
+  personalEventCard: {
+    backgroundColor: "#fcf9ff",
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 8,
+    borderLeftWidth: 3,
+    borderLeftColor: "#9b59b6",
+  },
   eventCardHeader: {
     flexDirection: "row",
     alignItems: "center",
@@ -720,7 +930,14 @@ const styles = StyleSheet.create({
   },
   badgeMatch: { backgroundColor: "#ffeaa7" },
   badgePractice: { backgroundColor: "#dff9fb" },
-  badgeOther: { backgroundColor: "#e0e0e0" }, // ★追加：その他の色
+  badgeOther: { backgroundColor: "#e0e0e0" },
+  badgePersonal: {
+    backgroundColor: "#9b59b6",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 12,
+    marginRight: 10,
+  },
   badgeText: { fontSize: 10, fontWeight: "bold", color: "#333" },
   eventTitle: { fontSize: 14, color: "#333", fontWeight: "bold", flex: 1 },
   eventMemoText: { fontSize: 13, color: "#666", marginTop: 8, marginLeft: 2 },
@@ -804,6 +1021,14 @@ const styles = StyleSheet.create({
   typeBtnActive: { backgroundColor: "#e6f2ff", borderColor: "#3498db" },
   typeBtnText: { fontSize: 13, color: "#555", fontWeight: "bold" },
   typeBtnTextActive: { color: "#3498db" },
+
+  privateNotice: {
+    fontSize: 12,
+    color: "#e67e22",
+    marginTop: 10,
+    textAlign: "center",
+    fontWeight: "bold",
+  },
 
   modalButtons: {
     flexDirection: "row",
