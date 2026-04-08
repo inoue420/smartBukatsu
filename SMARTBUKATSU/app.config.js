@@ -1,16 +1,20 @@
 // app.config.js（CJS版・.env.local対応）
-const path = require('path');
-const dotenvFlow = require('dotenv-flow');
-const dotenvExpand = require('dotenv-expand');
-const appJson = require('./app.json');
+const path = require("path");
+const dotenvFlow = require("dotenv-flow");
+const dotenvExpand = require("dotenv-expand");
+const appJson = require("./app.json");
 
 dotenvExpand.expand(
   dotenvFlow.config({
-    path: path.resolve(__dirname),   // ルート直下の .env* を読む（.env.local 最優先）
-    default_node_env: 'development',
-  })
+    path: path.resolve(__dirname), // ルート直下の .env* を読む（.env.local 最優先）
+    default_node_env: "development",
+  }),
 );
-
+// ↓↓↓ ここから追加 ↓↓↓
+console.log("========== 環境変数のチェック ==========");
+console.log("APIキーは入ってる？: ", process.env.EXPO_PUBLIC_FIREBASE_API_KEY);
+console.log("=======================================");
+// ↑↑↑ ここまで追加 ↑↑↑
 module.exports = {
   expo: {
     ...appJson.expo,
