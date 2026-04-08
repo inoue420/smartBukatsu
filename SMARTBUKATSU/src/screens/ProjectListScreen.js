@@ -22,6 +22,10 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Video, ResizeMode } from "expo-av";
 import YoutubePlayer from "react-native-youtube-iframe";
 
+// ★追加：AuthContextとFirestore連携機能を読み込み
+import { useAuth } from "../AuthContext";
+import { createProject } from "../services/firestoreService";
+
 export default function ProjectListScreen({
   navigation,
   isAdmin,
@@ -34,11 +38,11 @@ export default function ProjectListScreen({
   const userRole = isAdmin ? "owner" : currentUserProfile.role || "member";
   const canCreateProject = ["owner", "staff", "captain"].includes(userRole);
 
+  // ★追加：チームIDを取得
+  const { activeTeamId } = useAuth();
+
   const [activeTab, setActiveTab] = useState("summary");
 
-  // ==========================================
-  // ★変更：実際の projects データからハイライト用データを自動生成
-  // ==========================================
   const highlightData = useMemo(() => {
     const data = {};
     projects.forEach((p) => {
@@ -50,20 +54,18 @@ export default function ProjectListScreen({
             project: p.title,
             url: p.videoUrl,
             start: tag.videoTime,
-            end: tag.videoTime + 5, // タグの位置から5秒間再生
+            end: tag.videoTime + 5,
             user: tag.user,
           });
         });
       }
     });
-    // 再生順（開始時間が早い順）に並び替え
     Object.keys(data).forEach((key) => {
       data[key].sort((a, b) => a.start - b.start);
     });
     return data;
   }, [projects]);
 
-  // タグ一覧（実際にタグ付けされたものだけが表示されます）
   const availableTags = useMemo(
     () => Object.keys(highlightData).sort(),
     [highlightData],
@@ -78,7 +80,6 @@ export default function ProjectListScreen({
   const videoRef = useRef(null);
   const youtubeRef = useRef(null);
 
-  // 初期タグの自動選択
   useEffect(() => {
     if (
       availableTags.length > 0 &&
@@ -179,37 +180,41 @@ export default function ProjectListScreen({
     return `${m}:${s}`;
   };
 
-  // ==========================================
-  // プロジェクト作成ロジック
-  // ==========================================
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [title, setTitle] = useState("");
   const [type, setType] = useState("試合");
   const [participants, setParticipants] = useState("team");
   const [videoUrl, setVideoUrl] = useState("");
 
-  const handleCreateProject = () => {
+  // ★変更：Firestoreへ保存する処理
+  const handleCreateProject = async () => {
     if (title.trim() === "") {
       Alert.alert("エラー", "プロジェクト名を入力してください。");
       return;
     }
     const newProject = {
-      id: "p_" + Date.now().toString(),
       title,
       type,
       participants,
       videoUrl: videoUrl.trim(),
       date: new Date().toLocaleDateString("ja-JP"),
       status: "active",
-      tags: [], // ★追加：タグとメモの初期データ
+      tags: [],
       memos: [],
     };
-    setProjects([newProject, ...projects]);
-    setIsModalVisible(false);
-    setTitle("");
-    setType("試合");
-    setParticipants("team");
-    setVideoUrl("");
+
+    try {
+      // データベース（Firestore）へ書き込み！
+      await createProject(activeTeamId, newProject);
+      setIsModalVisible(false);
+      setTitle("");
+      setType("試合");
+      setParticipants("team");
+      setVideoUrl("");
+    } catch (error) {
+      Alert.alert("エラー", "プロジェクトの作成に失敗しました。");
+      console.error(error);
+    }
   };
 
   const renderProjectItem = ({ item }) => {
@@ -446,7 +451,6 @@ export default function ProjectListScreen({
         )}
       </View>
 
-      {/* 新規プロジェクト作成モーダル */}
       <Modal visible={isModalVisible} transparent={true} animationType="slide">
         <View style={styles.modalOverlay}>
           <KeyboardAvoidingView

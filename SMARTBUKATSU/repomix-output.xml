@@ -52,6 +52,7 @@ assets/icon.png
 assets/splash-icon.png
 index.js
 package.json
+src/AuthContext.js
 src/constants.js
 src/firebase.js
 src/screens/AddVideoScreen.js
@@ -189,6 +190,8 @@ import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { Alert, LogBox } from "react-native";
 import NetInfo from "@react-native-community/netinfo";
 
+import { AuthProvider } from "./src/AuthContext";
+
 // expo-avの非推奨警告を画面上で非表示にする
 LogBox.ignoreLogs(["[expo-av]"]);
 
@@ -232,6 +235,7 @@ export default function App() {
   const [dailyReports, setDailyReports] = useState([]);
   const [medicalRecords, setMedicalRecords] = useState([]);
 
+  // ★変更：初期データに動画URLとタグ(tags)の入れ物を追加
   const [projects, setProjects] = useState([
     {
       id: "p1",
@@ -241,6 +245,12 @@ export default function App() {
       status: "active",
       participants: "team",
       pinned: false,
+      videoUrl: "https://d23dyxeqlo5psv.cloudfront.net/big_buck_bunny.mp4",
+      tags: [
+        { id: "t1", videoTime: 15, label: "👍 ナイスプレイ", user: "監督" },
+        { id: "t2", videoTime: 30, label: "🎯 チャンス", user: "キャプテン" },
+      ],
+      memos: [],
     },
     {
       id: "p2",
@@ -250,8 +260,13 @@ export default function App() {
       status: "closed",
       participants: "team",
       pinned: false,
+      videoUrl: "https://d23dyxeqlo5psv.cloudfront.net/big_buck_bunny.mp4",
+      tags: [{ id: "t3", videoTime: 10, label: "🤔 要改善", user: "監督" }],
+      memos: [],
     },
   ]);
+
+  const [personalEvents, setPersonalEvents] = useState([]);
 
   useEffect(() => {
     const unsubscribe = NetInfo.addEventListener((state) => {
@@ -287,32 +302,6 @@ export default function App() {
             return newPosts;
           });
 
-          setDailyReports((prev) => {
-            let changed = false;
-            const newReports = prev.map((r) => {
-              let reportChanged = false;
-              let newR = { ...r };
-              if (newR.status === "pending") {
-                newR.status = "sent";
-                reportChanged = true;
-                changed = true;
-              }
-              if (
-                newR.comments &&
-                newR.comments.some((c) => c.status === "pending")
-              ) {
-                newR.comments = newR.comments.map((c) =>
-                  c.status === "pending" ? { ...c, status: "sent" } : c,
-                );
-                reportChanged = true;
-                changed = true;
-              }
-              return reportChanged ? newR : r;
-            });
-            if (changed) hasPending = true;
-            return newReports;
-          });
-
           if (hasPending) {
             setTimeout(() => {
               Alert.alert(
@@ -337,139 +326,146 @@ export default function App() {
   };
 
   return (
-    <NavigationContainer>
-      <Stack.Navigator
-        initialRouteName="Login"
-        screenOptions={{ headerShown: false }}
-      >
-        <Stack.Screen name="Login">
-          {(props) => (
-            <LoginScreen
-              {...props}
-              setIsAdmin={setIsAdmin}
-              setCurrentUser={setCurrentUser}
-              adminPassword={adminPassword}
-              memberPassword={memberPassword}
-              clubMembers={clubMembers}
-              setClubMembers={setClubMembers}
-              grades={grades}
-              positions={positions}
-              userProfiles={userProfiles}
-            />
-          )}
-        </Stack.Screen>
-        <Stack.Screen name="WorkspaceHome">
-          {(props) => (
-            <WorkspaceHomeScreen
-              {...props}
-              isAdmin={isAdmin}
-              currentUser={currentUser}
-              notices={notices}
-              posts={posts}
-              setPosts={setPosts}
-              isOffline={isOffline}
-              toggleNetworkStatus={toggleNetworkStatus}
-              clubMembers={clubMembers}
-              alertThresholds={alertThresholds}
-              userProfiles={userProfiles}
-              dailyReports={dailyReports}
-            />
-          )}
-        </Stack.Screen>
-        <Stack.Screen name="NoticeBoard">
-          {(props) => (
-            <NoticeBoardScreen
-              {...props}
-              isAdmin={isAdmin}
-              currentUser={currentUser}
-              notices={notices}
-              setNotices={setNotices}
-              isOffline={isOffline}
-              userProfiles={userProfiles}
-            />
-          )}
-        </Stack.Screen>
-        <Stack.Screen name="Diary">
-          {(props) => (
-            <DiaryScreen
-              {...props}
-              isAdmin={isAdmin}
-              currentUser={currentUser}
-              isOffline={isOffline}
-              grades={grades}
-              positions={positions}
-              posts={posts}
-              setPosts={setPosts}
-              userProfiles={userProfiles}
-              dailyReports={dailyReports}
-              setDailyReports={setDailyReports}
-              alertThresholds={alertThresholds}
-            />
-          )}
-        </Stack.Screen>
-        <Stack.Screen name="Calendar">
-          {(props) => (
-            <CalendarScreen
-              {...props}
-              isAdmin={isAdmin}
-              currentUser={currentUser}
-              projects={projects}
-              setProjects={setProjects} // ★追加：カレンダーから予定を編集できるように
-              dailyReports={dailyReports}
-              userProfiles={userProfiles}
-              alertThresholds={alertThresholds}
-            />
-          )}
-        </Stack.Screen>
-        <Stack.Screen name="ProjectList">
-          {(props) => (
-            <ProjectListScreen
-              {...props}
-              isAdmin={isAdmin}
-              currentUser={currentUser}
-              projects={projects}
-              setProjects={setProjects}
-              userProfiles={userProfiles}
-            />
-          )}
-        </Stack.Screen>
-        <Stack.Screen name="ProjectDetail">
-          {(props) => (
-            <ProjectDetailScreen
-              {...props}
-              isAdmin={isAdmin}
-              currentUser={currentUser}
-              clubMembers={clubMembers}
-              userProfiles={userProfiles}
-            />
-          )}
-        </Stack.Screen>
-        <Stack.Screen name="Settings">
-          {(props) => (
-            <SettingsScreen
-              {...props}
-              isAdmin={isAdmin}
-              currentUser={currentUser}
-              setCurrentUser={setCurrentUser}
-              adminPassword={adminPassword}
-              setAdminPassword={setAdminPassword}
-              memberPassword={memberPassword}
-              setMemberPassword={setMemberPassword}
-              clubMembers={clubMembers}
-              setClubMembers={setClubMembers}
-              grades={grades}
-              setGrades={setGrades}
-              positions={positions}
-              setPositions={setPositions}
-              alertThresholds={alertThresholds}
-              setAlertThresholds={setAlertThresholds}
-              userProfiles={userProfiles}
-              setUserProfiles={setUserProfiles}
-            />
-          )}
-        </Stack.Screen>
-      </Stack.Navigator>
-    </NavigationContainer>
+    <AuthProvider isAdmin={isAdmin} currentUser={currentUser}>
+      <NavigationContainer>
+        <Stack.Navigator
+          initialRouteName="Login"
+          screenOptions={{ headerShown: false }}
+        >
+          <Stack.Screen name="Login">
+            {(props) => (
+              <LoginScreen
+                {...props}
+                setIsAdmin={setIsAdmin}
+                setCurrentUser={setCurrentUser}
+                adminPassword={adminPassword}
+                memberPassword={memberPassword}
+                clubMembers={clubMembers}
+                setClubMembers={setClubMembers}
+                grades={grades}
+                positions={positions}
+                userProfiles={userProfiles}
+              />
+            )}
+          </Stack.Screen>
+          <Stack.Screen name="WorkspaceHome">
+            {(props) => (
+              <WorkspaceHomeScreen
+                {...props}
+                isAdmin={isAdmin}
+                currentUser={currentUser}
+                notices={notices}
+                posts={posts}
+                setPosts={setPosts}
+                isOffline={isOffline}
+                toggleNetworkStatus={toggleNetworkStatus}
+                clubMembers={clubMembers}
+                alertThresholds={alertThresholds}
+                userProfiles={userProfiles}
+                dailyReports={dailyReports}
+              />
+            )}
+          </Stack.Screen>
+          <Stack.Screen name="NoticeBoard">
+            {(props) => (
+              <NoticeBoardScreen
+                {...props}
+                isAdmin={isAdmin}
+                currentUser={currentUser}
+                notices={notices}
+                setNotices={setNotices}
+                isOffline={isOffline}
+                userProfiles={userProfiles}
+              />
+            )}
+          </Stack.Screen>
+          <Stack.Screen name="Diary">
+            {(props) => (
+              <DiaryScreen
+                {...props}
+                isAdmin={isAdmin}
+                currentUser={currentUser}
+                isOffline={isOffline}
+                grades={grades}
+                positions={positions}
+                posts={posts}
+                setPosts={setPosts}
+                userProfiles={userProfiles}
+                dailyReports={dailyReports}
+                setDailyReports={setDailyReports}
+                alertThresholds={alertThresholds}
+              />
+            )}
+          </Stack.Screen>
+          <Stack.Screen name="Calendar">
+            {(props) => (
+              <CalendarScreen
+                {...props}
+                isAdmin={isAdmin}
+                currentUser={currentUser}
+                projects={projects}
+                setProjects={setProjects}
+                dailyReports={dailyReports}
+                userProfiles={userProfiles}
+                alertThresholds={alertThresholds}
+                personalEvents={personalEvents}
+                setPersonalEvents={setPersonalEvents}
+              />
+            )}
+          </Stack.Screen>
+          <Stack.Screen name="ProjectList">
+            {(props) => (
+              <ProjectListScreen
+                {...props}
+                isAdmin={isAdmin}
+                currentUser={currentUser}
+                projects={projects}
+                setProjects={setProjects}
+                userProfiles={userProfiles}
+              />
+            )}
+          </Stack.Screen>
+          <Stack.Screen name="ProjectDetail">
+            {(props) => (
+              <ProjectDetailScreen
+                {...props}
+                isAdmin={isAdmin}
+                currentUser={currentUser}
+                clubMembers={clubMembers}
+                userProfiles={userProfiles}
+                // ★追加：タグとメモを保存・読み込みするために projects と setProjects を渡す
+                projects={projects}
+                setProjects={setProjects}
+              />
+            )}
+          </Stack.Screen>
+          <Stack.Screen name="Settings">
+            {(props) => (
+              <SettingsScreen
+                {...props}
+                isAdmin={isAdmin}
+                currentUser={currentUser}
+                setCurrentUser={setCurrentUser}
+                adminPassword={adminPassword}
+                setAdminPassword={setAdminPassword}
+                memberPassword={memberPassword}
+                setMemberPassword={setMemberPassword}
+                clubMembers={clubMembers}
+                setClubMembers={setClubMembers}
+                grades={grades}
+                setGrades={setGrades}
+                positions={positions}
+                setPositions={setPositions}
+                alertThresholds={alertThresholds}
+                setAlertThresholds={setAlertThresholds}
+                userProfiles={userProfiles}
+                setUserProfiles={setUserProfiles}
+              />
+            )}
+          </Stack.Screen>
+        </Stack.Navigator>
+      </NavigationContainer>
+    </AuthProvider>
   );
 }
 </file>
@@ -535,13 +531,16 @@ registerRootComponent(App);
     "expo": "~54.0.27",
     "expo-av": "~16.0.8",
     "expo-image-picker": "~17.0.10",
+    "expo-screen-orientation": "~9.0.8",
     "expo-status-bar": "~3.0.9",
     "firebase": "^12.6.0",
     "react": "19.1.0",
     "react-native": "0.81.5",
     "react-native-gesture-handler": "~2.28.0",
     "react-native-safe-area-context": "~5.6.0",
-    "react-native-screens": "~4.16.0"
+    "react-native-screens": "~4.16.0",
+    "react-native-webview": "13.15.0",
+    "react-native-youtube-iframe": "^2.4.1"
   },
   "private": true,
   "devDependencies": {
@@ -549,6 +548,33 @@ registerRootComponent(App);
     "dotenv-flow": "^4.1.0"
   }
 }
+</file>
+
+<file path="src/AuthContext.js">
+import React, { createContext, useContext } from "react";
+
+// 1. コンテキスト（データの通り道）を作成
+const AuthContext = createContext();
+
+// 2. データをアプリ全体に提供するプロバイダー
+export const AuthProvider = ({ children, isAdmin, currentUser }) => {
+  // 各画面で `const { isAdmin, currentUser, user, activeTeamId } = useAuth();`
+  // のように呼び出せるように、必要な値をまとめておきます。
+  const value = {
+    isAdmin,
+    currentUser,
+    // 既存のFirebase連携コードなどと互換性を持たせるための安全対策（ダミーデータ）
+    user: { uid: currentUser || "guest_user" },
+    activeTeamId: "team_001",
+  };
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+};
+
+// 3. 各画面で簡単にデータを呼び出せるようにするカスタムフック
+export const useAuth = () => {
+  return useContext(AuthContext);
+};
 </file>
 
 <file path="src/constants.js">
@@ -686,6 +712,8 @@ const CalendarScreen = ({
   setProjects,
   dailyReports,
   userProfiles = {},
+  personalEvents = [], // ★追加: 個人の予定
+  setPersonalEvents, // ★追加: 個人の予定更新用関数
   alertThresholds = {
     fatigueWarning: 7,
     fatigueDanger: 9,
@@ -707,14 +735,19 @@ const CalendarScreen = ({
   );
   const [selectedDate, setSelectedDate] = useState(todayString);
 
-  // === 予定（イベント）追加・編集用のステート ===
+  // === 部活の予定用ステート ===
   const [isEventModalVisible, setIsEventModalVisible] = useState(false);
   const [editingEventId, setEditingEventId] = useState(null);
   const [eventTitle, setEventTitle] = useState("");
   const [eventType, setEventType] = useState("練習");
   const [eventParticipants, setEventParticipants] = useState("team");
-  // ★追加：備考欄用のステート
   const [eventMemo, setEventMemo] = useState("");
+
+  // === ★新規追加：個人の予定用ステート ===
+  const [isPersonalModalVisible, setIsPersonalModalVisible] = useState(false);
+  const [editingPersonalId, setEditingPersonalId] = useState(null);
+  const [personalTitle, setPersonalTitle] = useState("");
+  const [personalMemo, setPersonalMemo] = useState("");
 
   // カレンダー移動処理
   const handlePrevMonth = () => {
@@ -771,15 +804,28 @@ const CalendarScreen = ({
     return false;
   });
 
-  // 日付ごとのイベントマッピング
+  // ★追加：自分自身の個人の予定だけを抽出
+  const myPersonalEvents = personalEvents.filter((e) => {
+    if (e.status === "deleted") return false;
+    return e.author === currentUser;
+  });
+
+  // 日付ごとのマッピング（★personal を追加）
   const eventsMap = {};
   visibleProjects.forEach((p) => {
-    if (!eventsMap[p.date]) eventsMap[p.date] = { projects: [], reports: [] };
+    if (!eventsMap[p.date])
+      eventsMap[p.date] = { projects: [], reports: [], personal: [] };
     eventsMap[p.date].projects.push(p);
   });
   visibleReports.forEach((r) => {
-    if (!eventsMap[r.date]) eventsMap[r.date] = { projects: [], reports: [] };
+    if (!eventsMap[r.date])
+      eventsMap[r.date] = { projects: [], reports: [], personal: [] };
     eventsMap[r.date].reports.push(r);
+  });
+  myPersonalEvents.forEach((pe) => {
+    if (!eventsMap[pe.date])
+      eventsMap[pe.date] = { projects: [], reports: [], personal: [] };
+    eventsMap[pe.date].personal.push(pe);
   });
 
   const year = currentMonth.getFullYear();
@@ -798,22 +844,23 @@ const CalendarScreen = ({
   const selectedEvents = eventsMap[selectedDate] || {
     projects: [],
     reports: [],
+    personal: [],
   };
 
-  // === 予定の操作ロジック ===
+  // === 部活の予定の操作ロジック ===
   const openEventModal = (event = null) => {
     if (event) {
       setEditingEventId(event.id);
       setEventTitle(event.title);
       setEventType(event.type);
       setEventParticipants(event.participants);
-      setEventMemo(event.memo || ""); // ★追加：既存の備考欄を読み込み
+      setEventMemo(event.memo || "");
     } else {
       setEditingEventId(null);
       setEventTitle("");
       setEventType("練習");
       setEventParticipants("team");
-      setEventMemo(""); // ★追加：リセット
+      setEventMemo("");
     }
     setIsEventModalVisible(true);
   };
@@ -823,7 +870,6 @@ const CalendarScreen = ({
       Alert.alert("エラー", "予定のタイトルを入力してください。");
       return;
     }
-
     if (editingEventId) {
       setProjects(
         projects.map((p) =>
@@ -834,7 +880,7 @@ const CalendarScreen = ({
                 type: eventType,
                 participants: eventParticipants,
                 memo: eventMemo,
-              } // ★追加：memoを保存
+              }
             : p,
         ),
       );
@@ -842,12 +888,12 @@ const CalendarScreen = ({
       const newEvent = {
         id: "p_" + Date.now().toString(),
         title: eventTitle,
-        date: selectedDate, // 選択中の日付に登録
+        date: selectedDate,
         type: eventType,
         status: "active",
         participants: eventParticipants,
         pinned: false,
-        memo: eventMemo, // ★追加：memoを保存
+        memo: eventMemo,
       };
       setProjects([...projects, newEvent]);
     }
@@ -875,6 +921,72 @@ const CalendarScreen = ({
             ),
           );
           setIsEventModalVisible(false);
+        },
+      },
+    ]);
+  };
+
+  // === ★追加：個人の予定の操作ロジック ===
+  const openPersonalModal = (event = null) => {
+    if (event) {
+      setEditingPersonalId(event.id);
+      setPersonalTitle(event.title);
+      setPersonalMemo(event.memo || "");
+    } else {
+      setEditingPersonalId(null);
+      setPersonalTitle("");
+      setPersonalMemo("");
+    }
+    setIsPersonalModalVisible(true);
+  };
+
+  const handleSavePersonal = () => {
+    if (personalTitle.trim() === "") {
+      Alert.alert("エラー", "予定のタイトルを入力してください。");
+      return;
+    }
+    if (editingPersonalId) {
+      setPersonalEvents(
+        personalEvents.map((p) =>
+          p.id === editingPersonalId
+            ? { ...p, title: personalTitle, memo: personalMemo }
+            : p,
+        ),
+      );
+    } else {
+      const newPersonalEvent = {
+        id: "pe_" + Date.now().toString(),
+        title: personalTitle,
+        date: selectedDate,
+        author: currentUser, // このユーザー専用
+        status: "active",
+        memo: personalMemo,
+      };
+      setPersonalEvents([...personalEvents, newPersonalEvent]);
+    }
+    setIsPersonalModalVisible(false);
+    Keyboard.dismiss();
+  };
+
+  const handleDeletePersonal = () => {
+    Alert.alert("削除の確認", "この個人の予定を削除しますか？", [
+      { text: "キャンセル", style: "cancel" },
+      {
+        text: "削除",
+        style: "destructive",
+        onPress: () => {
+          setPersonalEvents(
+            personalEvents.map((p) =>
+              p.id === editingPersonalId
+                ? {
+                    ...p,
+                    status: "deleted",
+                    deletedAt: new Date().toISOString(),
+                  }
+                : p,
+            ),
+          );
+          setIsPersonalModalVisible(false);
         },
       },
     ]);
@@ -935,6 +1047,7 @@ const CalendarScreen = ({
             const dayEvents = eventsMap[dateStr] || {
               projects: [],
               reports: [],
+              personal: [],
             };
 
             // アラートのサマリー
@@ -975,14 +1088,22 @@ const CalendarScreen = ({
                 </View>
 
                 <View style={styles.markerRow}>
+                  {/* 部活の予定ドット（青） */}
                   {dayEvents.projects.length > 0 && (
                     <View
                       style={[styles.dot, { backgroundColor: "#3498db" }]}
                     />
                   )}
+                  {/* コンディションドット（赤・黄・緑） */}
                   {reportDotColor && (
                     <View
                       style={[styles.dot, { backgroundColor: reportDotColor }]}
+                    />
+                  )}
+                  {/* ★個人の予定ドット（紫） */}
+                  {dayEvents.personal.length > 0 && (
+                    <View
+                      style={[styles.dot, { backgroundColor: "#9b59b6" }]}
                     />
                   )}
                 </View>
@@ -993,10 +1114,9 @@ const CalendarScreen = ({
 
         <View style={styles.divider} />
 
-        {/* 選択日の詳細エリア */}
         <Text style={styles.detailTitle}>{selectedDate} の予定・記録</Text>
 
-        {/* 部活の予定エリア */}
+        {/* 1. 部活の予定エリア */}
         <View style={styles.detailSection}>
           <View style={styles.sectionHeaderRow}>
             <Text style={styles.sectionSubtitle}>
@@ -1010,7 +1130,7 @@ const CalendarScreen = ({
           </View>
 
           {selectedEvents.projects.length === 0 ? (
-            <Text style={styles.emptyText}>予定はありません。</Text>
+            <Text style={styles.emptyText}>部活の予定はありません。</Text>
           ) : (
             selectedEvents.projects.map((p) => (
               <TouchableOpacity
@@ -1041,7 +1161,6 @@ const CalendarScreen = ({
                     <Text style={{ fontSize: 16, color: "#888" }}>✏️</Text>
                   )}
                 </View>
-                {/* ★追加：備考欄がある場合のみ表示 */}
                 {p.memo ? (
                   <Text style={styles.eventMemoText}>{p.memo}</Text>
                 ) : null}
@@ -1050,7 +1169,47 @@ const CalendarScreen = ({
           )}
         </View>
 
-        {/* 振り返りエリア */}
+        {/* ★追加 2. 個人の予定エリア (自分だけ見える) */}
+        <View style={styles.detailSection}>
+          <View style={styles.sectionHeaderRow}>
+            <Text style={styles.sectionSubtitle}>
+              🔒 個人の予定 ({selectedEvents.personal.length})
+            </Text>
+            <TouchableOpacity onPress={() => openPersonalModal()}>
+              <Text style={[styles.jumpLink, { color: "#9b59b6" }]}>
+                ＋ 個人の予定
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {selectedEvents.personal.length === 0 ? (
+            <Text style={styles.emptyText}>個人の予定はありません。</Text>
+          ) : (
+            selectedEvents.personal.map((pe) => (
+              <TouchableOpacity
+                key={pe.id}
+                style={styles.personalEventCard}
+                onPress={() => openPersonalModal(pe)}
+                activeOpacity={0.7}
+              >
+                <View style={styles.eventCardHeader}>
+                  <View style={styles.badgePersonal}>
+                    <Text style={[styles.badgeText, { color: "#fff" }]}>
+                      個人
+                    </Text>
+                  </View>
+                  <Text style={styles.eventTitle}>{pe.title}</Text>
+                  <Text style={{ fontSize: 16, color: "#888" }}>✏️</Text>
+                </View>
+                {pe.memo ? (
+                  <Text style={styles.eventMemoText}>{pe.memo}</Text>
+                ) : null}
+              </TouchableOpacity>
+            ))
+          )}
+        </View>
+
+        {/* 3. 振り返りエリア */}
         <View style={styles.detailSection}>
           <View style={styles.sectionHeaderRow}>
             <Text style={styles.sectionSubtitle}>
@@ -1096,7 +1255,7 @@ const CalendarScreen = ({
         <View style={{ height: 50 }} />
       </ScrollView>
 
-      {/* カレンダー用 予定追加・編集モーダル */}
+      {/* --- モーダル 1: 部活の予定用 --- */}
       <Modal
         visible={isEventModalVisible}
         transparent={true}
@@ -1158,7 +1317,6 @@ const CalendarScreen = ({
                     練習
                   </Text>
                 </TouchableOpacity>
-                {/* ★変更：OFFからその他に変更 */}
                 <TouchableOpacity
                   style={[
                     styles.typeBtn,
@@ -1216,7 +1374,6 @@ const CalendarScreen = ({
                 )}
               </View>
 
-              {/* ★追加：備考欄入力 */}
               <Text style={styles.label}>備考欄 (任意)</Text>
               <TextInput
                 style={styles.inputMulti}
@@ -1247,6 +1404,77 @@ const CalendarScreen = ({
                 <TouchableOpacity
                   style={styles.submitBtn}
                   onPress={handleSaveEvent}
+                >
+                  <Text style={styles.submitBtnText}>保存する</Text>
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
+
+      {/* --- ★新規追加 モーダル 2: 個人の予定用 --- */}
+      <Modal
+        visible={isPersonalModalVisible}
+        transparent={true}
+        animationType="fade"
+      >
+        <View style={styles.modalOverlay}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            style={styles.modalContent}
+          >
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>
+                {editingPersonalId ? "個人の予定を編集" : "個人の予定を追加"}
+              </Text>
+              <Text style={styles.modalDateText}>📅 {selectedDate}</Text>
+            </View>
+
+            <ScrollView showsVerticalScrollIndicator={false}>
+              <Text style={styles.label}>予定のタイトル</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="例: 筋トレ、通院、バイト など"
+                value={personalTitle}
+                onChangeText={setPersonalTitle}
+                autoFocus={!editingPersonalId}
+              />
+
+              <Text style={styles.label}>メモ (任意)</Text>
+              <TextInput
+                style={styles.inputMulti}
+                placeholder="時間や詳細なメモ..."
+                value={personalMemo}
+                onChangeText={setPersonalMemo}
+                multiline
+              />
+
+              <Text style={styles.privateNotice}>
+                ※個人の予定はあなた以外のチームメンバー（監督含む）には見えません。
+              </Text>
+
+              <View style={styles.modalButtons}>
+                {editingPersonalId && (
+                  <TouchableOpacity
+                    style={[
+                      styles.submitBtn,
+                      { backgroundColor: "#e74c3c", marginRight: "auto" },
+                    ]}
+                    onPress={handleDeletePersonal}
+                  >
+                    <Text style={styles.submitBtnText}>削除</Text>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity
+                  style={styles.cancelBtn}
+                  onPress={() => setIsPersonalModalVisible(false)}
+                >
+                  <Text style={styles.cancelBtnText}>キャンセル</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.submitBtn, { backgroundColor: "#9b59b6" }]}
+                  onPress={handleSavePersonal}
                 >
                   <Text style={styles.submitBtnText}>保存する</Text>
                 </TouchableOpacity>
@@ -1372,6 +1600,14 @@ const styles = StyleSheet.create({
     borderLeftWidth: 3,
     borderLeftColor: "#3498db",
   },
+  personalEventCard: {
+    backgroundColor: "#fcf9ff",
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 8,
+    borderLeftWidth: 3,
+    borderLeftColor: "#9b59b6",
+  },
   eventCardHeader: {
     flexDirection: "row",
     alignItems: "center",
@@ -1384,7 +1620,14 @@ const styles = StyleSheet.create({
   },
   badgeMatch: { backgroundColor: "#ffeaa7" },
   badgePractice: { backgroundColor: "#dff9fb" },
-  badgeOther: { backgroundColor: "#e0e0e0" }, // ★追加：その他の色
+  badgeOther: { backgroundColor: "#e0e0e0" },
+  badgePersonal: {
+    backgroundColor: "#9b59b6",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 12,
+    marginRight: 10,
+  },
   badgeText: { fontSize: 10, fontWeight: "bold", color: "#333" },
   eventTitle: { fontSize: 14, color: "#333", fontWeight: "bold", flex: 1 },
   eventMemoText: { fontSize: 13, color: "#666", marginTop: 8, marginLeft: 2 },
@@ -1468,6 +1711,14 @@ const styles = StyleSheet.create({
   typeBtnActive: { backgroundColor: "#e6f2ff", borderColor: "#3498db" },
   typeBtnText: { fontSize: 13, color: "#555", fontWeight: "bold" },
   typeBtnTextActive: { color: "#3498db" },
+
+  privateNotice: {
+    fontSize: 12,
+    color: "#e67e22",
+    marginTop: 10,
+    textAlign: "center",
+    fontWeight: "bold",
+  },
 
   modalButtons: {
     flexDirection: "row",
@@ -6421,7 +6672,7 @@ export default NoticeBoardScreen;
 </file>
 
 <file path="src/screens/ProjectDetailScreen.js">
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   View,
   Text,
@@ -6434,26 +6685,30 @@ import {
   Modal,
   Keyboard,
   Alert,
+  StatusBar,
+  useWindowDimensions,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Video, ResizeMode } from "expo-av";
-import * as ImagePicker from "expo-image-picker";
+import YoutubePlayer from "react-native-youtube-iframe";
+import * as ScreenOrientation from "expo-screen-orientation";
 
-const QUICK_TAGS = [
-  "👍 ナイスプレイ",
-  "🤔 要改善",
-  "🏃 スプリント",
-  "🎯 チャンス",
-  "⚠️ ピンチ",
-];
+// ★変更：projects と setProjects を受け取る
+const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
+  const { project: routeProject, userRole = "member" } = route.params || {};
 
-const ProjectDetailScreen = ({ route, navigation, clubMembers }) => {
-  // ★変更：List画面で選択されたロールを受け取る（デフォルトはmember）
-  const { project, userRole = "member" } = route.params || {};
-  const projectTitle = project ? project.title : "未定のプロジェクト";
+  // ★変更：常に App.js の projects 配列から最新のプロジェクト情報を取得する
+  const project =
+    projects?.find((p) => p.id === routeProject?.id) || routeProject || {};
+  const projectTitle = project.title || "未定のプロジェクト";
+  const projectVideoUrl = project.videoUrl || "";
 
-  // ★追加：ロールに応じた権限定義と表示名
-  const canEditSettings = ["owner", "staff"].includes(userRole);
+  // ★変更：ローカルステート(useState)を廃止し、グローバルのタグとメモを使用
+  const tags = project.tags || [];
+  const memos = project.memos || [];
+
+  const { width, height } = useWindowDimensions();
+  const isLandscape = width > height;
   const canDeleteAnyTag = ["owner", "staff"].includes(userRole);
 
   const roleNameMap = {
@@ -6464,24 +6719,16 @@ const ProjectDetailScreen = ({ route, navigation, clubMembers }) => {
   };
   const displayUserName = roleNameMap[userRole];
 
-  // --- 動画プレイヤー用のステート ---
   const [videoUri, setVideoUri] = useState(null);
-  const [inputUrl, setInputUrl] = useState("");
-  const [isUrlModalVisible, setIsUrlModalVisible] = useState(false);
+  const [youtubeVideoId, setYoutubeVideoId] = useState(null);
   const [videoDuration, setVideoDuration] = useState(15 * 60);
   const videoRef = useRef(null);
+  const youtubeRef = useRef(null);
 
   const [videoTime, setVideoTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [isMuted, setIsMuted] = useState(false);
-  const [activeTab, setActiveTab] = useState("highlight");
 
-  const [isSettingsModalVisible, setIsSettingsModalVisible] = useState(false);
-  const [shareScope, setShareScope] = useState("team");
-
-  // --- ハイライト再生の設定用ステート ---
-  const [preRoll, setPreRoll] = useState(5);
-  const [postRoll, setPostRoll] = useState(5);
+  const [activeTab, setActiveTab] = useState("tag");
 
   const [quickTags, setQuickTags] = useState([
     "👍 ナイスプレイ",
@@ -6494,135 +6741,87 @@ const ProjectDetailScreen = ({ route, navigation, clubMembers }) => {
     useState(false);
   const [newQuickTagName, setNewQuickTagName] = useState("");
 
-  const [chats, setChats] = useState([
-    {
-      id: "1",
-      user: "監督",
-      text: "試合お疲れ様。[01:15] のディフェンスの動きについて確認してほしい。",
-      time: "10:00",
-    },
-    {
-      id: "2",
-      user: "佐藤(自分)",
-      text: "[01:15] の場面ですね。カバーが遅れてしまいました。",
-      time: "10:15",
-    },
-  ]);
-  const [newChatText, setNewChatText] = useState("");
-  const chatScrollRef = useRef(null);
+  const [isCustomTagModalVisible, setIsCustomTagModalVisible] = useState(false);
+  const [customTagText, setCustomTagText] = useState("");
+  const [customTagTime, setCustomTagTime] = useState(0);
 
-  const [tags, setTags] = useState([
-    { id: "t1", videoTime: 15, label: "👍 ナイスプレイ", user: "監督" },
-    { id: "t2", videoTime: 75, label: "🤔 要改善", user: "佐藤(自分)" },
-    { id: "t3", videoTime: 120, label: "👍 ナイスプレイ", user: "キャプテン" },
-    { id: "t4", videoTime: 300, label: "🎯 チャンス", user: "コーチ" },
-  ]);
-
-  const [memos, setMemos] = useState([
-    {
-      id: "m1",
-      videoTime: 0,
-      text: "立ち上がりのフォーメーションが全体的に低い。",
-      user: "監督",
-    },
-  ]);
   const [newMemoText, setNewMemoText] = useState("");
 
-  const [highlightFilter, setHighlightFilter] = useState("all");
+  const extractYoutubeId = (url) => {
+    if (!url) return null;
+    const regExp =
+      /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|&v=)([^#&?]*).*/;
+    const match = url.match(regExp);
+    return match && match[2].length === 11 ? match[2] : null;
+  };
 
-  const uniqueTagLabels = Array.from(new Set(tags.map((t) => t.label)));
-  const filteredHighlights =
-    highlightFilter === "all"
-      ? tags
-      : tags.filter((t) => t.label === highlightFilter);
-
-  const [isPlaylistActive, setIsPlaylistActive] = useState(false);
-  const playlistRef = useRef({
-    active: false,
-    index: 0,
-    endTime: 0,
-    highlights: [],
-  });
-
-  // --- プレイリスト連続再生用ロジック ---
-  const startPlaylist = async () => {
-    if (filteredHighlights.length === 0) {
-      Alert.alert("エラー", "再生するハイライトがありません。");
-      return;
+  useEffect(() => {
+    if (projectVideoUrl) {
+      const url = projectVideoUrl.trim();
+      const extractedId = extractYoutubeId(url);
+      if (extractedId) {
+        setYoutubeVideoId(extractedId);
+        setVideoUri(null);
+      } else {
+        setVideoUri(url);
+        setYoutubeVideoId(null);
+      }
+    } else {
+      setVideoUri(null);
+      setYoutubeVideoId(null);
     }
-    const firstClip = filteredHighlights[0];
+  }, [projectVideoUrl]);
 
-    const startTime = Math.max(firstClip.videoTime - preRoll, 0);
-    const endTime = firstClip.videoTime + postRoll;
-
-    playlistRef.current = {
-      active: true,
-      index: 0,
-      endTime: endTime,
-      highlights: filteredHighlights,
+  useEffect(() => {
+    ScreenOrientation.unlockAsync().catch(() => {});
+    return () => {
+      ScreenOrientation.lockAsync(
+        ScreenOrientation.OrientationLock.PORTRAIT_UP,
+      ).catch(() => {});
     };
-    setIsPlaylistActive(true);
+  }, []);
 
-    if (videoUri && videoRef.current) {
-      await videoRef.current.setPositionAsync(startTime * 1000);
-      await videoRef.current.playAsync();
-    } else {
-      setVideoTime(startTime);
-      setIsPlaying(true);
-    }
+  const openLandscapeMode = async () => {
+    try {
+      await ScreenOrientation.lockAsync(
+        ScreenOrientation.OrientationLock.LANDSCAPE_RIGHT,
+      );
+    } catch (e) {}
   };
 
-  const stopPlaylist = () => {
-    playlistRef.current.active = false;
-    setIsPlaylistActive(false);
-    if (videoUri && videoRef.current) {
-      videoRef.current.pauseAsync();
-    } else {
-      setIsPlaying(false);
-    }
+  const closeLandscapeMode = async () => {
+    try {
+      await ScreenOrientation.lockAsync(
+        ScreenOrientation.OrientationLock.PORTRAIT_UP,
+      );
+      setTimeout(async () => {
+        await ScreenOrientation.unlockAsync();
+      }, 2000);
+    } catch (e) {}
   };
 
-  const cancelPlaylistIfActive = () => {
-    if (playlistRef.current.active) {
-      playlistRef.current.active = false;
-      setIsPlaylistActive(false);
-    }
-  };
-
-  // --- 動画プレイヤー用ロジック ---
   useEffect(() => {
     let interval;
-    if (isPlaying && !videoUri) {
-      interval = setInterval(() => {
-        setVideoTime((prev) => {
-          const nextTime = prev + 1;
-
-          if (playlistRef.current.active) {
-            if (nextTime >= playlistRef.current.endTime) {
-              const nextIndex = playlistRef.current.index + 1;
-              if (nextIndex < playlistRef.current.highlights.length) {
-                const nextClip = playlistRef.current.highlights[nextIndex];
-                playlistRef.current.index = nextIndex;
-                playlistRef.current.endTime = nextClip.videoTime + postRoll;
-                return Math.max(nextClip.videoTime - preRoll, 0);
-              } else {
-                playlistRef.current.active = false;
-                setIsPlaylistActive(false);
-                setIsPlaying(false);
-                Alert.alert(
-                  "プレイリスト終了",
-                  "すべてのハイライトの再生が完了しました。",
-                );
-                return prev;
-              }
-            }
-          }
-          return nextTime;
-        });
+    if (isPlaying && youtubeVideoId) {
+      interval = setInterval(async () => {
+        if (youtubeRef.current) {
+          const currentTime = await youtubeRef.current.getCurrentTime();
+          setVideoTime(Math.floor(currentTime));
+        }
       }, 1000);
     }
     return () => clearInterval(interval);
-  }, [isPlaying, videoUri, preRoll, postRoll]);
+  }, [isPlaying, youtubeVideoId]);
+
+  useEffect(() => {
+    let interval;
+    if (isPlaying && videoUri && !youtubeVideoId) {
+      interval = setInterval(() => {
+        setVideoTime((prev) => prev + 1);
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [isPlaying, videoUri, youtubeVideoId]);
 
   const formatTime = (seconds) => {
     const m = Math.floor(seconds / 60)
@@ -6637,142 +6836,53 @@ const ProjectDetailScreen = ({ route, navigation, clubMembers }) => {
       const currentTime = Math.floor(status.positionMillis / 1000);
       setVideoTime(currentTime);
       setIsPlaying(status.isPlaying);
-      if (status.durationMillis) {
+      if (status.durationMillis)
         setVideoDuration(Math.floor(status.durationMillis / 1000));
-      }
-
-      if (playlistRef.current.active && status.isPlaying) {
-        if (currentTime >= playlistRef.current.endTime) {
-          const nextIndex = playlistRef.current.index + 1;
-          if (nextIndex < playlistRef.current.highlights.length) {
-            const nextClip = playlistRef.current.highlights[nextIndex];
-            const startTime = Math.max(nextClip.videoTime - preRoll, 0);
-            playlistRef.current.index = nextIndex;
-            playlistRef.current.endTime = nextClip.videoTime + postRoll;
-            videoRef.current.setPositionAsync(startTime * 1000);
-          } else {
-            playlistRef.current.active = false;
-            setIsPlaylistActive(false);
-            videoRef.current.pauseAsync();
-            Alert.alert(
-              "プレイリスト終了",
-              "すべてのハイライトの再生が完了しました。",
-            );
-          }
-        }
-      }
     }
   };
 
-  const togglePlay = async () => {
-    cancelPlaylistIfActive();
-    if (videoUri && videoRef.current) {
-      if (isPlaying) {
-        await videoRef.current.pauseAsync();
-      } else {
-        await videoRef.current.playAsync();
-      }
-    } else {
-      setIsPlaying(!isPlaying);
-    }
-  };
+  const onYoutubeStateChange = useCallback((state) => {
+    if (state === "playing") setIsPlaying(true);
+    else if (state === "paused" || state === "ended") setIsPlaying(false);
+  }, []);
+
+  const togglePlay = async () => setIsPlaying(!isPlaying);
 
   const jumpToTime = async (seconds) => {
-    cancelPlaylistIfActive();
-    if (videoUri && videoRef.current) {
+    if (youtubeVideoId && youtubeRef.current) {
+      youtubeRef.current.seekTo(seconds, true);
+      setIsPlaying(true);
+    } else if (videoUri && videoRef.current) {
       await videoRef.current.setPositionAsync(seconds * 1000);
       await videoRef.current.playAsync();
     } else {
       setVideoTime(seconds);
-      setIsPlaying(false);
     }
   };
 
   const skipBackward = async () => {
-    cancelPlaylistIfActive();
-    if (videoUri && videoRef.current) {
-      const newTime = Math.max(videoTime - 5, 0);
+    const newTime = Math.max(videoTime - 5, 0);
+    if (youtubeVideoId && youtubeRef.current)
+      youtubeRef.current.seekTo(newTime, true);
+    else if (videoUri && videoRef.current)
       await videoRef.current.setPositionAsync(newTime * 1000);
-      setVideoTime(newTime);
-    } else {
-      setVideoTime((prev) => Math.max(prev - 5, 0));
-    }
+    setVideoTime(newTime);
   };
 
   const skipForward = async () => {
-    cancelPlaylistIfActive();
-    if (videoUri && videoRef.current) {
-      const newTime = Math.min(videoTime + 5, videoDuration);
+    let newTime = videoTime + 5;
+    if (youtubeVideoId && youtubeRef.current) {
+      const dur = await youtubeRef.current.getDuration();
+      newTime = Math.min(newTime, dur);
+      youtubeRef.current.seekTo(newTime, true);
+    } else if (videoUri && videoRef.current) {
+      newTime = Math.min(newTime, videoDuration);
       await videoRef.current.setPositionAsync(newTime * 1000);
-      setVideoTime(newTime);
-    } else {
-      setVideoTime((prev) => Math.min(prev + 5, videoDuration));
     }
+    setVideoTime(newTime);
   };
 
-  const pickVideoFromGallery = async () => {
-    try {
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Videos,
-        allowsEditing: false,
-      });
-      if (!result.canceled && result.assets && result.assets.length > 0) {
-        setVideoUri(result.assets[0].uri);
-      }
-    } catch (error) {
-      Alert.alert("エラー", "動画の読み込みに失敗しました");
-    }
-  };
-
-  // --- チャット処理 ---
-  const handleInsertTimestamp = () => {
-    setNewChatText((prev) => prev + `[${formatTime(videoTime)}] `);
-  };
-
-  const handleSendChat = () => {
-    if (newChatText.trim() === "") return;
-    const newChat = {
-      id: Date.now().toString(),
-      user: displayUserName,
-      text: newChatText,
-      time: "たった今",
-    };
-    setChats([...chats, newChat]);
-    setNewChatText("");
-    Keyboard.dismiss();
-    setTimeout(
-      () => chatScrollRef.current?.scrollToEnd({ animated: true }),
-      200,
-    );
-  };
-
-  const renderChatText = (text) => {
-    const regex = /\[(\d{2}:\d{2})\]/g;
-    const parts = text.split(regex);
-    return (
-      <Text style={styles.chatText}>
-        {parts.map((part, index) => {
-          if (index % 2 === 1) {
-            return (
-              <Text
-                key={index}
-                style={styles.timestampLink}
-                onPress={() => {
-                  const [m, s] = part.split(":");
-                  jumpToTime(parseInt(m, 10) * 60 + parseInt(s, 10));
-                }}
-              >
-                [{part}]
-              </Text>
-            );
-          }
-          return <Text key={index}>{part}</Text>;
-        })}
-      </Text>
-    );
-  };
-
-  // --- タグ処理 ---
+  // --- ★変更：タグとメモを App.js の projects に保存する ---
   const handleAddTag = (label) => {
     const newTag = {
       id: "tag_" + Date.now(),
@@ -6781,29 +6891,46 @@ const ProjectDetailScreen = ({ route, navigation, clubMembers }) => {
       user: displayUserName,
     };
     const newTags = [...tags, newTag].sort((a, b) => a.videoTime - b.videoTime);
-    setTags(newTags);
+    if (setProjects) {
+      setProjects((prev) =>
+        prev.map((p) => (p.id === project.id ? { ...p, tags: newTags } : p)),
+      );
+    }
   };
 
   const handleDeleteTag = (id) => {
-    setTags(tags.filter((t) => t.id !== id));
+    const newTags = tags.filter((t) => t.id !== id);
+    if (setProjects) {
+      setProjects((prev) =>
+        prev.map((p) => (p.id === project.id ? { ...p, tags: newTags } : p)),
+      );
+    }
   };
 
-  const handleCreateQuickTag = () => {
-    const trimmed = newQuickTagName.trim();
-    if (trimmed === "") {
-      Alert.alert("エラー", "タグの名前を入力してください。");
-      return;
-    }
-    if (quickTags.includes(trimmed)) {
-      Alert.alert("エラー", "そのタグは既に存在します。");
-      return;
-    }
-    setQuickTags([...quickTags, trimmed]);
-    setNewQuickTagName("");
-    setIsAddQuickTagModalVisible(false);
+  const handleOpenCustomTag = () => {
+    setCustomTagTime(videoTime);
+    setCustomTagText("");
+    setIsCustomTagModalVisible(true);
   };
 
-  // --- メモ処理 ---
+  const handleSaveCustomTag = () => {
+    if (customTagText.trim() === "") return;
+    const newTag = {
+      id: "tag_" + Date.now(),
+      videoTime: customTagTime,
+      label: customTagText.trim(),
+      user: displayUserName,
+    };
+    const newTags = [...tags, newTag].sort((a, b) => a.videoTime - b.videoTime);
+    if (setProjects) {
+      setProjects((prev) =>
+        prev.map((p) => (p.id === project.id ? { ...p, tags: newTags } : p)),
+      );
+    }
+    setIsCustomTagModalVisible(false);
+    Keyboard.dismiss();
+  };
+
   const handleAddMemo = () => {
     if (newMemoText.trim() === "") return;
     const newMemo = {
@@ -6815,22 +6942,298 @@ const ProjectDetailScreen = ({ route, navigation, clubMembers }) => {
     const newMemos = [...memos, newMemo].sort(
       (a, b) => a.videoTime - b.videoTime,
     );
-    setMemos(newMemos);
+    if (setProjects) {
+      setProjects((prev) =>
+        prev.map((p) => (p.id === project.id ? { ...p, memos: newMemos } : p)),
+      );
+    }
     setNewMemoText("");
     Keyboard.dismiss();
   };
 
   const handleDeleteMemo = (id) => {
-    setMemos(memos.filter((m) => m.id !== id));
+    const newMemos = memos.filter((m) => m.id !== id);
+    if (setProjects) {
+      setProjects((prev) =>
+        prev.map((p) => (p.id === project.id ? { ...p, memos: newMemos } : p)),
+      );
+    }
   };
+
+  const handleCreateQuickTag = () => {
+    const trimmed = newQuickTagName.trim();
+    if (trimmed === "") return;
+    if (!quickTags.includes(trimmed)) setQuickTags([...quickTags, trimmed]);
+    setNewQuickTagName("");
+    setIsAddQuickTagModalVisible(false);
+  };
+
+  // ==========================================
+  //  UIコンポーネント（動画プレイヤー）
+  // ==========================================
+  const renderVideoPlayer = () => (
+    <View
+      style={[styles.videoPlayerArea, isLandscape && styles.fsVideoPlayerArea]}
+    >
+      {youtubeVideoId ? (
+        <View
+          style={[
+            styles.youtubeContainer,
+            isLandscape && styles.fsYoutubeContainer,
+          ]}
+        >
+          <YoutubePlayer
+            ref={youtubeRef}
+            height={isLandscape ? Math.min(width, height) : 220}
+            play={isPlaying}
+            videoId={youtubeVideoId}
+            onChangeState={onYoutubeStateChange}
+            initialPlayerParams={{ controls: 1, rel: 0 }}
+          />
+        </View>
+      ) : videoUri ? (
+        <Video
+          ref={videoRef}
+          source={{ uri: videoUri }}
+          style={styles.videoComponent}
+          resizeMode={ResizeMode.CONTAIN}
+          onPlaybackStatusUpdate={handlePlaybackStatusUpdate}
+          useNativeControls={false}
+          shouldPlay={isPlaying}
+          onError={() => {
+            Alert.alert(
+              "エラー",
+              "このURLは再生できません。\nYouTubeリンクか、直接の動画ファイル(.mp4)を指定してください。",
+            );
+          }}
+        />
+      ) : (
+        <View style={styles.videoSetupContainer}>
+          <Text style={styles.videoPlaceholderText}>
+            ※ 動画URLが設定されていません
+          </Text>
+          <Text style={styles.videoPlaceholderSub}>
+            一覧画面でプロジェクトを作成し直すか、管理者に確認してください
+          </Text>
+        </View>
+      )}
+
+      {(youtubeVideoId || videoUri) && (
+        <View style={styles.videoControls}>
+          <TouchableOpacity style={styles.skipBtn} onPress={skipBackward}>
+            <Text style={styles.skipBtnText}>⏪ 5s</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.playBtn} onPress={togglePlay}>
+            <Text style={styles.playBtnText}>{isPlaying ? "⏸" : "▶"}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.skipBtn} onPress={skipForward}>
+            <Text style={styles.skipBtnText}>5s ⏩</Text>
+          </TouchableOpacity>
+          <Text style={styles.videoTimeDisplay}>
+            {formatTime(videoTime)}{" "}
+            {videoDuration > 0 && !youtubeVideoId
+              ? `/ ${formatTime(videoDuration)}`
+              : ""}
+          </Text>
+          <TouchableOpacity
+            style={styles.fullscreenBtn}
+            onPress={isLandscape ? closeLandscapeMode : openLandscapeMode}
+          >
+            <Text style={styles.fullscreenBtnText}>
+              {isLandscape ? "><" : "[  ]"}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
+    </View>
+  );
+
+  const renderLandscapeTagUI = () => (
+    <View style={styles.fsTagContainer}>
+      <Text style={styles.fsTagTitle}>💡 タップしてタグ付け</Text>
+      <ScrollView showsVerticalScrollIndicator={false}>
+        <View style={styles.fsTagsWrapper}>
+          {quickTags.map((tag) => (
+            <TouchableOpacity
+              key={tag}
+              style={styles.fsTagBtn}
+              onPress={() => handleAddTag(tag)}
+            >
+              <Text style={styles.fsTagBtnText}>{tag}</Text>
+            </TouchableOpacity>
+          ))}
+          <TouchableOpacity
+            style={styles.fsCustomTagBtn}
+            onPress={handleOpenCustomTag}
+          >
+            <Text style={styles.fsCustomTagBtnText}>✏️ 自由入力</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.fsAddTagBtn}
+            onPress={() => setIsAddQuickTagModalVisible(true)}
+          >
+            <Text style={styles.fsAddTagBtnText}>＋ ボタン追加</Text>
+          </TouchableOpacity>
+        </View>
+      </ScrollView>
+    </View>
+  );
+
+  const renderTabsAndContent = () => (
+    <View style={{ flex: 1 }}>
+      <View style={styles.tabContainer}>
+        {[
+          { id: "tag", label: "動画/タグ" },
+          { id: "memo", label: "メモ" },
+        ].map((tab) => (
+          <TouchableOpacity
+            key={tab.id}
+            style={[styles.tab, activeTab === tab.id && styles.activeTab]}
+            onPress={() => setActiveTab(tab.id)}
+          >
+            <Text
+              style={[
+                styles.tabText,
+                activeTab === tab.id && styles.activeTabText,
+              ]}
+            >
+              {tab.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      <View style={styles.tabContentArea}>
+        {activeTab === "tag" && (
+          <>
+            <View style={styles.quickTagArea}>
+              <Text style={styles.quickTagTitle}>
+                💡 再生中にタップしてタグを追加
+              </Text>
+              <View style={styles.quickTagsWrapper}>
+                {quickTags.map((tag) => (
+                  <TouchableOpacity
+                    key={tag}
+                    style={styles.quickTagBtn}
+                    onPress={() => handleAddTag(tag)}
+                  >
+                    <Text style={styles.quickTagBtnText}>{tag}</Text>
+                  </TouchableOpacity>
+                ))}
+                <TouchableOpacity
+                  style={styles.customTagBtn}
+                  onPress={handleOpenCustomTag}
+                >
+                  <Text style={styles.customTagBtnText}>✏️ 自由入力</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.addQuickTagBtn}
+                  onPress={() => setIsAddQuickTagModalVisible(true)}
+                >
+                  <Text style={styles.addQuickTagBtnText}>＋ ボタン追加</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+            <ScrollView style={styles.listScroll}>
+              {tags.length === 0 ? (
+                <Text style={styles.emptyText}>タグがありません。</Text>
+              ) : (
+                tags.map((tag) => (
+                  <View key={tag.id} style={styles.listItemCard}>
+                    <TouchableOpacity
+                      style={styles.timeJumpBtn}
+                      onPress={() => jumpToTime(tag.videoTime)}
+                    >
+                      <Text style={styles.timeJumpText}>
+                        ▶ {formatTime(tag.videoTime)}
+                      </Text>
+                    </TouchableOpacity>
+                    <View style={styles.listInfo}>
+                      <Text style={styles.listLabelText}>{tag.label}</Text>
+                      <Text style={styles.listUserText}>by {tag.user}</Text>
+                    </View>
+                    {(canDeleteAnyTag || tag.user === displayUserName) && (
+                      <TouchableOpacity
+                        style={styles.deleteAction}
+                        onPress={() => handleDeleteTag(tag.id)}
+                      >
+                        <Text style={styles.deleteActionText}>✕</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                ))
+              )}
+            </ScrollView>
+          </>
+        )}
+
+        {activeTab === "memo" && (
+          <>
+            <ScrollView style={styles.listScroll}>
+              {memos.length === 0 ? (
+                <Text style={styles.emptyText}>メモがありません。</Text>
+              ) : (
+                memos.map((memo) => (
+                  <View key={memo.id} style={styles.listItemCard}>
+                    <TouchableOpacity
+                      style={styles.timeJumpBtn}
+                      onPress={() => jumpToTime(memo.videoTime)}
+                    >
+                      <Text style={styles.timeJumpText}>
+                        ▶ {formatTime(memo.videoTime)}
+                      </Text>
+                    </TouchableOpacity>
+                    <View style={styles.listInfo}>
+                      <Text style={styles.listContentText}>{memo.text}</Text>
+                      <Text style={styles.listUserText}>by {memo.user}</Text>
+                    </View>
+                    {(canDeleteAnyTag || memo.user === displayUserName) && (
+                      <TouchableOpacity
+                        style={styles.deleteAction}
+                        onPress={() => handleDeleteMemo(memo.id)}
+                      >
+                        <Text style={styles.deleteActionText}>✕</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                ))
+              )}
+            </ScrollView>
+            <View style={styles.inputContainer}>
+              <Text style={styles.timestampContextText}>
+                ⏱️ {formatTime(videoTime)} のメモを追加
+              </Text>
+              <View style={styles.inputRow}>
+                <TextInput
+                  style={styles.inputField}
+                  value={newMemoText}
+                  onChangeText={setNewMemoText}
+                  placeholder="メモを入力..."
+                  multiline
+                />
+                <TouchableOpacity
+                  style={styles.sendBtn}
+                  onPress={handleAddMemo}
+                >
+                  <Text style={styles.sendBtnText}>保存</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </>
+        )}
+      </View>
+    </View>
+  );
 
   return (
     <SafeAreaView style={styles.container}>
+      <StatusBar hidden={isLandscape} />
+
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         style={{ flex: 1 }}
       >
-        <View style={styles.header}>
+        <View style={[styles.header, isLandscape && { display: "none" }]}>
           <TouchableOpacity
             style={styles.backButton}
             onPress={() => navigation.goBack()}
@@ -6840,398 +7243,49 @@ const ProjectDetailScreen = ({ route, navigation, clubMembers }) => {
           <Text style={styles.headerTitle} numberOfLines={1}>
             {projectTitle}
           </Text>
-          {/* ★変更：設定ボタンは「監督・スタッフ」のみ表示（キャプテン・部員は非表示） */}
-          {canEditSettings ? (
-            <TouchableOpacity
-              style={styles.settingsBtn}
-              onPress={() => setIsSettingsModalVisible(true)}
-            >
-              <Text style={styles.settingsBtnIcon}>⚙️</Text>
-            </TouchableOpacity>
-          ) : (
-            <View style={{ width: 60 }} />
-          )}
+          <View style={{ width: 60 }} />
         </View>
 
-        <View style={styles.videoPlayerArea}>
-          {videoUri ? (
-            <Video
-              ref={videoRef}
-              source={{ uri: videoUri }}
-              style={styles.videoComponent}
-              resizeMode={ResizeMode.CONTAIN}
-              onPlaybackStatusUpdate={handlePlaybackStatusUpdate}
-              useNativeControls={false}
-              isMuted={isMuted}
-            />
-          ) : (
-            <View style={styles.videoSetupContainer}>
-              <Text style={styles.videoPlaceholderText}>
-                ※ ここに動画が表示されます
-              </Text>
-              <View style={styles.setupBtnRow}>
-                <TouchableOpacity
-                  style={styles.setupBtn}
-                  onPress={pickVideoFromGallery}
-                >
-                  <Text style={styles.setupBtnText}>📸 カメラロール</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.setupBtn}
-                  onPress={() => setIsUrlModalVisible(true)}
-                >
-                  <Text style={styles.setupBtnText}>🔗 URL</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          )}
-
-          <View style={styles.videoControls}>
-            <TouchableOpacity style={styles.skipBtn} onPress={skipBackward}>
-              <Text style={styles.skipBtnText}>⏪ 5s</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.playBtn} onPress={togglePlay}>
-              <Text style={styles.playBtnText}>{isPlaying ? "⏸" : "▶"}</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.skipBtn} onPress={skipForward}>
-              <Text style={styles.skipBtnText}>5s ⏩</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.muteBtn}
-              onPress={() => setIsMuted(!isMuted)}
-            >
-              <Text style={styles.muteBtnText}>{isMuted ? "🔇" : "🔊"}</Text>
-            </TouchableOpacity>
-
-            <Text style={styles.videoTimeDisplay}>
-              {formatTime(videoTime)} / {formatTime(videoDuration)}
-            </Text>
+        <View
+          style={
+            isLandscape ? styles.fsRoot : { flex: 1, flexDirection: "column" }
+          }
+        >
+          <View style={isLandscape ? styles.fsVideoCol : { zIndex: 10 }}>
+            {renderVideoPlayer()}
           </View>
-        </View>
-
-        <View style={styles.tabContainer}>
-          {[
-            { id: "tag", label: "動画/タグ" },
-            { id: "highlight", label: "ハイライト" },
-            { id: "chat", label: "チャット" },
-            { id: "memo", label: "メモ" },
-          ].map((tab) => {
-            const isActive = activeTab === tab.id;
-            return (
-              <TouchableOpacity
-                key={tab.id}
-                style={[styles.tab, isActive && styles.activeTab]}
-                onPress={() => setActiveTab(tab.id)}
-              >
-                <Text
-                  style={[styles.tabText, isActive && styles.activeTabText]}
-                >
-                  {tab.label}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-
-        <View style={styles.tabContentArea}>
-          {/* ハイライトタブ */}
-          {activeTab === "highlight" && (
-            <View style={{ flex: 1, backgroundColor: "#f0f2f5" }}>
-              <View style={styles.highlightFilterArea}>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                  <TouchableOpacity
-                    style={[
-                      styles.filterTagBtn,
-                      highlightFilter === "all" && styles.filterTagBtnActive,
-                    ]}
-                    onPress={() => setHighlightFilter("all")}
-                  >
-                    <Text
-                      style={[
-                        styles.filterTagBtnText,
-                        highlightFilter === "all" &&
-                          styles.filterTagBtnTextActive,
-                      ]}
-                    >
-                      すべて
-                    </Text>
-                  </TouchableOpacity>
-                  {uniqueTagLabels.map((label) => (
-                    <TouchableOpacity
-                      key={label}
-                      style={[
-                        styles.filterTagBtn,
-                        highlightFilter === label && styles.filterTagBtnActive,
-                      ]}
-                      onPress={() => setHighlightFilter(label)}
-                    >
-                      <Text
-                        style={[
-                          styles.filterTagBtnText,
-                          highlightFilter === label &&
-                            styles.filterTagBtnTextActive,
-                        ]}
-                      >
-                        {label}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </ScrollView>
-              </View>
-
-              <View style={styles.playAllContainer}>
-                <TouchableOpacity
-                  style={[
-                    styles.playAllBtn,
-                    isPlaylistActive && styles.playAllBtnActive,
-                  ]}
-                  onPress={isPlaylistActive ? stopPlaylist : startPlaylist}
-                >
-                  <Text style={styles.playAllBtnText}>
-                    {isPlaylistActive
-                      ? "⏹ 連続再生を停止"
-                      : `▶ プレイリストを連続再生 (${filteredHighlights.length} クリップ)`}
-                  </Text>
-                </TouchableOpacity>
-                <Text style={styles.playAllHint}>
-                  ※タグ付けされた時間の{preRoll}秒前から{postRoll}
-                  秒後までを順に再生します
-                </Text>
-              </View>
-
-              <ScrollView style={styles.listScroll}>
-                {filteredHighlights.length === 0 ? (
-                  <Text style={styles.emptyText}>
-                    該当するシーンがありません。
-                  </Text>
-                ) : (
-                  filteredHighlights.map((highlight, index) => (
-                    <TouchableOpacity
-                      key={highlight.id}
-                      style={[
-                        styles.highlightCard,
-                        isPlaylistActive &&
-                          playlistRef.current.index === index &&
-                          styles.highlightCardActive,
-                      ]}
-                      activeOpacity={0.7}
-                      onPress={() => jumpToTime(highlight.videoTime)}
-                    >
-                      <Text style={styles.highlightIndex}>{index + 1}</Text>
-                      <View style={styles.highlightInfo}>
-                        <Text style={styles.highlightLabel}>
-                          {highlight.label}
-                        </Text>
-                        <Text style={styles.highlightTimeText}>
-                          🕒 {formatTime(highlight.videoTime)} (追加:{" "}
-                          {highlight.user})
-                        </Text>
-                      </View>
-                      <View style={styles.timeJumpBtn}>
-                        <Text style={styles.timeJumpText}>▶ 再生</Text>
-                      </View>
-                    </TouchableOpacity>
-                  ))
-                )}
-                <View style={{ height: 30 }} />
-              </ScrollView>
+          <View style={isLandscape ? styles.fsUiCol : { flex: 1 }}>
+            <View style={{ flex: 1, display: isLandscape ? "none" : "flex" }}>
+              {renderTabsAndContent()}
             </View>
-          )}
-
-          {/* チャットタブ */}
-          {activeTab === "chat" && (
-            <>
-              <ScrollView style={styles.chatScroll} ref={chatScrollRef}>
-                {chats.map((chat) => {
-                  const isMe = chat.user === displayUserName;
-                  return (
-                    <View
-                      key={chat.id}
-                      style={[
-                        styles.chatBubbleWrapper,
-                        isMe ? styles.chatRight : styles.chatLeft,
-                      ]}
-                    >
-                      {!isMe && (
-                        <Text style={styles.chatUser}>{chat.user}</Text>
-                      )}
-                      <View
-                        style={[
-                          styles.chatBubble,
-                          isMe ? styles.chatBubbleMe : styles.chatBubbleOther,
-                        ]}
-                      >
-                        {renderChatText(chat.text)}
-                      </View>
-                      <Text style={styles.chatTime}>{chat.time}</Text>
-                    </View>
-                  );
-                })}
-              </ScrollView>
-              <View style={styles.inputContainer}>
-                <TouchableOpacity
-                  style={styles.timestampBtn}
-                  onPress={handleInsertTimestamp}
-                >
-                  <Text style={styles.timestampBtnText}>
-                    ⏱️ {formatTime(videoTime)} を引用
-                  </Text>
-                </TouchableOpacity>
-                <View style={styles.inputRow}>
-                  <TextInput
-                    style={styles.inputField}
-                    value={newChatText}
-                    onChangeText={setNewChatText}
-                    placeholder="メッセージを入力..."
-                    multiline
-                  />
-                  <TouchableOpacity
-                    style={styles.sendBtn}
-                    onPress={handleSendChat}
-                  >
-                    <Text style={styles.sendBtnText}>送信</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            </>
-          )}
-
-          {/* タグタブ */}
-          {activeTab === "tag" && (
-            <>
-              <View style={styles.quickTagArea}>
-                <Text style={styles.quickTagTitle}>
-                  💡 再生中にタップしてタグを追加
-                </Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                  {quickTags.map((tag) => (
-                    <TouchableOpacity
-                      key={tag}
-                      style={styles.quickTagBtn}
-                      onPress={() => handleAddTag(tag)}
-                    >
-                      <Text style={styles.quickTagBtnText}>{tag}</Text>
-                    </TouchableOpacity>
-                  ))}
-                  <TouchableOpacity
-                    style={styles.addQuickTagBtn}
-                    onPress={() => setIsAddQuickTagModalVisible(true)}
-                  >
-                    <Text style={styles.addQuickTagBtnText}>＋ 追加</Text>
-                  </TouchableOpacity>
-                </ScrollView>
-              </View>
-              <ScrollView style={styles.listScroll}>
-                {tags.length === 0 ? (
-                  <Text style={styles.emptyText}>タグがありません。</Text>
-                ) : (
-                  tags.map((tag) => (
-                    <View key={tag.id} style={styles.listItemCard}>
-                      <TouchableOpacity
-                        style={styles.timeJumpBtn}
-                        onPress={() => jumpToTime(tag.videoTime)}
-                      >
-                        <Text style={styles.timeJumpText}>
-                          ▶ {formatTime(tag.videoTime)}
-                        </Text>
-                      </TouchableOpacity>
-                      <View style={styles.listInfo}>
-                        <Text style={styles.listLabelText}>{tag.label}</Text>
-                        <Text style={styles.listUserText}>by {tag.user}</Text>
-                      </View>
-                      {/* ★変更：自分が追加したタグ、または「監督・スタッフ」のみ消去可能 */}
-                      {(canDeleteAnyTag || tag.user === displayUserName) && (
-                        <TouchableOpacity
-                          style={styles.deleteAction}
-                          onPress={() => handleDeleteTag(tag.id)}
-                        >
-                          <Text style={styles.deleteActionText}>✕</Text>
-                        </TouchableOpacity>
-                      )}
-                    </View>
-                  ))
-                )}
-              </ScrollView>
-            </>
-          )}
-
-          {/* メモタブ */}
-          {activeTab === "memo" && (
-            <>
-              <ScrollView style={styles.listScroll}>
-                {memos.length === 0 ? (
-                  <Text style={styles.emptyText}>メモがありません。</Text>
-                ) : (
-                  memos.map((memo) => (
-                    <View key={memo.id} style={styles.listItemCard}>
-                      <TouchableOpacity
-                        style={styles.timeJumpBtn}
-                        onPress={() => jumpToTime(memo.videoTime)}
-                      >
-                        <Text style={styles.timeJumpText}>
-                          ▶ {formatTime(memo.videoTime)}
-                        </Text>
-                      </TouchableOpacity>
-                      <View style={styles.listInfo}>
-                        <Text style={styles.listContentText}>{memo.text}</Text>
-                        <Text style={styles.listUserText}>by {memo.user}</Text>
-                      </View>
-                      {/* ★変更：自分が追加したメモ、または「監督・スタッフ」のみ消去可能 */}
-                      {(canDeleteAnyTag || memo.user === displayUserName) && (
-                        <TouchableOpacity
-                          style={styles.deleteAction}
-                          onPress={() => handleDeleteMemo(memo.id)}
-                        >
-                          <Text style={styles.deleteActionText}>✕</Text>
-                        </TouchableOpacity>
-                      )}
-                    </View>
-                  ))
-                )}
-              </ScrollView>
-              <View style={styles.inputContainer}>
-                <Text style={styles.timestampContextText}>
-                  ⏱️ {formatTime(videoTime)} のメモを追加
-                </Text>
-                <View style={styles.inputRow}>
-                  <TextInput
-                    style={styles.inputField}
-                    value={newMemoText}
-                    onChangeText={setNewMemoText}
-                    placeholder="メモを入力..."
-                    multiline
-                  />
-                  <TouchableOpacity
-                    style={styles.sendBtn}
-                    onPress={handleAddMemo}
-                  >
-                    <Text style={styles.sendBtnText}>保存</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            </>
-          )}
+            <View style={{ flex: 1, display: isLandscape ? "flex" : "none" }}>
+              {renderLandscapeTagUI()}
+            </View>
+          </View>
         </View>
       </KeyboardAvoidingView>
 
-      {/* URL入力モーダル */}
+      {/* --- モーダル群 --- */}
       <Modal
-        visible={isUrlModalVisible}
+        visible={isCustomTagModalVisible}
         transparent={true}
         animationType="fade"
       >
         <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>動画のURLを入力</Text>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            style={styles.modalContent}
+          >
+            <Text style={styles.modalTitle}>自由入力でタグ付け</Text>
+            <Text style={styles.timestampContextTextCenter}>
+              ⏱️ {formatTime(customTagTime)} の位置にタグを追加
+            </Text>
             <TextInput
               style={styles.modalInputField}
-              placeholder="https://... (.mp4など)"
-              value={inputUrl}
-              onChangeText={setInputUrl}
-              autoCapitalize="none"
+              placeholder="気づいたこと、課題など..."
+              value={customTagText}
+              onChangeText={setCustomTagText}
+              autoFocus
             />
             <View
               style={{
@@ -7242,121 +7296,21 @@ const ProjectDetailScreen = ({ route, navigation, clubMembers }) => {
             >
               <TouchableOpacity
                 style={styles.cancelBtn}
-                onPress={() => setIsUrlModalVisible(false)}
+                onPress={() => setIsCustomTagModalVisible(false)}
               >
                 <Text style={styles.cancelBtnText}>キャンセル</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.addBtn}
-                onPress={() => {
-                  if (inputUrl.trim()) setVideoUri(inputUrl.trim());
-                  setIsUrlModalVisible(false);
-                }}
+                onPress={handleSaveCustomTag}
               >
-                <Text style={styles.addBtnText}>読み込む</Text>
+                <Text style={styles.addBtnText}>タグを保存</Text>
               </TouchableOpacity>
             </View>
-          </View>
+          </KeyboardAvoidingView>
         </View>
       </Modal>
 
-      {/* 設定・共有モーダル */}
-      <Modal
-        visible={isSettingsModalVisible}
-        transparent={true}
-        animationType="fade"
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>設定</Text>
-
-            <View style={styles.settingSection}>
-              <Text style={styles.label}>プロジェクト共有設定</Text>
-              <Text style={styles.settingHint}>
-                誰がこのプロジェクトを見れますか？
-              </Text>
-              <TouchableOpacity
-                style={[
-                  styles.shareOption,
-                  shareScope === "team" && styles.shareOptionActive,
-                ]}
-                onPress={() => setShareScope("team")}
-              >
-                <Text
-                  style={[
-                    styles.shareOptionText,
-                    shareScope === "team" && styles.shareOptionTextActive,
-                  ]}
-                >
-                  👥 チーム全員
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  styles.shareOption,
-                  shareScope === "selected" && styles.shareOptionActive,
-                ]}
-                onPress={() => setShareScope("selected")}
-              >
-                <Text
-                  style={[
-                    styles.shareOptionText,
-                    shareScope === "selected" && styles.shareOptionTextActive,
-                  ]}
-                >
-                  👤 選択したメンバーのみ
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            <View style={styles.settingSection}>
-              <Text style={styles.label}>ハイライト再生設定</Text>
-              <Text style={styles.settingHint}>
-                タグが付けられた時間の前後何秒を再生するか設定します。
-              </Text>
-
-              <View style={styles.numberSettingRow}>
-                <Text style={styles.numberSettingLabel}>
-                  再生開始 (タグの何秒前か):
-                </Text>
-                <View style={styles.numberInputWrapper}>
-                  <TextInput
-                    style={styles.numberInput}
-                    value={String(preRoll)}
-                    keyboardType="numeric"
-                    onChangeText={(txt) => setPreRoll(Number(txt) || 0)}
-                  />
-                  <Text style={styles.numberInputUnit}>秒</Text>
-                </View>
-              </View>
-
-              <View style={styles.numberSettingRow}>
-                <Text style={styles.numberSettingLabel}>
-                  再生終了 (タグの何秒後か):
-                </Text>
-                <View style={styles.numberInputWrapper}>
-                  <TextInput
-                    style={styles.numberInput}
-                    value={String(postRoll)}
-                    keyboardType="numeric"
-                    onChangeText={(txt) => setPostRoll(Number(txt) || 0)}
-                  />
-                  <Text style={styles.numberInputUnit}>秒</Text>
-                </View>
-              </View>
-            </View>
-
-            <TouchableOpacity
-              style={styles.modalCloseBtn}
-              onPress={() => setIsSettingsModalVisible(false)}
-            >
-              <Text style={styles.modalCloseBtnText}>完了</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-
-      {/* タグ追加モーダル */}
       <Modal
         visible={isAddQuickTagModalVisible}
         transparent={true}
@@ -7395,7 +7349,7 @@ const ProjectDetailScreen = ({ route, navigation, clubMembers }) => {
                 style={styles.addBtn}
                 onPress={handleCreateQuickTag}
               >
-                <Text style={styles.addBtnText}>追加する</Text>
+                <Text style={styles.addBtnText}>追加</Text>
               </TouchableOpacity>
             </View>
           </KeyboardAvoidingView>
@@ -7423,12 +7377,6 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     textAlign: "center",
   },
-  settingsBtnIcon: {
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: "bold",
-    padding: 5,
-  },
 
   videoPlayerArea: {
     height: 220,
@@ -7437,6 +7385,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     position: "relative",
   },
+  youtubeContainer: { width: "100%", height: 220 },
   videoComponent: {
     position: "absolute",
     top: 0,
@@ -7444,6 +7393,90 @@ const styles = StyleSheet.create({
     bottom: 0,
     right: 0,
   },
+
+  fsRoot: { flex: 1, flexDirection: "row", backgroundColor: "#000" },
+  fsVideoCol: {
+    flex: 0.65,
+    backgroundColor: "#000",
+    justifyContent: "center",
+    position: "relative",
+  },
+  fsUiCol: {
+    flex: 0.35,
+    backgroundColor: "#1e293b",
+    paddingHorizontal: 10,
+    paddingTop: 10,
+  },
+  fsVideoPlayerArea: { flex: 1, width: "100%", height: "100%" },
+  fsYoutubeContainer: { flex: 1, width: "100%", justifyContent: "center" },
+
+  fsTagContainer: { flex: 1 },
+  fsTagTitle: {
+    color: "#ccc",
+    fontSize: 13,
+    fontWeight: "bold",
+    marginBottom: 10,
+    textAlign: "center",
+    marginTop: 5,
+  },
+  fsTagsWrapper: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "space-between",
+    paddingBottom: 20,
+  },
+  fsTagBtn: {
+    backgroundColor: "#0077cc",
+    paddingVertical: 15,
+    paddingHorizontal: 5,
+    borderRadius: 8,
+    width: "48%",
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  fsTagBtnText: {
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "bold",
+    textAlign: "center",
+  },
+
+  fsCustomTagBtn: {
+    backgroundColor: "#fff",
+    paddingVertical: 15,
+    paddingHorizontal: 5,
+    borderRadius: 8,
+    width: "48%",
+    alignItems: "center",
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: "#e67e22",
+  },
+  fsCustomTagBtnText: {
+    color: "#e67e22",
+    fontSize: 13,
+    fontWeight: "bold",
+    textAlign: "center",
+  },
+  fsAddTagBtn: {
+    backgroundColor: "transparent",
+    borderWidth: 1,
+    borderColor: "#0077cc",
+    borderStyle: "dashed",
+    paddingVertical: 15,
+    paddingHorizontal: 5,
+    borderRadius: 8,
+    width: "48%",
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  fsAddTagBtnText: {
+    color: "#0077cc",
+    fontSize: 13,
+    fontWeight: "bold",
+    textAlign: "center",
+  },
+
   videoSetupContainer: {
     alignItems: "center",
     justifyContent: "center",
@@ -7453,17 +7486,9 @@ const styles = StyleSheet.create({
     color: "#888",
     fontSize: 14,
     fontWeight: "bold",
-    marginBottom: 15,
+    marginBottom: 5,
   },
-  setupBtnRow: { flexDirection: "row", gap: 10 },
-  setupBtn: {
-    backgroundColor: "rgba(255,255,255,0.8)",
-    paddingVertical: 10,
-    paddingHorizontal: 15,
-    borderRadius: 20,
-    marginHorizontal: 5,
-  },
-  setupBtnText: { color: "#333", fontWeight: "bold", fontSize: 12 },
+  videoPlaceholderSub: { color: "#aaa", fontSize: 12 },
 
   videoControls: {
     position: "absolute",
@@ -7481,16 +7506,24 @@ const styles = StyleSheet.create({
   playBtnText: { color: "#fff", fontSize: 24 },
   skipBtn: { marginHorizontal: 10 },
   skipBtnText: { color: "#fff", fontSize: 14, fontWeight: "bold" },
-
-  muteBtn: { marginLeft: 10 },
-  muteBtnText: { color: "#fff", fontSize: 20 },
-
   videoTimeDisplay: {
     color: "#fff",
     fontSize: 13,
     fontWeight: "bold",
     fontFamily: "monospace",
     marginLeft: "auto",
+  },
+
+  fullscreenBtn: {
+    marginLeft: 15,
+    paddingHorizontal: 5,
+    justifyContent: "center",
+  },
+  fullscreenBtnText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "bold",
+    letterSpacing: 1,
   },
 
   tabContainer: {
@@ -7511,123 +7544,12 @@ const styles = StyleSheet.create({
   activeTabText: { color: "#0077cc" },
 
   tabContentArea: { flex: 1 },
-
-  highlightFilterArea: {
-    backgroundColor: "#fff",
-    padding: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: "#eee",
-  },
-  filterTagBtn: {
-    paddingHorizontal: 15,
-    paddingVertical: 8,
-    borderRadius: 20,
-    marginRight: 10,
-    backgroundColor: "#f0f0f0",
-    borderWidth: 1,
-    borderColor: "#ddd",
-  },
-  filterTagBtnActive: { backgroundColor: "#2c3e50", borderColor: "#2c3e50" },
-  filterTagBtnText: { fontSize: 13, color: "#555", fontWeight: "bold" },
-  filterTagBtnTextActive: { color: "#fff" },
-  playAllContainer: {
-    padding: 15,
-    backgroundColor: "#fafafa",
-    borderBottomWidth: 1,
-    borderBottomColor: "#eee",
-    alignItems: "center",
-  },
-  playAllBtn: {
-    backgroundColor: "#e74c3c",
-    width: "100%",
-    paddingVertical: 14,
-    borderRadius: 8,
-    alignItems: "center",
-    shadowColor: "#e74c3c",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 3,
-    elevation: 3,
-  },
-  playAllBtnActive: {
-    backgroundColor: "#555",
-    shadowColor: "#333",
-  },
-  playAllBtnText: { color: "#fff", fontSize: 15, fontWeight: "bold" },
-  playAllHint: { fontSize: 11, color: "#888", marginTop: 8 },
-  highlightCard: {
-    flexDirection: "row",
-    backgroundColor: "#fff",
-    padding: 15,
-    borderRadius: 8,
-    marginBottom: 10,
-    elevation: 2,
-    borderWidth: 1,
-    borderColor: "#eee",
-    alignItems: "center",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-  },
-  highlightCardActive: {
-    borderColor: "#0077cc",
-    borderWidth: 2,
-    backgroundColor: "#e6f2ff",
-  },
-  highlightIndex: {
-    fontSize: 20,
-    fontWeight: "bold",
-    color: "#ccc",
-    width: 35,
-  },
-  highlightInfo: { flex: 1, paddingRight: 10 },
-  highlightLabel: {
-    fontSize: 16,
-    fontWeight: "bold",
-    color: "#333",
-    marginBottom: 4,
-  },
-  highlightTimeText: { fontSize: 12, color: "#888", fontWeight: "bold" },
-
-  chatScroll: { flex: 1, padding: 15 },
-  chatBubbleWrapper: { marginBottom: 15, maxWidth: "85%" },
-  chatRight: { alignSelf: "flex-end", alignItems: "flex-end" },
-  chatLeft: { alignSelf: "flex-start", alignItems: "flex-start" },
-  chatUser: { fontSize: 11, color: "#666", marginBottom: 4, marginLeft: 5 },
-  chatBubble: { padding: 12, borderRadius: 15 },
-  chatBubbleMe: { backgroundColor: "#0077cc", borderBottomRightRadius: 0 },
-  chatBubbleOther: {
-    backgroundColor: "#fff",
-    borderBottomLeftRadius: 0,
-    borderWidth: 1,
-    borderColor: "#eee",
-  },
-  chatText: { fontSize: 15, color: "#333", lineHeight: 22 },
-  chatTime: { fontSize: 10, color: "#aaa", marginTop: 4 },
-  timestampLink: {
-    color: "#e74c3c",
-    fontWeight: "bold",
-    textDecorationLine: "underline",
-  },
-
   inputContainer: {
     backgroundColor: "#fff",
     padding: 10,
     borderTopWidth: 1,
     borderTopColor: "#ddd",
   },
-  timestampBtn: {
-    alignSelf: "flex-start",
-    backgroundColor: "#f0f0f0",
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 15,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: "#ccc",
-  },
-  timestampBtnText: { fontSize: 12, color: "#333", fontWeight: "bold" },
   timestampContextText: {
     fontSize: 12,
     color: "#e74c3c",
@@ -7635,6 +7557,14 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     marginLeft: 5,
   },
+  timestampContextTextCenter: {
+    fontSize: 13,
+    color: "#e74c3c",
+    fontWeight: "bold",
+    marginBottom: 15,
+    textAlign: "center",
+  },
+
   inputRow: { flexDirection: "row", alignItems: "flex-end" },
   inputField: {
     flex: 1,
@@ -7710,22 +7640,42 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     marginLeft: 5,
   },
+  quickTagsWrapper: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    paddingHorizontal: 5,
+  },
   quickTagBtn: {
     backgroundColor: "#f0f0f0",
     paddingHorizontal: 15,
-    paddingVertical: 8,
+    paddingVertical: 10,
     borderRadius: 20,
     marginRight: 10,
+    marginBottom: 10,
     borderWidth: 1,
     borderColor: "#ddd",
   },
   quickTagBtnText: { fontSize: 13, color: "#333", fontWeight: "bold" },
+
+  customTagBtn: {
+    backgroundColor: "#fff",
+    paddingHorizontal: 15,
+    paddingVertical: 10,
+    borderRadius: 20,
+    marginRight: 10,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: "#e67e22",
+  },
+  customTagBtnText: { fontSize: 13, color: "#e67e22", fontWeight: "bold" },
+
   addQuickTagBtn: {
     backgroundColor: "#e6f2ff",
     paddingHorizontal: 15,
-    paddingVertical: 8,
+    paddingVertical: 10,
     borderRadius: 20,
     marginRight: 10,
+    marginBottom: 10,
     borderWidth: 1,
     borderColor: "#0077cc",
     borderStyle: "dashed",
@@ -7763,52 +7713,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
 
-  settingSection: {
-    marginBottom: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: "#eee",
-    paddingBottom: 15,
-  },
-  label: { fontSize: 15, fontWeight: "bold", color: "#333", marginBottom: 5 },
-  settingHint: { fontSize: 12, color: "#888", marginBottom: 10 },
-  shareOption: {
-    padding: 12,
-    backgroundColor: "#f9f9f9",
-    borderRadius: 8,
-    marginBottom: 8,
-    borderWidth: 1,
-    borderColor: "#eee",
-  },
-  shareOptionActive: { backgroundColor: "#e6f2ff", borderColor: "#0077cc" },
-  shareOptionText: { fontSize: 14, color: "#555", fontWeight: "bold" },
-  shareOptionTextActive: { color: "#0077cc" },
-
-  numberSettingRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 10,
-    backgroundColor: "#f9f9f9",
-    padding: 10,
-    borderRadius: 8,
-  },
-  numberSettingLabel: { fontSize: 14, color: "#555", fontWeight: "bold" },
-  numberInputWrapper: { flexDirection: "row", alignItems: "center" },
-  numberInput: {
-    backgroundColor: "#fff",
-    borderWidth: 1,
-    borderColor: "#ddd",
-    borderRadius: 6,
-    paddingVertical: 5,
-    paddingHorizontal: 10,
-    width: 50,
-    textAlign: "center",
-    fontSize: 16,
-    fontWeight: "bold",
-    color: "#333",
-  },
-  numberInputUnit: { fontSize: 14, color: "#555", marginLeft: 8 },
-
   modalCloseBtn: {
     backgroundColor: "#0077cc",
     padding: 12,
@@ -7831,129 +7735,256 @@ export default ProjectDetailScreen;
 </file>
 
 <file path="src/screens/ProjectListScreen.js">
-import React, { useState } from "react";
+import React, {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  useMemo,
+} from "react";
 import {
   View,
   Text,
   TextInput,
   StyleSheet,
   TouchableOpacity,
-  ScrollView,
+  FlatList,
   Modal,
   KeyboardAvoidingView,
   Platform,
-  Keyboard,
   Alert,
+  ScrollView,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { Video, ResizeMode } from "expo-av";
+import YoutubePlayer from "react-native-youtube-iframe";
 
-const ProjectListScreen = ({
+export default function ProjectListScreen({
   navigation,
   isAdmin,
   currentUser,
   projects,
   setProjects,
-  userProfiles = {},
-}) => {
-  // ★追加：タブ切り替え用のステート ("summary" = まとめ, "tagging" = タグ付け)
-  const [activeTab, setActiveTab] = useState("tagging");
-
-  const [searchQuery, setSearchQuery] = useState("");
-  const [isCreateModalVisible, setIsCreateModalVisible] = useState(false);
-  const [newTitle, setNewTitle] = useState("");
-  const [newType, setNewType] = useState("試合");
-  const [newParticipants, setNewParticipants] = useState("team");
-
-  const [activeLongPressProjectId, setActiveLongPressProjectId] =
-    useState(null);
-
+  userProfiles,
+}) {
   const currentUserProfile = userProfiles[currentUser] || {};
   const userRole = isAdmin ? "owner" : currentUserProfile.role || "member";
-  const displayUserName = isAdmin ? "管理者(監督)" : currentUser;
-
   const canCreateProject = ["owner", "staff", "captain"].includes(userRole);
-  const canDeleteProject = ["owner", "staff", "captain"].includes(userRole);
-  const canPinProject = ["owner", "staff", "captain"].includes(userRole);
 
-  let filteredProjects = projects.filter((p) => {
-    if (p.status === "deleted") return false;
-    if (!p.title.includes(searchQuery)) return false;
-    if (userRole === "member" || userRole === "captain") {
-      if (p.participants === "coach") return false;
+  const [activeTab, setActiveTab] = useState("summary");
+
+  // ==========================================
+  // ★変更：実際の projects データからハイライト用データを自動生成
+  // ==========================================
+  const highlightData = useMemo(() => {
+    const data = {};
+    projects.forEach((p) => {
+      if (p.videoUrl && p.tags && p.tags.length > 0) {
+        p.tags.forEach((tag) => {
+          if (!data[tag.label]) data[tag.label] = [];
+          data[tag.label].push({
+            id: tag.id,
+            project: p.title,
+            url: p.videoUrl,
+            start: tag.videoTime,
+            end: tag.videoTime + 5, // タグの位置から5秒間再生
+            user: tag.user,
+          });
+        });
+      }
+    });
+    // 再生順（開始時間が早い順）に並び替え
+    Object.keys(data).forEach((key) => {
+      data[key].sort((a, b) => a.start - b.start);
+    });
+    return data;
+  }, [projects]);
+
+  // タグ一覧（実際にタグ付けされたものだけが表示されます）
+  const availableTags = useMemo(
+    () => Object.keys(highlightData).sort(),
+    [highlightData],
+  );
+
+  const [selectedHighlightTag, setSelectedHighlightTag] = useState("");
+  const [currentClipIndex, setCurrentClipIndex] = useState(0);
+
+  const [videoTime, setVideoTime] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+
+  const videoRef = useRef(null);
+  const youtubeRef = useRef(null);
+
+  // 初期タグの自動選択
+  useEffect(() => {
+    if (
+      availableTags.length > 0 &&
+      (!selectedHighlightTag || !availableTags.includes(selectedHighlightTag))
+    ) {
+      setSelectedHighlightTag(availableTags[0]);
+      setCurrentClipIndex(0);
     }
-    return true;
-  });
+  }, [availableTags, selectedHighlightTag]);
 
-  filteredProjects.sort((a, b) => {
-    if (a.pinned && !b.pinned) return -1;
-    if (!a.pinned && b.pinned) return 1;
-    return 0;
-  });
+  const currentClips = highlightData[selectedHighlightTag] || [];
+  const currentClip = currentClips[currentClipIndex] || null;
+
+  const extractYoutubeId = (url) => {
+    if (!url) return null;
+    const regExp =
+      /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|&v=)([^#&?]*).*/;
+    const match = url.match(regExp);
+    return match && match[2].length === 11 ? match[2] : null;
+  };
+  const ytId = currentClip ? extractYoutubeId(currentClip.url) : null;
+
+  const handleSelectTag = (tag) => {
+    setSelectedHighlightTag(tag);
+    setCurrentClipIndex(0);
+    setIsPlaying(true);
+  };
+
+  const handleSelectClip = (index) => {
+    setCurrentClipIndex(index);
+    setIsPlaying(true);
+  };
+
+  const playNextClip = () => {
+    if (currentClipIndex < currentClips.length - 1) {
+      setCurrentClipIndex((prev) => prev + 1);
+    } else {
+      setIsPlaying(false);
+      if (videoRef.current) videoRef.current.pauseAsync();
+    }
+  };
+
+  useEffect(() => {
+    if (!currentClip) return;
+    if (ytId) {
+      setTimeout(() => {
+        if (youtubeRef.current)
+          youtubeRef.current.seekTo(currentClip.start, true);
+      }, 500);
+    } else {
+      setTimeout(() => {
+        if (videoRef.current) {
+          videoRef.current.setPositionAsync(currentClip.start * 1000);
+          videoRef.current.playAsync();
+          setIsPlaying(true);
+        }
+      }, 300);
+    }
+  }, [currentClipIndex, selectedHighlightTag]);
+
+  useEffect(() => {
+    let interval;
+    if (isPlaying && ytId) {
+      interval = setInterval(async () => {
+        if (youtubeRef.current) {
+          const currentTime = await youtubeRef.current.getCurrentTime();
+          setVideoTime(Math.floor(currentTime));
+          if (currentClip && currentTime >= currentClip.end) {
+            playNextClip();
+          }
+        }
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [isPlaying, ytId, currentClip, currentClipIndex]);
+
+  const handlePlaybackStatusUpdate = (status) => {
+    if (status.isLoaded) {
+      const currentTime = Math.floor(status.positionMillis / 1000);
+      setVideoTime(currentTime);
+      setIsPlaying(status.isPlaying);
+      if (currentClip && currentTime >= currentClip.end) {
+        playNextClip();
+      }
+    }
+  };
+
+  const onYoutubeStateChange = useCallback((state) => {
+    if (state === "playing") setIsPlaying(true);
+    else if (state === "paused" || state === "ended") setIsPlaying(false);
+  }, []);
+
+  const formatTime = (seconds) => {
+    const m = Math.floor(seconds / 60)
+      .toString()
+      .padStart(2, "0");
+    const s = (Math.floor(seconds) % 60).toString().padStart(2, "0");
+    return `${m}:${s}`;
+  };
+
+  // ==========================================
+  // プロジェクト作成ロジック
+  // ==========================================
+  const [isModalVisible, setIsModalVisible] = useState(false);
+  const [title, setTitle] = useState("");
+  const [type, setType] = useState("試合");
+  const [participants, setParticipants] = useState("team");
+  const [videoUrl, setVideoUrl] = useState("");
 
   const handleCreateProject = () => {
-    if (newTitle.trim() === "") return;
-    const today = new Date();
-    const dateString = `${today.getFullYear()}/${String(today.getMonth() + 1).padStart(2, "0")}/${String(today.getDate()).padStart(2, "0")}`;
-
+    if (title.trim() === "") {
+      Alert.alert("エラー", "プロジェクト名を入力してください。");
+      return;
+    }
     const newProject = {
       id: "p_" + Date.now().toString(),
-      title: newTitle,
-      date: dateString,
-      type: newType,
+      title,
+      type,
+      participants,
+      videoUrl: videoUrl.trim(),
+      date: new Date().toLocaleDateString("ja-JP"),
       status: "active",
-      participants: newParticipants,
-      pinned: false,
+      tags: [], // ★追加：タグとメモの初期データ
+      memos: [],
     };
-
     setProjects([newProject, ...projects]);
-    setIsCreateModalVisible(false);
-    setNewTitle("");
-    setNewParticipants("team");
-    Keyboard.dismiss();
+    setIsModalVisible(false);
+    setTitle("");
+    setType("試合");
+    setParticipants("team");
+    setVideoUrl("");
   };
 
-  const handleTogglePin = (projectId) => {
-    setProjects(
-      projects.map((p) =>
-        p.id === projectId ? { ...p, pinned: !p.pinned } : p,
-      ),
+  const renderProjectItem = ({ item }) => {
+    if (
+      ["member", "captain"].includes(userRole) &&
+      item.participants === "coach"
+    )
+      return null;
+    return (
+      <TouchableOpacity
+        style={styles.card}
+        onPress={() =>
+          navigation.navigate("ProjectDetail", { project: item, userRole })
+        }
+      >
+        <View style={styles.cardHeader}>
+          <View
+            style={[
+              styles.badge,
+              item.type === "試合"
+                ? styles.badgeMatch
+                : item.type === "練習"
+                  ? styles.badgePractice
+                  : styles.badgeOther,
+            ]}
+          >
+            <Text style={styles.badgeText}>{item.type}</Text>
+          </View>
+          <Text style={styles.cardTitle}>{item.title}</Text>
+        </View>
+        <Text style={styles.cardSub}>作成日: {item.date}</Text>
+        {item.videoUrl ? (
+          <Text style={styles.urlText}>🔗 動画リンクあり</Text>
+        ) : (
+          <Text style={styles.noUrlText}>※ 動画未設定</Text>
+        )}
+      </TouchableOpacity>
     );
-    setActiveLongPressProjectId(null);
-  };
-
-  const confirmDeleteProject = (projectId) => {
-    Alert.alert(
-      "プロジェクトの消去",
-      "本当にこのプロジェクトを消去しますか？（データはゴミ箱に保持されます）",
-      [
-        { text: "キャンセル", style: "cancel" },
-        {
-          text: "消去",
-          style: "destructive",
-          onPress: () => {
-            setProjects(
-              projects.map((p) =>
-                p.id === projectId
-                  ? {
-                      ...p,
-                      status: "deleted",
-                      deletedBy: displayUserName,
-                      deletedAt: new Date().toISOString(),
-                    }
-                  : p,
-              ),
-            );
-            setActiveLongPressProjectId(null);
-          },
-        },
-      ],
-    );
-  };
-
-  const getParticipantsLabel = (val) => {
-    if (val === "team") return "全体";
-    if (val === "coach") return "指導者のみ";
-    return "限定";
   };
 
   return (
@@ -7969,313 +8000,295 @@ const ProjectListScreen = ({
         <View style={{ width: 60 }} />
       </View>
 
-      {/* ★追加：画面上部のタブ切り替え */}
-      <View style={styles.topTabContainer}>
-        <TouchableOpacity
-          style={[
-            styles.topTabBtn,
-            activeTab === "summary" && styles.topTabBtnActive,
-          ]}
-          onPress={() => setActiveTab("summary")}
-        >
-          <Text
-            style={[
-              styles.topTabText,
-              activeTab === "summary" && styles.topTabTextActive,
-            ]}
+      <View style={styles.tabContainer}>
+        {[
+          { id: "summary", label: "ハイライトまとめ" },
+          { id: "list", label: "プロジェクト一覧" },
+        ].map((tab) => (
+          <TouchableOpacity
+            key={tab.id}
+            style={[styles.tab, activeTab === tab.id && styles.activeTab]}
+            onPress={() => {
+              setActiveTab(tab.id);
+              setIsPlaying(false);
+            }}
           >
-            📊 まとめ
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[
-            styles.topTabBtn,
-            activeTab === "tagging" && styles.topTabBtnActive,
-          ]}
-          onPress={() => setActiveTab("tagging")}
-        >
-          <Text
-            style={[
-              styles.topTabText,
-              activeTab === "tagging" && styles.topTabTextActive,
-            ]}
-          >
-            🏷️ タグ付け
-          </Text>
-        </TouchableOpacity>
+            <Text
+              style={[
+                styles.tabText,
+                activeTab === tab.id && styles.activeTabText,
+              ]}
+            >
+              {tab.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
       </View>
 
-      {/* ★追加：タブに応じた表示の出し分け */}
-      {activeTab === "summary" ? (
-        <View style={styles.summaryContainer}>
-          <Text style={styles.summaryIcon}>🚧</Text>
-          <Text style={styles.summaryTitle}>次に実装！</Text>
-          <Text style={styles.summaryDesc}>
-            ここにチームの強み・弱みの集計や、全体的なスタッツをまとめたダッシュボードが入ります。
-          </Text>
-        </View>
-      ) : (
-        <>
-          <View style={styles.searchContainer}>
-            <TextInput
-              style={styles.searchInput}
-              placeholder="プロジェクトを検索..."
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-            />
-          </View>
-
-          <ScrollView
-            style={styles.listContainer}
-            contentContainerStyle={{ paddingBottom: 100 }}
-            onScrollBeginDrag={() => setActiveLongPressProjectId(null)}
-          >
-            {filteredProjects.length === 0 ? (
-              <Text style={styles.emptyText}>
-                該当するプロジェクトがありません。
-              </Text>
-            ) : (
-              filteredProjects.map((project) => (
-                <TouchableOpacity
-                  key={project.id}
-                  style={[
-                    styles.card,
-                    project.pinned && styles.cardPinned,
-                    activeLongPressProjectId === project.id && { zIndex: 10 },
-                  ]}
-                  activeOpacity={0.9}
-                  onLongPress={() => {
-                    if (canPinProject || canDeleteProject) {
-                      setActiveLongPressProjectId(project.id);
-                    }
-                  }}
-                  delayLongPress={300}
-                  onPress={() => {
-                    if (activeLongPressProjectId === project.id) {
-                      setActiveLongPressProjectId(null);
-                    } else {
-                      navigation.navigate("ProjectDetail", {
-                        project,
-                        userRole,
-                      });
-                    }
-                  }}
-                >
-                  <View style={styles.cardHeader}>
-                    <Text style={styles.dateText}>{project.date}</Text>
-                    <View
+      <View style={styles.content}>
+        {activeTab === "summary" ? (
+          <View style={styles.summaryContainer}>
+            <View style={styles.tagSelectorWrapper}>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                {availableTags.map((tag) => (
+                  <TouchableOpacity
+                    key={tag}
+                    style={[
+                      styles.summaryTagBtn,
+                      selectedHighlightTag === tag &&
+                        styles.summaryTagBtnActive,
+                    ]}
+                    onPress={() => handleSelectTag(tag)}
+                  >
+                    <Text
                       style={[
-                        styles.badge,
-                        project.type === "試合"
-                          ? styles.badgeMatch
-                          : styles.badgePractice,
+                        styles.summaryTagBtnText,
+                        selectedHighlightTag === tag &&
+                          styles.summaryTagBtnTextActive,
                       ]}
                     >
-                      <Text style={styles.badgeText}>{project.type}</Text>
-                    </View>
-                  </View>
-
-                  <Text style={styles.projectTitle}>
-                    {project.pinned ? "📌 " : ""}
-                    {project.title}
-                  </Text>
-
-                  <View style={styles.cardFooter}>
-                    <Text style={styles.footerText}>
-                      👥 共有: {getParticipantsLabel(project.participants)}
+                      {tag}
                     </Text>
-                    <Text style={styles.footerText}>💬 チャット進行中</Text>
-                  </View>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
 
-                  {activeLongPressProjectId === project.id && (
-                    <View style={styles.longPressMenu}>
-                      {canPinProject && (
-                        <TouchableOpacity
-                          style={styles.longPressMenuItem}
-                          onPress={() => handleTogglePin(project.id)}
-                        >
-                          <Text style={styles.longPressMenuText}>
-                            {project.pinned ? "📌 固定を解除" : "📌 固定する"}
-                          </Text>
-                        </TouchableOpacity>
-                      )}
-                      {canDeleteProject && (
-                        <TouchableOpacity
-                          style={styles.longPressMenuItem}
-                          onPress={() => confirmDeleteProject(project.id)}
-                        >
-                          <Text
-                            style={[
-                              styles.longPressMenuText,
-                              { color: "#d9534f" },
-                            ]}
-                          >
-                            🗑 消去する
-                          </Text>
-                        </TouchableOpacity>
-                      )}
-                      <TouchableOpacity
-                        style={[
-                          styles.longPressMenuItem,
-                          { borderBottomWidth: 0 },
-                        ]}
-                        onPress={() => setActiveLongPressProjectId(null)}
-                      >
-                        <Text
-                          style={[styles.longPressMenuText, { color: "#888" }]}
-                        >
-                          ✕ キャンセル
-                        </Text>
-                      </TouchableOpacity>
+            {currentClips.length === 0 ? (
+              <View
+                style={{
+                  flex: 1,
+                  justifyContent: "center",
+                  alignItems: "center",
+                }}
+              >
+                <Text style={styles.emptyText}>
+                  タグが付けられたシーンはありません。
+                </Text>
+                <Text style={styles.emptySubText}>
+                  動画詳細画面でタグ付けを行うと、ここに表示されます。
+                </Text>
+              </View>
+            ) : (
+              <>
+                <View style={styles.videoPlayerArea}>
+                  {ytId ? (
+                    <View style={styles.youtubeContainer}>
+                      <YoutubePlayer
+                        ref={youtubeRef}
+                        height={200}
+                        play={isPlaying}
+                        videoId={ytId}
+                        onChangeState={onYoutubeStateChange}
+                        initialPlayerParams={{ controls: 0, rel: 0 }}
+                      />
                     </View>
+                  ) : (
+                    <Video
+                      ref={videoRef}
+                      source={{ uri: currentClip.url }}
+                      style={styles.videoComponent}
+                      resizeMode={ResizeMode.CONTAIN}
+                      onPlaybackStatusUpdate={handlePlaybackStatusUpdate}
+                      useNativeControls={false}
+                      shouldPlay={isPlaying}
+                    />
                   )}
-                </TouchableOpacity>
-              ))
+                  <View style={styles.videoOverlay}>
+                    <Text style={styles.overlayProjectName}>
+                      {currentClip.project}
+                    </Text>
+                    <Text style={styles.overlayTag}>
+                      🏷️ {selectedHighlightTag}
+                    </Text>
+                  </View>
+                </View>
+
+                <View style={styles.playlistHeader}>
+                  <Text style={styles.playlistTitle}>
+                    連続再生リスト ({currentClips.length}件)
+                  </Text>
+                  <Text style={styles.playlistSub}>
+                    ※再生が終わると自動で次に進みます
+                  </Text>
+                </View>
+                <ScrollView
+                  style={styles.playlistScroll}
+                  showsVerticalScrollIndicator={false}
+                >
+                  {currentClips.map((clip, index) => (
+                    <TouchableOpacity
+                      key={clip.id}
+                      style={[
+                        styles.clipCard,
+                        currentClipIndex === index && styles.clipCardActive,
+                      ]}
+                      onPress={() => handleSelectClip(index)}
+                    >
+                      <Text
+                        style={[
+                          styles.clipCardNumber,
+                          currentClipIndex === index && { color: "#0077cc" },
+                        ]}
+                      >
+                        {index + 1}
+                      </Text>
+                      <View style={{ flex: 1 }}>
+                        <Text
+                          style={[
+                            styles.clipCardTitle,
+                            currentClipIndex === index && { color: "#0077cc" },
+                          ]}
+                        >
+                          {clip.project}
+                        </Text>
+                        <Text style={styles.clipCardSub}>
+                          ⏱ {formatTime(clip.start)} 〜 {formatTime(clip.end)} /
+                          by {clip.user}
+                        </Text>
+                      </View>
+                      {currentClipIndex === index && isPlaying ? (
+                        <Text style={styles.playingIcon}>▶ 再生中</Text>
+                      ) : null}
+                    </TouchableOpacity>
+                  ))}
+                  <View style={{ height: 30 }} />
+                </ScrollView>
+              </>
             )}
-          </ScrollView>
+          </View>
+        ) : (
+          <>
+            <View style={styles.topRow}>
+              <Text style={styles.sectionTitle}>プロジェクト一覧</Text>
+              {canCreateProject && (
+                <TouchableOpacity
+                  style={styles.createBtn}
+                  onPress={() => setIsModalVisible(true)}
+                >
+                  <Text style={styles.createBtnText}>＋ 新規追加</Text>
+                </TouchableOpacity>
+              )}
+            </View>
 
-          {canCreateProject && (
-            <TouchableOpacity
-              style={styles.fab}
-              onPress={() => setIsCreateModalVisible(true)}
-            >
-              <Text style={styles.fabIcon}>＋</Text>
-            </TouchableOpacity>
-          )}
-        </>
-      )}
+            <FlatList
+              data={projects}
+              keyExtractor={(item) => item.id}
+              renderItem={renderProjectItem}
+              ListEmptyComponent={
+                <Text style={styles.emptyText}>プロジェクトがありません。</Text>
+              }
+            />
+          </>
+        )}
+      </View>
 
-      <Modal
-        visible={isCreateModalVisible}
-        transparent={true}
-        animationType="fade"
-      >
+      {/* 新規プロジェクト作成モーダル */}
+      <Modal visible={isModalVisible} transparent={true} animationType="slide">
         <View style={styles.modalOverlay}>
           <KeyboardAvoidingView
             behavior={Platform.OS === "ios" ? "padding" : "height"}
             style={styles.modalContent}
           >
-            <Text style={styles.modalTitle}>新規プロジェクト作成</Text>
+            <Text style={styles.modalTitle}>新しいプロジェクトを追加</Text>
 
-            <Text style={styles.label}>プロジェクト名</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="例: 春季大会 1回戦"
-              value={newTitle}
-              onChangeText={setNewTitle}
-              autoFocus
-            />
+            <ScrollView showsVerticalScrollIndicator={false}>
+              <Text style={styles.label}>プロジェクト名</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="例: 秋季大会 決勝戦"
+                value={title}
+                onChangeText={setTitle}
+              />
 
-            <Text style={styles.label}>種類</Text>
-            <View style={styles.typeContainer}>
-              <TouchableOpacity
-                style={[
-                  styles.typeBtn,
-                  newType === "試合" && styles.typeBtnActive,
-                ]}
-                onPress={() => setNewType("試合")}
-              >
-                <Text
-                  style={[
-                    styles.typeBtnText,
-                    newType === "試合" && styles.typeBtnTextActive,
-                  ]}
-                >
-                  試合
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  styles.typeBtn,
-                  newType === "練習" && styles.typeBtnActive,
-                ]}
-                onPress={() => setNewType("練習")}
-              >
-                <Text
-                  style={[
-                    styles.typeBtnText,
-                    newType === "練習" && styles.typeBtnTextActive,
-                  ]}
-                >
-                  練習
-                </Text>
-              </TouchableOpacity>
-            </View>
+              <Text style={styles.label}>種類</Text>
+              <View style={styles.typeContainer}>
+                {["試合", "練習", "その他"].map((t) => (
+                  <TouchableOpacity
+                    key={t}
+                    style={[styles.typeBtn, type === t && styles.typeBtnActive]}
+                    onPress={() => setType(t)}
+                  >
+                    <Text
+                      style={[
+                        styles.typeBtnText,
+                        type === t && styles.typeBtnTextActive,
+                      ]}
+                    >
+                      {t}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
 
-            <Text style={styles.label}>共有範囲</Text>
-            <View style={styles.typeContainer}>
-              <TouchableOpacity
-                style={[
-                  styles.typeBtn,
-                  newParticipants === "team" && styles.typeBtnActive,
-                ]}
-                onPress={() => setNewParticipants("team")}
-              >
-                <Text
-                  style={[
-                    styles.typeBtnText,
-                    newParticipants === "team" && styles.typeBtnTextActive,
-                  ]}
-                >
-                  全体
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  styles.typeBtn,
-                  newParticipants === "group" && styles.typeBtnActive,
-                ]}
-                onPress={() => setNewParticipants("group")}
-              >
-                <Text
-                  style={[
-                    styles.typeBtnText,
-                    newParticipants === "group" && styles.typeBtnTextActive,
-                  ]}
-                >
-                  限定
-                </Text>
-              </TouchableOpacity>
-              {["owner", "staff"].includes(userRole) && (
+              <Text style={styles.label}>共有範囲</Text>
+              <View style={styles.typeContainer}>
                 <TouchableOpacity
                   style={[
                     styles.typeBtn,
-                    newParticipants === "coach" && styles.typeBtnActive,
+                    participants === "team" && styles.typeBtnActive,
                   ]}
-                  onPress={() => setNewParticipants("coach")}
+                  onPress={() => setParticipants("team")}
                 >
                   <Text
                     style={[
                       styles.typeBtnText,
-                      newParticipants === "coach" && styles.typeBtnTextActive,
+                      participants === "team" && styles.typeBtnTextActive,
                     ]}
                   >
-                    指導者のみ
+                    全体
                   </Text>
                 </TouchableOpacity>
-              )}
-            </View>
+                {["owner", "staff"].includes(userRole) && (
+                  <TouchableOpacity
+                    style={[
+                      styles.typeBtn,
+                      participants === "coach" && styles.typeBtnActive,
+                    ]}
+                    onPress={() => setParticipants("coach")}
+                  >
+                    <Text
+                      style={[
+                        styles.typeBtnText,
+                        participants === "coach" && styles.typeBtnTextActive,
+                      ]}
+                    >
+                      指導者のみ
+                    </Text>
+                  </TouchableOpacity>
+                )}
+              </View>
 
-            <View style={styles.modalButtons}>
-              <TouchableOpacity
-                style={styles.cancelBtn}
-                onPress={() => setIsCreateModalVisible(false)}
-              >
-                <Text style={styles.cancelBtnText}>キャンセル</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.submitBtn}
-                onPress={handleCreateProject}
-              >
-                <Text style={styles.submitBtnText}>作成する</Text>
-              </TouchableOpacity>
-            </View>
+              <Text style={styles.label}>動画のURL (YouTubeなど)</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="https://youtu.be/..."
+                value={videoUrl}
+                onChangeText={setVideoUrl}
+                autoCapitalize="none"
+              />
+
+              <View style={styles.modalButtons}>
+                <TouchableOpacity
+                  style={styles.cancelBtn}
+                  onPress={() => setIsModalVisible(false)}
+                >
+                  <Text style={styles.cancelBtnText}>キャンセル</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.submitBtn}
+                  onPress={handleCreateProject}
+                >
+                  <Text style={styles.submitBtnText}>作成する</Text>
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
           </KeyboardAvoidingView>
         </View>
       </Modal>
     </SafeAreaView>
   );
-};
+}
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#f0f2f5" },
@@ -8291,164 +8304,199 @@ const styles = StyleSheet.create({
   headerTitle: {
     flex: 1,
     color: "#fff",
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: "bold",
     textAlign: "center",
   },
 
-  // ★追加：上部タブのスタイル
-  topTabContainer: {
+  tabContainer: {
     flexDirection: "row",
     backgroundColor: "#fff",
     borderBottomWidth: 1,
-    borderBottomColor: "#eee",
+    borderBottomColor: "#ddd",
   },
-  topTabBtn: {
+  tab: {
     flex: 1,
-    paddingVertical: 14,
+    paddingVertical: 12,
     alignItems: "center",
     borderBottomWidth: 3,
     borderBottomColor: "transparent",
   },
-  topTabBtnActive: {
-    borderBottomColor: "#2c3e50",
-  },
-  topTabText: {
-    fontSize: 15,
-    fontWeight: "bold",
-    color: "#888",
-  },
-  topTabTextActive: {
-    color: "#2c3e50",
-  },
+  activeTab: { borderBottomColor: "#0077cc" },
+  tabText: { fontSize: 14, color: "#666", fontWeight: "bold" },
+  activeTabText: { color: "#0077cc" },
 
-  // ★追加：まとめタブ専用のスタイル
-  summaryContainer: {
-    flex: 1,
-    justifyContent: "center",
+  content: { flex: 1, padding: 15 },
+  topRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
     alignItems: "center",
-    padding: 30,
+    marginBottom: 15,
   },
-  summaryIcon: {
-    fontSize: 60,
-    marginBottom: 20,
+  sectionTitle: { fontSize: 18, fontWeight: "bold", color: "#333" },
+  createBtn: {
+    backgroundColor: "#0077cc",
+    paddingHorizontal: 15,
+    paddingVertical: 8,
+    borderRadius: 20,
   },
-  summaryTitle: {
-    fontSize: 22,
-    fontWeight: "bold",
-    color: "#333",
-    marginBottom: 10,
-  },
-  summaryDesc: {
-    fontSize: 14,
-    color: "#666",
+  createBtnText: { color: "#fff", fontWeight: "bold", fontSize: 13 },
+  emptyText: { textAlign: "center", color: "#888", marginTop: 30 },
+  emptySubText: {
     textAlign: "center",
-    lineHeight: 22,
+    color: "#aaa",
+    fontSize: 12,
+    marginTop: 10,
   },
-
-  searchContainer: {
-    padding: 15,
-    backgroundColor: "#fff",
-    borderBottomWidth: 1,
-    borderBottomColor: "#eee",
-  },
-  searchInput: {
-    backgroundColor: "#f0f0f0",
-    borderRadius: 8,
-    padding: 10,
-    fontSize: 15,
-  },
-
-  listContainer: { padding: 15 },
-  emptyText: { textAlign: "center", color: "#888", marginTop: 50 },
 
   card: {
     backgroundColor: "#fff",
-    borderRadius: 12,
     padding: 15,
-    marginBottom: 15,
-    elevation: 2,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 3,
-    position: "relative",
+    borderRadius: 10,
+    marginBottom: 12,
+    borderLeftWidth: 4,
+    borderLeftColor: "#0077cc",
+    elevation: 1,
   },
-  cardPinned: {
-    borderWidth: 2,
-    borderColor: "#e6f2ff",
-    backgroundColor: "#fafcff",
+  cardHeader: { flexDirection: "row", alignItems: "center", marginBottom: 8 },
+  badge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 12,
+    marginRight: 10,
   },
-  cardHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 10,
-  },
-  dateText: { fontSize: 13, color: "#888", fontWeight: "bold" },
-  badge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
   badgeMatch: { backgroundColor: "#ffeaa7" },
   badgePractice: { backgroundColor: "#dff9fb" },
-  badgeText: { fontSize: 11, fontWeight: "bold", color: "#333" },
-  projectTitle: {
-    fontSize: 18,
-    fontWeight: "bold",
-    color: "#333",
-    marginBottom: 15,
+  badgeOther: { backgroundColor: "#e0e0e0" },
+  badgeText: { fontSize: 10, fontWeight: "bold", color: "#333" },
+  cardTitle: { fontSize: 16, fontWeight: "bold", color: "#333", flex: 1 },
+  cardSub: { fontSize: 12, color: "#888", marginBottom: 5 },
+  urlText: { fontSize: 12, color: "#2ecc71", fontWeight: "bold" },
+  noUrlText: { fontSize: 12, color: "#e74c3c" },
+
+  summaryContainer: { flex: 1, marginHorizontal: -15 },
+  tagSelectorWrapper: {
+    paddingHorizontal: 15,
+    paddingBottom: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: "#ddd",
   },
-  cardFooter: {
+  summaryTagBtn: {
+    backgroundColor: "#fff",
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
+    marginRight: 10,
+    borderWidth: 1,
+    borderColor: "#ddd",
+    elevation: 1,
+  },
+  summaryTagBtnActive: { backgroundColor: "#0077cc", borderColor: "#0077cc" },
+  summaryTagBtnText: { fontSize: 14, color: "#555", fontWeight: "bold" },
+  summaryTagBtnTextActive: { color: "#fff" },
+
+  videoPlayerArea: {
+    height: 200,
+    backgroundColor: "#000",
+    justifyContent: "center",
+    position: "relative",
+  },
+  youtubeContainer: { width: "100%", height: 200 },
+  videoComponent: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    bottom: 0,
+    right: 0,
+  },
+  videoOverlay: {
+    position: "absolute",
+    bottom: 10,
+    left: 10,
+    right: 10,
     flexDirection: "row",
     justifyContent: "space-between",
-    borderTopWidth: 1,
-    borderTopColor: "#f0f0f0",
-    paddingTop: 10,
-  },
-  footerText: { fontSize: 12, color: "#666", fontWeight: "bold" },
-
-  longPressMenu: {
-    position: "absolute",
-    top: 40,
-    right: 15,
-    backgroundColor: "#fff",
-    borderRadius: 8,
-    padding: 5,
-    elevation: 6,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
-    zIndex: 20,
-    minWidth: 140,
-  },
-  longPressMenuItem: {
-    paddingVertical: 12,
-    paddingHorizontal: 15,
-    borderBottomWidth: 1,
-    borderBottomColor: "#f0f0f0",
-  },
-  longPressMenuText: { fontSize: 14, fontWeight: "bold", color: "#0077cc" },
-
-  fab: {
-    position: "absolute",
-    bottom: 30,
-    right: 20,
-    width: 60,
-    height: 60,
-    backgroundColor: "#2c3e50",
-    borderRadius: 30,
-    justifyContent: "center",
     alignItems: "center",
-    elevation: 5,
   },
-  fabIcon: { fontSize: 30, color: "#fff", fontWeight: "bold" },
+  overlayProjectName: {
+    color: "#fff",
+    backgroundColor: "rgba(0,0,0,0.6)",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 4,
+    fontSize: 12,
+    fontWeight: "bold",
+  },
+  overlayTag: {
+    color: "#fff",
+    backgroundColor: "rgba(0,119,204,0.8)",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 4,
+    fontSize: 12,
+    fontWeight: "bold",
+  },
+
+  playlistHeader: {
+    padding: 15,
+    backgroundColor: "#f9f9f9",
+    borderBottomWidth: 1,
+    borderBottomColor: "#eee",
+  },
+  playlistTitle: {
+    fontSize: 16,
+    fontWeight: "bold",
+    color: "#333",
+    marginBottom: 2,
+  },
+  playlistSub: { fontSize: 12, color: "#888" },
+  playlistScroll: { flex: 1, paddingHorizontal: 15, paddingTop: 10 },
+  clipCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#fff",
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: "#eee",
+    elevation: 1,
+  },
+  clipCardActive: { borderColor: "#0077cc", backgroundColor: "#e6f2ff" },
+  clipCardNumber: {
+    fontSize: 16,
+    fontWeight: "bold",
+    color: "#aaa",
+    marginRight: 15,
+    width: 20,
+    textAlign: "center",
+  },
+  clipCardTitle: {
+    fontSize: 14,
+    fontWeight: "bold",
+    color: "#333",
+    marginBottom: 4,
+  },
+  clipCardSub: { fontSize: 12, color: "#666" },
+  playingIcon: {
+    fontSize: 12,
+    color: "#0077cc",
+    fontWeight: "bold",
+    marginLeft: 10,
+  },
 
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.5)",
-    justifyContent: "center",
-    padding: 20,
+    justifyContent: "flex-end",
   },
-  modalContent: { backgroundColor: "#fff", borderRadius: 12, padding: 20 },
+  modalContent: {
+    backgroundColor: "#fff",
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 20,
+    maxHeight: "90%",
+  },
   modalTitle: {
     fontSize: 18,
     fontWeight: "bold",
@@ -8456,7 +8504,13 @@ const styles = StyleSheet.create({
     color: "#333",
     textAlign: "center",
   },
-  label: { fontSize: 14, fontWeight: "bold", color: "#555", marginBottom: 8 },
+  label: {
+    fontSize: 14,
+    fontWeight: "bold",
+    color: "#555",
+    marginBottom: 8,
+    marginTop: 10,
+  },
   input: {
     backgroundColor: "#f9f9f9",
     borderWidth: 1,
@@ -8464,10 +8518,9 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     padding: 12,
     fontSize: 16,
-    marginBottom: 20,
+    marginBottom: 10,
   },
-
-  typeContainer: { flexDirection: "row", marginBottom: 20 },
+  typeContainer: { flexDirection: "row", marginBottom: 10 },
   typeBtn: {
     flex: 1,
     paddingVertical: 12,
@@ -8476,24 +8529,26 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#ddd",
     marginRight: 10,
+    backgroundColor: "#f9f9f9",
   },
   typeBtnActive: { backgroundColor: "#e6f2ff", borderColor: "#0077cc" },
   typeBtnText: { fontSize: 13, color: "#555", fontWeight: "bold" },
   typeBtnTextActive: { color: "#0077cc" },
-
-  modalButtons: { flexDirection: "row", justifyContent: "flex-end" },
+  modalButtons: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    marginTop: 20,
+  },
   cancelBtn: { paddingVertical: 12, paddingHorizontal: 20, marginRight: 10 },
   cancelBtnText: { color: "#888", fontWeight: "bold", fontSize: 15 },
   submitBtn: {
-    backgroundColor: "#2c3e50",
+    backgroundColor: "#0077cc",
     paddingVertical: 12,
     paddingHorizontal: 20,
     borderRadius: 8,
   },
   submitBtnText: { color: "#fff", fontWeight: "bold", fontSize: 15 },
 });
-
-export default ProjectListScreen;
 </file>
 
 <file path="src/screens/SettingsScreen.js">

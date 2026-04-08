@@ -5,6 +5,8 @@ import { Alert, LogBox } from "react-native";
 import NetInfo from "@react-native-community/netinfo";
 
 import { AuthProvider } from "./src/AuthContext";
+// ★追加：Firestoreからデータを監視する関数を読み込み
+import { subscribeProjects } from "./src/services/firestoreService";
 
 // expo-avの非推奨警告を画面上で非表示にする
 LogBox.ignoreLogs(["[expo-av]"]);
@@ -49,38 +51,19 @@ export default function App() {
   const [dailyReports, setDailyReports] = useState([]);
   const [medicalRecords, setMedicalRecords] = useState([]);
 
-  // ★変更：初期データに動画URLとタグ(tags)の入れ物を追加
-  const [projects, setProjects] = useState([
-    {
-      id: "p1",
-      title: "秋季大会 vs 〇〇高校",
-      date: "2026/02/20",
-      type: "試合",
-      status: "active",
-      participants: "team",
-      pinned: false,
-      videoUrl: "https://d23dyxeqlo5psv.cloudfront.net/big_buck_bunny.mp4",
-      tags: [
-        { id: "t1", videoTime: 15, label: "👍 ナイスプレイ", user: "監督" },
-        { id: "t2", videoTime: 30, label: "🎯 チャンス", user: "キャプテン" },
-      ],
-      memos: [],
-    },
-    {
-      id: "p2",
-      title: "2月第3週 紅白戦",
-      date: "2026/02/15",
-      type: "練習",
-      status: "closed",
-      participants: "team",
-      pinned: false,
-      videoUrl: "https://d23dyxeqlo5psv.cloudfront.net/big_buck_bunny.mp4",
-      tags: [{ id: "t3", videoTime: 10, label: "🤔 要改善", user: "監督" }],
-      memos: [],
-    },
-  ]);
+  // ★変更：ダミーデータを削除し、空っぽの配列をセットします
+  const [projects, setProjects] = useState([]);
 
   const [personalEvents, setPersonalEvents] = useState([]);
+
+  // ★追加：アプリ起動時にFirestoreのデータをリアルタイムで読み込む
+  useEffect(() => {
+    // 'team_001' は AuthContext で設定している固定のチームIDです
+    const unsubscribe = subscribeProjects("team_001", (fetchedProjects) => {
+      setProjects(fetchedProjects);
+    });
+    return () => unsubscribe();
+  }, []);
 
   useEffect(() => {
     const unsubscribe = NetInfo.addEventListener((state) => {
@@ -114,6 +97,32 @@ export default function App() {
             });
             if (changed) hasPending = true;
             return newPosts;
+          });
+
+          setDailyReports((prev) => {
+            let changed = false;
+            const newReports = prev.map((r) => {
+              let reportChanged = false;
+              let newR = { ...r };
+              if (newR.status === "pending") {
+                newR.status = "sent";
+                reportChanged = true;
+                changed = true;
+              }
+              if (
+                newR.comments &&
+                newR.comments.some((c) => c.status === "pending")
+              ) {
+                newR.comments = newR.comments.map((c) =>
+                  c.status === "pending" ? { ...c, status: "sent" } : c,
+                );
+                reportChanged = true;
+                changed = true;
+              }
+              return reportChanged ? newR : r;
+            });
+            if (changed) hasPending = true;
+            return newReports;
           });
 
           if (hasPending) {
@@ -247,7 +256,6 @@ export default function App() {
                 currentUser={currentUser}
                 clubMembers={clubMembers}
                 userProfiles={userProfiles}
-                // ★追加：タグとメモを保存・読み込みするために projects と setProjects を渡す
                 projects={projects}
                 setProjects={setProjects}
               />
