@@ -80,7 +80,9 @@ const DiaryScreen = ({
   },
 }) => {
   const currentUserProfile = userProfiles[currentUser] || {};
-  const userRole = isAdmin ? "owner" : currentUserProfile.role || "member";
+  const userRole =
+    global.TEST_ROLE ||
+    (isAdmin ? "owner" : currentUserProfile.role || "member");
   const isStaffOrAbove = ["owner", "staff"].includes(userRole);
 
   const roleNameMap = {

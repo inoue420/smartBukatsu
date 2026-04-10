@@ -25,7 +25,9 @@ const NoticeBoardScreen = ({
 }) => {
   // 実際の設定データからロールを取得
   const currentUserProfile = userProfiles[currentUser] || {};
-  const userRole = isAdmin ? "owner" : currentUserProfile.role || "member";
+  const userRole =
+    global.TEST_ROLE ||
+    (isAdmin ? "owner" : currentUserProfile.role || "member");
 
   // 掲示板に投稿・削除できる権限（監督、スタッフ、キャプテン）
   const canManageNotices = ["owner", "staff", "captain"].includes(userRole);

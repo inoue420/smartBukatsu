@@ -15,12 +15,12 @@ import { useAuth } from "../AuthContext";
 const LoginScreen = ({ navigation }) => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [isLoginMode, setIsLoginMode] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
 
-  // ★青木さんの本物AuthContextからログイン機能を取得
-  const { signIn } = useAuth();
+  const { signIn, signUp } = useAuth();
 
-  const handleLogin = async () => {
+  const handleAuth = async () => {
     if (!email || !password) {
       Alert.alert("エラー", "メールアドレスとパスワードを入力してください。");
       return;
@@ -28,16 +28,20 @@ const LoginScreen = ({ navigation }) => {
 
     setIsLoading(true);
     try {
-      // Firebaseに本物のログインリクエストを送信
-      await signIn(email, password);
-      // 成功したらホーム画面へ
-      navigation.replace("WorkspaceHome");
+      if (isLoginMode) {
+        await signIn(email.trim(), password);
+        // ★ ログイン成功したら、直接ホームではなく「セットアップ画面」へ！
+        navigation.replace("TeamSetup");
+      } else {
+        await signUp(email.trim(), password);
+        // ★ 新規登録後も「セットアップ画面」へ！
+        navigation.replace("TeamSetup");
+      }
     } catch (error) {
       Alert.alert(
-        "ログイン失敗",
-        "メールアドレスかパスワードが間違っています。\n(またはアカウントが未登録です)",
+        "認証エラー",
+        "メールアドレスかパスワードが間違っています（パスワードは6文字以上）。",
       );
-      console.error(error);
     } finally {
       setIsLoading(false);
     }
@@ -51,7 +55,9 @@ const LoginScreen = ({ navigation }) => {
       >
         <View style={styles.header}>
           <Text style={styles.appTitle}>📱 スマート部活</Text>
-          <Text style={styles.subTitle}>ログイン</Text>
+          <Text style={styles.subTitle}>
+            {isLoginMode ? "ログイン" : "新規アカウント作成"}
+          </Text>
         </View>
 
         <View style={styles.stepContainer}>
@@ -59,7 +65,7 @@ const LoginScreen = ({ navigation }) => {
             <Text style={styles.label}>メールアドレス</Text>
             <TextInput
               style={styles.input}
-              placeholder="例: admin@example.com"
+              placeholder="例: user@example.com"
               value={email}
               onChangeText={setEmail}
               autoCapitalize="none"
@@ -72,7 +78,7 @@ const LoginScreen = ({ navigation }) => {
             <TextInput
               style={styles.input}
               secureTextEntry
-              placeholder="パスワードを入力"
+              placeholder="6文字以上で入力"
               value={password}
               onChangeText={setPassword}
             />
@@ -80,11 +86,26 @@ const LoginScreen = ({ navigation }) => {
 
           <TouchableOpacity
             style={[styles.primaryBtn, isLoading && { opacity: 0.7 }]}
-            onPress={handleLogin}
+            onPress={handleAuth}
             disabled={isLoading}
           >
             <Text style={styles.primaryBtnText}>
-              {isLoading ? "ログイン中..." : "ログイン"}
+              {isLoading
+                ? "処理中..."
+                : isLoginMode
+                  ? "次へ"
+                  : "アカウントを作成して次へ"}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.switchModeBtn}
+            onPress={() => setIsLoginMode(!isLoginMode)}
+          >
+            <Text style={styles.switchModeText}>
+              {isLoginMode
+                ? "初めての方はこちら（新規登録）"
+                : "すでにアカウントをお持ちの方（ログイン）"}
             </Text>
           </TouchableOpacity>
         </View>
@@ -103,10 +124,10 @@ const styles = StyleSheet.create({
     color: "#0077cc",
     marginBottom: 5,
   },
-  subTitle: { fontSize: 16, color: "#666" },
+  subTitle: { fontSize: 16, color: "#666", fontWeight: "bold" },
   stepContainer: {
     backgroundColor: "#fff",
-    padding: 20,
+    padding: 25,
     borderRadius: 12,
     elevation: 3,
   },
@@ -128,6 +149,13 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   primaryBtnText: { color: "#fff", fontSize: 16, fontWeight: "bold" },
+  switchModeBtn: { marginTop: 20, alignItems: "center", paddingVertical: 10 },
+  switchModeText: {
+    color: "#0077cc",
+    fontSize: 14,
+    fontWeight: "bold",
+    textDecorationLine: "underline",
+  },
 });
 
 export default LoginScreen;

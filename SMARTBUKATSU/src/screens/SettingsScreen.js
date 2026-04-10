@@ -91,7 +91,12 @@ const SettingsScreen = ({
   setUserProfiles,
 }) => {
   const currentUserProfile = userProfiles[currentUser] || {};
-  const userRole = isAdmin ? "owner" : currentUserProfile.role || "member";
+
+  // ★ ここが修正の要！ グローバル変数(global.TEST_ROLE)があれば最優先にする！
+  const userRole =
+    global.TEST_ROLE ||
+    (isAdmin ? "owner" : currentUserProfile.role || "member");
+
   const isStaffOrAbove = ["owner", "staff"].includes(userRole);
 
   const [newAdminPass, setNewAdminPass] = useState(adminPassword);
@@ -121,11 +126,9 @@ const SettingsScreen = ({
     userProfiles[currentUser]?.position || "",
   );
 
-  // ★修正：初期値として設定済みのパスワードを読み込む
   const [myPassword, setMyPassword] = useState(
     userProfiles[currentUser]?.password || "",
   );
-  // ★追加：自分専用パスワードの表示/非表示ステート
   const [showMyPassword, setShowMyPassword] = useState(false);
 
   const [isRoleModalVisible, setIsRoleModalVisible] = useState(false);
@@ -398,7 +401,6 @@ const SettingsScreen = ({
                 </TouchableOpacity>
               </SectionCard>
 
-              {/* ★修正：自分専用パスワードの表示/非表示ボタンを追加 */}
               <SectionCard
                 isExp={expanded.myPassword}
                 onToggle={() => toggleSection("myPassword")}

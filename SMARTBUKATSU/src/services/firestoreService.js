@@ -8,55 +8,76 @@ import {
   query,
   orderBy,
   onSnapshot,
+  setDoc,
+  getDoc,
 } from "firebase/firestore";
 import { db } from "../firebase";
 
-// プロジェクト一覧をリアルタイムで取得する
 export function subscribeProjects(teamId, callback) {
   if (!teamId) return () => {};
-  const q = query(
-    collection(db, "teams", teamId, "projects"),
-    orderBy("createdAt", "desc"),
-  );
-  return onSnapshot(q, (snapshot) => {
-    const projects = snapshot.docs.map((doc) => ({
+  const projectsRef = collection(db, "teams", teamId, "projects");
+  const q = query(projectsRef, orderBy("createdAt", "desc"));
+  const unsubscribe = onSnapshot(q, (snapshot) => {
+    const projectsData = snapshot.docs.map((doc) => ({
       id: doc.id,
       ...doc.data(),
     }));
-    callback(projects);
+    callback(projectsData);
   });
+  return unsubscribe;
 }
 
-// 新しいプロジェクトを作成する
-export async function createProject(teamId, uid, projectData) {
-  if (!teamId || !uid)
-    throw new Error("認証エラー: チームIDまたはユーザーIDがありません");
+export async function createProject(teamId, projectData) {
+  if (!teamId) {
+    throw new Error(
+      "チーム情報が同期されていません。アプリを一度リロードしてください！",
+    );
+  }
   const projectsRef = collection(db, "teams", teamId, "projects");
-
-  return await addDoc(projectsRef, {
+  await addDoc(projectsRef, {
     ...projectData,
-    name: projectData.title, // ★ルールの「name is string」をクリアするため変換
-    createdBy: uid, // ★ルールの「createdBy == uid()」をクリアするため追加
     createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-    tags: projectData.tags || [],
-    memos: projectData.memos || [],
   });
 }
 
-// プロジェクトを更新する（タグ・メモ追加用）
-export async function updateProject(teamId, projectId, updateData) {
-  if (!teamId || !projectId) return;
-  const projectRef = doc(db, "teams", teamId, "projects", projectId);
-  return await updateDoc(projectRef, {
-    ...updateData,
-    updatedAt: serverTimestamp(),
+export async function createTeam(uid, teamName) {
+  if (!uid || !teamName) throw new Error("情報が不足しています");
+  const newTeamRef = doc(collection(db, "teams"));
+  const teamId = newTeamRef.id;
+  await setDoc(newTeamRef, {
+    name: teamName,
+    createdBy: uid,
+    createdAt: serverTimestamp(),
   });
+  const memberRef = doc(db, "teams", teamId, "members", uid);
+  await setDoc(memberRef, {
+    role: "owner",
+    joinedAt: serverTimestamp(),
+  });
+  const userRef = doc(db, "users", uid);
+  await updateDoc(userRef, {
+    activeTeamId: teamId,
+  });
+  return teamId;
 }
 
-// プロジェクトを削除する
-export async function deleteProject(teamId, projectId) {
-  if (!teamId || !projectId) return;
-  const projectRef = doc(db, "teams", teamId, "projects", projectId);
-  return await deleteDoc(projectRef);
+export async function joinTeamWithInvite(uid, inviteCode) {
+  if (!uid || !inviteCode) throw new Error("招待コードを入力してください");
+  const inviteRef = doc(db, "invites", inviteCode);
+  const inviteSnap = await getDoc(inviteRef);
+  if (!inviteSnap.exists() || !inviteSnap.data().active) {
+    throw new Error("無効な招待コードです、または期限切れです");
+  }
+  const teamId = inviteSnap.data().teamId;
+  const memberRef = doc(db, "teams", teamId, "members", uid);
+  await setDoc(memberRef, {
+    role: "member",
+    inviteCode: inviteCode,
+    joinedAt: serverTimestamp(),
+  });
+  const userRef = doc(db, "users", uid);
+  await updateDoc(userRef, {
+    activeTeamId: teamId,
+  });
+  return teamId;
 }

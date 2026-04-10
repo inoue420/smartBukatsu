@@ -22,7 +22,6 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Video, ResizeMode } from "expo-av";
 import YoutubePlayer from "react-native-youtube-iframe";
 
-// ★追加：AuthContextとFirestore連携機能を読み込み
 import { useAuth } from "../AuthContext";
 import { createProject } from "../services/firestoreService";
 
@@ -35,10 +34,15 @@ export default function ProjectListScreen({
   userProfiles,
 }) {
   const currentUserProfile = userProfiles[currentUser] || {};
-  const userRole = isAdmin ? "owner" : currentUserProfile.role || "member";
+
+  // ★ ここが修正の要！ global.TEST_ROLE があれば最優先で採用する！
+  const userRole =
+    global.TEST_ROLE ||
+    (isAdmin ? "owner" : currentUserProfile.role || "member");
+
+  // owner, staff, captain なら「＋新規追加」ボタンを表示する
   const canCreateProject = ["owner", "staff", "captain"].includes(userRole);
 
-  // ★追加：チームIDを取得
   const { activeTeamId } = useAuth();
 
   const [activeTab, setActiveTab] = useState("summary");
@@ -186,7 +190,6 @@ export default function ProjectListScreen({
   const [participants, setParticipants] = useState("team");
   const [videoUrl, setVideoUrl] = useState("");
 
-  // ★変更：Firestoreへ保存する処理
   const handleCreateProject = async () => {
     if (title.trim() === "") {
       Alert.alert("エラー", "プロジェクト名を入力してください。");
@@ -204,7 +207,6 @@ export default function ProjectListScreen({
     };
 
     try {
-      // データベース（Firestore）へ書き込み！
       await createProject(activeTeamId, newProject);
       setIsModalVisible(false);
       setTitle("");

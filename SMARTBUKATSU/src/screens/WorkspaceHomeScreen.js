@@ -32,7 +32,11 @@ const WorkspaceHomeScreen = ({
   userProfiles = {},
 }) => {
   const currentUserProfile = userProfiles[currentUser] || {};
-  const userRole = isAdmin ? "owner" : currentUserProfile.role || "member";
+
+  // ★ ここが修正の要！ グローバル変数(global.TEST_ROLE)があれば最優先にする！
+  const userRole =
+    global.TEST_ROLE ||
+    (isAdmin ? "owner" : currentUserProfile.role || "member");
 
   const roleNameMap = {
     owner: "管理者(監督)",
@@ -68,7 +72,6 @@ const WorkspaceHomeScreen = ({
     return level;
   };
 
-  // カレンダーアイコンに表示する危険アラートの数
   const unreadMedicalDangerCount = medicalRecords
     ? medicalRecords.filter((r) => {
         if (r.isReviewed) return false;
@@ -853,7 +856,6 @@ const WorkspaceHomeScreen = ({
               <Text style={styles.menuLabel}>掲示板</Text>
             </TouchableOpacity>
 
-            {/* ★変更：「部活日記」「メディカル」から「振り返り」「カレンダー」に変更 */}
             <TouchableOpacity
               style={styles.menuItem}
               onPress={() => navigation.navigate("Diary")}
