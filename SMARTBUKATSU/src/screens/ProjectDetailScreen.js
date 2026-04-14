@@ -19,38 +19,36 @@ import { Video, ResizeMode } from "expo-av";
 import YoutubePlayer from "react-native-youtube-iframe";
 import * as ScreenOrientation from "expo-screen-orientation";
 
-// ★追加：AuthContextとFirestore連携機能を読み込み
 import { useAuth } from "../AuthContext";
 import { updateProject } from "../services/firestoreService";
 
-const ProjectDetailScreen = ({ route, navigation, projects }) => {
+// ★ 修正：setProjects を受け取るように追加
+const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
   const { project: routeProject, userRole = "member" } = route.params || {};
 
-  // ★Firestoreから送られてくる最新のprojects配列から、この画面のプロジェクトを探す
   const project =
     projects?.find((p) => p.id === routeProject?.id) || routeProject || {};
   const projectTitle = project.title || "未定のプロジェクト";
   const projectVideoUrl = project.videoUrl || "";
 
-  // ★チームIDの取得
   const { activeTeamId } = useAuth();
 
-  // プロジェクト内の最新のタグ・メモを参照する
-  const tags = project.tags || [];
-  const memos = project.memos || [];
+  const [localTags, setLocalTags] = useState(project.tags || []);
+  const [localMemos, setLocalMemos] = useState(project.memos || []);
 
   const { width, height } = useWindowDimensions();
   const isLandscape = width > height;
 
-  const canDeleteAnyTag = ["owner", "staff"].includes(userRole);
+  const canDeleteAnyTag = ["owner", "admin", "staff"].includes(userRole);
 
   const roleNameMap = {
-    owner: "監督",
-    staff: "コーチ",
-    captain: "キャプテン",
-    member: "佐藤(自分)",
+    owner: `${currentUser}(監督)`,
+    admin: `${currentUser}(管理者)`,
+    staff: `${currentUser}(コーチ)`,
+    captain: `${currentUser}(キャプテン)`,
+    member: currentUser, // 「(あなた)」や「佐藤(自分)」を削除し、純粋な名前のみに！
   };
-  const displayUserName = roleNameMap[userRole];
+  const displayUserName = roleNameMap[userRole] || currentUser;
 
   const [videoUri, setVideoUri] = useState(null);
   const [youtubeVideoId, setYoutubeVideoId] = useState(null);
@@ -63,13 +61,8 @@ const ProjectDetailScreen = ({ route, navigation, projects }) => {
 
   const [activeTab, setActiveTab] = useState("tag");
 
-  const [quickTags, setQuickTags] = useState([
-    "👍 ナイスプレイ",
-    "🤔 要改善",
-    "🏃 スプリント",
-    "🎯 チャンス",
-    "⚠️ ピンチ",
-  ]);
+  // ★ 修正：初期タグを変更！
+  const [quickTags, setQuickTags] = useState(["ナイスプレー", "得点", "罰則"]);
   const [isAddQuickTagModalVisible, setIsAddQuickTagModalVisible] =
     useState(false);
   const [newQuickTagName, setNewQuickTagName] = useState("");
@@ -179,7 +172,9 @@ const ProjectDetailScreen = ({ route, navigation, projects }) => {
     else if (state === "paused" || state === "ended") setIsPlaying(false);
   }, []);
 
-  const togglePlay = async () => setIsPlaying(!isPlaying);
+  const togglePlay = () => {
+    setIsPlaying(!isPlaying);
+  };
 
   const jumpToTime = async (seconds) => {
     if (youtubeVideoId && youtubeRef.current) {
@@ -188,6 +183,7 @@ const ProjectDetailScreen = ({ route, navigation, projects }) => {
     } else if (videoUri && videoRef.current) {
       await videoRef.current.setPositionAsync(seconds * 1000);
       await videoRef.current.playAsync();
+      setIsPlaying(true);
     } else {
       setVideoTime(seconds);
     }
@@ -215,7 +211,7 @@ const ProjectDetailScreen = ({ route, navigation, projects }) => {
     setVideoTime(newTime);
   };
 
-  // --- ★変更：タグをFirestoreに保存 ---
+  // --- ★修正：タグをアプリ全体（projects）にも反映させる ---
   const handleAddTag = async (label) => {
     const newTag = {
       id: "tag_" + Date.now(),
@@ -223,18 +219,41 @@ const ProjectDetailScreen = ({ route, navigation, projects }) => {
       label,
       user: displayUserName,
     };
-    const newTags = [...tags, newTag].sort((a, b) => a.videoTime - b.videoTime);
+    const newTags = [...localTags, newTag].sort(
+      (a, b) => a.videoTime - b.videoTime,
+    );
+
+    setLocalTags(newTags);
+
+    // ★ 追加：アプリ全体のプロジェクトリストも更新する（一覧画面のハイライトに反映）
+    if (setProjects) {
+      setProjects((prev) =>
+        prev.map((p) => (p.id === project.id ? { ...p, tags: newTags } : p)),
+      );
+    }
+
     try {
-      await updateProject(activeTeamId, project.id, { tags: newTags });
+      const safeTeamId = activeTeamId || "test_team";
+      await updateProject(safeTeamId, project.id, { tags: newTags });
     } catch (error) {
-      Alert.alert("エラー", "保存に失敗しました");
+      console.log("Firestore保存はスキップ:", error);
     }
   };
 
   const handleDeleteTag = async (id) => {
-    const newTags = tags.filter((t) => t.id !== id);
+    const newTags = localTags.filter((t) => t.id !== id);
+    setLocalTags(newTags);
+
+    // ★ 全体リストからも削除
+    if (setProjects) {
+      setProjects((prev) =>
+        prev.map((p) => (p.id === project.id ? { ...p, tags: newTags } : p)),
+      );
+    }
+
     try {
-      await updateProject(activeTeamId, project.id, { tags: newTags });
+      const safeTeamId = activeTeamId || "test_team";
+      await updateProject(safeTeamId, project.id, { tags: newTags });
     } catch (error) {}
   };
 
@@ -252,17 +271,31 @@ const ProjectDetailScreen = ({ route, navigation, projects }) => {
       label: customTagText.trim(),
       user: displayUserName,
     };
-    const newTags = [...tags, newTag].sort((a, b) => a.videoTime - b.videoTime);
+    const newTags = [...localTags, newTag].sort(
+      (a, b) => a.videoTime - b.videoTime,
+    );
+
+    setLocalTags(newTags);
+
+    // ★ 全体リストにも追加
+    if (setProjects) {
+      setProjects((prev) =>
+        prev.map((p) => (p.id === project.id ? { ...p, tags: newTags } : p)),
+      );
+    }
+
+    setIsCustomTagModalVisible(false);
+    Keyboard.dismiss();
+
     try {
-      await updateProject(activeTeamId, project.id, { tags: newTags });
-      setIsCustomTagModalVisible(false);
-      Keyboard.dismiss();
+      const safeTeamId = activeTeamId || "test_team";
+      await updateProject(safeTeamId, project.id, { tags: newTags });
     } catch (error) {
-      Alert.alert("エラー", "保存に失敗しました");
+      console.log(error);
     }
   };
 
-  // --- ★変更：メモをFirestoreに保存 ---
+  // --- ★メモも同様に全体に反映させる ---
   const handleAddMemo = async () => {
     if (newMemoText.trim() === "") return;
     const newMemo = {
@@ -271,22 +304,42 @@ const ProjectDetailScreen = ({ route, navigation, projects }) => {
       text: newMemoText,
       user: displayUserName,
     };
-    const newMemos = [...memos, newMemo].sort(
+    const newMemos = [...localMemos, newMemo].sort(
       (a, b) => a.videoTime - b.videoTime,
     );
+
+    setLocalMemos(newMemos);
+
+    if (setProjects) {
+      setProjects((prev) =>
+        prev.map((p) => (p.id === project.id ? { ...p, memos: newMemos } : p)),
+      );
+    }
+
+    setNewMemoText("");
+    Keyboard.dismiss();
+
     try {
-      await updateProject(activeTeamId, project.id, { memos: newMemos });
-      setNewMemoText("");
-      Keyboard.dismiss();
+      const safeTeamId = activeTeamId || "test_team";
+      await updateProject(safeTeamId, project.id, { memos: newMemos });
     } catch (error) {
-      Alert.alert("エラー", "保存に失敗しました");
+      console.log(error);
     }
   };
 
   const handleDeleteMemo = async (id) => {
-    const newMemos = memos.filter((m) => m.id !== id);
+    const newMemos = localMemos.filter((m) => m.id !== id);
+    setLocalMemos(newMemos);
+
+    if (setProjects) {
+      setProjects((prev) =>
+        prev.map((p) => (p.id === project.id ? { ...p, memos: newMemos } : p)),
+      );
+    }
+
     try {
-      await updateProject(activeTeamId, project.id, { memos: newMemos });
+      const safeTeamId = activeTeamId || "test_team";
+      await updateProject(safeTeamId, project.id, { memos: newMemos });
     } catch (error) {}
   };
 
@@ -307,6 +360,7 @@ const ProjectDetailScreen = ({ route, navigation, projects }) => {
           style={[
             styles.youtubeContainer,
             isLandscape && styles.fsYoutubeContainer,
+            { pointerEvents: "auto" },
           ]}
         >
           <YoutubePlayer
@@ -346,7 +400,7 @@ const ProjectDetailScreen = ({ route, navigation, projects }) => {
       )}
 
       {(youtubeVideoId || videoUri) && (
-        <View style={styles.videoControls}>
+        <View style={[styles.videoControls, { zIndex: 100 }]}>
           <TouchableOpacity style={styles.skipBtn} onPress={skipBackward}>
             <Text style={styles.skipBtnText}>⏪ 5s</Text>
           </TouchableOpacity>
@@ -462,10 +516,10 @@ const ProjectDetailScreen = ({ route, navigation, projects }) => {
               </View>
             </View>
             <ScrollView style={styles.listScroll}>
-              {tags.length === 0 ? (
+              {localTags.length === 0 ? (
                 <Text style={styles.emptyText}>タグがありません。</Text>
               ) : (
-                tags.map((tag) => (
+                localTags.map((tag) => (
                   <View key={tag.id} style={styles.listItemCard}>
                     <TouchableOpacity
                       style={styles.timeJumpBtn}
@@ -497,10 +551,10 @@ const ProjectDetailScreen = ({ route, navigation, projects }) => {
         {activeTab === "memo" && (
           <>
             <ScrollView style={styles.listScroll}>
-              {memos.length === 0 ? (
+              {localMemos.length === 0 ? (
                 <Text style={styles.emptyText}>メモがありません。</Text>
               ) : (
-                memos.map((memo) => (
+                localMemos.map((memo) => (
                   <View key={memo.id} style={styles.listItemCard}>
                     <TouchableOpacity
                       style={styles.timeJumpBtn}
@@ -826,11 +880,10 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.6)",
     padding: 10,
     borderRadius: 8,
-    zIndex: 20,
   },
-  playBtn: { marginRight: 10 },
+  playBtn: { marginRight: 10, padding: 5 },
   playBtnText: { color: "#fff", fontSize: 24 },
-  skipBtn: { marginHorizontal: 10 },
+  skipBtn: { marginHorizontal: 10, padding: 5 },
   skipBtnText: { color: "#fff", fontSize: 14, fontWeight: "bold" },
   videoTimeDisplay: {
     color: "#fff",

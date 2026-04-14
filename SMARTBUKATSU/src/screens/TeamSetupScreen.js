@@ -8,37 +8,59 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
+  ActivityIndicator,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { useAuth } from "../AuthContext";
+import { createTeam, joinTeamWithInvite } from "../services/firestoreService";
 
-const TeamSetupScreen = ({ navigation }) => {
-  const [teamId, setTeamId] = useState("");
-  const [selectedRole, setSelectedRole] = useState("member");
-  const [adminCode, setAdminCode] = useState("");
+const TeamSetupScreen = ({ route, navigation }) => {
+  const { user } = useAuth();
 
-  const handleNext = () => {
-    if (!teamId.trim()) {
-      Alert.alert("エラー", "チームIDを入力してください。");
-      return;
+  // ★追加：ログイン画面から渡された「役割」と「名前」をしっかり受け取る！
+  const initialRole = route.params?.initialRole || "member";
+  const userName = route.params?.userName || "ゲスト";
+
+  const [teamName, setTeamName] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+
+  const handleCreateTeam = async () => {
+    if (!teamName.trim())
+      return Alert.alert("エラー", "チーム名を入力してください");
+
+    setIsLoading(true);
+    try {
+      // ★修正：userName も一緒に送る！
+      await createTeam(user.uid, teamName, userName);
+
+      global.TEST_ROLE = null;
+      Alert.alert("成功！", "新しいチームを作成し、管理者になりました！");
+      navigation.replace("WorkspaceHome");
+    } catch (error) {
+      Alert.alert("作成失敗", error.message); // ログだけでなく画面にもエラー理由を表示
+      console.log(error);
+    } finally {
+      setIsLoading(false);
     }
+  };
 
-    if (selectedRole === "admin") {
-      if (adminCode !== "KIT2026") {
-        Alert.alert("エラー", "管理者コードが間違っています。");
-        return;
-      }
+  const handleJoinTeam = async () => {
+    if (!inviteCode.trim())
+      return Alert.alert("エラー", "招待コードを入力してください");
 
-      // ★ 魔法のコード：アプリ全体に「この人は管理者(owner)だ！」と記憶させる
-      global.TEST_ROLE = "owner";
+    setIsLoading(true);
+    try {
+      // ★修正：userName も一緒に送る！
+      await joinTeamWithInvite(user.uid, inviteCode, userName);
 
-      Alert.alert("認証成功", "管理者としてログインします！");
+      global.TEST_ROLE = null;
+      Alert.alert("成功！", "チームに参加しました！");
       navigation.replace("WorkspaceHome");
-    } else {
-      // ★ 魔法のコード：アプリ全体に「この人は部員(member)だ！」と記憶させる
-      global.TEST_ROLE = "member";
-
-      Alert.alert("参加成功", "部員としてログインします！");
-      navigation.replace("WorkspaceHome");
+    } catch (error) {
+      Alert.alert("参加失敗", error.message);
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -50,77 +72,61 @@ const TeamSetupScreen = ({ navigation }) => {
       >
         <View style={styles.header}>
           <Text style={styles.appTitle}>📱 スマート部活</Text>
-          <Text style={styles.subTitle}>チームへの参加</Text>
+          <Text style={styles.subTitle}>初期セットアップ</Text>
         </View>
 
-        <View style={styles.card}>
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>チームIDを入力してください</Text>
+        {initialRole === "member" && (
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>👤 部員・関係者として参加</Text>
+            <Text style={styles.cardDesc}>
+              教員から教えられた招待コードを入力してください
+            </Text>
             <TextInput
               style={styles.input}
-              placeholder="例: kit2026"
-              value={teamId}
-              onChangeText={setTeamId}
-              autoCapitalize="none"
+              placeholder="例: A1B2C3"
+              value={inviteCode}
+              onChangeText={setInviteCode}
+              autoCapitalize="characters"
             />
+            <TouchableOpacity
+              style={styles.btnPrimary}
+              onPress={handleJoinTeam}
+              disabled={isLoading}
+            >
+              {isLoading ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.btnPrimaryText}>参加する</Text>
+              )}
+            </TouchableOpacity>
           </View>
+        )}
 
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>あなたの役割</Text>
-            <View style={styles.roleContainer}>
-              <TouchableOpacity
-                style={[
-                  styles.roleBtn,
-                  selectedRole === "admin" && styles.roleBtnActive,
-                ]}
-                onPress={() => setSelectedRole("admin")}
-              >
-                <Text
-                  style={[
-                    styles.roleBtnText,
-                    selectedRole === "admin" && styles.roleBtnTextActive,
-                  ]}
-                >
-                  👑 管理者
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[
-                  styles.roleBtn,
-                  selectedRole === "member" && styles.roleBtnActive,
-                ]}
-                onPress={() => setSelectedRole("member")}
-              >
-                <Text
-                  style={[
-                    styles.roleBtnText,
-                    selectedRole === "member" && styles.roleBtnTextActive,
-                  ]}
-                >
-                  👤 部員
-                </Text>
-              </TouchableOpacity>
-            </View>
+        {initialRole === "admin" && (
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>👑 管理者としてチームを作成</Text>
+            <Text style={styles.cardDesc}>
+              新しく自分の部活チームを立ち上げます
+            </Text>
+            <TextInput
+              style={styles.input}
+              placeholder="例: 野々市高校 サッカー部"
+              value={teamName}
+              onChangeText={setTeamName}
+            />
+            <TouchableOpacity
+              style={styles.btnPrimary}
+              onPress={handleCreateTeam}
+              disabled={isLoading}
+            >
+              {isLoading ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.btnPrimaryText}>チームを作成する</Text>
+              )}
+            </TouchableOpacity>
           </View>
-
-          {selectedRole === "admin" && (
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>管理者コード</Text>
-              <TextInput
-                style={styles.input}
-                secureTextEntry
-                placeholder="コードを入力"
-                value={adminCode}
-                onChangeText={setAdminCode}
-              />
-            </View>
-          )}
-
-          <TouchableOpacity style={styles.btnPrimary} onPress={handleNext}>
-            <Text style={styles.btnPrimaryText}>チームに入る</Text>
-          </TouchableOpacity>
-        </View>
+        )}
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -128,7 +134,7 @@ const TeamSetupScreen = ({ navigation }) => {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#f0f2f5", justifyContent: "center" },
-  inner: { padding: 20, width: "100%", maxWidth: 400, alignSelf: "center" },
+  inner: { padding: 20, width: "100%", maxWidth: 450, alignSelf: "center" },
   header: { alignItems: "center", marginBottom: 30 },
   appTitle: {
     fontSize: 28,
@@ -139,12 +145,18 @@ const styles = StyleSheet.create({
   subTitle: { fontSize: 18, fontWeight: "bold", color: "#333" },
   card: {
     backgroundColor: "#fff",
-    padding: 25,
+    padding: 20,
     borderRadius: 12,
-    elevation: 3,
+    elevation: 2,
+    marginBottom: 15,
   },
-  inputGroup: { marginBottom: 20 },
-  label: { fontSize: 14, fontWeight: "bold", color: "#555", marginBottom: 8 },
+  cardTitle: {
+    fontSize: 16,
+    fontWeight: "bold",
+    color: "#333",
+    marginBottom: 5,
+  },
+  cardDesc: { fontSize: 12, color: "#666", marginBottom: 15 },
   input: {
     backgroundColor: "#f9f9f9",
     borderWidth: 1,
@@ -152,27 +164,13 @@ const styles = StyleSheet.create({
     padding: 12,
     borderRadius: 8,
     fontSize: 16,
+    marginBottom: 15,
   },
-  roleContainer: { flexDirection: "row", justifyContent: "space-between" },
-  roleBtn: {
-    flex: 1,
-    paddingVertical: 12,
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: "#ddd",
-    borderRadius: 8,
-    marginHorizontal: 4,
-    backgroundColor: "#f9f9f9",
-  },
-  roleBtnActive: { backgroundColor: "#e6f2ff", borderColor: "#0077cc" },
-  roleBtnText: { fontSize: 14, color: "#666", fontWeight: "bold" },
-  roleBtnTextActive: { color: "#0077cc" },
   btnPrimary: {
     backgroundColor: "#0077cc",
-    paddingVertical: 15,
+    paddingVertical: 14,
     borderRadius: 8,
     alignItems: "center",
-    marginTop: 10,
   },
   btnPrimaryText: { color: "#fff", fontSize: 16, fontWeight: "bold" },
 });

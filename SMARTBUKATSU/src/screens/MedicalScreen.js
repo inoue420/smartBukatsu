@@ -76,10 +76,11 @@ const MedicalScreen = ({
   const isStaffOrAbove = ["owner", "staff"].includes(userRole);
 
   const roleNameMap = {
-    owner: "管理者(監督)",
-    staff: "コーチ(スタッフ)",
+    owner: `${currentUser}(監督)`,
+    admin: `${currentUser}(管理者)`,
+    staff: `${currentUser}(コーチ)`,
     captain: `${currentUser}(キャプテン)`,
-    member: `${currentUser}(あなた)`,
+    member: currentUser, // 「(あなた)」や「佐藤(自分)」を削除し、純粋な名前のみに！
   };
   const displayUserName = roleNameMap[userRole] || currentUser;
 

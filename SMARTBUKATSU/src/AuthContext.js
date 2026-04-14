@@ -25,9 +25,10 @@ const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
+  const [userName, setUserName] = useState(""); // ★追加：ユーザー名を保持
   const [loading, setLoading] = useState(true);
   const [activeTeamId, setActiveTeamId] = useState(null);
-  const [role, setRole] = useState(null); // 'admin' | 'member' | null
+  const [role, setRole] = useState(null);
 
   // Firebaseの認証状態を監視
   useEffect(() => {
@@ -35,6 +36,7 @@ export function AuthProvider({ children }) {
       setUser(u || null);
       setRole(null);
       setActiveTeamId(null);
+      setUserName(""); // リセット
       setLoading(false);
 
       if (u?.uid) {
@@ -52,7 +54,7 @@ export function AuthProvider({ children }) {
     return () => unsub();
   }, []);
 
-  // ユーザーの所属チームIDを取得
+  // ユーザーの所属チームIDと「表示名（name）」を取得
   useEffect(() => {
     if (!user?.uid) return;
     const ref = doc(db, "users", user.uid);
@@ -60,6 +62,8 @@ export function AuthProvider({ children }) {
       const data = snap.data() || {};
       const t = typeof data.activeTeamId === "string" ? data.activeTeamId : "";
       setActiveTeamId(t || null);
+      // ★取得した名前をセット（名前がなければメールアドレスを表示）
+      setUserName(data.name || user.email || "ゲスト");
     });
     return () => unsub();
   }, [user?.uid]);
@@ -93,16 +97,17 @@ export function AuthProvider({ children }) {
     };
     return {
       user,
+      userName, // ★追加：Contextで名前を配信
       loading,
       activeTeamId,
       role,
-      isAdmin: role === "admin",
+      isAdmin: role === "admin" || role === "owner", // ownerも管理者として扱うように強化
       signIn,
       signUp,
       resetPassword,
       signOut,
     };
-  }, [user, loading, activeTeamId, role]);
+  }, [user, userName, loading, activeTeamId, role]);
 
   return <AuthContext.Provider value={api}>{children}</AuthContext.Provider>;
 }

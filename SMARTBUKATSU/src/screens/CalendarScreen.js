@@ -14,6 +14,29 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+// 日付操作のユーティリティ関数
+const getDatesInRange = (startDateStr, endDateStr) => {
+  const dates = [];
+  let curr = new Date(startDateStr.replace(/\//g, "-"));
+  const end = new Date(endDateStr.replace(/\//g, "-"));
+
+  while (curr <= end) {
+    const y = curr.getFullYear();
+    const m = String(curr.getMonth() + 1).padStart(2, "0");
+    const d = String(curr.getDate()).padStart(2, "0");
+    dates.push(`${y}/${m}/${d}`);
+    curr.setDate(curr.getDate() + 1);
+  }
+  return dates;
+};
+
+// ボタンで日付を前後にずらすための関数
+const adjustDateByDays = (dateStr, days) => {
+  const d = new Date(dateStr.replace(/\//g, "-"));
+  d.setDate(d.getDate() + days);
+  return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
+};
+
 const CalendarScreen = ({
   navigation,
   isAdmin,
@@ -22,8 +45,8 @@ const CalendarScreen = ({
   setProjects,
   dailyReports,
   userProfiles = {},
-  personalEvents = [], // ★追加: 個人の予定
-  setPersonalEvents, // ★追加: 個人の予定更新用関数
+  personalEvents = [],
+  setPersonalEvents,
   alertThresholds = {
     fatigueWarning: 7,
     fatigueDanger: 9,
@@ -38,7 +61,6 @@ const CalendarScreen = ({
   const isStaffOrAbove = ["owner", "staff"].includes(userRole);
   const staffScope = currentUserProfile.staffScope || "all";
 
-  // 今日の日付を取得
   const today = new Date();
   const todayString = `${today.getFullYear()}/${String(today.getMonth() + 1).padStart(2, "0")}/${String(today.getDate()).padStart(2, "0")}`;
 
@@ -51,17 +73,20 @@ const CalendarScreen = ({
   const [isEventModalVisible, setIsEventModalVisible] = useState(false);
   const [editingEventId, setEditingEventId] = useState(null);
   const [eventTitle, setEventTitle] = useState("");
+  const [isEventMultiDay, setIsEventMultiDay] = useState(false);
+  const [eventEndDate, setEventEndDate] = useState(todayString);
   const [eventType, setEventType] = useState("練習");
   const [eventParticipants, setEventParticipants] = useState("team");
   const [eventMemo, setEventMemo] = useState("");
 
-  // === ★新規追加：個人の予定用ステート ===
+  // === 個人の予定用ステート ===
   const [isPersonalModalVisible, setIsPersonalModalVisible] = useState(false);
   const [editingPersonalId, setEditingPersonalId] = useState(null);
   const [personalTitle, setPersonalTitle] = useState("");
+  const [isPersonalMultiDay, setIsPersonalMultiDay] = useState(false);
+  const [personalEndDate, setPersonalEndDate] = useState(todayString);
   const [personalMemo, setPersonalMemo] = useState("");
 
-  // カレンダー移動処理
   const handlePrevMonth = () => {
     setCurrentMonth(
       new Date(currentMonth.getFullYear(), currentMonth.getMonth() - 1, 1),
@@ -73,7 +98,6 @@ const CalendarScreen = ({
     );
   };
 
-  // アラートレベル判定
   const getAlertLevel = (record) => {
     if (!record.condition) return "normal";
     if (
@@ -93,7 +117,6 @@ const CalendarScreen = ({
     return "normal";
   };
 
-  // 表示権限に基づくデータフィルタリング
   const visibleProjects = projects.filter((p) => {
     if (p.status === "deleted") return false;
     if (["member", "captain"].includes(userRole) && p.participants === "coach")
@@ -111,33 +134,39 @@ const CalendarScreen = ({
         return authorProfile.assignedStaff === currentUser;
       }
     }
-    if (["member", "captain"].includes(userRole))
-      return d.author === currentUser;
-    return false;
+    return ["member", "captain"].includes(userRole)
+      ? d.author === currentUser
+      : false;
   });
 
-  // ★追加：自分自身の個人の予定だけを抽出
-  const myPersonalEvents = personalEvents.filter((e) => {
-    if (e.status === "deleted") return false;
-    return e.author === currentUser;
-  });
+  const myPersonalEvents = personalEvents.filter(
+    (e) => e.status !== "deleted" && e.author === currentUser,
+  );
 
-  // 日付ごとのマッピング（★personal を追加）
   const eventsMap = {};
+
   visibleProjects.forEach((p) => {
-    if (!eventsMap[p.date])
-      eventsMap[p.date] = { projects: [], reports: [], personal: [] };
-    eventsMap[p.date].projects.push(p);
+    const range = getDatesInRange(p.date, p.endDate || p.date);
+    range.forEach((d) => {
+      if (!eventsMap[d])
+        eventsMap[d] = { projects: [], reports: [], personal: [] };
+      eventsMap[d].projects.push(p);
+    });
   });
+
   visibleReports.forEach((r) => {
     if (!eventsMap[r.date])
       eventsMap[r.date] = { projects: [], reports: [], personal: [] };
     eventsMap[r.date].reports.push(r);
   });
+
   myPersonalEvents.forEach((pe) => {
-    if (!eventsMap[pe.date])
-      eventsMap[pe.date] = { projects: [], reports: [], personal: [] };
-    eventsMap[pe.date].personal.push(pe);
+    const range = getDatesInRange(pe.date, pe.endDate || pe.date);
+    range.forEach((d) => {
+      if (!eventsMap[d])
+        eventsMap[d] = { projects: [], reports: [], personal: [] };
+      eventsMap[d].personal.push(pe);
+    });
   });
 
   const year = currentMonth.getFullYear();
@@ -159,17 +188,31 @@ const CalendarScreen = ({
     personal: [],
   };
 
-  // === 部活の予定の操作ロジック ===
+  const adjustEndDate = (setter, currentEnd, days) => {
+    const nextDate = adjustDateByDays(currentEnd, days);
+    if (
+      new Date(nextDate.replace(/\//g, "-")) <
+      new Date(selectedDate.replace(/\//g, "-"))
+    ) {
+      return;
+    }
+    setter(nextDate);
+  };
+
   const openEventModal = (event = null) => {
     if (event) {
       setEditingEventId(event.id);
       setEventTitle(event.title);
+      setEventEndDate(event.endDate || event.date);
+      setIsEventMultiDay(!!event.endDate && event.endDate !== event.date);
       setEventType(event.type);
       setEventParticipants(event.participants);
       setEventMemo(event.memo || "");
     } else {
       setEditingEventId(null);
       setEventTitle("");
+      setEventEndDate(selectedDate);
+      setIsEventMultiDay(false);
       setEventType("練習");
       setEventParticipants("team");
       setEventMemo("");
@@ -177,11 +220,20 @@ const CalendarScreen = ({
     setIsEventModalVisible(true);
   };
 
+  // ★修正: 再度「ローカルに保存（setProjects）」へ戻しました。Firebaseの門番は回避します。
   const handleSaveEvent = () => {
-    if (eventTitle.trim() === "") {
-      Alert.alert("エラー", "予定のタイトルを入力してください。");
-      return;
+    if (eventTitle.trim() === "")
+      return Alert.alert("エラー", "タイトルを入力してください。");
+
+    const finalEndDate = isEventMultiDay ? eventEndDate : selectedDate;
+
+    if (
+      new Date(finalEndDate.replace(/\//g, "-")) <
+      new Date(selectedDate.replace(/\//g, "-"))
+    ) {
+      return Alert.alert("エラー", "終了日は開始日以降に設定してください。");
     }
+
     if (editingEventId) {
       setProjects(
         projects.map((p) =>
@@ -189,6 +241,7 @@ const CalendarScreen = ({
             ? {
                 ...p,
                 title: eventTitle,
+                endDate: finalEndDate,
                 type: eventType,
                 participants: eventParticipants,
                 memo: eventMemo,
@@ -201,10 +254,10 @@ const CalendarScreen = ({
         id: "p_" + Date.now().toString(),
         title: eventTitle,
         date: selectedDate,
+        endDate: finalEndDate,
         type: eventType,
         status: "active",
         participants: eventParticipants,
-        pinned: false,
         memo: eventMemo,
       };
       setProjects([...projects, newEvent]);
@@ -222,14 +275,7 @@ const CalendarScreen = ({
         onPress: () => {
           setProjects(
             projects.map((p) =>
-              p.id === editingEventId
-                ? {
-                    ...p,
-                    status: "deleted",
-                    deletedBy: userRole,
-                    deletedAt: new Date().toISOString(),
-                  }
-                : p,
+              p.id === editingEventId ? { ...p, status: "deleted" } : p,
             ),
           );
           setIsEventModalVisible(false);
@@ -238,30 +284,46 @@ const CalendarScreen = ({
     ]);
   };
 
-  // === ★追加：個人の予定の操作ロジック ===
   const openPersonalModal = (event = null) => {
     if (event) {
       setEditingPersonalId(event.id);
       setPersonalTitle(event.title);
+      setPersonalEndDate(event.endDate || event.date);
+      setIsPersonalMultiDay(!!event.endDate && event.endDate !== event.date);
       setPersonalMemo(event.memo || "");
     } else {
       setEditingPersonalId(null);
       setPersonalTitle("");
+      setPersonalEndDate(selectedDate);
+      setIsPersonalMultiDay(false);
       setPersonalMemo("");
     }
     setIsPersonalModalVisible(true);
   };
 
   const handleSavePersonal = () => {
-    if (personalTitle.trim() === "") {
-      Alert.alert("エラー", "予定のタイトルを入力してください。");
-      return;
+    if (personalTitle.trim() === "")
+      return Alert.alert("エラー", "タイトルを入力してください。");
+
+    const finalEndDate = isPersonalMultiDay ? personalEndDate : selectedDate;
+
+    if (
+      new Date(finalEndDate.replace(/\//g, "-")) <
+      new Date(selectedDate.replace(/\//g, "-"))
+    ) {
+      return Alert.alert("エラー", "終了日は開始日以降に設定してください。");
     }
+
     if (editingPersonalId) {
       setPersonalEvents(
         personalEvents.map((p) =>
           p.id === editingPersonalId
-            ? { ...p, title: personalTitle, memo: personalMemo }
+            ? {
+                ...p,
+                title: personalTitle,
+                endDate: finalEndDate,
+                memo: personalMemo,
+              }
             : p,
         ),
       );
@@ -270,7 +332,8 @@ const CalendarScreen = ({
         id: "pe_" + Date.now().toString(),
         title: personalTitle,
         date: selectedDate,
-        author: currentUser, // このユーザー専用
+        endDate: finalEndDate,
+        author: currentUser,
         status: "active",
         memo: personalMemo,
       };
@@ -289,13 +352,7 @@ const CalendarScreen = ({
         onPress: () => {
           setPersonalEvents(
             personalEvents.map((p) =>
-              p.id === editingPersonalId
-                ? {
-                    ...p,
-                    status: "deleted",
-                    deletedAt: new Date().toISOString(),
-                  }
-                : p,
+              p.id === editingPersonalId ? { ...p, status: "deleted" } : p,
             ),
           );
           setIsPersonalModalVisible(false);
@@ -318,7 +375,6 @@ const CalendarScreen = ({
       </View>
 
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-        {/* カレンダーコントロール */}
         <View style={styles.calendarControl}>
           <TouchableOpacity style={styles.arrowBtn} onPress={handlePrevMonth}>
             <Text style={styles.arrowText}>◀</Text>
@@ -331,7 +387,6 @@ const CalendarScreen = ({
           </TouchableOpacity>
         </View>
 
-        {/* 曜日ヘッダー */}
         <View style={styles.weekRow}>
           {["日", "月", "火", "水", "木", "金", "土"].map((day, idx) => (
             <Text
@@ -347,12 +402,10 @@ const CalendarScreen = ({
           ))}
         </View>
 
-        {/* 日付グリッド */}
         <View style={styles.daysGrid}>
           {daysArray.map((day, index) => {
             if (!day)
               return <View key={`empty-${index}`} style={styles.dayCell} />;
-
             const dateStr = `${year}/${String(month + 1).padStart(2, "0")}/${String(day).padStart(2, "0")}`;
             const isToday = dateStr === todayString;
             const isSelected = dateStr === selectedDate;
@@ -362,7 +415,6 @@ const CalendarScreen = ({
               personal: [],
             };
 
-            // アラートのサマリー
             let reportDotColor = null;
             if (dayEvents.reports.length > 0) {
               const hasDanger = dayEvents.reports.some(
@@ -398,21 +450,17 @@ const CalendarScreen = ({
                     {day}
                   </Text>
                 </View>
-
                 <View style={styles.markerRow}>
-                  {/* 部活の予定ドット（青） */}
                   {dayEvents.projects.length > 0 && (
                     <View
                       style={[styles.dot, { backgroundColor: "#3498db" }]}
                     />
                   )}
-                  {/* コンディションドット（赤・黄・緑） */}
                   {reportDotColor && (
                     <View
                       style={[styles.dot, { backgroundColor: reportDotColor }]}
                     />
                   )}
-                  {/* ★個人の予定ドット（紫） */}
                   {dayEvents.personal.length > 0 && (
                     <View
                       style={[styles.dot, { backgroundColor: "#9b59b6" }]}
@@ -425,10 +473,8 @@ const CalendarScreen = ({
         </View>
 
         <View style={styles.divider} />
-
         <Text style={styles.detailTitle}>{selectedDate} の予定・記録</Text>
 
-        {/* 1. 部活の予定エリア */}
         <View style={styles.detailSection}>
           <View style={styles.sectionHeaderRow}>
             <Text style={styles.sectionSubtitle}>
@@ -440,20 +486,17 @@ const CalendarScreen = ({
               </TouchableOpacity>
             )}
           </View>
-
           {selectedEvents.projects.length === 0 ? (
-            <Text style={styles.emptyText}>部活の予定はありません。</Text>
+            <Text style={styles.emptyText}>予定はありません。</Text>
           ) : (
             selectedEvents.projects.map((p) => (
               <TouchableOpacity
                 key={p.id}
                 style={styles.eventCard}
-                onPress={() => {
-                  if (["owner", "staff", "captain"].includes(userRole)) {
-                    openEventModal(p);
-                  }
-                }}
-                activeOpacity={0.7}
+                onPress={() =>
+                  ["owner", "staff", "captain"].includes(userRole) &&
+                  openEventModal(p)
+                }
               >
                 <View style={styles.eventCardHeader}>
                   <View
@@ -469,10 +512,12 @@ const CalendarScreen = ({
                     <Text style={styles.badgeText}>{p.type}</Text>
                   </View>
                   <Text style={styles.eventTitle}>{p.title}</Text>
-                  {["owner", "staff", "captain"].includes(userRole) && (
-                    <Text style={{ fontSize: 16, color: "#888" }}>✏️</Text>
-                  )}
                 </View>
+                {p.endDate && p.endDate !== p.date && (
+                  <Text style={styles.periodText}>
+                    期間: {p.date} 〜 {p.endDate}
+                  </Text>
+                )}
                 {p.memo ? (
                   <Text style={styles.eventMemoText}>{p.memo}</Text>
                 ) : null}
@@ -481,7 +526,6 @@ const CalendarScreen = ({
           )}
         </View>
 
-        {/* ★追加 2. 個人の予定エリア (自分だけ見える) */}
         <View style={styles.detailSection}>
           <View style={styles.sectionHeaderRow}>
             <Text style={styles.sectionSubtitle}>
@@ -493,16 +537,14 @@ const CalendarScreen = ({
               </Text>
             </TouchableOpacity>
           </View>
-
           {selectedEvents.personal.length === 0 ? (
-            <Text style={styles.emptyText}>個人の予定はありません。</Text>
+            <Text style={styles.emptyText}>予定はありません。</Text>
           ) : (
             selectedEvents.personal.map((pe) => (
               <TouchableOpacity
                 key={pe.id}
                 style={styles.personalEventCard}
                 onPress={() => openPersonalModal(pe)}
-                activeOpacity={0.7}
               >
                 <View style={styles.eventCardHeader}>
                   <View style={styles.badgePersonal}>
@@ -511,8 +553,12 @@ const CalendarScreen = ({
                     </Text>
                   </View>
                   <Text style={styles.eventTitle}>{pe.title}</Text>
-                  <Text style={{ fontSize: 16, color: "#888" }}>✏️</Text>
                 </View>
+                {pe.endDate && pe.endDate !== pe.date && (
+                  <Text style={styles.periodText}>
+                    期間: {pe.date} 〜 {pe.endDate}
+                  </Text>
+                )}
                 {pe.memo ? (
                   <Text style={styles.eventMemoText}>{pe.memo}</Text>
                 ) : null}
@@ -521,7 +567,6 @@ const CalendarScreen = ({
           )}
         </View>
 
-        {/* 3. 振り返りエリア */}
         <View style={styles.detailSection}>
           <View style={styles.sectionHeaderRow}>
             <Text style={styles.sectionSubtitle}>
@@ -531,7 +576,6 @@ const CalendarScreen = ({
               <Text style={styles.jumpLink}>一覧を見る ＞</Text>
             </TouchableOpacity>
           </View>
-
           {selectedEvents.reports.length === 0 ? (
             <Text style={styles.emptyText}>記録はありません。</Text>
           ) : (
@@ -547,16 +591,7 @@ const CalendarScreen = ({
                   ]}
                 >
                   <Text style={styles.reportAuthor}>👤 {r.author}</Text>
-
-                  {r.condition && (
-                    <Text style={styles.reportText}>
-                      体調: {r.condition} / 疲労度: {r.fatigue}
-                      {r.hasPain && (
-                        <Text style={{ color: "#e74c3c" }}> / ケガあり</Text>
-                      )}
-                    </Text>
-                  )}
-                  <Text style={styles.reportText} numberOfLines={1}>
+                  <Text style={styles.reportText}>
                     練習: {r.practiceContent || "未入力"}
                   </Text>
                 </View>
@@ -567,12 +602,8 @@ const CalendarScreen = ({
         <View style={{ height: 50 }} />
       </ScrollView>
 
-      {/* --- モーダル 1: 部活の予定用 --- */}
-      <Modal
-        visible={isEventModalVisible}
-        transparent={true}
-        animationType="fade"
-      >
+      {/* --- 部活の予定モーダル --- */}
+      <Modal visible={isEventModalVisible} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <KeyboardAvoidingView
             behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -582,114 +613,106 @@ const CalendarScreen = ({
               <Text style={styles.modalTitle}>
                 {editingEventId ? "予定の編集" : "新しい予定を追加"}
               </Text>
-              <Text style={styles.modalDateText}>📅 {selectedDate}</Text>
             </View>
-
             <ScrollView showsVerticalScrollIndicator={false}>
               <Text style={styles.label}>予定のタイトル</Text>
               <TextInput
                 style={styles.input}
-                placeholder="例: 春季大会 1回戦"
+                placeholder="例: 春季大会"
                 value={eventTitle}
                 onChangeText={setEventTitle}
-                autoFocus={!editingEventId}
               />
 
-              <Text style={styles.label}>種類</Text>
+              <Text style={styles.label}>日程 (開始日: {selectedDate})</Text>
               <View style={styles.typeContainer}>
                 <TouchableOpacity
                   style={[
                     styles.typeBtn,
-                    eventType === "試合" && styles.typeBtnActive,
+                    !isEventMultiDay && styles.typeBtnActive,
                   ]}
-                  onPress={() => setEventType("試合")}
+                  onPress={() => {
+                    setIsEventMultiDay(false);
+                    setEventEndDate(selectedDate);
+                  }}
                 >
                   <Text
                     style={[
                       styles.typeBtnText,
-                      eventType === "試合" && styles.typeBtnTextActive,
+                      !isEventMultiDay && styles.typeBtnTextActive,
                     ]}
                   >
-                    試合
+                    当日のみ
                   </Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[
                     styles.typeBtn,
-                    eventType === "練習" && styles.typeBtnActive,
+                    isEventMultiDay && styles.typeBtnActive,
                   ]}
-                  onPress={() => setEventType("練習")}
+                  onPress={() => setIsEventMultiDay(true)}
                 >
                   <Text
                     style={[
                       styles.typeBtnText,
-                      eventType === "練習" && styles.typeBtnTextActive,
+                      isEventMultiDay && styles.typeBtnTextActive,
                     ]}
                   >
-                    練習
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[
-                    styles.typeBtn,
-                    eventType === "その他" && styles.typeBtnActive,
-                  ]}
-                  onPress={() => setEventType("その他")}
-                >
-                  <Text
-                    style={[
-                      styles.typeBtnText,
-                      eventType === "その他" && styles.typeBtnTextActive,
-                    ]}
-                  >
-                    その他
+                    複数日
                   </Text>
                 </TouchableOpacity>
               </View>
 
-              <Text style={styles.label}>共有範囲</Text>
+              {isEventMultiDay && (
+                <View style={styles.dateAdjusterContainer}>
+                  <Text style={styles.subLabel}>終了日を指定</Text>
+                  <View style={styles.dateAdjusterRow}>
+                    <TouchableOpacity
+                      style={styles.dateAdjustBtn}
+                      onPress={() =>
+                        adjustEndDate(setEventEndDate, eventEndDate, -1)
+                      }
+                    >
+                      <Text style={styles.dateAdjustBtnText}>◀</Text>
+                    </TouchableOpacity>
+                    <Text style={styles.dateAdjustValue}>{eventEndDate}</Text>
+                    <TouchableOpacity
+                      style={styles.dateAdjustBtn}
+                      onPress={() =>
+                        adjustEndDate(setEventEndDate, eventEndDate, 1)
+                      }
+                    >
+                      <Text style={styles.dateAdjustBtnText}>▶</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+
+              <Text style={styles.label}>種類</Text>
               <View style={styles.typeContainer}>
-                <TouchableOpacity
-                  style={[
-                    styles.typeBtn,
-                    eventParticipants === "team" && styles.typeBtnActive,
-                  ]}
-                  onPress={() => setEventParticipants("team")}
-                >
-                  <Text
-                    style={[
-                      styles.typeBtnText,
-                      eventParticipants === "team" && styles.typeBtnTextActive,
-                    ]}
-                  >
-                    全体
-                  </Text>
-                </TouchableOpacity>
-                {isStaffOrAbove && (
+                {["試合", "練習", "その他"].map((t) => (
                   <TouchableOpacity
+                    key={t}
                     style={[
                       styles.typeBtn,
-                      eventParticipants === "coach" && styles.typeBtnActive,
+                      eventType === t && styles.typeBtnActive,
                     ]}
-                    onPress={() => setEventParticipants("coach")}
+                    onPress={() => setEventType(t)}
                   >
                     <Text
                       style={[
                         styles.typeBtnText,
-                        eventParticipants === "coach" &&
-                          styles.typeBtnTextActive,
+                        eventType === t && styles.typeBtnTextActive,
                       ]}
                     >
-                      指導者のみ
+                      {t}
                     </Text>
                   </TouchableOpacity>
-                )}
+                ))}
               </View>
 
-              <Text style={styles.label}>備考欄 (任意)</Text>
+              <Text style={styles.label}>備考欄</Text>
               <TextInput
                 style={styles.inputMulti}
-                placeholder="場所や時間、持ち物など..."
                 value={eventMemo}
                 onChangeText={setEventMemo}
                 multiline
@@ -725,12 +748,8 @@ const CalendarScreen = ({
         </View>
       </Modal>
 
-      {/* --- ★新規追加 モーダル 2: 個人の予定用 --- */}
-      <Modal
-        visible={isPersonalModalVisible}
-        transparent={true}
-        animationType="fade"
-      >
+      {/* --- 個人の予定モーダル --- */}
+      <Modal visible={isPersonalModalVisible} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <KeyboardAvoidingView
             behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -740,31 +759,89 @@ const CalendarScreen = ({
               <Text style={styles.modalTitle}>
                 {editingPersonalId ? "個人の予定を編集" : "個人の予定を追加"}
               </Text>
-              <Text style={styles.modalDateText}>📅 {selectedDate}</Text>
             </View>
-
             <ScrollView showsVerticalScrollIndicator={false}>
               <Text style={styles.label}>予定のタイトル</Text>
               <TextInput
                 style={styles.input}
-                placeholder="例: 筋トレ、通院、バイト など"
+                placeholder="例: 塾、通院"
                 value={personalTitle}
                 onChangeText={setPersonalTitle}
-                autoFocus={!editingPersonalId}
               />
 
-              <Text style={styles.label}>メモ (任意)</Text>
+              <Text style={styles.label}>日程 (開始日: {selectedDate})</Text>
+              <View style={styles.typeContainer}>
+                <TouchableOpacity
+                  style={[
+                    styles.typeBtn,
+                    !isPersonalMultiDay && styles.typeBtnActive,
+                  ]}
+                  onPress={() => {
+                    setIsPersonalMultiDay(false);
+                    setPersonalEndDate(selectedDate);
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.typeBtnText,
+                      !isPersonalMultiDay && styles.typeBtnTextActive,
+                    ]}
+                  >
+                    当日のみ
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.typeBtn,
+                    isPersonalMultiDay && styles.typeBtnActive,
+                  ]}
+                  onPress={() => setIsPersonalMultiDay(true)}
+                >
+                  <Text
+                    style={[
+                      styles.typeBtnText,
+                      isPersonalMultiDay && styles.typeBtnTextActive,
+                    ]}
+                  >
+                    複数日
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {isPersonalMultiDay && (
+                <View style={styles.dateAdjusterContainer}>
+                  <Text style={styles.subLabel}>終了日を指定</Text>
+                  <View style={styles.dateAdjusterRow}>
+                    <TouchableOpacity
+                      style={styles.dateAdjustBtn}
+                      onPress={() =>
+                        adjustEndDate(setPersonalEndDate, personalEndDate, -1)
+                      }
+                    >
+                      <Text style={styles.dateAdjustBtnText}>◀</Text>
+                    </TouchableOpacity>
+                    <Text style={styles.dateAdjustValue}>
+                      {personalEndDate}
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.dateAdjustBtn}
+                      onPress={() =>
+                        adjustEndDate(setPersonalEndDate, personalEndDate, 1)
+                      }
+                    >
+                      <Text style={styles.dateAdjustBtnText}>▶</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+
+              <Text style={styles.label}>メモ</Text>
               <TextInput
                 style={styles.inputMulti}
-                placeholder="時間や詳細なメモ..."
                 value={personalMemo}
                 onChangeText={setPersonalMemo}
                 multiline
               />
-
-              <Text style={styles.privateNotice}>
-                ※個人の予定はあなた以外のチームメンバー（監督含む）には見えません。
-              </Text>
 
               <View style={styles.modalButtons}>
                 {editingPersonalId && (
@@ -817,9 +894,7 @@ const styles = StyleSheet.create({
     flex: 1,
     textAlign: "center",
   },
-
   content: { padding: 15 },
-
   calendarControl: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -833,7 +908,6 @@ const styles = StyleSheet.create({
   arrowBtn: { paddingHorizontal: 15, paddingVertical: 5 },
   arrowText: { fontSize: 18, color: "#34495e", fontWeight: "bold" },
   monthTitle: { fontSize: 18, fontWeight: "bold", color: "#333" },
-
   weekRow: { flexDirection: "row", marginBottom: 5 },
   weekText: {
     flex: 1,
@@ -842,7 +916,6 @@ const styles = StyleSheet.create({
     color: "#555",
     fontSize: 12,
   },
-
   daysGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -870,10 +943,8 @@ const styles = StyleSheet.create({
   },
   dayCircleToday: { backgroundColor: "#34495e" },
   dayText: { fontSize: 14, color: "#333", fontWeight: "bold" },
-
   markerRow: { flexDirection: "row", marginTop: 2, height: 6 },
   dot: { width: 6, height: 6, borderRadius: 3, marginHorizontal: 2 },
-
   divider: { height: 1, backgroundColor: "#ddd", marginVertical: 20 },
   detailTitle: {
     fontSize: 18,
@@ -881,7 +952,6 @@ const styles = StyleSheet.create({
     color: "#333",
     marginBottom: 15,
   },
-
   detailSection: {
     backgroundColor: "#fff",
     borderRadius: 12,
@@ -903,7 +973,6 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginVertical: 10,
   },
-
   eventCard: {
     backgroundColor: "#f9f9f9",
     padding: 12,
@@ -920,10 +989,7 @@ const styles = StyleSheet.create({
     borderLeftWidth: 3,
     borderLeftColor: "#9b59b6",
   },
-  eventCardHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
+  eventCardHeader: { flexDirection: "row", alignItems: "center" },
   badge: {
     paddingHorizontal: 8,
     paddingVertical: 3,
@@ -942,8 +1008,13 @@ const styles = StyleSheet.create({
   },
   badgeText: { fontSize: 10, fontWeight: "bold", color: "#333" },
   eventTitle: { fontSize: 14, color: "#333", fontWeight: "bold", flex: 1 },
+  periodText: {
+    fontSize: 11,
+    color: "#0077cc",
+    marginTop: 4,
+    fontWeight: "bold",
+  },
   eventMemoText: { fontSize: 13, color: "#666", marginTop: 8, marginLeft: 2 },
-
   reportCard: {
     backgroundColor: "#f9f9f9",
     padding: 12,
@@ -961,7 +1032,6 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   reportText: { fontSize: 12, color: "#555", marginTop: 2 },
-
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.5)",
@@ -981,13 +1051,18 @@ const styles = StyleSheet.create({
     color: "#333",
     marginBottom: 5,
   },
-  modalDateText: { fontSize: 14, color: "#e74c3c", fontWeight: "bold" },
   label: {
     fontSize: 14,
     fontWeight: "bold",
     color: "#555",
     marginBottom: 8,
     marginTop: 10,
+  },
+  subLabel: {
+    fontSize: 12,
+    fontWeight: "bold",
+    color: "#888",
+    marginBottom: 5,
   },
   input: {
     backgroundColor: "#f9f9f9",
@@ -1024,12 +1099,32 @@ const styles = StyleSheet.create({
   typeBtnText: { fontSize: 13, color: "#555", fontWeight: "bold" },
   typeBtnTextActive: { color: "#3498db" },
 
-  privateNotice: {
-    fontSize: 12,
-    color: "#e67e22",
-    marginTop: 10,
-    textAlign: "center",
+  dateAdjusterContainer: {
+    backgroundColor: "#fdfdfd",
+    padding: 15,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#ddd",
+    marginBottom: 10,
+    alignItems: "center",
+  },
+  dateAdjusterRow: { flexDirection: "row", alignItems: "center", marginTop: 5 },
+  dateAdjustBtn: {
+    backgroundColor: "#f0f0f0",
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    justifyContent: "center",
+    alignItems: "center",
+    marginHorizontal: 15,
+  },
+  dateAdjustBtnText: { fontSize: 18, fontWeight: "bold", color: "#333" },
+  dateAdjustValue: {
+    fontSize: 18,
     fontWeight: "bold",
+    color: "#3498db",
+    minWidth: 120,
+    textAlign: "center",
   },
 
   modalButtons: {

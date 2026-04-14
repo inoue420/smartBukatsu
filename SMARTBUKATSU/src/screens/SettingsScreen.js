@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   View,
   Text,
@@ -11,8 +11,18 @@ import {
   Platform,
   Switch,
   Modal,
+  Clipboard,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { useAuth } from "../AuthContext";
+import { auth } from "../firebase"; // ★追加
+import {
+  getTeamInviteCode,
+  subscribeTeamData,
+  addTeamArrayItem,
+  removeTeamArrayItem,
+  updateUserName, // ★追加
+} from "../services/firestoreService";
 
 const ThresholdSelector = ({ label, value, min, max, onChange }) => (
   <View style={styles.thresholdRow}>
@@ -81,23 +91,47 @@ const SettingsScreen = ({
   setMemberPassword,
   clubMembers,
   setClubMembers,
-  grades,
-  setGrades,
-  positions,
-  setPositions,
   alertThresholds,
   setAlertThresholds,
   userProfiles,
   setUserProfiles,
 }) => {
-  const currentUserProfile = userProfiles[currentUser] || {};
+  const { activeTeamId } = useAuth();
+  const [inviteCode, setInviteCode] = useState("読み込み中...");
 
-  // ★ ここが修正の要！ グローバル変数(global.TEST_ROLE)があれば最優先にする！
+  const [grades, setGrades] = useState([]);
+  const [positions, setPositions] = useState([]);
+
+  const currentUserProfile = userProfiles[currentUser] || {};
   const userRole =
     global.TEST_ROLE ||
     (isAdmin ? "owner" : currentUserProfile.role || "member");
+  const isStaffOrAbove = ["owner", "staff", "admin"].includes(userRole);
 
-  const isStaffOrAbove = ["owner", "staff"].includes(userRole);
+  useEffect(() => {
+    if (!activeTeamId) return;
+
+    let isMounted = true;
+    const fetchInvite = async () => {
+      if (isStaffOrAbove) {
+        const code = await getTeamInviteCode(activeTeamId);
+        if (isMounted) setInviteCode(code || "未発行");
+      }
+    };
+    fetchInvite();
+
+    const unsubscribe = subscribeTeamData(activeTeamId, (data) => {
+      if (data) {
+        setGrades(data.grades || []);
+        setPositions(data.positions || []);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
+  }, [activeTeamId, isStaffOrAbove]);
 
   const [newAdminPass, setNewAdminPass] = useState(adminPassword);
   const [newMemberPass, setNewMemberPass] = useState(memberPassword);
@@ -109,6 +143,7 @@ const SettingsScreen = ({
   const [newPositionName, setNewPositionName] = useState("");
 
   const [expanded, setExpanded] = useState({
+    teamInfo: true,
     alert: false,
     password: false,
     member: false,
@@ -118,14 +153,18 @@ const SettingsScreen = ({
     myPassword: false,
   });
 
+  // ★ 修正：currentUserが変わったら入力欄も追従する
   const [myNewName, setMyNewName] = useState(currentUser);
+  useEffect(() => {
+    setMyNewName(currentUser);
+  }, [currentUser]);
+
   const [myGrade, setMyGrade] = useState(
     userProfiles[currentUser]?.grade || "",
   );
   const [myPosition, setMyPosition] = useState(
     userProfiles[currentUser]?.position || "",
   );
-
   const [myPassword, setMyPassword] = useState(
     userProfiles[currentUser]?.password || "",
   );
@@ -144,6 +183,7 @@ const SettingsScreen = ({
 
   const roleConfig = {
     owner: { label: "監督(オーナー)", color: "#e74c3c", bg: "#fceeea" },
+    admin: { label: "管理者", color: "#e74c3c", bg: "#fceeea" },
     staff: { label: "スタッフ", color: "#9b59b6", bg: "#f5eef8" },
     captain: { label: "キャプテン", color: "#e67e22", bg: "#fdf2e9" },
     member: { label: "一般部員", color: "#3498db", bg: "#ebf5fb" },
@@ -151,7 +191,7 @@ const SettingsScreen = ({
 
   const staffList = clubMembers.filter((m) => {
     const r = userProfiles[m]?.role;
-    return r === "owner" || r === "staff";
+    return r === "owner" || r === "staff" || r === "admin";
   });
 
   const toggleSection = (sectionKey) => {
@@ -168,7 +208,13 @@ const SettingsScreen = ({
     Alert.alert("保存完了", "チームの共通パスワードを更新しました。");
   };
 
-  const handleAddItem = (itemName, list, setList, setNewItemName, label) => {
+  const handleAddItemLocal = (
+    itemName,
+    list,
+    setList,
+    setNewItemName,
+    label,
+  ) => {
     const trimmed = itemName.trim();
     if (trimmed === "") return;
     if (list.includes(trimmed)) {
@@ -179,7 +225,7 @@ const SettingsScreen = ({
     setNewItemName("");
   };
 
-  const handleDeleteItem = (itemName, list, setList, label) => {
+  const handleDeleteItemLocal = (itemName, list, setList, label) => {
     Alert.alert(`${label}の削除`, `${itemName} をリストから削除しますか？`, [
       { text: "キャンセル", style: "cancel" },
       {
@@ -190,44 +236,55 @@ const SettingsScreen = ({
     ]);
   };
 
-  const handleSaveMemberProfile = () => {
+  const handleAddTeamArrayItem = async (field, value, setter) => {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    try {
+      await addTeamArrayItem(activeTeamId, field, trimmed);
+      setter("");
+    } catch (error) {
+      Alert.alert("エラー", "追加に失敗しました。権限を確認してください。");
+    }
+  };
+
+  const handleDeleteTeamArrayItem = (field, value, label) => {
+    Alert.alert(`${label}の削除`, `「${value}」を削除しますか？`, [
+      { text: "キャンセル", style: "cancel" },
+      {
+        text: "削除",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await removeTeamArrayItem(activeTeamId, field, value);
+          } catch (error) {
+            Alert.alert("エラー", "削除に失敗しました。");
+          }
+        },
+      },
+    ]);
+  };
+
+  // ★ 修正：Firestoreのユーザー名を更新するように変更
+  const handleSaveMemberProfile = async () => {
     const trimmedName = myNewName.trim();
     if (trimmedName === "") {
       Alert.alert("エラー", "名前を入力してください。");
       return;
     }
 
-    let updatedProfiles = { ...userProfiles };
-    let updatedMembers = [...clubMembers];
-
-    if (trimmedName !== currentUser) {
-      if (clubMembers.includes(trimmedName)) {
-        Alert.alert("エラー", "その名前は既に他の部員が使用しています。");
-        return;
+    try {
+      const uid = auth.currentUser?.uid;
+      if (uid) {
+        await updateUserName(uid, trimmedName);
       }
-      updatedMembers = updatedMembers.map((m) =>
-        m === currentUser ? trimmedName : m,
+      Alert.alert(
+        "保存完了",
+        "プロフィールを更新しました。\n変更はアプリ全体に即座に反映されます。",
       );
-      updatedProfiles[trimmedName] = {
-        ...updatedProfiles[currentUser],
-        grade: myGrade,
-        position: myPosition,
-      };
-      delete updatedProfiles[currentUser];
-    } else {
-      updatedProfiles[currentUser] = {
-        ...updatedProfiles[currentUser],
-        grade: myGrade,
-        position: myPosition,
-      };
+    } catch (error) {
+      console.log(error);
+      Alert.alert("エラー", "プロフィールの更新に失敗しました。");
     }
-
-    setClubMembers(updatedMembers);
-    setUserProfiles(updatedProfiles);
-    if (trimmedName !== currentUser) {
-      setCurrentUser(trimmedName);
-    }
-    Alert.alert("保存完了", "プロフィールを更新しました。");
   };
 
   const handleSaveMemberPassword = () => {
@@ -325,6 +382,14 @@ const SettingsScreen = ({
     setSelectedStaffForScope(null);
   };
 
+  const copyToClipboard = (text, label) => {
+    Clipboard.setString(text);
+    Alert.alert(
+      "コピー完了",
+      `${label}をコピーしました。部員に送ってください。`,
+    );
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <KeyboardAvoidingView
@@ -364,7 +429,7 @@ const SettingsScreen = ({
                   placeholder="表示名"
                 />
                 <Text style={styles.hintText}>
-                  ※過去の投稿の名前はそのまま残ります。
+                  ※変更するとアプリ全体の表示名が切り替わります。
                 </Text>
 
                 <Text style={[styles.label, { marginTop: 15 }]}>学年</Text>
@@ -443,6 +508,69 @@ const SettingsScreen = ({
               <Text style={styles.sectionDescription}>
                 チームの管理・設定を行うことができます。
               </Text>
+
+              {/* Profile setup for admin */}
+              <SectionCard
+                isExp={expanded.myProfile}
+                onToggle={() => toggleSection("myProfile")}
+                title="👤 あなたのプロフィール設定"
+              >
+                <Text style={styles.label}>
+                  表示名（本名またはニックネーム）
+                </Text>
+                <TextInput
+                  style={styles.input}
+                  value={myNewName}
+                  onChangeText={setMyNewName}
+                  placeholder="表示名"
+                />
+                <Text style={styles.hintText}>
+                  ※変更するとアプリ全体の表示名が切り替わります。
+                </Text>
+                <TouchableOpacity
+                  style={styles.saveBtn}
+                  onPress={handleSaveMemberProfile}
+                >
+                  <Text style={styles.saveBtnText}>プロフィールを保存</Text>
+                </TouchableOpacity>
+              </SectionCard>
+
+              <SectionCard
+                isExp={expanded.teamInfo}
+                onToggle={() => toggleSection("teamInfo")}
+                title="🏟️ 所属チーム・入部用コード"
+              >
+                <View style={styles.idInfoBox}>
+                  <Text style={styles.idLabel}>
+                    部員に教える【招待コード】:
+                  </Text>
+                  <Text style={styles.idValueHighlight}>{inviteCode}</Text>
+                  <TouchableOpacity
+                    style={styles.copySubBtn}
+                    onPress={() => copyToClipboard(inviteCode, "招待コード")}
+                  >
+                    <Text style={styles.copySubBtnText}>
+                      招待コードをコピー
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+                <View
+                  style={[
+                    styles.idInfoBox,
+                    {
+                      marginTop: 15,
+                      borderTopWidth: 1,
+                      borderTopColor: "#eee",
+                      paddingTop: 15,
+                    },
+                  ]}
+                >
+                  <Text style={styles.idLabel}>チームID (システム用):</Text>
+                  <Text style={styles.idValueSmall}>
+                    {activeTeamId || "---"}
+                  </Text>
+                </View>
+              </SectionCard>
 
               <SectionCard
                 isExp={expanded.alert}
@@ -566,7 +694,7 @@ const SettingsScreen = ({
                   <TouchableOpacity
                     style={styles.addMemberBtn}
                     onPress={() =>
-                      handleAddItem(
+                      handleAddItemLocal(
                         newMemberName,
                         clubMembers,
                         setClubMembers,
@@ -592,7 +720,7 @@ const SettingsScreen = ({
                           <Text style={styles.memberName}>{name}</Text>
                           <TouchableOpacity
                             onPress={() =>
-                              handleDeleteItem(
+                              handleDeleteItemLocal(
                                 name,
                                 clubMembers,
                                 setClubMembers,
@@ -603,7 +731,6 @@ const SettingsScreen = ({
                             <Text style={styles.deleteText}>削除</Text>
                           </TouchableOpacity>
                         </View>
-
                         <View style={{ alignItems: "flex-end" }}>
                           <TouchableOpacity
                             style={[
@@ -625,7 +752,6 @@ const SettingsScreen = ({
                               {roleData.label} ▾
                             </Text>
                           </TouchableOpacity>
-
                           {(memberRole === "member" ||
                             memberRole === "captain") && (
                             <TouchableOpacity
@@ -637,7 +763,6 @@ const SettingsScreen = ({
                               </Text>
                             </TouchableOpacity>
                           )}
-
                           {memberRole === "staff" && (
                             <TouchableOpacity
                               style={styles.subSettingBadge}
@@ -679,12 +804,10 @@ const SettingsScreen = ({
                       { backgroundColor: "#f39c12" },
                     ]}
                     onPress={() =>
-                      handleAddItem(
+                      handleAddTeamArrayItem(
+                        "grades",
                         newGradeName,
-                        grades,
-                        setGrades,
                         setNewGradeName,
-                        "学年",
                       )
                     }
                   >
@@ -697,13 +820,16 @@ const SettingsScreen = ({
                       <Text style={styles.memberName}>{g}</Text>
                       <TouchableOpacity
                         onPress={() =>
-                          handleDeleteItem(g, grades, setGrades, "学年")
+                          handleDeleteTeamArrayItem("grades", g, "学年")
                         }
                       >
                         <Text style={styles.deleteText}>削除</Text>
                       </TouchableOpacity>
                     </View>
                   ))}
+                  {grades.length === 0 && (
+                    <Text style={styles.emptyText}>登録がありません</Text>
+                  )}
                 </View>
               </SectionCard>
 
@@ -725,12 +851,10 @@ const SettingsScreen = ({
                       { backgroundColor: "#e67e22" },
                     ]}
                     onPress={() =>
-                      handleAddItem(
+                      handleAddTeamArrayItem(
+                        "positions",
                         newPositionName,
-                        positions,
-                        setPositions,
                         setNewPositionName,
-                        "ポジション",
                       )
                     }
                   >
@@ -743,10 +867,9 @@ const SettingsScreen = ({
                       <Text style={styles.memberName}>{p}</Text>
                       <TouchableOpacity
                         onPress={() =>
-                          handleDeleteItem(
+                          handleDeleteTeamArrayItem(
+                            "positions",
                             p,
-                            positions,
-                            setPositions,
                             "ポジション",
                           )
                         }
@@ -755,12 +878,14 @@ const SettingsScreen = ({
                       </TouchableOpacity>
                     </View>
                   ))}
+                  {positions.length === 0 && (
+                    <Text style={styles.emptyText}>登録がありません</Text>
+                  )}
                 </View>
               </SectionCard>
             </>
           )}
-
-          <View style={{ height: 50 }} />
+          <View style={{ height: 100 }} />
         </ScrollView>
       </KeyboardAvoidingView>
 
@@ -774,7 +899,6 @@ const SettingsScreen = ({
             <Text style={styles.modalTitle}>
               {selectedMemberForRole} の権限を変更
             </Text>
-
             {userRole === "owner" && (
               <TouchableOpacity
                 style={[
@@ -790,7 +914,6 @@ const SettingsScreen = ({
                 </Text>
               </TouchableOpacity>
             )}
-
             <TouchableOpacity
               style={[
                 styles.roleSelectBtn,
@@ -804,7 +927,6 @@ const SettingsScreen = ({
                 プロジェクトの作成や消去、全体への連絡が可能です。他メンバーの通報・メディカルは見られません。
               </Text>
             </TouchableOpacity>
-
             <TouchableOpacity
               style={[
                 styles.roleSelectBtn,
@@ -819,7 +941,6 @@ const SettingsScreen = ({
                 プロジェクトの閲覧やタグ付け、自身のメディカル入力のみが可能です。
               </Text>
             </TouchableOpacity>
-
             <TouchableOpacity
               style={styles.cancelBtn}
               onPress={() => setIsRoleModalVisible(false)}
@@ -886,7 +1007,6 @@ const SettingsScreen = ({
             <Text style={styles.settingHint}>
               日記やメディカル情報をどこまで閲覧できるか設定します。
             </Text>
-
             <TouchableOpacity
               style={[
                 styles.roleSelectBtn,
@@ -903,7 +1023,6 @@ const SettingsScreen = ({
                 すべての部員の記録を閲覧できます。
               </Text>
             </TouchableOpacity>
-
             <TouchableOpacity
               style={[
                 styles.roleSelectBtn,
@@ -919,7 +1038,6 @@ const SettingsScreen = ({
                 自分が担当に設定されている部員の記録のみ閲覧できます。
               </Text>
             </TouchableOpacity>
-
             <TouchableOpacity
               style={styles.cancelBtn}
               onPress={() => setIsStaffScopeModalVisible(false)}
@@ -958,7 +1076,6 @@ const styles = StyleSheet.create({
     marginBottom: 15,
     textAlign: "center",
   },
-
   card: {
     backgroundColor: "#fff",
     borderRadius: 12,
@@ -981,7 +1098,6 @@ const styles = StyleSheet.create({
   cardTitle: { fontSize: 16, fontWeight: "bold", color: "#333" },
   chevron: { fontSize: 16, color: "#888", fontWeight: "bold" },
   cardContent: { padding: 20, paddingTop: 15 },
-
   subText: { fontSize: 12, color: "#666", marginBottom: 15 },
   label: { fontSize: 14, fontWeight: "bold", color: "#555", marginBottom: 5 },
   input: {
@@ -1002,7 +1118,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   hintText: { fontSize: 11, color: "#888", marginTop: 4 },
-
   optionBtn: {
     backgroundColor: "#f0f0f0",
     paddingHorizontal: 15,
@@ -1018,7 +1133,6 @@ const styles = StyleSheet.create({
   },
   optionText: { fontSize: 13, color: "#555" },
   optionTextActive: { color: "#27ae60", fontWeight: "bold" },
-
   thresholdRow: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -1062,7 +1176,6 @@ const styles = StyleSheet.create({
     marginTop: 4,
     marginRight: 10,
   },
-
   passwordRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -1114,7 +1227,6 @@ const styles = StyleSheet.create({
   },
   deleteText: { color: "#e74c3c", fontWeight: "bold", fontSize: 12 },
   emptyText: { padding: 15, textAlign: "center", color: "#888" },
-
   roleBadge: {
     paddingHorizontal: 12,
     paddingVertical: 6,
@@ -1122,7 +1234,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   roleBadgeText: { fontSize: 12, fontWeight: "bold" },
-
   subSettingBadge: {
     paddingHorizontal: 8,
     paddingVertical: 4,
@@ -1130,13 +1241,9 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
     borderWidth: 1,
     borderColor: "#ccc",
+    marginTop: 6,
   },
-  subSettingText: {
-    fontSize: 10,
-    color: "#666",
-    fontWeight: "bold",
-  },
-
+  subSettingText: { fontSize: 10, color: "#666", fontWeight: "bold" },
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.5)",
@@ -1164,22 +1271,14 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     marginBottom: 10,
   },
-  roleSelectBtnActive: {
-    backgroundColor: "#ebf5fb",
-    borderColor: "#3498db",
-  },
+  roleSelectBtnActive: { backgroundColor: "#ebf5fb", borderColor: "#3498db" },
   roleSelectTitle: {
     fontSize: 15,
     fontWeight: "bold",
     color: "#333",
     marginBottom: 6,
   },
-  roleSelectDesc: {
-    fontSize: 12,
-    color: "#666",
-    lineHeight: 18,
-  },
-
+  roleSelectDesc: { fontSize: 12, color: "#666", lineHeight: 18 },
   optionBtnFull: {
     padding: 15,
     borderBottomWidth: 1,
@@ -1197,17 +1296,25 @@ const styles = StyleSheet.create({
     marginBottom: 15,
     textAlign: "center",
   },
-
-  cancelBtn: {
-    marginTop: 10,
-    paddingVertical: 12,
-    alignItems: "center",
-  },
-  cancelBtnText: {
-    fontSize: 15,
+  cancelBtn: { marginTop: 10, paddingVertical: 12, alignItems: "center" },
+  cancelBtnText: { fontSize: 15, fontWeight: "bold", color: "#888" },
+  idInfoBox: { alignItems: "center", paddingVertical: 10 },
+  idLabel: { fontSize: 12, color: "#888", fontWeight: "bold", marginBottom: 5 },
+  idValueHighlight: {
+    fontSize: 32,
     fontWeight: "bold",
-    color: "#888",
+    color: "#0077cc",
+    letterSpacing: 3,
+    marginBottom: 10,
   },
+  idValueSmall: { fontSize: 12, color: "#aaa", fontFamily: "monospace" },
+  copySubBtn: {
+    backgroundColor: "#e6f2ff",
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 20,
+  },
+  copySubBtnText: { color: "#0077cc", fontSize: 13, fontWeight: "bold" },
 });
 
 export default SettingsScreen;

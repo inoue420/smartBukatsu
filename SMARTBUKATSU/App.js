@@ -4,13 +4,15 @@ import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { Alert, LogBox, ActivityIndicator, View } from "react-native";
 import NetInfo from "@react-native-community/netinfo";
 
-// コンテキストとサービス
 import { AuthProvider, useAuth } from "./src/AuthContext";
-import { subscribeProjects } from "./src/services/firestoreService";
+// ★変更：subscribeNotices を追加でインポート！
+import {
+  subscribeProjects,
+  subscribeNotices,
+} from "./src/services/firestoreService";
 
-// 画面
 import LoginScreen from "./src/screens/LoginScreen";
-import TeamSetupScreen from "./src/screens/TeamSetupScreen"; // ★追加
+import TeamSetupScreen from "./src/screens/TeamSetupScreen";
 import WorkspaceHomeScreen from "./src/screens/WorkspaceHomeScreen";
 import NoticeBoardScreen from "./src/screens/NoticeBoardScreen";
 import SettingsScreen from "./src/screens/SettingsScreen";
@@ -22,20 +24,15 @@ import CalendarScreen from "./src/screens/CalendarScreen";
 LogBox.ignoreLogs(["[expo-av]"]);
 const Stack = createNativeStackNavigator();
 
-/**
- * メインのコンテンツ部分
- * AuthProviderの内側に配置することで、useAuth() から
- * ログインユーザー情報やチームIDを取得できるようにします。
- */
 function AppContent() {
   const {
     user,
+    userName,
     activeTeamId,
     isAdmin: authIsAdmin,
     loading: authLoading,
   } = useAuth();
 
-  // --- アプリ全体で共有する状態（UI用） ---
   const [projects, setProjects] = useState([]);
   const [clubMembers, setClubMembers] = useState(["キャプテン", "部員1"]);
   const [grades, setGrades] = useState(["1年", "2年", "3年"]);
@@ -56,21 +53,32 @@ function AppContent() {
   const [dailyReports, setDailyReports] = useState([]);
   const [personalEvents, setPersonalEvents] = useState([]);
 
-  // ★Firestoreのリアルタイム購読
-  // ログイン済み かつ チーム所属済み の時だけデータを取ってくる
+  // ★変更：プロジェクトに加えて、掲示板のデータもリアルタイム監視を開始！
   useEffect(() => {
     if (user && activeTeamId) {
       console.log("Firestore購読開始 (Team ID):", activeTeamId);
-      const unsubscribe = subscribeProjects(activeTeamId, (fetchedProjects) => {
-        setProjects(fetchedProjects);
+
+      const unsubProjects = subscribeProjects(
+        activeTeamId,
+        (fetchedProjects) => {
+          setProjects(fetchedProjects);
+        },
+      );
+
+      const unsubNotices = subscribeNotices(activeTeamId, (fetchedNotices) => {
+        setNotices(fetchedNotices);
       });
-      return () => unsubscribe();
+
+      return () => {
+        unsubProjects();
+        unsubNotices();
+      };
     } else {
       setProjects([]);
+      setNotices([]);
     }
   }, [user, activeTeamId]);
 
-  // オフライン状態の監視
   useEffect(() => {
     const unsubscribe = NetInfo.addEventListener((state) => {
       setIsOffline(!state.isConnected);
@@ -78,7 +86,6 @@ function AppContent() {
     return () => unsubscribe();
   }, []);
 
-  // 認証情報の読み込み中はローディング画面を表示
   if (authLoading) {
     return (
       <View
@@ -93,10 +100,6 @@ function AppContent() {
     );
   }
 
-  // ★ナビゲーションの初期画面（初期ルート）のロジック
-  // 1. 未ログインなら「Login」
-  // 2. ログイン済みだがチーム未設定なら「TeamSetup」
-  // 3. ログイン済みかつチーム設定済みなら「WorkspaceHome」
   const initialRoute = !user
     ? "Login"
     : !activeTeamId
@@ -109,18 +112,17 @@ function AppContent() {
         initialRouteName={initialRoute}
         screenOptions={{ headerShown: false }}
       >
-        {/* 認証・初期設定フロー */}
         <Stack.Screen name="Login" component={LoginScreen} />
         <Stack.Screen name="TeamSetup" component={TeamSetupScreen} />
 
-        {/* メイン機能 */}
         <Stack.Screen name="WorkspaceHome">
           {(props) => (
             <WorkspaceHomeScreen
               {...props}
               isAdmin={authIsAdmin}
-              currentUser={user?.email || ""}
+              currentUser={userName}
               notices={notices}
+              setNotices={setNotices}
               posts={posts}
               setPosts={setPosts}
               isOffline={isOffline}
@@ -137,7 +139,7 @@ function AppContent() {
             <NoticeBoardScreen
               {...props}
               isAdmin={authIsAdmin}
-              currentUser={user?.email || ""}
+              currentUser={userName}
               notices={notices}
               setNotices={setNotices}
               isOffline={isOffline}
@@ -151,7 +153,7 @@ function AppContent() {
             <DiaryScreen
               {...props}
               isAdmin={authIsAdmin}
-              currentUser={user?.email || ""}
+              currentUser={userName}
               isOffline={isOffline}
               grades={grades}
               positions={positions}
@@ -170,7 +172,7 @@ function AppContent() {
             <CalendarScreen
               {...props}
               isAdmin={authIsAdmin}
-              currentUser={user?.email || ""}
+              currentUser={userName}
               projects={projects}
               setProjects={setProjects}
               dailyReports={dailyReports}
@@ -187,7 +189,7 @@ function AppContent() {
             <ProjectListScreen
               {...props}
               isAdmin={authIsAdmin}
-              currentUser={user?.email || ""}
+              currentUser={userName}
               projects={projects}
               setProjects={setProjects}
               userProfiles={userProfiles}
@@ -200,7 +202,7 @@ function AppContent() {
             <ProjectDetailScreen
               {...props}
               isAdmin={authIsAdmin}
-              currentUser={user?.email || ""}
+              currentUser={userName}
               clubMembers={clubMembers}
               userProfiles={userProfiles}
               projects={projects}
@@ -214,7 +216,7 @@ function AppContent() {
             <SettingsScreen
               {...props}
               isAdmin={authIsAdmin}
-              currentUser={user?.email || ""}
+              currentUser={userName}
               clubMembers={clubMembers}
               setClubMembers={setClubMembers}
               grades={grades}
@@ -233,9 +235,6 @@ function AppContent() {
   );
 }
 
-/**
- * エントリーポイント
- */
 export default function App() {
   return (
     <AuthProvider>

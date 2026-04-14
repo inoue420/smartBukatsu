@@ -52,6 +52,7 @@ assets/icon.png
 assets/splash-icon.png
 index.js
 package.json
+src/.env.example
 src/AuthContext.js
 src/constants.js
 src/firebase.js
@@ -66,6 +67,7 @@ src/screens/ProjectDetailScreen.js
 src/screens/ProjectListScreen.js
 src/screens/SettingsScreen.js
 src/screens/TaggingScreen.js
+src/screens/TeamSetupScreen.js
 src/screens/VideoListScreen.js
 src/screens/WorkspaceHomeScreen.js
 src/services/firestoreService.js
@@ -155,18 +157,22 @@ Thumbs.db
 
 <file path="app.config.js">
 // app.config.js（CJS版・.env.local対応）
-const path = require('path');
-const dotenvFlow = require('dotenv-flow');
-const dotenvExpand = require('dotenv-expand');
-const appJson = require('./app.json');
+const path = require("path");
+const dotenvFlow = require("dotenv-flow");
+const dotenvExpand = require("dotenv-expand");
+const appJson = require("./app.json");
 
 dotenvExpand.expand(
   dotenvFlow.config({
-    path: path.resolve(__dirname),   // ルート直下の .env* を読む（.env.local 最優先）
-    default_node_env: 'development',
-  })
+    path: path.resolve(__dirname), // ルート直下の .env* を読む（.env.local 最優先）
+    default_node_env: "development",
+  }),
 );
-
+// ↓↓↓ ここから追加 ↓↓↓
+console.log("========== 環境変数のチェック ==========");
+console.log("APIキーは入ってる？: ", process.env.EXPO_PUBLIC_FIREBASE_API_KEY);
+console.log("=======================================");
+// ↑↑↑ ここまで追加 ↑↑↑
 module.exports = {
   expo: {
     ...appJson.expo,
@@ -187,15 +193,16 @@ module.exports = {
 import React, { useState, useEffect } from "react";
 import { NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
-import { Alert, LogBox } from "react-native";
+import { Alert, LogBox, ActivityIndicator, View } from "react-native";
 import NetInfo from "@react-native-community/netinfo";
 
-import { AuthProvider } from "./src/AuthContext";
+// コンテキストとサービス
+import { AuthProvider, useAuth } from "./src/AuthContext";
+import { subscribeProjects } from "./src/services/firestoreService";
 
-// expo-avの非推奨警告を画面上で非表示にする
-LogBox.ignoreLogs(["[expo-av]"]);
-
+// 画面
 import LoginScreen from "./src/screens/LoginScreen";
+import TeamSetupScreen from "./src/screens/TeamSetupScreen";
 import WorkspaceHomeScreen from "./src/screens/WorkspaceHomeScreen";
 import NoticeBoardScreen from "./src/screens/NoticeBoardScreen";
 import SettingsScreen from "./src/screens/SettingsScreen";
@@ -204,267 +211,228 @@ import ProjectListScreen from "./src/screens/ProjectListScreen";
 import ProjectDetailScreen from "./src/screens/ProjectDetailScreen";
 import CalendarScreen from "./src/screens/CalendarScreen";
 
+LogBox.ignoreLogs(["[expo-av]"]);
 const Stack = createNativeStackNavigator();
 
-export default function App() {
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [currentUser, setCurrentUser] = useState("");
+/**
+ * メインのコンテンツ部分
+ * AuthProviderの内側に配置することで、useAuth() から
+ * ログインユーザー情報やチームIDを取得できるようにします。
+ */
+function AppContent() {
+  const {
+    user,
+    activeTeamId,
+    isAdmin: authIsAdmin,
+    loading: authLoading,
+  } = useAuth();
 
-  const [adminPassword, setAdminPassword] = useState("1952");
-  const [memberPassword, setMemberPassword] = useState("1234");
-
+  // --- アプリ全体で共有する状態（UI用） ---
+  const [projects, setProjects] = useState([]);
   const [clubMembers, setClubMembers] = useState(["キャプテン", "部員1"]);
   const [grades, setGrades] = useState(["1年", "2年", "3年"]);
   const [positions, setPositions] = useState(["CP", "GK", "マネージャー"]);
-
   const [userProfiles, setUserProfiles] = useState({
     キャプテン: { role: "captain" },
     部員1: { role: "member" },
   });
-
   const [alertThresholds, setAlertThresholds] = useState({
     fatigueWarning: 7,
     fatigueDanger: 9,
     painDanger: 7,
     autoEscalate: true,
   });
-
   const [isOffline, setIsOffline] = useState(false);
   const [posts, setPosts] = useState([]);
   const [notices, setNotices] = useState([]);
   const [dailyReports, setDailyReports] = useState([]);
-  const [medicalRecords, setMedicalRecords] = useState([]);
-
-  // ★変更：初期データに動画URLとタグ(tags)の入れ物を追加
-  const [projects, setProjects] = useState([
-    {
-      id: "p1",
-      title: "秋季大会 vs 〇〇高校",
-      date: "2026/02/20",
-      type: "試合",
-      status: "active",
-      participants: "team",
-      pinned: false,
-      videoUrl: "https://d23dyxeqlo5psv.cloudfront.net/big_buck_bunny.mp4",
-      tags: [
-        { id: "t1", videoTime: 15, label: "👍 ナイスプレイ", user: "監督" },
-        { id: "t2", videoTime: 30, label: "🎯 チャンス", user: "キャプテン" },
-      ],
-      memos: [],
-    },
-    {
-      id: "p2",
-      title: "2月第3週 紅白戦",
-      date: "2026/02/15",
-      type: "練習",
-      status: "closed",
-      participants: "team",
-      pinned: false,
-      videoUrl: "https://d23dyxeqlo5psv.cloudfront.net/big_buck_bunny.mp4",
-      tags: [{ id: "t3", videoTime: 10, label: "🤔 要改善", user: "監督" }],
-      memos: [],
-    },
-  ]);
-
   const [personalEvents, setPersonalEvents] = useState([]);
 
+  // ★Firestoreのリアルタイム購読
+  // ログイン済み かつ チーム所属済み の時だけデータを取ってくる
+  useEffect(() => {
+    if (user && activeTeamId) {
+      console.log("Firestore購読開始 (Team ID):", activeTeamId);
+      const unsubscribe = subscribeProjects(activeTeamId, (fetchedProjects) => {
+        setProjects(fetchedProjects);
+      });
+      return () => unsubscribe();
+    } else {
+      setProjects([]);
+    }
+  }, [user, activeTeamId]);
+
+  // オフライン状態の監視
   useEffect(() => {
     const unsubscribe = NetInfo.addEventListener((state) => {
-      const currentlyOffline = !state.isConnected;
-
-      setIsOffline((prevOffline) => {
-        if (prevOffline && !currentlyOffline) {
-          let hasPending = false;
-
-          setPosts((prev) => {
-            let changed = false;
-            const newPosts = prev.map((p) => {
-              let postChanged = false;
-              let newP = { ...p };
-              if (newP.status === "pending") {
-                newP.status = "sent";
-                postChanged = true;
-                changed = true;
-              }
-              if (
-                newP.replies &&
-                newP.replies.some((r) => r.status === "pending")
-              ) {
-                newP.replies = newP.replies.map((r) =>
-                  r.status === "pending" ? { ...r, status: "sent" } : r,
-                );
-                postChanged = true;
-                changed = true;
-              }
-              return postChanged ? newP : p;
-            });
-            if (changed) hasPending = true;
-            return newPosts;
-          });
-
-          if (hasPending) {
-            setTimeout(() => {
-              Alert.alert(
-                "🌐 通信が復旧しました",
-                "オフライン時の待機データをすべて自動送信しました。",
-              );
-            }, 500);
-          }
-        }
-        return currentlyOffline;
-      });
+      setIsOffline(!state.isConnected);
     });
-
     return () => unsubscribe();
   }, []);
 
-  const toggleNetworkStatus = () => {
-    Alert.alert(
-      "自動判定中",
-      "現在は端末のネットワーク状態を自動で監視しています。",
+  // 認証情報の読み込み中はローディング画面を表示
+  if (authLoading) {
+    return (
+      <View
+        style={{
+          flex: 1,
+          justifyContent: "center",
+          backgroundColor: "#f0f2f5",
+        }}
+      >
+        <ActivityIndicator size="large" color="#0077cc" />
+      </View>
     );
-  };
+  }
+
+  // ★ナビゲーションの初期画面（初期ルート）のロジック
+  // 1. 未ログインなら「Login」
+  // 2. ログイン済みだがチーム未設定なら「TeamSetup」
+  // 3. ログイン済みかつチーム設定済みなら「WorkspaceHome」
+  const initialRoute = !user
+    ? "Login"
+    : !activeTeamId
+      ? "TeamSetup"
+      : "WorkspaceHome";
 
   return (
-    <AuthProvider isAdmin={isAdmin} currentUser={currentUser}>
-      <NavigationContainer>
-        <Stack.Navigator
-          initialRouteName="Login"
-          screenOptions={{ headerShown: false }}
-        >
-          <Stack.Screen name="Login">
-            {(props) => (
-              <LoginScreen
-                {...props}
-                setIsAdmin={setIsAdmin}
-                setCurrentUser={setCurrentUser}
-                adminPassword={adminPassword}
-                memberPassword={memberPassword}
-                clubMembers={clubMembers}
-                setClubMembers={setClubMembers}
-                grades={grades}
-                positions={positions}
-                userProfiles={userProfiles}
-              />
-            )}
-          </Stack.Screen>
-          <Stack.Screen name="WorkspaceHome">
-            {(props) => (
-              <WorkspaceHomeScreen
-                {...props}
-                isAdmin={isAdmin}
-                currentUser={currentUser}
-                notices={notices}
-                posts={posts}
-                setPosts={setPosts}
-                isOffline={isOffline}
-                toggleNetworkStatus={toggleNetworkStatus}
-                clubMembers={clubMembers}
-                alertThresholds={alertThresholds}
-                userProfiles={userProfiles}
-                dailyReports={dailyReports}
-              />
-            )}
-          </Stack.Screen>
-          <Stack.Screen name="NoticeBoard">
-            {(props) => (
-              <NoticeBoardScreen
-                {...props}
-                isAdmin={isAdmin}
-                currentUser={currentUser}
-                notices={notices}
-                setNotices={setNotices}
-                isOffline={isOffline}
-                userProfiles={userProfiles}
-              />
-            )}
-          </Stack.Screen>
-          <Stack.Screen name="Diary">
-            {(props) => (
-              <DiaryScreen
-                {...props}
-                isAdmin={isAdmin}
-                currentUser={currentUser}
-                isOffline={isOffline}
-                grades={grades}
-                positions={positions}
-                posts={posts}
-                setPosts={setPosts}
-                userProfiles={userProfiles}
-                dailyReports={dailyReports}
-                setDailyReports={setDailyReports}
-                alertThresholds={alertThresholds}
-              />
-            )}
-          </Stack.Screen>
-          <Stack.Screen name="Calendar">
-            {(props) => (
-              <CalendarScreen
-                {...props}
-                isAdmin={isAdmin}
-                currentUser={currentUser}
-                projects={projects}
-                setProjects={setProjects}
-                dailyReports={dailyReports}
-                userProfiles={userProfiles}
-                alertThresholds={alertThresholds}
-                personalEvents={personalEvents}
-                setPersonalEvents={setPersonalEvents}
-              />
-            )}
-          </Stack.Screen>
-          <Stack.Screen name="ProjectList">
-            {(props) => (
-              <ProjectListScreen
-                {...props}
-                isAdmin={isAdmin}
-                currentUser={currentUser}
-                projects={projects}
-                setProjects={setProjects}
-                userProfiles={userProfiles}
-              />
-            )}
-          </Stack.Screen>
-          <Stack.Screen name="ProjectDetail">
-            {(props) => (
-              <ProjectDetailScreen
-                {...props}
-                isAdmin={isAdmin}
-                currentUser={currentUser}
-                clubMembers={clubMembers}
-                userProfiles={userProfiles}
-                // ★追加：タグとメモを保存・読み込みするために projects と setProjects を渡す
-                projects={projects}
-                setProjects={setProjects}
-              />
-            )}
-          </Stack.Screen>
-          <Stack.Screen name="Settings">
-            {(props) => (
-              <SettingsScreen
-                {...props}
-                isAdmin={isAdmin}
-                currentUser={currentUser}
-                setCurrentUser={setCurrentUser}
-                adminPassword={adminPassword}
-                setAdminPassword={setAdminPassword}
-                memberPassword={memberPassword}
-                setMemberPassword={setMemberPassword}
-                clubMembers={clubMembers}
-                setClubMembers={setClubMembers}
-                grades={grades}
-                setGrades={setGrades}
-                positions={positions}
-                setPositions={setPositions}
-                alertThresholds={alertThresholds}
-                setAlertThresholds={setAlertThresholds}
-                userProfiles={userProfiles}
-                setUserProfiles={setUserProfiles}
-              />
-            )}
-          </Stack.Screen>
-        </Stack.Navigator>
-      </NavigationContainer>
+    <NavigationContainer>
+      <Stack.Navigator
+        initialRouteName={initialRoute}
+        screenOptions={{ headerShown: false }}
+      >
+        {/* 認証・初期設定フロー */}
+        <Stack.Screen name="Login" component={LoginScreen} />
+        <Stack.Screen name="TeamSetup" component={TeamSetupScreen} />
+
+        {/* メイン機能 */}
+        <Stack.Screen name="WorkspaceHome">
+          {(props) => (
+            <WorkspaceHomeScreen
+              {...props}
+              isAdmin={authIsAdmin}
+              currentUser={user?.email || ""}
+              notices={notices}
+              setNotices={setNotices} // ★ 修正箇所：ここを正しく追加しました！
+              posts={posts}
+              setPosts={setPosts}
+              isOffline={isOffline}
+              clubMembers={clubMembers}
+              alertThresholds={alertThresholds}
+              userProfiles={userProfiles}
+              dailyReports={dailyReports}
+            />
+          )}
+        </Stack.Screen>
+
+        <Stack.Screen name="NoticeBoard">
+          {(props) => (
+            <NoticeBoardScreen
+              {...props}
+              isAdmin={authIsAdmin}
+              currentUser={user?.email || ""}
+              notices={notices}
+              setNotices={setNotices}
+              isOffline={isOffline}
+              userProfiles={userProfiles}
+            />
+          )}
+        </Stack.Screen>
+
+        <Stack.Screen name="Diary">
+          {(props) => (
+            <DiaryScreen
+              {...props}
+              isAdmin={authIsAdmin}
+              currentUser={user?.email || ""}
+              isOffline={isOffline}
+              grades={grades}
+              positions={positions}
+              posts={posts}
+              setPosts={setPosts}
+              userProfiles={userProfiles}
+              dailyReports={dailyReports}
+              setDailyReports={setDailyReports}
+              alertThresholds={alertThresholds}
+            />
+          )}
+        </Stack.Screen>
+
+        <Stack.Screen name="Calendar">
+          {(props) => (
+            <CalendarScreen
+              {...props}
+              isAdmin={authIsAdmin}
+              currentUser={user?.email || ""}
+              projects={projects}
+              setProjects={setProjects}
+              dailyReports={dailyReports}
+              userProfiles={userProfiles}
+              alertThresholds={alertThresholds}
+              personalEvents={personalEvents}
+              setPersonalEvents={setPersonalEvents}
+            />
+          )}
+        </Stack.Screen>
+
+        <Stack.Screen name="ProjectList">
+          {(props) => (
+            <ProjectListScreen
+              {...props}
+              isAdmin={authIsAdmin}
+              currentUser={user?.email || ""}
+              projects={projects}
+              setProjects={setProjects}
+              userProfiles={userProfiles}
+            />
+          )}
+        </Stack.Screen>
+
+        <Stack.Screen name="ProjectDetail">
+          {(props) => (
+            <ProjectDetailScreen
+              {...props}
+              isAdmin={authIsAdmin}
+              currentUser={user?.email || ""}
+              clubMembers={clubMembers}
+              userProfiles={userProfiles}
+              projects={projects}
+              setProjects={setProjects}
+            />
+          )}
+        </Stack.Screen>
+
+        <Stack.Screen name="Settings">
+          {(props) => (
+            <SettingsScreen
+              {...props}
+              isAdmin={authIsAdmin}
+              currentUser={user?.email || ""}
+              clubMembers={clubMembers}
+              setClubMembers={setClubMembers}
+              grades={grades}
+              setGrades={setGrades}
+              positions={positions}
+              setPositions={setPositions}
+              alertThresholds={alertThresholds}
+              setAlertThresholds={setAlertThresholds}
+              userProfiles={userProfiles}
+              setUserProfiles={setUserProfiles}
+            />
+          )}
+        </Stack.Screen>
+      </Stack.Navigator>
+    </NavigationContainer>
+  );
+}
+
+/**
+ * エントリーポイント
+ */
+export default function App() {
+  return (
+    <AuthProvider>
+      <AppContent />
     </AuthProvider>
   );
 }
@@ -550,31 +518,131 @@ registerRootComponent(App);
 }
 </file>
 
+<file path="src/.env.example">
+EXPO_PUBLIC_FIREBASE_API_KEY=
+EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN=
+EXPO_PUBLIC_FIREBASE_PROJECT_ID=
+EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET=
+EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=
+EXPO_PUBLIC_FIREBASE_APP_ID=
+EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID=
+</file>
+
 <file path="src/AuthContext.js">
-import React, { createContext, useContext } from "react";
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
+import {
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  sendPasswordResetEmail,
+  signOut as fbSignOut,
+} from "firebase/auth";
+import {
+  doc,
+  getDoc,
+  onSnapshot,
+  serverTimestamp,
+  setDoc,
+} from "firebase/firestore";
+import { auth, db } from "./firebase";
 
-// 1. コンテキスト（データの通り道）を作成
-const AuthContext = createContext();
+const AuthContext = createContext(null);
 
-// 2. データをアプリ全体に提供するプロバイダー
-export const AuthProvider = ({ children, isAdmin, currentUser }) => {
-  // 各画面で `const { isAdmin, currentUser, user, activeTeamId } = useAuth();`
-  // のように呼び出せるように、必要な値をまとめておきます。
-  const value = {
-    isAdmin,
-    currentUser,
-    // 既存のFirebase連携コードなどと互換性を持たせるための安全対策（ダミーデータ）
-    user: { uid: currentUser || "guest_user" },
-    activeTeamId: "team_001",
-  };
+export function AuthProvider({ children }) {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [activeTeamId, setActiveTeamId] = useState(null);
+  const [role, setRole] = useState(null); // 'admin' | 'member' | null
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
-};
+  // Firebaseの認証状態を監視
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (u) => {
+      setUser(u || null);
+      setRole(null);
+      setActiveTeamId(null);
+      setLoading(false);
 
-// 3. 各画面で簡単にデータを呼び出せるようにするカスタムフック
-export const useAuth = () => {
-  return useContext(AuthContext);
-};
+      if (u?.uid) {
+        const ref = doc(db, "users", u.uid);
+        const snap = await getDoc(ref);
+        if (!snap.exists()) {
+          await setDoc(
+            ref,
+            { activeTeamId: "", createdAt: serverTimestamp() },
+            { merge: true },
+          );
+        }
+      }
+    });
+    return () => unsub();
+  }, []);
+
+  // ユーザーの所属チームIDを取得
+  useEffect(() => {
+    if (!user?.uid) return;
+    const ref = doc(db, "users", user.uid);
+    const unsub = onSnapshot(ref, (snap) => {
+      const data = snap.data() || {};
+      const t = typeof data.activeTeamId === "string" ? data.activeTeamId : "";
+      setActiveTeamId(t || null);
+    });
+    return () => unsub();
+  }, [user?.uid]);
+
+  // チーム内での権限（role）を取得
+  useEffect(() => {
+    if (!user?.uid || !activeTeamId) {
+      setRole(null);
+      return;
+    }
+    const ref = doc(db, "teams", activeTeamId, "members", user.uid);
+    const unsub = onSnapshot(ref, (snap) => {
+      const data = snap.data() || {};
+      setRole(data.role || null);
+    });
+    return () => unsub();
+  }, [user?.uid, activeTeamId]);
+
+  const api = useMemo(() => {
+    const signIn = async (email, password) => {
+      await signInWithEmailAndPassword(auth, email.trim(), password);
+    };
+    const signUp = async (email, password) => {
+      await createUserWithEmailAndPassword(auth, email.trim(), password);
+    };
+    const resetPassword = async (email) => {
+      await sendPasswordResetEmail(auth, email.trim());
+    };
+    const signOut = async () => {
+      await fbSignOut(auth);
+    };
+    return {
+      user,
+      loading,
+      activeTeamId,
+      role,
+      isAdmin: role === "admin",
+      signIn,
+      signUp,
+      resetPassword,
+      signOut,
+    };
+  }, [user, loading, activeTeamId, role]);
+
+  return <AuthContext.Provider value={api}>{children}</AuthContext.Provider>;
+}
+
+export function useAuth() {
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error("useAuth must be used within AuthProvider");
+  return ctx;
+}
 </file>
 
 <file path="src/constants.js">
@@ -590,28 +658,31 @@ export const PLAYBACK_MARGIN_END = 0.1;
 </file>
 
 <file path="src/firebase.js">
-// src/firebase.js
-import { initializeApp } from 'firebase/app';
-import { getFirestore } from 'firebase/firestore';
-import Constants from 'expo-constants';
+import { initializeApp, getApps, getApp } from "firebase/app";
+import { getFirestore } from "firebase/firestore";
+import { getAuth } from "firebase/auth";
+import Constants from "expo-constants";
 
-const extra =
-  (Constants.expoConfig && Constants.expoConfig.extra) ||
-  (Constants.manifest && Constants.manifest.extra) ||
-  {};
-
+/**
+ * app.config.js の extra で定義された名前と
+ * ピッタリ一致させる必要があります。
+ */
 const firebaseConfig = {
-  apiKey: extra.firebaseApiKey,
-  authDomain: extra.authDomain,
-  projectId: extra.projectId,
-  storageBucket: extra.storageBucket,
-  messagingSenderId: extra.messagingSenderId,
-  appId: extra.appId,
-  measurementId: extra.measurementId,
+  apiKey: Constants.expoConfig.extra.firebaseApiKey,
+  authDomain: Constants.expoConfig.extra.authDomain,
+  projectId: Constants.expoConfig.extra.projectId,
+  storageBucket: Constants.expoConfig.extra.storageBucket,
+  messagingSenderId: Constants.expoConfig.extra.messagingSenderId,
+  appId: Constants.expoConfig.extra.appId,
+  measurementId: Constants.expoConfig.extra.measurementId,
 };
 
-const app = initializeApp(firebaseConfig);
+// Firebase アプリの初期化
+const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+
+// 各サービスをエクスポート
 export const db = getFirestore(app);
+export const auth = getAuth(app);
 </file>
 
 <file path="src/screens/AddVideoScreen.js">
@@ -704,6 +775,29 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+// 日付操作のユーティリティ関数
+const getDatesInRange = (startDateStr, endDateStr) => {
+  const dates = [];
+  let curr = new Date(startDateStr.replace(/\//g, "-"));
+  const end = new Date(endDateStr.replace(/\//g, "-"));
+
+  while (curr <= end) {
+    const y = curr.getFullYear();
+    const m = String(curr.getMonth() + 1).padStart(2, "0");
+    const d = String(curr.getDate()).padStart(2, "0");
+    dates.push(`${y}/${m}/${d}`);
+    curr.setDate(curr.getDate() + 1);
+  }
+  return dates;
+};
+
+// ボタンで日付を前後にずらすための関数
+const adjustDateByDays = (dateStr, days) => {
+  const d = new Date(dateStr.replace(/\//g, "-"));
+  d.setDate(d.getDate() + days);
+  return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
+};
+
 const CalendarScreen = ({
   navigation,
   isAdmin,
@@ -712,8 +806,8 @@ const CalendarScreen = ({
   setProjects,
   dailyReports,
   userProfiles = {},
-  personalEvents = [], // ★追加: 個人の予定
-  setPersonalEvents, // ★追加: 個人の予定更新用関数
+  personalEvents = [],
+  setPersonalEvents,
   alertThresholds = {
     fatigueWarning: 7,
     fatigueDanger: 9,
@@ -722,11 +816,12 @@ const CalendarScreen = ({
   },
 }) => {
   const currentUserProfile = userProfiles[currentUser] || {};
-  const userRole = isAdmin ? "owner" : currentUserProfile.role || "member";
+  const userRole =
+    global.TEST_ROLE ||
+    (isAdmin ? "owner" : currentUserProfile.role || "member");
   const isStaffOrAbove = ["owner", "staff"].includes(userRole);
   const staffScope = currentUserProfile.staffScope || "all";
 
-  // 今日の日付を取得
   const today = new Date();
   const todayString = `${today.getFullYear()}/${String(today.getMonth() + 1).padStart(2, "0")}/${String(today.getDate()).padStart(2, "0")}`;
 
@@ -739,17 +834,20 @@ const CalendarScreen = ({
   const [isEventModalVisible, setIsEventModalVisible] = useState(false);
   const [editingEventId, setEditingEventId] = useState(null);
   const [eventTitle, setEventTitle] = useState("");
+  const [isEventMultiDay, setIsEventMultiDay] = useState(false);
+  const [eventEndDate, setEventEndDate] = useState(todayString);
   const [eventType, setEventType] = useState("練習");
   const [eventParticipants, setEventParticipants] = useState("team");
   const [eventMemo, setEventMemo] = useState("");
 
-  // === ★新規追加：個人の予定用ステート ===
+  // === 個人の予定用ステート ===
   const [isPersonalModalVisible, setIsPersonalModalVisible] = useState(false);
   const [editingPersonalId, setEditingPersonalId] = useState(null);
   const [personalTitle, setPersonalTitle] = useState("");
+  const [isPersonalMultiDay, setIsPersonalMultiDay] = useState(false);
+  const [personalEndDate, setPersonalEndDate] = useState(todayString);
   const [personalMemo, setPersonalMemo] = useState("");
 
-  // カレンダー移動処理
   const handlePrevMonth = () => {
     setCurrentMonth(
       new Date(currentMonth.getFullYear(), currentMonth.getMonth() - 1, 1),
@@ -761,7 +859,6 @@ const CalendarScreen = ({
     );
   };
 
-  // アラートレベル判定
   const getAlertLevel = (record) => {
     if (!record.condition) return "normal";
     if (
@@ -781,7 +878,6 @@ const CalendarScreen = ({
     return "normal";
   };
 
-  // 表示権限に基づくデータフィルタリング
   const visibleProjects = projects.filter((p) => {
     if (p.status === "deleted") return false;
     if (["member", "captain"].includes(userRole) && p.participants === "coach")
@@ -799,33 +895,39 @@ const CalendarScreen = ({
         return authorProfile.assignedStaff === currentUser;
       }
     }
-    if (["member", "captain"].includes(userRole))
-      return d.author === currentUser;
-    return false;
+    return ["member", "captain"].includes(userRole)
+      ? d.author === currentUser
+      : false;
   });
 
-  // ★追加：自分自身の個人の予定だけを抽出
-  const myPersonalEvents = personalEvents.filter((e) => {
-    if (e.status === "deleted") return false;
-    return e.author === currentUser;
-  });
+  const myPersonalEvents = personalEvents.filter(
+    (e) => e.status !== "deleted" && e.author === currentUser,
+  );
 
-  // 日付ごとのマッピング（★personal を追加）
   const eventsMap = {};
+
   visibleProjects.forEach((p) => {
-    if (!eventsMap[p.date])
-      eventsMap[p.date] = { projects: [], reports: [], personal: [] };
-    eventsMap[p.date].projects.push(p);
+    const range = getDatesInRange(p.date, p.endDate || p.date);
+    range.forEach((d) => {
+      if (!eventsMap[d])
+        eventsMap[d] = { projects: [], reports: [], personal: [] };
+      eventsMap[d].projects.push(p);
+    });
   });
+
   visibleReports.forEach((r) => {
     if (!eventsMap[r.date])
       eventsMap[r.date] = { projects: [], reports: [], personal: [] };
     eventsMap[r.date].reports.push(r);
   });
+
   myPersonalEvents.forEach((pe) => {
-    if (!eventsMap[pe.date])
-      eventsMap[pe.date] = { projects: [], reports: [], personal: [] };
-    eventsMap[pe.date].personal.push(pe);
+    const range = getDatesInRange(pe.date, pe.endDate || pe.date);
+    range.forEach((d) => {
+      if (!eventsMap[d])
+        eventsMap[d] = { projects: [], reports: [], personal: [] };
+      eventsMap[d].personal.push(pe);
+    });
   });
 
   const year = currentMonth.getFullYear();
@@ -847,17 +949,31 @@ const CalendarScreen = ({
     personal: [],
   };
 
-  // === 部活の予定の操作ロジック ===
+  const adjustEndDate = (setter, currentEnd, days) => {
+    const nextDate = adjustDateByDays(currentEnd, days);
+    if (
+      new Date(nextDate.replace(/\//g, "-")) <
+      new Date(selectedDate.replace(/\//g, "-"))
+    ) {
+      return;
+    }
+    setter(nextDate);
+  };
+
   const openEventModal = (event = null) => {
     if (event) {
       setEditingEventId(event.id);
       setEventTitle(event.title);
+      setEventEndDate(event.endDate || event.date);
+      setIsEventMultiDay(!!event.endDate && event.endDate !== event.date);
       setEventType(event.type);
       setEventParticipants(event.participants);
       setEventMemo(event.memo || "");
     } else {
       setEditingEventId(null);
       setEventTitle("");
+      setEventEndDate(selectedDate);
+      setIsEventMultiDay(false);
       setEventType("練習");
       setEventParticipants("team");
       setEventMemo("");
@@ -865,11 +981,20 @@ const CalendarScreen = ({
     setIsEventModalVisible(true);
   };
 
+  // ★修正: 再度「ローカルに保存（setProjects）」へ戻しました。Firebaseの門番は回避します。
   const handleSaveEvent = () => {
-    if (eventTitle.trim() === "") {
-      Alert.alert("エラー", "予定のタイトルを入力してください。");
-      return;
+    if (eventTitle.trim() === "")
+      return Alert.alert("エラー", "タイトルを入力してください。");
+
+    const finalEndDate = isEventMultiDay ? eventEndDate : selectedDate;
+
+    if (
+      new Date(finalEndDate.replace(/\//g, "-")) <
+      new Date(selectedDate.replace(/\//g, "-"))
+    ) {
+      return Alert.alert("エラー", "終了日は開始日以降に設定してください。");
     }
+
     if (editingEventId) {
       setProjects(
         projects.map((p) =>
@@ -877,6 +1002,7 @@ const CalendarScreen = ({
             ? {
                 ...p,
                 title: eventTitle,
+                endDate: finalEndDate,
                 type: eventType,
                 participants: eventParticipants,
                 memo: eventMemo,
@@ -889,10 +1015,10 @@ const CalendarScreen = ({
         id: "p_" + Date.now().toString(),
         title: eventTitle,
         date: selectedDate,
+        endDate: finalEndDate,
         type: eventType,
         status: "active",
         participants: eventParticipants,
-        pinned: false,
         memo: eventMemo,
       };
       setProjects([...projects, newEvent]);
@@ -910,14 +1036,7 @@ const CalendarScreen = ({
         onPress: () => {
           setProjects(
             projects.map((p) =>
-              p.id === editingEventId
-                ? {
-                    ...p,
-                    status: "deleted",
-                    deletedBy: userRole,
-                    deletedAt: new Date().toISOString(),
-                  }
-                : p,
+              p.id === editingEventId ? { ...p, status: "deleted" } : p,
             ),
           );
           setIsEventModalVisible(false);
@@ -926,30 +1045,46 @@ const CalendarScreen = ({
     ]);
   };
 
-  // === ★追加：個人の予定の操作ロジック ===
   const openPersonalModal = (event = null) => {
     if (event) {
       setEditingPersonalId(event.id);
       setPersonalTitle(event.title);
+      setPersonalEndDate(event.endDate || event.date);
+      setIsPersonalMultiDay(!!event.endDate && event.endDate !== event.date);
       setPersonalMemo(event.memo || "");
     } else {
       setEditingPersonalId(null);
       setPersonalTitle("");
+      setPersonalEndDate(selectedDate);
+      setIsPersonalMultiDay(false);
       setPersonalMemo("");
     }
     setIsPersonalModalVisible(true);
   };
 
   const handleSavePersonal = () => {
-    if (personalTitle.trim() === "") {
-      Alert.alert("エラー", "予定のタイトルを入力してください。");
-      return;
+    if (personalTitle.trim() === "")
+      return Alert.alert("エラー", "タイトルを入力してください。");
+
+    const finalEndDate = isPersonalMultiDay ? personalEndDate : selectedDate;
+
+    if (
+      new Date(finalEndDate.replace(/\//g, "-")) <
+      new Date(selectedDate.replace(/\//g, "-"))
+    ) {
+      return Alert.alert("エラー", "終了日は開始日以降に設定してください。");
     }
+
     if (editingPersonalId) {
       setPersonalEvents(
         personalEvents.map((p) =>
           p.id === editingPersonalId
-            ? { ...p, title: personalTitle, memo: personalMemo }
+            ? {
+                ...p,
+                title: personalTitle,
+                endDate: finalEndDate,
+                memo: personalMemo,
+              }
             : p,
         ),
       );
@@ -958,7 +1093,8 @@ const CalendarScreen = ({
         id: "pe_" + Date.now().toString(),
         title: personalTitle,
         date: selectedDate,
-        author: currentUser, // このユーザー専用
+        endDate: finalEndDate,
+        author: currentUser,
         status: "active",
         memo: personalMemo,
       };
@@ -977,13 +1113,7 @@ const CalendarScreen = ({
         onPress: () => {
           setPersonalEvents(
             personalEvents.map((p) =>
-              p.id === editingPersonalId
-                ? {
-                    ...p,
-                    status: "deleted",
-                    deletedAt: new Date().toISOString(),
-                  }
-                : p,
+              p.id === editingPersonalId ? { ...p, status: "deleted" } : p,
             ),
           );
           setIsPersonalModalVisible(false);
@@ -1006,7 +1136,6 @@ const CalendarScreen = ({
       </View>
 
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-        {/* カレンダーコントロール */}
         <View style={styles.calendarControl}>
           <TouchableOpacity style={styles.arrowBtn} onPress={handlePrevMonth}>
             <Text style={styles.arrowText}>◀</Text>
@@ -1019,7 +1148,6 @@ const CalendarScreen = ({
           </TouchableOpacity>
         </View>
 
-        {/* 曜日ヘッダー */}
         <View style={styles.weekRow}>
           {["日", "月", "火", "水", "木", "金", "土"].map((day, idx) => (
             <Text
@@ -1035,12 +1163,10 @@ const CalendarScreen = ({
           ))}
         </View>
 
-        {/* 日付グリッド */}
         <View style={styles.daysGrid}>
           {daysArray.map((day, index) => {
             if (!day)
               return <View key={`empty-${index}`} style={styles.dayCell} />;
-
             const dateStr = `${year}/${String(month + 1).padStart(2, "0")}/${String(day).padStart(2, "0")}`;
             const isToday = dateStr === todayString;
             const isSelected = dateStr === selectedDate;
@@ -1050,7 +1176,6 @@ const CalendarScreen = ({
               personal: [],
             };
 
-            // アラートのサマリー
             let reportDotColor = null;
             if (dayEvents.reports.length > 0) {
               const hasDanger = dayEvents.reports.some(
@@ -1086,21 +1211,17 @@ const CalendarScreen = ({
                     {day}
                   </Text>
                 </View>
-
                 <View style={styles.markerRow}>
-                  {/* 部活の予定ドット（青） */}
                   {dayEvents.projects.length > 0 && (
                     <View
                       style={[styles.dot, { backgroundColor: "#3498db" }]}
                     />
                   )}
-                  {/* コンディションドット（赤・黄・緑） */}
                   {reportDotColor && (
                     <View
                       style={[styles.dot, { backgroundColor: reportDotColor }]}
                     />
                   )}
-                  {/* ★個人の予定ドット（紫） */}
                   {dayEvents.personal.length > 0 && (
                     <View
                       style={[styles.dot, { backgroundColor: "#9b59b6" }]}
@@ -1113,10 +1234,8 @@ const CalendarScreen = ({
         </View>
 
         <View style={styles.divider} />
-
         <Text style={styles.detailTitle}>{selectedDate} の予定・記録</Text>
 
-        {/* 1. 部活の予定エリア */}
         <View style={styles.detailSection}>
           <View style={styles.sectionHeaderRow}>
             <Text style={styles.sectionSubtitle}>
@@ -1128,20 +1247,17 @@ const CalendarScreen = ({
               </TouchableOpacity>
             )}
           </View>
-
           {selectedEvents.projects.length === 0 ? (
-            <Text style={styles.emptyText}>部活の予定はありません。</Text>
+            <Text style={styles.emptyText}>予定はありません。</Text>
           ) : (
             selectedEvents.projects.map((p) => (
               <TouchableOpacity
                 key={p.id}
                 style={styles.eventCard}
-                onPress={() => {
-                  if (["owner", "staff", "captain"].includes(userRole)) {
-                    openEventModal(p);
-                  }
-                }}
-                activeOpacity={0.7}
+                onPress={() =>
+                  ["owner", "staff", "captain"].includes(userRole) &&
+                  openEventModal(p)
+                }
               >
                 <View style={styles.eventCardHeader}>
                   <View
@@ -1157,10 +1273,12 @@ const CalendarScreen = ({
                     <Text style={styles.badgeText}>{p.type}</Text>
                   </View>
                   <Text style={styles.eventTitle}>{p.title}</Text>
-                  {["owner", "staff", "captain"].includes(userRole) && (
-                    <Text style={{ fontSize: 16, color: "#888" }}>✏️</Text>
-                  )}
                 </View>
+                {p.endDate && p.endDate !== p.date && (
+                  <Text style={styles.periodText}>
+                    期間: {p.date} 〜 {p.endDate}
+                  </Text>
+                )}
                 {p.memo ? (
                   <Text style={styles.eventMemoText}>{p.memo}</Text>
                 ) : null}
@@ -1169,7 +1287,6 @@ const CalendarScreen = ({
           )}
         </View>
 
-        {/* ★追加 2. 個人の予定エリア (自分だけ見える) */}
         <View style={styles.detailSection}>
           <View style={styles.sectionHeaderRow}>
             <Text style={styles.sectionSubtitle}>
@@ -1181,16 +1298,14 @@ const CalendarScreen = ({
               </Text>
             </TouchableOpacity>
           </View>
-
           {selectedEvents.personal.length === 0 ? (
-            <Text style={styles.emptyText}>個人の予定はありません。</Text>
+            <Text style={styles.emptyText}>予定はありません。</Text>
           ) : (
             selectedEvents.personal.map((pe) => (
               <TouchableOpacity
                 key={pe.id}
                 style={styles.personalEventCard}
                 onPress={() => openPersonalModal(pe)}
-                activeOpacity={0.7}
               >
                 <View style={styles.eventCardHeader}>
                   <View style={styles.badgePersonal}>
@@ -1199,8 +1314,12 @@ const CalendarScreen = ({
                     </Text>
                   </View>
                   <Text style={styles.eventTitle}>{pe.title}</Text>
-                  <Text style={{ fontSize: 16, color: "#888" }}>✏️</Text>
                 </View>
+                {pe.endDate && pe.endDate !== pe.date && (
+                  <Text style={styles.periodText}>
+                    期間: {pe.date} 〜 {pe.endDate}
+                  </Text>
+                )}
                 {pe.memo ? (
                   <Text style={styles.eventMemoText}>{pe.memo}</Text>
                 ) : null}
@@ -1209,7 +1328,6 @@ const CalendarScreen = ({
           )}
         </View>
 
-        {/* 3. 振り返りエリア */}
         <View style={styles.detailSection}>
           <View style={styles.sectionHeaderRow}>
             <Text style={styles.sectionSubtitle}>
@@ -1219,7 +1337,6 @@ const CalendarScreen = ({
               <Text style={styles.jumpLink}>一覧を見る ＞</Text>
             </TouchableOpacity>
           </View>
-
           {selectedEvents.reports.length === 0 ? (
             <Text style={styles.emptyText}>記録はありません。</Text>
           ) : (
@@ -1235,16 +1352,7 @@ const CalendarScreen = ({
                   ]}
                 >
                   <Text style={styles.reportAuthor}>👤 {r.author}</Text>
-
-                  {r.condition && (
-                    <Text style={styles.reportText}>
-                      体調: {r.condition} / 疲労度: {r.fatigue}
-                      {r.hasPain && (
-                        <Text style={{ color: "#e74c3c" }}> / ケガあり</Text>
-                      )}
-                    </Text>
-                  )}
-                  <Text style={styles.reportText} numberOfLines={1}>
+                  <Text style={styles.reportText}>
                     練習: {r.practiceContent || "未入力"}
                   </Text>
                 </View>
@@ -1255,12 +1363,8 @@ const CalendarScreen = ({
         <View style={{ height: 50 }} />
       </ScrollView>
 
-      {/* --- モーダル 1: 部活の予定用 --- */}
-      <Modal
-        visible={isEventModalVisible}
-        transparent={true}
-        animationType="fade"
-      >
+      {/* --- 部活の予定モーダル --- */}
+      <Modal visible={isEventModalVisible} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <KeyboardAvoidingView
             behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -1270,114 +1374,106 @@ const CalendarScreen = ({
               <Text style={styles.modalTitle}>
                 {editingEventId ? "予定の編集" : "新しい予定を追加"}
               </Text>
-              <Text style={styles.modalDateText}>📅 {selectedDate}</Text>
             </View>
-
             <ScrollView showsVerticalScrollIndicator={false}>
               <Text style={styles.label}>予定のタイトル</Text>
               <TextInput
                 style={styles.input}
-                placeholder="例: 春季大会 1回戦"
+                placeholder="例: 春季大会"
                 value={eventTitle}
                 onChangeText={setEventTitle}
-                autoFocus={!editingEventId}
               />
 
-              <Text style={styles.label}>種類</Text>
+              <Text style={styles.label}>日程 (開始日: {selectedDate})</Text>
               <View style={styles.typeContainer}>
                 <TouchableOpacity
                   style={[
                     styles.typeBtn,
-                    eventType === "試合" && styles.typeBtnActive,
+                    !isEventMultiDay && styles.typeBtnActive,
                   ]}
-                  onPress={() => setEventType("試合")}
+                  onPress={() => {
+                    setIsEventMultiDay(false);
+                    setEventEndDate(selectedDate);
+                  }}
                 >
                   <Text
                     style={[
                       styles.typeBtnText,
-                      eventType === "試合" && styles.typeBtnTextActive,
+                      !isEventMultiDay && styles.typeBtnTextActive,
                     ]}
                   >
-                    試合
+                    当日のみ
                   </Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[
                     styles.typeBtn,
-                    eventType === "練習" && styles.typeBtnActive,
+                    isEventMultiDay && styles.typeBtnActive,
                   ]}
-                  onPress={() => setEventType("練習")}
+                  onPress={() => setIsEventMultiDay(true)}
                 >
                   <Text
                     style={[
                       styles.typeBtnText,
-                      eventType === "練習" && styles.typeBtnTextActive,
+                      isEventMultiDay && styles.typeBtnTextActive,
                     ]}
                   >
-                    練習
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[
-                    styles.typeBtn,
-                    eventType === "その他" && styles.typeBtnActive,
-                  ]}
-                  onPress={() => setEventType("その他")}
-                >
-                  <Text
-                    style={[
-                      styles.typeBtnText,
-                      eventType === "その他" && styles.typeBtnTextActive,
-                    ]}
-                  >
-                    その他
+                    複数日
                   </Text>
                 </TouchableOpacity>
               </View>
 
-              <Text style={styles.label}>共有範囲</Text>
+              {isEventMultiDay && (
+                <View style={styles.dateAdjusterContainer}>
+                  <Text style={styles.subLabel}>終了日を指定</Text>
+                  <View style={styles.dateAdjusterRow}>
+                    <TouchableOpacity
+                      style={styles.dateAdjustBtn}
+                      onPress={() =>
+                        adjustEndDate(setEventEndDate, eventEndDate, -1)
+                      }
+                    >
+                      <Text style={styles.dateAdjustBtnText}>◀</Text>
+                    </TouchableOpacity>
+                    <Text style={styles.dateAdjustValue}>{eventEndDate}</Text>
+                    <TouchableOpacity
+                      style={styles.dateAdjustBtn}
+                      onPress={() =>
+                        adjustEndDate(setEventEndDate, eventEndDate, 1)
+                      }
+                    >
+                      <Text style={styles.dateAdjustBtnText}>▶</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+
+              <Text style={styles.label}>種類</Text>
               <View style={styles.typeContainer}>
-                <TouchableOpacity
-                  style={[
-                    styles.typeBtn,
-                    eventParticipants === "team" && styles.typeBtnActive,
-                  ]}
-                  onPress={() => setEventParticipants("team")}
-                >
-                  <Text
-                    style={[
-                      styles.typeBtnText,
-                      eventParticipants === "team" && styles.typeBtnTextActive,
-                    ]}
-                  >
-                    全体
-                  </Text>
-                </TouchableOpacity>
-                {isStaffOrAbove && (
+                {["試合", "練習", "その他"].map((t) => (
                   <TouchableOpacity
+                    key={t}
                     style={[
                       styles.typeBtn,
-                      eventParticipants === "coach" && styles.typeBtnActive,
+                      eventType === t && styles.typeBtnActive,
                     ]}
-                    onPress={() => setEventParticipants("coach")}
+                    onPress={() => setEventType(t)}
                   >
                     <Text
                       style={[
                         styles.typeBtnText,
-                        eventParticipants === "coach" &&
-                          styles.typeBtnTextActive,
+                        eventType === t && styles.typeBtnTextActive,
                       ]}
                     >
-                      指導者のみ
+                      {t}
                     </Text>
                   </TouchableOpacity>
-                )}
+                ))}
               </View>
 
-              <Text style={styles.label}>備考欄 (任意)</Text>
+              <Text style={styles.label}>備考欄</Text>
               <TextInput
                 style={styles.inputMulti}
-                placeholder="場所や時間、持ち物など..."
                 value={eventMemo}
                 onChangeText={setEventMemo}
                 multiline
@@ -1413,12 +1509,8 @@ const CalendarScreen = ({
         </View>
       </Modal>
 
-      {/* --- ★新規追加 モーダル 2: 個人の予定用 --- */}
-      <Modal
-        visible={isPersonalModalVisible}
-        transparent={true}
-        animationType="fade"
-      >
+      {/* --- 個人の予定モーダル --- */}
+      <Modal visible={isPersonalModalVisible} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <KeyboardAvoidingView
             behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -1428,31 +1520,89 @@ const CalendarScreen = ({
               <Text style={styles.modalTitle}>
                 {editingPersonalId ? "個人の予定を編集" : "個人の予定を追加"}
               </Text>
-              <Text style={styles.modalDateText}>📅 {selectedDate}</Text>
             </View>
-
             <ScrollView showsVerticalScrollIndicator={false}>
               <Text style={styles.label}>予定のタイトル</Text>
               <TextInput
                 style={styles.input}
-                placeholder="例: 筋トレ、通院、バイト など"
+                placeholder="例: 塾、通院"
                 value={personalTitle}
                 onChangeText={setPersonalTitle}
-                autoFocus={!editingPersonalId}
               />
 
-              <Text style={styles.label}>メモ (任意)</Text>
+              <Text style={styles.label}>日程 (開始日: {selectedDate})</Text>
+              <View style={styles.typeContainer}>
+                <TouchableOpacity
+                  style={[
+                    styles.typeBtn,
+                    !isPersonalMultiDay && styles.typeBtnActive,
+                  ]}
+                  onPress={() => {
+                    setIsPersonalMultiDay(false);
+                    setPersonalEndDate(selectedDate);
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.typeBtnText,
+                      !isPersonalMultiDay && styles.typeBtnTextActive,
+                    ]}
+                  >
+                    当日のみ
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.typeBtn,
+                    isPersonalMultiDay && styles.typeBtnActive,
+                  ]}
+                  onPress={() => setIsPersonalMultiDay(true)}
+                >
+                  <Text
+                    style={[
+                      styles.typeBtnText,
+                      isPersonalMultiDay && styles.typeBtnTextActive,
+                    ]}
+                  >
+                    複数日
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {isPersonalMultiDay && (
+                <View style={styles.dateAdjusterContainer}>
+                  <Text style={styles.subLabel}>終了日を指定</Text>
+                  <View style={styles.dateAdjusterRow}>
+                    <TouchableOpacity
+                      style={styles.dateAdjustBtn}
+                      onPress={() =>
+                        adjustEndDate(setPersonalEndDate, personalEndDate, -1)
+                      }
+                    >
+                      <Text style={styles.dateAdjustBtnText}>◀</Text>
+                    </TouchableOpacity>
+                    <Text style={styles.dateAdjustValue}>
+                      {personalEndDate}
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.dateAdjustBtn}
+                      onPress={() =>
+                        adjustEndDate(setPersonalEndDate, personalEndDate, 1)
+                      }
+                    >
+                      <Text style={styles.dateAdjustBtnText}>▶</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+
+              <Text style={styles.label}>メモ</Text>
               <TextInput
                 style={styles.inputMulti}
-                placeholder="時間や詳細なメモ..."
                 value={personalMemo}
                 onChangeText={setPersonalMemo}
                 multiline
               />
-
-              <Text style={styles.privateNotice}>
-                ※個人の予定はあなた以外のチームメンバー（監督含む）には見えません。
-              </Text>
 
               <View style={styles.modalButtons}>
                 {editingPersonalId && (
@@ -1505,9 +1655,7 @@ const styles = StyleSheet.create({
     flex: 1,
     textAlign: "center",
   },
-
   content: { padding: 15 },
-
   calendarControl: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -1521,7 +1669,6 @@ const styles = StyleSheet.create({
   arrowBtn: { paddingHorizontal: 15, paddingVertical: 5 },
   arrowText: { fontSize: 18, color: "#34495e", fontWeight: "bold" },
   monthTitle: { fontSize: 18, fontWeight: "bold", color: "#333" },
-
   weekRow: { flexDirection: "row", marginBottom: 5 },
   weekText: {
     flex: 1,
@@ -1530,7 +1677,6 @@ const styles = StyleSheet.create({
     color: "#555",
     fontSize: 12,
   },
-
   daysGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -1558,10 +1704,8 @@ const styles = StyleSheet.create({
   },
   dayCircleToday: { backgroundColor: "#34495e" },
   dayText: { fontSize: 14, color: "#333", fontWeight: "bold" },
-
   markerRow: { flexDirection: "row", marginTop: 2, height: 6 },
   dot: { width: 6, height: 6, borderRadius: 3, marginHorizontal: 2 },
-
   divider: { height: 1, backgroundColor: "#ddd", marginVertical: 20 },
   detailTitle: {
     fontSize: 18,
@@ -1569,7 +1713,6 @@ const styles = StyleSheet.create({
     color: "#333",
     marginBottom: 15,
   },
-
   detailSection: {
     backgroundColor: "#fff",
     borderRadius: 12,
@@ -1591,7 +1734,6 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginVertical: 10,
   },
-
   eventCard: {
     backgroundColor: "#f9f9f9",
     padding: 12,
@@ -1608,10 +1750,7 @@ const styles = StyleSheet.create({
     borderLeftWidth: 3,
     borderLeftColor: "#9b59b6",
   },
-  eventCardHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
+  eventCardHeader: { flexDirection: "row", alignItems: "center" },
   badge: {
     paddingHorizontal: 8,
     paddingVertical: 3,
@@ -1630,8 +1769,13 @@ const styles = StyleSheet.create({
   },
   badgeText: { fontSize: 10, fontWeight: "bold", color: "#333" },
   eventTitle: { fontSize: 14, color: "#333", fontWeight: "bold", flex: 1 },
+  periodText: {
+    fontSize: 11,
+    color: "#0077cc",
+    marginTop: 4,
+    fontWeight: "bold",
+  },
   eventMemoText: { fontSize: 13, color: "#666", marginTop: 8, marginLeft: 2 },
-
   reportCard: {
     backgroundColor: "#f9f9f9",
     padding: 12,
@@ -1649,7 +1793,6 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   reportText: { fontSize: 12, color: "#555", marginTop: 2 },
-
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.5)",
@@ -1669,13 +1812,18 @@ const styles = StyleSheet.create({
     color: "#333",
     marginBottom: 5,
   },
-  modalDateText: { fontSize: 14, color: "#e74c3c", fontWeight: "bold" },
   label: {
     fontSize: 14,
     fontWeight: "bold",
     color: "#555",
     marginBottom: 8,
     marginTop: 10,
+  },
+  subLabel: {
+    fontSize: 12,
+    fontWeight: "bold",
+    color: "#888",
+    marginBottom: 5,
   },
   input: {
     backgroundColor: "#f9f9f9",
@@ -1712,12 +1860,32 @@ const styles = StyleSheet.create({
   typeBtnText: { fontSize: 13, color: "#555", fontWeight: "bold" },
   typeBtnTextActive: { color: "#3498db" },
 
-  privateNotice: {
-    fontSize: 12,
-    color: "#e67e22",
-    marginTop: 10,
-    textAlign: "center",
+  dateAdjusterContainer: {
+    backgroundColor: "#fdfdfd",
+    padding: 15,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#ddd",
+    marginBottom: 10,
+    alignItems: "center",
+  },
+  dateAdjusterRow: { flexDirection: "row", alignItems: "center", marginTop: 5 },
+  dateAdjustBtn: {
+    backgroundColor: "#f0f0f0",
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    justifyContent: "center",
+    alignItems: "center",
+    marginHorizontal: 15,
+  },
+  dateAdjustBtnText: { fontSize: 18, fontWeight: "bold", color: "#333" },
+  dateAdjustValue: {
+    fontSize: 18,
     fontWeight: "bold",
+    color: "#3498db",
+    minWidth: 120,
+    textAlign: "center",
   },
 
   modalButtons: {
@@ -1822,7 +1990,9 @@ const DiaryScreen = ({
   },
 }) => {
   const currentUserProfile = userProfiles[currentUser] || {};
-  const userRole = isAdmin ? "owner" : currentUserProfile.role || "member";
+  const userRole =
+    global.TEST_ROLE ||
+    (isAdmin ? "owner" : currentUserProfile.role || "member");
   const isStaffOrAbove = ["owner", "staff"].includes(userRole);
 
   const roleNameMap = {
@@ -1862,7 +2032,10 @@ const DiaryScreen = ({
   const [showLinkInput, setShowLinkInput] = useState(false);
   // ========================================
 
-  const [activeTab, setActiveTab] = useState("unread");
+  // ★ 修正：デフォルトのタブを「unread(未読)」から「all(すべて)」に変更しました！
+  // これにより、確認済みにしてもリストに残り続けます。
+  const [activeTab, setActiveTab] = useState("all");
+
   const [searchQuery, setSearchQuery] = useState("");
   const [isFilterModalVisible, setIsFilterModalVisible] = useState(false);
   const [expandedDates, setExpandedDates] = useState({});
@@ -2320,6 +2493,19 @@ const DiaryScreen = ({
             contentContainerStyle={{ paddingHorizontal: 15 }}
           >
             <TouchableOpacity
+              onPress={() => setActiveTab("all")}
+              style={[styles.tabBtn, activeTab === "all" && styles.tabActive]}
+            >
+              <Text
+                style={[
+                  styles.tabText,
+                  activeTab === "all" && styles.tabTextActive,
+                ]}
+              >
+                すべて
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
               onPress={() => setActiveTab("unread")}
               style={[
                 styles.tabBtn,
@@ -2381,19 +2567,6 @@ const DiaryScreen = ({
                 ]}
               >
                 ⭐ スター
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={() => setActiveTab("all")}
-              style={[styles.tabBtn, activeTab === "all" && styles.tabActive]}
-            >
-              <Text
-                style={[
-                  styles.tabText,
-                  activeTab === "all" && styles.tabTextActive,
-                ]}
-              >
-                すべて
               </Text>
             </TouchableOpacity>
           </ScrollView>
@@ -3804,88 +3977,86 @@ import {
   ScrollView,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { useAuth } from "../AuthContext";
+import { auth } from "../firebase";
+import { executeRegistration } from "../services/firestoreService";
 
-const LoginScreen = ({
-  navigation,
-  setIsAdmin,
-  setCurrentUser,
-  adminPassword,
-  memberPassword,
-  clubMembers,
-  setClubMembers,
-  userProfiles,
-}) => {
-  // ★修正：ログインフローを2段階にするためのステート
-  const [step, setStep] = useState(1); // 1: チームID入力, 2: ログイン/新規登録
-  const [teamId, setTeamId] = useState("");
+const LoginScreen = ({ navigation }) => {
+  const [isLoginMode, setIsLoginMode] = useState(true);
+  const [registerStep, setRegisterStep] = useState(1);
 
-  const [selectedRole, setSelectedRole] = useState("member");
-  const [selectedMember, setSelectedMember] = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [userName, setUserName] = useState("");
+  const [role, setRole] = useState("admin");
+  const [teamName, setTeamName] = useState("");
 
-  const [isRegistering, setIsRegistering] = useState(false);
-  const [newMemberName, setNewMemberName] = useState("");
+  // 変数名を teamIdInput から inviteCode に変更
+  const [inviteCode, setInviteCode] = useState("");
+
+  const [isLoading, setIsLoading] = useState(false);
+  const { signIn, signUp } = useAuth();
+
+  const handleLogin = async () => {
+    if (!email || !password) return Alert.alert("エラー", "入力してください。");
+    setIsLoading(true);
+    try {
+      await signIn(email.trim(), password);
+      navigation.replace("WorkspaceHome");
+    } catch (error) {
+      Alert.alert("エラー", "ログインに失敗しました。");
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const handleNextStep = () => {
-    if (!teamId.trim()) {
-      Alert.alert("エラー", "チームIDを入力してください。");
-      return;
+    if (!email || !password || !userName.trim()) {
+      return Alert.alert("エラー", "すべての項目を入力してください。");
     }
-    // 本番環境ではここで「チームが存在するか」をデータベースに確認します
-    setStep(2);
+    if (password.length < 6) {
+      return Alert.alert("エラー", "パスワードは6文字以上で入力してください。");
+    }
+    setRegisterStep(2);
   };
 
-  const handleLogin = () => {
-    if (selectedRole === "admin") {
-      if (password === adminPassword) {
-        setIsAdmin(true);
-        setCurrentUser("管理者");
-        navigation.replace("WorkspaceHome");
-      } else {
-        Alert.alert("エラー", "管理者のパスワードが間違っています。");
-      }
-    } else {
-      if (!selectedMember) {
-        Alert.alert("エラー", "名前を選択してください。");
-        return;
-      }
+  const handleRegister = async () => {
+    if (role === "admin" && !teamName.trim())
+      return Alert.alert("エラー", "チーム名を入力してください。");
+    if (role === "member" && !inviteCode.trim())
+      return Alert.alert("エラー", "招待コードを入力してください。");
 
-      const personalPass =
-        userProfiles && userProfiles[selectedMember]?.password;
-      const expectedPass = personalPass ? personalPass : memberPassword;
+    setIsLoading(true);
+    try {
+      await signUp(email.trim(), password);
+      const uid = auth.currentUser?.uid;
 
-      if (password === expectedPass) {
-        setIsAdmin(false);
-        setCurrentUser(selectedMember);
-        navigation.replace("WorkspaceHome");
-      } else {
-        Alert.alert("エラー", "パスワードが間違っています。");
-      }
-    }
-  };
-
-  const handleRegister = () => {
-    const trimmed = newMemberName.trim();
-    if (!trimmed) {
-      Alert.alert("エラー", "名前を入力してください。");
-      return;
-    }
-    if (clubMembers.includes(trimmed)) {
-      Alert.alert(
-        "エラー",
-        "その名前は既に登録されています。ログイン画面に戻って選択してください。",
+      const result = await executeRegistration(
+        uid,
+        role,
+        userName.trim(),
+        teamName.trim(),
+        inviteCode.trim(),
       );
-      return;
+
+      if (result.type === "create") {
+        Alert.alert(
+          "🎉 チーム作成成功！",
+          `部員を招待するための【 招待コード 】が発行されました：\n\n【 ${result.inviteCode} 】\n\nこのコードを部員に教えてください！`,
+          [{ text: "OK", onPress: () => navigation.replace("WorkspaceHome") }],
+        );
+      } else {
+        Alert.alert(
+          "✅ 参加完了",
+          "招待コードが承認され、チームに参加しました！",
+          [{ text: "OK", onPress: () => navigation.replace("WorkspaceHome") }],
+        );
+      }
+    } catch (error) {
+      Alert.alert("登録エラー", error.message || "処理に失敗しました。");
+    } finally {
+      setIsLoading(false);
     }
-    // 部員を追加してログイン画面（選択状態）に戻す
-    setClubMembers([...clubMembers, trimmed]);
-    setSelectedMember(trimmed);
-    setIsRegistering(false);
-    setNewMemberName("");
-    Alert.alert(
-      "登録完了",
-      "新しい部員として登録しました。初期パスワードを入力してログインしてください。",
-    );
   };
 
   return (
@@ -3894,336 +4065,214 @@ const LoginScreen = ({
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         style={styles.inner}
       >
-        <View style={styles.header}>
-          <Text style={styles.appTitle}>📱 スマート部活</Text>
-          <Text style={styles.subTitle}>
-            {step === 1 ? "チームの検索" : "ログイン"}
-          </Text>
-        </View>
-
-        {/* =========================================================
-            ステップ1：チームID入力
-        ========================================================= */}
-        {step === 1 && (
-          <View style={styles.stepContainer}>
-            <Text style={styles.label}>チームID (ワークスペースID)</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="例: demo-team"
-              value={teamId}
-              onChangeText={setTeamId}
-              autoCapitalize="none"
-            />
-            <Text style={styles.hintText}>
-              ※プロトタイプ版は任意の文字（例: demo）で進めます
+        <ScrollView
+          contentContainerStyle={{ flexGrow: 1, justifyContent: "center" }}
+        >
+          <View style={styles.header}>
+            <Text style={styles.appTitle}>📱 スマート部活</Text>
+            <Text style={styles.subTitle}>
+              {isLoginMode ? "ログイン" : `新規登録 (${registerStep}/2)`}
             </Text>
-
-            <TouchableOpacity
-              style={styles.primaryBtn}
-              onPress={handleNextStep}
-            >
-              <Text style={styles.primaryBtnText}>次へ進む</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.textLinkContainer}
-              onPress={() =>
-                Alert.alert(
-                  "お知らせ",
-                  "プロトタイプ版では新しいチームの作成はスキップし、任意のIDを入力して「次へ進む」を押してください。",
-                )
-              }
-            >
-              <Text style={styles.textLink}>
-                新しくチームを作成する場合はこちら
-              </Text>
-            </TouchableOpacity>
           </View>
-        )}
 
-        {/* =========================================================
-            ステップ2：ログイン / 新規登録
-        ========================================================= */}
-        {step === 2 && (
           <View style={styles.stepContainer}>
-            {/* 選択中のチームID表示と戻るボタン */}
-            <View style={styles.teamIdDisplayRow}>
-              <Text style={styles.teamIdText}>
-                チームID:{" "}
-                <Text style={{ fontWeight: "bold", color: "#333" }}>
-                  {teamId}
-                </Text>
-              </Text>
-              <TouchableOpacity
-                onPress={() => {
-                  setStep(1);
-                  setIsRegistering(false);
-                }}
-              >
-                <Text style={styles.changeTeamText}>変更</Text>
-              </TouchableOpacity>
-            </View>
-
-            <View style={styles.roleContainer}>
-              <TouchableOpacity
-                style={[
-                  styles.roleBtn,
-                  selectedRole === "member" && styles.roleBtnActive,
-                ]}
-                onPress={() => {
-                  setSelectedRole("member");
-                  setPassword("");
-                  setIsRegistering(false);
-                }}
-              >
-                <Text
-                  style={[
-                    styles.roleBtnText,
-                    selectedRole === "member" && styles.roleBtnTextActive,
-                  ]}
-                >
-                  部員
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  styles.roleBtn,
-                  selectedRole === "admin" && styles.roleBtnActive,
-                ]}
-                onPress={() => {
-                  setSelectedRole("admin");
-                  setPassword("");
-                  setIsRegistering(false);
-                }}
-              >
-                <Text
-                  style={[
-                    styles.roleBtnText,
-                    selectedRole === "admin" && styles.roleBtnTextActive,
-                  ]}
-                >
-                  管理者 (監督)
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            {selectedRole === "member" && isRegistering ? (
-              /* --- 新規登録モード --- */
-              <View>
-                <Text style={styles.label}>新しい部員の名前を登録</Text>
+            {isLoginMode ? (
+              <>
                 <TextInput
                   style={styles.input}
-                  placeholder="名前を入力"
-                  value={newMemberName}
-                  onChangeText={setNewMemberName}
+                  placeholder="メールアドレス"
+                  value={email}
+                  onChangeText={setEmail}
+                  autoCapitalize="none"
                 />
-                <Text style={styles.hintText}>
-                  ※登録後は初期パスワード「{memberPassword}
-                  」でログインできます。
-                </Text>
-
-                <TouchableOpacity
-                  style={styles.primaryBtn}
-                  onPress={handleRegister}
-                >
-                  <Text style={styles.primaryBtnText}>
-                    登録してログイン画面へ
-                  </Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.textLinkContainer}
-                  onPress={() => setIsRegistering(false)}
-                >
-                  <Text style={styles.textLink}>
-                    既存のアカウントでログインする
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            ) : (
-              /* --- ログインモード --- */
-              <View>
-                {selectedRole === "member" && (
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.label}>名前を選択</Text>
-                    <ScrollView
-                      style={styles.memberScroll}
-                      nestedScrollEnabled={true}
-                    >
-                      <View style={styles.memberList}>
-                        {clubMembers.map((name) => (
-                          <TouchableOpacity
-                            key={name}
-                            style={[
-                              styles.memberBadge,
-                              selectedMember === name &&
-                                styles.memberBadgeActive,
-                            ]}
-                            onPress={() => setSelectedMember(name)}
-                          >
-                            <Text
-                              style={[
-                                styles.memberBadgeText,
-                                selectedMember === name &&
-                                  styles.memberBadgeTextActive,
-                              ]}
-                            >
-                              {name}
-                            </Text>
-                          </TouchableOpacity>
-                        ))}
-                      </View>
-                    </ScrollView>
-                  </View>
-                )}
-
-                <View style={styles.inputGroup}>
-                  <Text style={styles.label}>パスワード</Text>
-                  <TextInput
-                    style={styles.input}
-                    secureTextEntry
-                    placeholder="パスワードを入力"
-                    value={password}
-                    onChangeText={setPassword}
-                  />
-
-                  {selectedRole === "member" ? (
-                    <Text style={styles.hintText}>
-                      ※個人パスワード未設定の場合は「{memberPassword}」
-                    </Text>
-                  ) : (
-                    <Text style={styles.hintText}>
-                      ※管理者の初期パスワードは「{adminPassword}」です
-                    </Text>
-                  )}
-                </View>
-
+                <TextInput
+                  style={styles.input}
+                  placeholder="パスワード"
+                  value={password}
+                  onChangeText={setPassword}
+                  secureTextEntry
+                />
                 <TouchableOpacity
                   style={styles.primaryBtn}
                   onPress={handleLogin}
+                  disabled={isLoading}
                 >
-                  <Text style={styles.primaryBtnText}>ログイン</Text>
+                  <Text style={styles.primaryBtnText}>
+                    {isLoading ? "送信中..." : "ログイン"}
+                  </Text>
                 </TouchableOpacity>
-
-                {selectedRole === "member" && (
+              </>
+            ) : registerStep === 1 ? (
+              <>
+                <Text style={styles.label}>お名前</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="例: 山田 太郎"
+                  value={userName}
+                  onChangeText={setUserName}
+                />
+                <TextInput
+                  style={styles.input}
+                  placeholder="メールアドレス"
+                  value={email}
+                  onChangeText={setEmail}
+                  autoCapitalize="none"
+                />
+                <TextInput
+                  style={styles.input}
+                  placeholder="パスワード(6文字以上)"
+                  value={password}
+                  onChangeText={setPassword}
+                  secureTextEntry
+                />
+                <TouchableOpacity
+                  style={styles.primaryBtn}
+                  onPress={handleNextStep}
+                >
+                  <Text style={styles.primaryBtnText}>次へ進む</Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <>
+                <TouchableOpacity
+                  onPress={() => setRegisterStep(1)}
+                  style={{ marginBottom: 15 }}
+                >
+                  <Text style={{ color: "#888", fontWeight: "bold" }}>
+                    ◁ 戻る
+                  </Text>
+                </TouchableOpacity>
+                <View style={styles.roleContainer}>
                   <TouchableOpacity
-                    style={styles.textLinkContainer}
-                    onPress={() => setIsRegistering(true)}
+                    style={[
+                      styles.roleBtn,
+                      role === "admin" && styles.roleBtnActive,
+                    ]}
+                    onPress={() => setRole("admin")}
                   >
-                    <Text style={styles.textLink}>
-                      自分の名前がない場合はこちら (新規登録)
+                    <Text
+                      style={
+                        role === "admin"
+                          ? styles.roleBtnTextActive
+                          : styles.roleBtnText
+                      }
+                    >
+                      👑 管理者
                     </Text>
                   </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.roleBtn,
+                      role === "member" && styles.roleBtnActive,
+                    ]}
+                    onPress={() => setRole("member")}
+                  >
+                    <Text
+                      style={
+                        role === "member"
+                          ? styles.roleBtnTextActive
+                          : styles.roleBtnText
+                      }
+                    >
+                      👤 部員
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+                {role === "admin" ? (
+                  <TextInput
+                    style={styles.input}
+                    placeholder="部活名（例：サッカー部）"
+                    value={teamName}
+                    onChangeText={setTeamName}
+                  />
+                ) : (
+                  <TextInput
+                    style={styles.input}
+                    placeholder="共有された6桁の招待コード"
+                    value={inviteCode}
+                    onChangeText={setInviteCode}
+                    autoCapitalize="characters"
+                  />
                 )}
-              </View>
+                <TouchableOpacity
+                  style={styles.primaryBtn}
+                  onPress={handleRegister}
+                  disabled={isLoading}
+                >
+                  <Text style={styles.primaryBtnText}>
+                    {isLoading ? "処理中..." : "登録を完了する"}
+                  </Text>
+                </TouchableOpacity>
+              </>
             )}
+
+            <TouchableOpacity
+              style={styles.switchModeBtn}
+              onPress={() => {
+                setIsLoginMode(!isLoginMode);
+                setRegisterStep(1);
+              }}
+            >
+              <Text style={styles.switchModeText}>
+                {isLoginMode ? "新規登録はこちら" : "ログインに戻る"}
+              </Text>
+            </TouchableOpacity>
           </View>
-        )}
+        </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
 };
 
+// スタイルは前回と同じです
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#f0f2f5", justifyContent: "center" },
-  inner: { padding: 20, width: "100%", maxWidth: 400, alignSelf: "center" },
-  header: { alignItems: "center", marginBottom: 20 },
-  appTitle: {
-    fontSize: 28,
-    fontWeight: "bold",
-    color: "#0077cc",
-    marginBottom: 5,
-  },
-  subTitle: { fontSize: 16, color: "#666" },
-
+  container: { flex: 1, backgroundColor: "#f0f2f5" },
+  inner: { flex: 1, padding: 20 },
+  header: { alignItems: "center", marginBottom: 30 },
+  appTitle: { fontSize: 28, fontWeight: "bold", color: "#0077cc" },
+  subTitle: { fontSize: 14, color: "#666", marginTop: 5 },
   stepContainer: {
     backgroundColor: "#fff",
     padding: 20,
     borderRadius: 12,
     elevation: 3,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
   },
-
-  teamIdDisplayRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    backgroundColor: "#f9f9f9",
-    padding: 10,
-    borderRadius: 8,
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: "#eee",
-  },
-  teamIdText: { fontSize: 14, color: "#666" },
-  changeTeamText: { fontSize: 13, color: "#0077cc", fontWeight: "bold" },
-
-  roleContainer: {
-    flexDirection: "row",
-    marginBottom: 20,
-    backgroundColor: "#f0f0f0",
-    borderRadius: 8,
-    padding: 4,
-  },
-  roleBtn: {
-    flex: 1,
-    paddingVertical: 10,
-    alignItems: "center",
-    borderRadius: 6,
-  },
-  roleBtnActive: {
-    backgroundColor: "#fff",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-    elevation: 2,
-  },
-  roleBtnText: { fontSize: 14, fontWeight: "bold", color: "#888" },
-  roleBtnTextActive: { color: "#0077cc" },
-
-  inputGroup: { marginBottom: 15 },
-  label: { fontSize: 13, fontWeight: "bold", color: "#555", marginBottom: 8 },
   input: {
     backgroundColor: "#f9f9f9",
     borderWidth: 1,
     borderColor: "#ddd",
     padding: 12,
     borderRadius: 8,
-    fontSize: 16,
+    marginBottom: 15,
   },
-  hintText: { fontSize: 11, color: "#888", marginTop: 5 },
-
-  memberScroll: { maxHeight: 120 },
-  memberList: { flexDirection: "row", flexWrap: "wrap" },
-  memberBadge: {
-    backgroundColor: "#f9f9f9",
-    borderWidth: 1,
-    borderColor: "#ddd",
-    paddingVertical: 8,
-    paddingHorizontal: 15,
-    borderRadius: 20,
-    marginRight: 10,
-    marginBottom: 10,
-  },
-  memberBadgeActive: { backgroundColor: "#0077cc", borderColor: "#0077cc" },
-  memberBadgeText: { fontSize: 14, color: "#555", fontWeight: "bold" },
-  memberBadgeTextActive: { color: "#fff" },
-
+  label: { fontSize: 12, fontWeight: "bold", color: "#555", marginBottom: 6 },
   primaryBtn: {
     backgroundColor: "#0077cc",
-    paddingVertical: 15,
+    padding: 15,
     borderRadius: 8,
     alignItems: "center",
     marginTop: 10,
   },
-  primaryBtnText: { color: "#fff", fontSize: 16, fontWeight: "bold" },
-
-  textLinkContainer: { marginTop: 20, alignItems: "center" },
-  textLink: { color: "#0077cc", fontSize: 13, fontWeight: "bold" },
+  primaryBtnText: { color: "#fff", fontWeight: "bold", fontSize: 16 },
+  roleContainer: { flexDirection: "row", marginBottom: 20 },
+  roleBtn: {
+    flex: 1,
+    padding: 12,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#ddd",
+    marginHorizontal: 5,
+    borderRadius: 8,
+  },
+  roleBtnActive: { backgroundColor: "#e6f2ff", borderColor: "#0077cc" },
+  roleBtnText: { color: "#666", fontWeight: "bold" },
+  roleBtnTextActive: { color: "#0077cc", fontWeight: "bold" },
+  switchModeBtn: { marginTop: 20, alignItems: "center" },
+  switchModeText: {
+    color: "#0077cc",
+    textDecorationLine: "underline",
+    fontWeight: "bold",
+  },
 });
 
 export default LoginScreen;
@@ -5992,7 +6041,9 @@ const NoticeBoardScreen = ({
 }) => {
   // 実際の設定データからロールを取得
   const currentUserProfile = userProfiles[currentUser] || {};
-  const userRole = isAdmin ? "owner" : currentUserProfile.role || "member";
+  const userRole =
+    global.TEST_ROLE ||
+    (isAdmin ? "owner" : currentUserProfile.role || "member");
 
   // 掲示板に投稿・削除できる権限（監督、スタッフ、キャプテン）
   const canManageNotices = ["owner", "staff", "captain"].includes(userRole);
@@ -6693,31 +6744,36 @@ import { Video, ResizeMode } from "expo-av";
 import YoutubePlayer from "react-native-youtube-iframe";
 import * as ScreenOrientation from "expo-screen-orientation";
 
-// ★変更：projects と setProjects を受け取る
+import { useAuth } from "../AuthContext";
+import { updateProject } from "../services/firestoreService";
+
+// ★ 修正：setProjects を受け取るように追加
 const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
   const { project: routeProject, userRole = "member" } = route.params || {};
 
-  // ★変更：常に App.js の projects 配列から最新のプロジェクト情報を取得する
   const project =
     projects?.find((p) => p.id === routeProject?.id) || routeProject || {};
   const projectTitle = project.title || "未定のプロジェクト";
   const projectVideoUrl = project.videoUrl || "";
 
-  // ★変更：ローカルステート(useState)を廃止し、グローバルのタグとメモを使用
-  const tags = project.tags || [];
-  const memos = project.memos || [];
+  const { activeTeamId } = useAuth();
+
+  const [localTags, setLocalTags] = useState(project.tags || []);
+  const [localMemos, setLocalMemos] = useState(project.memos || []);
 
   const { width, height } = useWindowDimensions();
   const isLandscape = width > height;
-  const canDeleteAnyTag = ["owner", "staff"].includes(userRole);
+
+  const canDeleteAnyTag = ["owner", "admin", "staff"].includes(userRole);
 
   const roleNameMap = {
     owner: "監督",
+    admin: "管理者",
     staff: "コーチ",
     captain: "キャプテン",
     member: "佐藤(自分)",
   };
-  const displayUserName = roleNameMap[userRole];
+  const displayUserName = roleNameMap[userRole] || "テストユーザー";
 
   const [videoUri, setVideoUri] = useState(null);
   const [youtubeVideoId, setYoutubeVideoId] = useState(null);
@@ -6730,13 +6786,8 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
 
   const [activeTab, setActiveTab] = useState("tag");
 
-  const [quickTags, setQuickTags] = useState([
-    "👍 ナイスプレイ",
-    "🤔 要改善",
-    "🏃 スプリント",
-    "🎯 チャンス",
-    "⚠️ ピンチ",
-  ]);
+  // ★ 修正：初期タグを変更！
+  const [quickTags, setQuickTags] = useState(["ナイスプレー", "得点", "罰則"]);
   const [isAddQuickTagModalVisible, setIsAddQuickTagModalVisible] =
     useState(false);
   const [newQuickTagName, setNewQuickTagName] = useState("");
@@ -6846,7 +6897,9 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
     else if (state === "paused" || state === "ended") setIsPlaying(false);
   }, []);
 
-  const togglePlay = async () => setIsPlaying(!isPlaying);
+  const togglePlay = () => {
+    setIsPlaying(!isPlaying);
+  };
 
   const jumpToTime = async (seconds) => {
     if (youtubeVideoId && youtubeRef.current) {
@@ -6855,6 +6908,7 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
     } else if (videoUri && videoRef.current) {
       await videoRef.current.setPositionAsync(seconds * 1000);
       await videoRef.current.playAsync();
+      setIsPlaying(true);
     } else {
       setVideoTime(seconds);
     }
@@ -6882,29 +6936,50 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
     setVideoTime(newTime);
   };
 
-  // --- ★変更：タグとメモを App.js の projects に保存する ---
-  const handleAddTag = (label) => {
+  // --- ★修正：タグをアプリ全体（projects）にも反映させる ---
+  const handleAddTag = async (label) => {
     const newTag = {
       id: "tag_" + Date.now(),
       videoTime,
       label,
       user: displayUserName,
     };
-    const newTags = [...tags, newTag].sort((a, b) => a.videoTime - b.videoTime);
+    const newTags = [...localTags, newTag].sort(
+      (a, b) => a.videoTime - b.videoTime,
+    );
+
+    setLocalTags(newTags);
+
+    // ★ 追加：アプリ全体のプロジェクトリストも更新する（一覧画面のハイライトに反映）
     if (setProjects) {
       setProjects((prev) =>
         prev.map((p) => (p.id === project.id ? { ...p, tags: newTags } : p)),
       );
+    }
+
+    try {
+      const safeTeamId = activeTeamId || "test_team";
+      await updateProject(safeTeamId, project.id, { tags: newTags });
+    } catch (error) {
+      console.log("Firestore保存はスキップ:", error);
     }
   };
 
-  const handleDeleteTag = (id) => {
-    const newTags = tags.filter((t) => t.id !== id);
+  const handleDeleteTag = async (id) => {
+    const newTags = localTags.filter((t) => t.id !== id);
+    setLocalTags(newTags);
+
+    // ★ 全体リストからも削除
     if (setProjects) {
       setProjects((prev) =>
         prev.map((p) => (p.id === project.id ? { ...p, tags: newTags } : p)),
       );
     }
+
+    try {
+      const safeTeamId = activeTeamId || "test_team";
+      await updateProject(safeTeamId, project.id, { tags: newTags });
+    } catch (error) {}
   };
 
   const handleOpenCustomTag = () => {
@@ -6913,7 +6988,7 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
     setIsCustomTagModalVisible(true);
   };
 
-  const handleSaveCustomTag = () => {
+  const handleSaveCustomTag = async () => {
     if (customTagText.trim() === "") return;
     const newTag = {
       id: "tag_" + Date.now(),
@@ -6921,17 +6996,32 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
       label: customTagText.trim(),
       user: displayUserName,
     };
-    const newTags = [...tags, newTag].sort((a, b) => a.videoTime - b.videoTime);
+    const newTags = [...localTags, newTag].sort(
+      (a, b) => a.videoTime - b.videoTime,
+    );
+
+    setLocalTags(newTags);
+
+    // ★ 全体リストにも追加
     if (setProjects) {
       setProjects((prev) =>
         prev.map((p) => (p.id === project.id ? { ...p, tags: newTags } : p)),
       );
     }
+
     setIsCustomTagModalVisible(false);
     Keyboard.dismiss();
+
+    try {
+      const safeTeamId = activeTeamId || "test_team";
+      await updateProject(safeTeamId, project.id, { tags: newTags });
+    } catch (error) {
+      console.log(error);
+    }
   };
 
-  const handleAddMemo = () => {
+  // --- ★メモも同様に全体に反映させる ---
+  const handleAddMemo = async () => {
     if (newMemoText.trim() === "") return;
     const newMemo = {
       id: "memo_" + Date.now(),
@@ -6939,25 +7029,43 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
       text: newMemoText,
       user: displayUserName,
     };
-    const newMemos = [...memos, newMemo].sort(
+    const newMemos = [...localMemos, newMemo].sort(
       (a, b) => a.videoTime - b.videoTime,
     );
+
+    setLocalMemos(newMemos);
+
     if (setProjects) {
       setProjects((prev) =>
         prev.map((p) => (p.id === project.id ? { ...p, memos: newMemos } : p)),
       );
     }
+
     setNewMemoText("");
     Keyboard.dismiss();
+
+    try {
+      const safeTeamId = activeTeamId || "test_team";
+      await updateProject(safeTeamId, project.id, { memos: newMemos });
+    } catch (error) {
+      console.log(error);
+    }
   };
 
-  const handleDeleteMemo = (id) => {
-    const newMemos = memos.filter((m) => m.id !== id);
+  const handleDeleteMemo = async (id) => {
+    const newMemos = localMemos.filter((m) => m.id !== id);
+    setLocalMemos(newMemos);
+
     if (setProjects) {
       setProjects((prev) =>
         prev.map((p) => (p.id === project.id ? { ...p, memos: newMemos } : p)),
       );
     }
+
+    try {
+      const safeTeamId = activeTeamId || "test_team";
+      await updateProject(safeTeamId, project.id, { memos: newMemos });
+    } catch (error) {}
   };
 
   const handleCreateQuickTag = () => {
@@ -6968,9 +7076,6 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
     setIsAddQuickTagModalVisible(false);
   };
 
-  // ==========================================
-  //  UIコンポーネント（動画プレイヤー）
-  // ==========================================
   const renderVideoPlayer = () => (
     <View
       style={[styles.videoPlayerArea, isLandscape && styles.fsVideoPlayerArea]}
@@ -6980,6 +7085,7 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
           style={[
             styles.youtubeContainer,
             isLandscape && styles.fsYoutubeContainer,
+            { pointerEvents: "auto" },
           ]}
         >
           <YoutubePlayer
@@ -7019,7 +7125,7 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
       )}
 
       {(youtubeVideoId || videoUri) && (
-        <View style={styles.videoControls}>
+        <View style={[styles.videoControls, { zIndex: 100 }]}>
           <TouchableOpacity style={styles.skipBtn} onPress={skipBackward}>
             <Text style={styles.skipBtnText}>⏪ 5s</Text>
           </TouchableOpacity>
@@ -7135,10 +7241,10 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
               </View>
             </View>
             <ScrollView style={styles.listScroll}>
-              {tags.length === 0 ? (
+              {localTags.length === 0 ? (
                 <Text style={styles.emptyText}>タグがありません。</Text>
               ) : (
-                tags.map((tag) => (
+                localTags.map((tag) => (
                   <View key={tag.id} style={styles.listItemCard}>
                     <TouchableOpacity
                       style={styles.timeJumpBtn}
@@ -7170,10 +7276,10 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
         {activeTab === "memo" && (
           <>
             <ScrollView style={styles.listScroll}>
-              {memos.length === 0 ? (
+              {localMemos.length === 0 ? (
                 <Text style={styles.emptyText}>メモがありません。</Text>
               ) : (
-                memos.map((memo) => (
+                localMemos.map((memo) => (
                   <View key={memo.id} style={styles.listItemCard}>
                     <TouchableOpacity
                       style={styles.timeJumpBtn}
@@ -7265,7 +7371,6 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
         </View>
       </KeyboardAvoidingView>
 
-      {/* --- モーダル群 --- */}
       <Modal
         visible={isCustomTagModalVisible}
         transparent={true}
@@ -7500,11 +7605,10 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.6)",
     padding: 10,
     borderRadius: 8,
-    zIndex: 20,
   },
-  playBtn: { marginRight: 10 },
+  playBtn: { marginRight: 10, padding: 5 },
   playBtnText: { color: "#fff", fontSize: 24 },
-  skipBtn: { marginHorizontal: 10 },
+  skipBtn: { marginHorizontal: 10, padding: 5 },
   skipBtnText: { color: "#fff", fontSize: 14, fontWeight: "bold" },
   videoTimeDisplay: {
     color: "#fff",
@@ -7754,10 +7858,17 @@ import {
   Platform,
   Alert,
   ScrollView,
+  StatusBar,
+  useWindowDimensions,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Video, ResizeMode } from "expo-av";
 import YoutubePlayer from "react-native-youtube-iframe";
+import * as ScreenOrientation from "expo-screen-orientation";
+
+import { useAuth } from "../AuthContext";
+import { auth } from "../firebase";
+import { createProject } from "../services/firestoreService";
 
 export default function ProjectListScreen({
   navigation,
@@ -7768,14 +7879,21 @@ export default function ProjectListScreen({
   userProfiles,
 }) {
   const currentUserProfile = userProfiles[currentUser] || {};
-  const userRole = isAdmin ? "owner" : currentUserProfile.role || "member";
-  const canCreateProject = ["owner", "staff", "captain"].includes(userRole);
 
-  const [activeTab, setActiveTab] = useState("summary");
+  const userRole =
+    global.TEST_ROLE ||
+    (isAdmin ? "owner" : currentUserProfile.role || "member");
+  const canCreateProject = ["owner", "admin", "staff", "captain"].includes(
+    userRole,
+  );
 
-  // ==========================================
-  // ★変更：実際の projects データからハイライト用データを自動生成
-  // ==========================================
+  const { user, activeTeamId } = useAuth();
+
+  const [activeTab, setActiveTab] = useState("list");
+
+  const { width, height } = useWindowDimensions();
+  const isLandscape = width > height;
+
   const highlightData = useMemo(() => {
     const data = {};
     projects.forEach((p) => {
@@ -7787,20 +7905,18 @@ export default function ProjectListScreen({
             project: p.title,
             url: p.videoUrl,
             start: tag.videoTime,
-            end: tag.videoTime + 5, // タグの位置から5秒間再生
+            end: tag.videoTime + 5,
             user: tag.user,
           });
         });
       }
     });
-    // 再生順（開始時間が早い順）に並び替え
     Object.keys(data).forEach((key) => {
       data[key].sort((a, b) => a.start - b.start);
     });
     return data;
   }, [projects]);
 
-  // タグ一覧（実際にタグ付けされたものだけが表示されます）
   const availableTags = useMemo(
     () => Object.keys(highlightData).sort(),
     [highlightData],
@@ -7815,7 +7931,34 @@ export default function ProjectListScreen({
   const videoRef = useRef(null);
   const youtubeRef = useRef(null);
 
-  // 初期タグの自動選択
+  useEffect(() => {
+    ScreenOrientation.unlockAsync().catch(() => {});
+    return () => {
+      ScreenOrientation.lockAsync(
+        ScreenOrientation.OrientationLock.PORTRAIT_UP,
+      ).catch(() => {});
+    };
+  }, []);
+
+  const openLandscapeMode = async () => {
+    try {
+      await ScreenOrientation.lockAsync(
+        ScreenOrientation.OrientationLock.LANDSCAPE_RIGHT,
+      );
+    } catch (e) {}
+  };
+
+  const closeLandscapeMode = async () => {
+    try {
+      await ScreenOrientation.lockAsync(
+        ScreenOrientation.OrientationLock.PORTRAIT_UP,
+      );
+      setTimeout(async () => {
+        await ScreenOrientation.unlockAsync();
+      }, 2000);
+    } catch (e) {}
+  };
+
   useEffect(() => {
     if (
       availableTags.length > 0 &&
@@ -7916,37 +8059,66 @@ export default function ProjectListScreen({
     return `${m}:${s}`;
   };
 
-  // ==========================================
-  // プロジェクト作成ロジック
-  // ==========================================
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [title, setTitle] = useState("");
   const [type, setType] = useState("試合");
   const [participants, setParticipants] = useState("team");
   const [videoUrl, setVideoUrl] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
 
-  const handleCreateProject = () => {
+  // ==========================================
+  // 🚀 本番用：プロジェクト作成機能（最終形態）
+  // ==========================================
+  const handleCreateProject = async () => {
     if (title.trim() === "") {
-      Alert.alert("エラー", "プロジェクト名を入力してください。");
-      return;
+      return Alert.alert("エラー", "プロジェクト名を入力してください。");
     }
+    if (!activeTeamId) {
+      return Alert.alert(
+        "エラー",
+        "チーム情報がありません。再度ログインしてください。",
+      );
+    }
+
+    // 🚨 トラップ防止：テストボタンから入っている場合（本物のIDがない場合）は弾く！
+    const realUid = auth.currentUser?.uid || user?.uid;
+    if (!realUid) {
+      return Alert.alert(
+        "認証エラー",
+        "テストボタン（裏口）から入室しているため、保存権限がありません。\nお手数ですが一度ログアウトし、正規の新規登録からやり直してください！",
+      );
+    }
+
+    // ★ 修正：ルールが求めている「status」「tags」「memos」の空データをしっかり同封する！
     const newProject = {
-      id: "p_" + Date.now().toString(),
-      title,
-      type,
-      participants,
+      title: title.trim(),
+      type: type,
+      participants: participants,
       videoUrl: videoUrl.trim(),
       date: new Date().toLocaleDateString("ja-JP"),
       status: "active",
-      tags: [], // ★追加：タグとメモの初期データ
+      tags: [],
       memos: [],
+      createdBy: realUid,
     };
-    setProjects([newProject, ...projects]);
-    setIsModalVisible(false);
-    setTitle("");
-    setType("試合");
-    setParticipants("team");
-    setVideoUrl("");
+
+    setIsSaving(true);
+    try {
+      await createProject(activeTeamId, newProject);
+
+      setIsModalVisible(false);
+      setTitle("");
+      setType("試合");
+      setParticipants("team");
+      setVideoUrl("");
+
+      Alert.alert("成功", "プロジェクトを作成しました！");
+    } catch (error) {
+      console.error("プロジェクト保存エラー:", error);
+      Alert.alert("エラー", "保存に失敗しました。");
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const renderProjectItem = ({ item }) => {
@@ -7987,175 +8159,259 @@ export default function ProjectListScreen({
     );
   };
 
-  return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity
-          style={styles.backButton}
-          onPress={() => navigation.goBack()}
+  const renderTagSelector = () => (
+    <View
+      style={[
+        styles.tagSelectorWrapper,
+        isLandscape && styles.fsTagSelectorWrapper,
+      ]}
+    >
+      <ScrollView
+        horizontal={!isLandscape}
+        showsHorizontalScrollIndicator={false}
+      >
+        <View
+          style={
+            isLandscape
+              ? { flexDirection: "row", flexWrap: "wrap" }
+              : { flexDirection: "row" }
+          }
         >
-          <Text style={styles.backButtonText}>◁ ホーム</Text>
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>📁 プロジェクト</Text>
-        <View style={{ width: 60 }} />
+          {availableTags.map((tag) => (
+            <TouchableOpacity
+              key={tag}
+              style={[
+                styles.summaryTagBtn,
+                selectedHighlightTag === tag && styles.summaryTagBtnActive,
+                isLandscape && { marginBottom: 10 },
+              ]}
+              onPress={() => handleSelectTag(tag)}
+            >
+              <Text
+                style={[
+                  styles.summaryTagBtnText,
+                  selectedHighlightTag === tag &&
+                    styles.summaryTagBtnTextActive,
+                ]}
+              >
+                {tag}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      </ScrollView>
+    </View>
+  );
+
+  const renderVideoPlayer = () => (
+    <View
+      style={[styles.videoPlayerArea, isLandscape && styles.fsVideoPlayerArea]}
+    >
+      {ytId ? (
+        <View
+          style={[
+            styles.youtubeContainer,
+            isLandscape && styles.fsYoutubeContainer,
+            { pointerEvents: "auto" },
+          ]}
+        >
+          <YoutubePlayer
+            ref={youtubeRef}
+            height={isLandscape ? height : 200}
+            play={isPlaying}
+            videoId={ytId}
+            onChangeState={onYoutubeStateChange}
+            initialPlayerParams={{ controls: 0, rel: 0 }}
+          />
+        </View>
+      ) : (
+        <Video
+          ref={videoRef}
+          source={{ uri: currentClip.url }}
+          style={styles.videoComponent}
+          resizeMode={ResizeMode.CONTAIN}
+          onPlaybackStatusUpdate={handlePlaybackStatusUpdate}
+          useNativeControls={false}
+          shouldPlay={isPlaying}
+        />
+      )}
+
+      <View style={styles.videoOverlay}>
+        <Text style={styles.overlayProjectName}>{currentClip.project}</Text>
+        <Text style={styles.overlayTag}>🏷️ {selectedHighlightTag}</Text>
       </View>
 
-      <View style={styles.tabContainer}>
-        {[
-          { id: "summary", label: "ハイライトまとめ" },
-          { id: "list", label: "プロジェクト一覧" },
-        ].map((tab) => (
+      <View style={[styles.videoControls, { zIndex: 100 }]}>
+        <TouchableOpacity
+          style={styles.playBtn}
+          onPress={() => setIsPlaying(!isPlaying)}
+        >
+          <Text style={styles.playBtnText}>{isPlaying ? "⏸" : "▶"}</Text>
+        </TouchableOpacity>
+        <Text style={styles.videoTimeDisplay}>{formatTime(videoTime)}</Text>
+        <TouchableOpacity
+          style={styles.fullscreenBtn}
+          onPress={isLandscape ? closeLandscapeMode : openLandscapeMode}
+        >
+          <Text style={styles.fullscreenBtnText}>
+            {isLandscape ? "><" : "[  ]"}
+          </Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+
+  const renderPlaylist = () => (
+    <View style={{ flex: 1 }}>
+      <View
+        style={[styles.playlistHeader, isLandscape && styles.fsPlaylistHeader]}
+      >
+        <Text style={[styles.playlistTitle, isLandscape && { color: "#fff" }]}>
+          連続再生 ({currentClips.length}件)
+        </Text>
+        {!isLandscape && (
+          <Text style={styles.playlistSub}>
+            ※再生が終わると自動で次に進みます
+          </Text>
+        )}
+      </View>
+      <ScrollView
+        style={[styles.playlistScroll, isLandscape && { paddingHorizontal: 0 }]}
+        showsVerticalScrollIndicator={false}
+      >
+        {currentClips.map((clip, index) => (
           <TouchableOpacity
-            key={tab.id}
-            style={[styles.tab, activeTab === tab.id && styles.activeTab]}
-            onPress={() => {
-              setActiveTab(tab.id);
-              setIsPlaying(false);
-            }}
+            key={clip.id}
+            style={[
+              styles.clipCard,
+              currentClipIndex === index && styles.clipCardActive,
+            ]}
+            onPress={() => handleSelectClip(index)}
           >
             <Text
               style={[
-                styles.tabText,
-                activeTab === tab.id && styles.activeTabText,
+                styles.clipCardNumber,
+                currentClipIndex === index && { color: "#0077cc" },
               ]}
             >
-              {tab.label}
+              {index + 1}
             </Text>
+            <View style={{ flex: 1 }}>
+              <Text
+                style={[
+                  styles.clipCardTitle,
+                  currentClipIndex === index && { color: "#0077cc" },
+                ]}
+              >
+                {clip.project}
+              </Text>
+              <Text style={styles.clipCardSub}>
+                ⏱ {formatTime(clip.start)} 〜 {formatTime(clip.end)} / by{" "}
+                {clip.user}
+              </Text>
+            </View>
+            {currentClipIndex === index && isPlaying ? (
+              <Text style={styles.playingIcon}>▶ 再生中</Text>
+            ) : null}
           </TouchableOpacity>
         ))}
-      </View>
+        <View style={{ height: 30 }} />
+      </ScrollView>
+    </View>
+  );
 
-      <View style={styles.content}>
+  return (
+    <SafeAreaView
+      style={[
+        styles.container,
+        isLandscape && { backgroundColor: "#000", padding: 0 },
+      ]}
+    >
+      <StatusBar hidden={isLandscape} />
+
+      {!isLandscape && (
+        <View style={styles.header}>
+          <TouchableOpacity
+            style={styles.backButton}
+            onPress={() => navigation.goBack()}
+          >
+            <Text style={styles.backButtonText}>◁ ホーム</Text>
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>📁 プロジェクト</Text>
+          <View style={{ width: 60 }} />
+        </View>
+      )}
+
+      {!isLandscape && (
+        <View style={styles.tabContainer}>
+          {[
+            { id: "list", label: "プロジェクト一覧" },
+            { id: "summary", label: "ハイライトまとめ" },
+          ].map((tab) => (
+            <TouchableOpacity
+              key={tab.id}
+              style={[styles.tab, activeTab === tab.id && styles.activeTab]}
+              onPress={() => {
+                setActiveTab(tab.id);
+                setIsPlaying(false);
+              }}
+            >
+              <Text
+                style={[
+                  styles.tabText,
+                  activeTab === tab.id && styles.activeTabText,
+                ]}
+              >
+                {tab.label}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
+
+      <View style={[styles.content, isLandscape && { padding: 0 }]}>
         {activeTab === "summary" ? (
-          <View style={styles.summaryContainer}>
-            <View style={styles.tagSelectorWrapper}>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                {availableTags.map((tag) => (
-                  <TouchableOpacity
-                    key={tag}
-                    style={[
-                      styles.summaryTagBtn,
-                      selectedHighlightTag === tag &&
-                        styles.summaryTagBtnActive,
-                    ]}
-                    onPress={() => handleSelectTag(tag)}
+          <View
+            style={[
+              styles.summaryContainer,
+              isLandscape && { flexDirection: "row", marginHorizontal: 0 },
+            ]}
+          >
+            <View style={isLandscape ? styles.fsVideoCol : {}}>
+              {!isLandscape && renderTagSelector()}
+
+              {currentClips.length === 0 ? (
+                <View
+                  style={{
+                    flex: 1,
+                    justifyContent: "center",
+                    alignItems: "center",
+                  }}
+                >
+                  <Text
+                    style={[styles.emptyText, isLandscape && { color: "#fff" }]}
                   >
-                    <Text
-                      style={[
-                        styles.summaryTagBtnText,
-                        selectedHighlightTag === tag &&
-                          styles.summaryTagBtnTextActive,
-                      ]}
-                    >
-                      {tag}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
+                    タグが付けられたシーンはありません。
+                  </Text>
+                </View>
+              ) : (
+                renderVideoPlayer()
+              )}
             </View>
 
-            {currentClips.length === 0 ? (
-              <View
-                style={{
-                  flex: 1,
-                  justifyContent: "center",
-                  alignItems: "center",
-                }}
-              >
-                <Text style={styles.emptyText}>
-                  タグが付けられたシーンはありません。
-                </Text>
-                <Text style={styles.emptySubText}>
-                  動画詳細画面でタグ付けを行うと、ここに表示されます。
-                </Text>
-              </View>
-            ) : (
-              <>
-                <View style={styles.videoPlayerArea}>
-                  {ytId ? (
-                    <View style={styles.youtubeContainer}>
-                      <YoutubePlayer
-                        ref={youtubeRef}
-                        height={200}
-                        play={isPlaying}
-                        videoId={ytId}
-                        onChangeState={onYoutubeStateChange}
-                        initialPlayerParams={{ controls: 0, rel: 0 }}
-                      />
-                    </View>
-                  ) : (
-                    <Video
-                      ref={videoRef}
-                      source={{ uri: currentClip.url }}
-                      style={styles.videoComponent}
-                      resizeMode={ResizeMode.CONTAIN}
-                      onPlaybackStatusUpdate={handlePlaybackStatusUpdate}
-                      useNativeControls={false}
-                      shouldPlay={isPlaying}
-                    />
-                  )}
-                  <View style={styles.videoOverlay}>
-                    <Text style={styles.overlayProjectName}>
-                      {currentClip.project}
-                    </Text>
-                    <Text style={styles.overlayTag}>
-                      🏷️ {selectedHighlightTag}
-                    </Text>
-                  </View>
-                </View>
-
-                <View style={styles.playlistHeader}>
-                  <Text style={styles.playlistTitle}>
-                    連続再生リスト ({currentClips.length}件)
-                  </Text>
-                  <Text style={styles.playlistSub}>
-                    ※再生が終わると自動で次に進みます
-                  </Text>
-                </View>
-                <ScrollView
-                  style={styles.playlistScroll}
-                  showsVerticalScrollIndicator={false}
-                >
-                  {currentClips.map((clip, index) => (
-                    <TouchableOpacity
-                      key={clip.id}
-                      style={[
-                        styles.clipCard,
-                        currentClipIndex === index && styles.clipCardActive,
-                      ]}
-                      onPress={() => handleSelectClip(index)}
-                    >
-                      <Text
-                        style={[
-                          styles.clipCardNumber,
-                          currentClipIndex === index && { color: "#0077cc" },
-                        ]}
-                      >
-                        {index + 1}
-                      </Text>
-                      <View style={{ flex: 1 }}>
-                        <Text
-                          style={[
-                            styles.clipCardTitle,
-                            currentClipIndex === index && { color: "#0077cc" },
-                          ]}
-                        >
-                          {clip.project}
-                        </Text>
-                        <Text style={styles.clipCardSub}>
-                          ⏱ {formatTime(clip.start)} 〜 {formatTime(clip.end)} /
-                          by {clip.user}
-                        </Text>
-                      </View>
-                      {currentClipIndex === index && isPlaying ? (
-                        <Text style={styles.playingIcon}>▶ 再生中</Text>
-                      ) : null}
-                    </TouchableOpacity>
-                  ))}
-                  <View style={{ height: 30 }} />
-                </ScrollView>
-              </>
-            )}
+            <View
+              style={
+                isLandscape
+                  ? styles.fsUiCol
+                  : {
+                      flex: 1,
+                      display: currentClips.length === 0 ? "none" : "flex",
+                    }
+              }
+            >
+              {isLandscape && renderTagSelector()}
+              {currentClips.length > 0 && renderPlaylist()}
+            </View>
           </View>
         ) : (
           <>
@@ -8183,7 +8439,6 @@ export default function ProjectListScreen({
         )}
       </View>
 
-      {/* 新規プロジェクト作成モーダル */}
       <Modal visible={isModalVisible} transparent={true} animationType="slide">
         <View style={styles.modalOverlay}>
           <KeyboardAvoidingView
@@ -8239,7 +8494,7 @@ export default function ProjectListScreen({
                     全体
                   </Text>
                 </TouchableOpacity>
-                {["owner", "staff"].includes(userRole) && (
+                {["owner", "admin", "staff"].includes(userRole) && (
                   <TouchableOpacity
                     style={[
                       styles.typeBtn,
@@ -8272,14 +8527,18 @@ export default function ProjectListScreen({
                 <TouchableOpacity
                   style={styles.cancelBtn}
                   onPress={() => setIsModalVisible(false)}
+                  disabled={isSaving}
                 >
                   <Text style={styles.cancelBtnText}>キャンセル</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                  style={styles.submitBtn}
+                  style={[styles.submitBtn, isSaving && { opacity: 0.7 }]}
                   onPress={handleCreateProject}
+                  disabled={isSaving}
                 >
-                  <Text style={styles.submitBtnText}>作成する</Text>
+                  <Text style={styles.submitBtnText}>
+                    {isSaving ? "保存中..." : "作成する"}
+                  </Text>
                 </TouchableOpacity>
               </View>
             </ScrollView>
@@ -8308,7 +8567,6 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     textAlign: "center",
   },
-
   tabContainer: {
     flexDirection: "row",
     backgroundColor: "#fff",
@@ -8325,7 +8583,6 @@ const styles = StyleSheet.create({
   activeTab: { borderBottomColor: "#0077cc" },
   tabText: { fontSize: 14, color: "#666", fontWeight: "bold" },
   activeTabText: { color: "#0077cc" },
-
   content: { flex: 1, padding: 15 },
   topRow: {
     flexDirection: "row",
@@ -8342,13 +8599,6 @@ const styles = StyleSheet.create({
   },
   createBtnText: { color: "#fff", fontWeight: "bold", fontSize: 13 },
   emptyText: { textAlign: "center", color: "#888", marginTop: 30 },
-  emptySubText: {
-    textAlign: "center",
-    color: "#aaa",
-    fontSize: 12,
-    marginTop: 10,
-  },
-
   card: {
     backgroundColor: "#fff",
     padding: 15,
@@ -8411,12 +8661,13 @@ const styles = StyleSheet.create({
   },
   videoOverlay: {
     position: "absolute",
-    bottom: 10,
+    top: 10,
     left: 10,
     right: 10,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
+    zIndex: 50,
   },
   overlayProjectName: {
     color: "#fff",
@@ -8435,6 +8686,71 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     fontSize: 12,
     fontWeight: "bold",
+  },
+  videoControls: {
+    position: "absolute",
+    bottom: 10,
+    left: 10,
+    right: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(0,0,0,0.6)",
+    padding: 10,
+    borderRadius: 8,
+  },
+  playBtn: { marginRight: 10, padding: 5 },
+  playBtnText: { color: "#fff", fontSize: 24 },
+  videoTimeDisplay: {
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "bold",
+    fontFamily: "monospace",
+    marginLeft: "auto",
+  },
+  fullscreenBtn: {
+    marginLeft: 15,
+    paddingHorizontal: 5,
+    justifyContent: "center",
+  },
+  fullscreenBtnText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "bold",
+    letterSpacing: 1,
+  },
+
+  fsVideoCol: {
+    flex: 0.65,
+    backgroundColor: "#000",
+    justifyContent: "center",
+    position: "relative",
+  },
+  fsUiCol: {
+    flex: 0.35,
+    backgroundColor: "#1e293b",
+    paddingTop: 10,
+    paddingHorizontal: 10,
+  },
+  fsVideoPlayerArea: {
+    width: "100%",
+    height: "100%",
+  },
+  fsYoutubeContainer: {
+    width: "100%",
+    justifyContent: "center",
+  },
+  fsTagSelectorWrapper: {
+    borderBottomWidth: 0,
+    paddingBottom: 10,
+    paddingHorizontal: 0,
+  },
+  fsPlaylistHeader: {
+    backgroundColor: "transparent",
+    padding: 0,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: "#334155",
+    marginBottom: 10,
   },
 
   playlistHeader: {
@@ -8552,7 +8868,7 @@ const styles = StyleSheet.create({
 </file>
 
 <file path="src/screens/SettingsScreen.js">
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   View,
   Text,
@@ -8565,9 +8881,20 @@ import {
   Platform,
   Switch,
   Modal,
+  Clipboard,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { useAuth } from "../AuthContext";
+import {
+  getTeamInviteCode,
+  subscribeTeamData,
+  addTeamArrayItem,
+  removeTeamArrayItem,
+} from "../services/firestoreService";
 
+// ==========================================
+// ▼ 画面の部品
+// ==========================================
 const ThresholdSelector = ({ label, value, min, max, onChange }) => (
   <View style={styles.thresholdRow}>
     <Text style={styles.thresholdLabel}>{label}</Text>
@@ -8624,6 +8951,9 @@ const OptionSelector = ({ options, selected, onSelect }) => (
   </View>
 );
 
+// ==========================================
+// ▼ メイン画面
+// ==========================================
 const SettingsScreen = ({
   navigation,
   isAdmin,
@@ -8635,18 +8965,50 @@ const SettingsScreen = ({
   setMemberPassword,
   clubMembers,
   setClubMembers,
-  grades,
-  setGrades,
-  positions,
-  setPositions,
+  // grades, setGrades, positions, setPositions はFirestore連動にしたためPropsから除外（内部で管理）
   alertThresholds,
   setAlertThresholds,
   userProfiles,
   setUserProfiles,
 }) => {
+  const { activeTeamId } = useAuth();
+  const [inviteCode, setInviteCode] = useState("読み込み中...");
+
+  // ★ Firestoreと連動する学年・ポジションデータ
+  const [grades, setGrades] = useState([]);
+  const [positions, setPositions] = useState([]);
+
   const currentUserProfile = userProfiles[currentUser] || {};
-  const userRole = isAdmin ? "owner" : currentUserProfile.role || "member";
-  const isStaffOrAbove = ["owner", "staff"].includes(userRole);
+  const userRole =
+    global.TEST_ROLE ||
+    (isAdmin ? "owner" : currentUserProfile.role || "member");
+  const isStaffOrAbove = ["owner", "staff", "admin"].includes(userRole);
+
+  // ★ チームデータのリアルタイム取得
+  useEffect(() => {
+    if (!activeTeamId) return;
+
+    let isMounted = true;
+    const fetchInvite = async () => {
+      if (isStaffOrAbove) {
+        const code = await getTeamInviteCode(activeTeamId);
+        if (isMounted) setInviteCode(code || "未発行");
+      }
+    };
+    fetchInvite();
+
+    const unsubscribe = subscribeTeamData(activeTeamId, (data) => {
+      if (data) {
+        setGrades(data.grades || []);
+        setPositions(data.positions || []);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
+  }, [activeTeamId, isStaffOrAbove]);
 
   const [newAdminPass, setNewAdminPass] = useState(adminPassword);
   const [newMemberPass, setNewMemberPass] = useState(memberPassword);
@@ -8658,6 +9020,7 @@ const SettingsScreen = ({
   const [newPositionName, setNewPositionName] = useState("");
 
   const [expanded, setExpanded] = useState({
+    teamInfo: true,
     alert: false,
     password: false,
     member: false,
@@ -8674,12 +9037,9 @@ const SettingsScreen = ({
   const [myPosition, setMyPosition] = useState(
     userProfiles[currentUser]?.position || "",
   );
-
-  // ★修正：初期値として設定済みのパスワードを読み込む
   const [myPassword, setMyPassword] = useState(
     userProfiles[currentUser]?.password || "",
   );
-  // ★追加：自分専用パスワードの表示/非表示ステート
   const [showMyPassword, setShowMyPassword] = useState(false);
 
   const [isRoleModalVisible, setIsRoleModalVisible] = useState(false);
@@ -8695,6 +9055,7 @@ const SettingsScreen = ({
 
   const roleConfig = {
     owner: { label: "監督(オーナー)", color: "#e74c3c", bg: "#fceeea" },
+    admin: { label: "管理者", color: "#e74c3c", bg: "#fceeea" },
     staff: { label: "スタッフ", color: "#9b59b6", bg: "#f5eef8" },
     captain: { label: "キャプテン", color: "#e67e22", bg: "#fdf2e9" },
     member: { label: "一般部員", color: "#3498db", bg: "#ebf5fb" },
@@ -8702,7 +9063,7 @@ const SettingsScreen = ({
 
   const staffList = clubMembers.filter((m) => {
     const r = userProfiles[m]?.role;
-    return r === "owner" || r === "staff";
+    return r === "owner" || r === "staff" || r === "admin";
   });
 
   const toggleSection = (sectionKey) => {
@@ -8719,7 +9080,16 @@ const SettingsScreen = ({
     Alert.alert("保存完了", "チームの共通パスワードを更新しました。");
   };
 
-  const handleAddItem = (itemName, list, setList, setNewItemName, label) => {
+  // ==========================================
+  // 🔘 リストの追加・削除機能（元々のローカル用）
+  // ==========================================
+  const handleAddItemLocal = (
+    itemName,
+    list,
+    setList,
+    setNewItemName,
+    label,
+  ) => {
     const trimmed = itemName.trim();
     if (trimmed === "") return;
     if (list.includes(trimmed)) {
@@ -8730,13 +9100,44 @@ const SettingsScreen = ({
     setNewItemName("");
   };
 
-  const handleDeleteItem = (itemName, list, setList, label) => {
+  const handleDeleteItemLocal = (itemName, list, setList, label) => {
     Alert.alert(`${label}の削除`, `${itemName} をリストから削除しますか？`, [
       { text: "キャンセル", style: "cancel" },
       {
         text: "削除",
         style: "destructive",
         onPress: () => setList(list.filter((item) => item !== itemName)),
+      },
+    ]);
+  };
+
+  // ==========================================
+  // 🔘 データベース（Firestore）用 学年・ポジション追加・削除
+  // ==========================================
+  const handleAddTeamArrayItem = async (field, value, setter) => {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    try {
+      await addTeamArrayItem(activeTeamId, field, trimmed);
+      setter("");
+    } catch (error) {
+      Alert.alert("エラー", "追加に失敗しました。権限を確認してください。");
+    }
+  };
+
+  const handleDeleteTeamArrayItem = (field, value, label) => {
+    Alert.alert(`${label}の削除`, `「${value}」を削除しますか？`, [
+      { text: "キャンセル", style: "cancel" },
+      {
+        text: "削除",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await removeTeamArrayItem(activeTeamId, field, value);
+          } catch (error) {
+            Alert.alert("エラー", "削除に失敗しました。");
+          }
+        },
       },
     ]);
   };
@@ -8876,6 +9277,14 @@ const SettingsScreen = ({
     setSelectedStaffForScope(null);
   };
 
+  const copyToClipboard = (text, label) => {
+    Clipboard.setString(text);
+    Alert.alert(
+      "コピー完了",
+      `${label}をコピーしました。部員に送ってください。`,
+    );
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <KeyboardAvoidingView
@@ -8952,7 +9361,6 @@ const SettingsScreen = ({
                 </TouchableOpacity>
               </SectionCard>
 
-              {/* ★修正：自分専用パスワードの表示/非表示ボタンを追加 */}
               <SectionCard
                 isExp={expanded.myPassword}
                 onToggle={() => toggleSection("myPassword")}
@@ -8996,6 +9404,45 @@ const SettingsScreen = ({
                 チームの管理・設定を行うことができます。
               </Text>
 
+              {/* ★ 所属チーム情報（新規追加部分） */}
+              <SectionCard
+                isExp={expanded.teamInfo}
+                onToggle={() => toggleSection("teamInfo")}
+                title="🏟️ 所属チーム・入部用コード"
+              >
+                <View style={styles.idInfoBox}>
+                  <Text style={styles.idLabel}>
+                    部員に教える【招待コード】:
+                  </Text>
+                  <Text style={styles.idValueHighlight}>{inviteCode}</Text>
+                  <TouchableOpacity
+                    style={styles.copySubBtn}
+                    onPress={() => copyToClipboard(inviteCode, "招待コード")}
+                  >
+                    <Text style={styles.copySubBtnText}>
+                      招待コードをコピー
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+                <View
+                  style={[
+                    styles.idInfoBox,
+                    {
+                      marginTop: 15,
+                      borderTopWidth: 1,
+                      borderTopColor: "#eee",
+                      paddingTop: 15,
+                    },
+                  ]}
+                >
+                  <Text style={styles.idLabel}>チームID (システム用):</Text>
+                  <Text style={styles.idValueSmall}>
+                    {activeTeamId || "---"}
+                  </Text>
+                </View>
+              </SectionCard>
+
+              {/* ★ 元々あったアラート設定 */}
               <SectionCard
                 isExp={expanded.alert}
                 onToggle={() => toggleSection("alert")}
@@ -9056,6 +9503,7 @@ const SettingsScreen = ({
                 </View>
               </SectionCard>
 
+              {/* ★ 元々あったパスワード設定 */}
               <SectionCard
                 isExp={expanded.password}
                 onToggle={() => toggleSection("password")}
@@ -9103,6 +9551,7 @@ const SettingsScreen = ({
                 </TouchableOpacity>
               </SectionCard>
 
+              {/* ★ 元々あった部員リスト設定（ローカル管理維持） */}
               <SectionCard
                 isExp={expanded.member}
                 onToggle={() => toggleSection("member")}
@@ -9118,7 +9567,7 @@ const SettingsScreen = ({
                   <TouchableOpacity
                     style={styles.addMemberBtn}
                     onPress={() =>
-                      handleAddItem(
+                      handleAddItemLocal(
                         newMemberName,
                         clubMembers,
                         setClubMembers,
@@ -9144,7 +9593,7 @@ const SettingsScreen = ({
                           <Text style={styles.memberName}>{name}</Text>
                           <TouchableOpacity
                             onPress={() =>
-                              handleDeleteItem(
+                              handleDeleteItemLocal(
                                 name,
                                 clubMembers,
                                 setClubMembers,
@@ -9213,6 +9662,7 @@ const SettingsScreen = ({
                 </View>
               </SectionCard>
 
+              {/* ★ 学年リスト管理（データベース連動版） */}
               <SectionCard
                 isExp={expanded.grade}
                 onToggle={() => toggleSection("grade")}
@@ -9231,12 +9681,10 @@ const SettingsScreen = ({
                       { backgroundColor: "#f39c12" },
                     ]}
                     onPress={() =>
-                      handleAddItem(
+                      handleAddTeamArrayItem(
+                        "grades",
                         newGradeName,
-                        grades,
-                        setGrades,
                         setNewGradeName,
-                        "学年",
                       )
                     }
                   >
@@ -9249,16 +9697,20 @@ const SettingsScreen = ({
                       <Text style={styles.memberName}>{g}</Text>
                       <TouchableOpacity
                         onPress={() =>
-                          handleDeleteItem(g, grades, setGrades, "学年")
+                          handleDeleteTeamArrayItem("grades", g, "学年")
                         }
                       >
                         <Text style={styles.deleteText}>削除</Text>
                       </TouchableOpacity>
                     </View>
                   ))}
+                  {grades.length === 0 && (
+                    <Text style={styles.emptyText}>登録がありません</Text>
+                  )}
                 </View>
               </SectionCard>
 
+              {/* ★ ポジション管理（データベース連動版） */}
               <SectionCard
                 isExp={expanded.position}
                 onToggle={() => toggleSection("position")}
@@ -9277,12 +9729,10 @@ const SettingsScreen = ({
                       { backgroundColor: "#e67e22" },
                     ]}
                     onPress={() =>
-                      handleAddItem(
+                      handleAddTeamArrayItem(
+                        "positions",
                         newPositionName,
-                        positions,
-                        setPositions,
                         setNewPositionName,
-                        "ポジション",
                       )
                     }
                   >
@@ -9295,10 +9745,9 @@ const SettingsScreen = ({
                       <Text style={styles.memberName}>{p}</Text>
                       <TouchableOpacity
                         onPress={() =>
-                          handleDeleteItem(
+                          handleDeleteTeamArrayItem(
+                            "positions",
                             p,
-                            positions,
-                            setPositions,
                             "ポジション",
                           )
                         }
@@ -9307,15 +9756,21 @@ const SettingsScreen = ({
                       </TouchableOpacity>
                     </View>
                   ))}
+                  {positions.length === 0 && (
+                    <Text style={styles.emptyText}>登録がありません</Text>
+                  )}
                 </View>
               </SectionCard>
             </>
           )}
 
-          <View style={{ height: 50 }} />
+          <View style={{ height: 100 }} />
         </ScrollView>
       </KeyboardAvoidingView>
 
+      {/* ========================================== */}
+      {/* ▼ モーダル群（元々あったものを完全維持！） */}
+      {/* ========================================== */}
       <Modal
         visible={isRoleModalVisible}
         transparent={true}
@@ -9760,6 +10215,24 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     color: "#888",
   },
+
+  idInfoBox: { alignItems: "center", paddingVertical: 10 },
+  idLabel: { fontSize: 12, color: "#888", fontWeight: "bold", marginBottom: 5 },
+  idValueHighlight: {
+    fontSize: 32,
+    fontWeight: "bold",
+    color: "#0077cc",
+    letterSpacing: 3,
+    marginBottom: 10,
+  },
+  idValueSmall: { fontSize: 12, color: "#aaa", fontFamily: "monospace" },
+  copySubBtn: {
+    backgroundColor: "#e6f2ff",
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 20,
+  },
+  copySubBtnText: { color: "#0077cc", fontSize: 13, fontWeight: "bold" },
 });
 
 export default SettingsScreen;
@@ -9912,6 +10385,187 @@ const styles = StyleSheet.create({
 });
 </file>
 
+<file path="src/screens/TeamSetupScreen.js">
+import React, { useState } from "react";
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  StyleSheet,
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+  ActivityIndicator,
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { useAuth } from "../AuthContext";
+import { createTeam, joinTeamWithInvite } from "../services/firestoreService";
+
+const TeamSetupScreen = ({ route, navigation }) => {
+  const { user } = useAuth();
+
+  // ★追加：ログイン画面から渡された「役割」と「名前」をしっかり受け取る！
+  const initialRole = route.params?.initialRole || "member";
+  const userName = route.params?.userName || "ゲスト";
+
+  const [teamName, setTeamName] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+
+  const handleCreateTeam = async () => {
+    if (!teamName.trim())
+      return Alert.alert("エラー", "チーム名を入力してください");
+
+    setIsLoading(true);
+    try {
+      // ★修正：userName も一緒に送る！
+      await createTeam(user.uid, teamName, userName);
+
+      global.TEST_ROLE = null;
+      Alert.alert("成功！", "新しいチームを作成し、管理者になりました！");
+      navigation.replace("WorkspaceHome");
+    } catch (error) {
+      Alert.alert("作成失敗", error.message); // ログだけでなく画面にもエラー理由を表示
+      console.log(error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleJoinTeam = async () => {
+    if (!inviteCode.trim())
+      return Alert.alert("エラー", "招待コードを入力してください");
+
+    setIsLoading(true);
+    try {
+      // ★修正：userName も一緒に送る！
+      await joinTeamWithInvite(user.uid, inviteCode, userName);
+
+      global.TEST_ROLE = null;
+      Alert.alert("成功！", "チームに参加しました！");
+      navigation.replace("WorkspaceHome");
+    } catch (error) {
+      Alert.alert("参加失敗", error.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        style={styles.inner}
+      >
+        <View style={styles.header}>
+          <Text style={styles.appTitle}>📱 スマート部活</Text>
+          <Text style={styles.subTitle}>初期セットアップ</Text>
+        </View>
+
+        {initialRole === "member" && (
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>👤 部員・関係者として参加</Text>
+            <Text style={styles.cardDesc}>
+              教員から教えられた招待コードを入力してください
+            </Text>
+            <TextInput
+              style={styles.input}
+              placeholder="例: A1B2C3"
+              value={inviteCode}
+              onChangeText={setInviteCode}
+              autoCapitalize="characters"
+            />
+            <TouchableOpacity
+              style={styles.btnPrimary}
+              onPress={handleJoinTeam}
+              disabled={isLoading}
+            >
+              {isLoading ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.btnPrimaryText}>参加する</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {initialRole === "admin" && (
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>👑 管理者としてチームを作成</Text>
+            <Text style={styles.cardDesc}>
+              新しく自分の部活チームを立ち上げます
+            </Text>
+            <TextInput
+              style={styles.input}
+              placeholder="例: 野々市高校 サッカー部"
+              value={teamName}
+              onChangeText={setTeamName}
+            />
+            <TouchableOpacity
+              style={styles.btnPrimary}
+              onPress={handleCreateTeam}
+              disabled={isLoading}
+            >
+              {isLoading ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.btnPrimaryText}>チームを作成する</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        )}
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: "#f0f2f5", justifyContent: "center" },
+  inner: { padding: 20, width: "100%", maxWidth: 450, alignSelf: "center" },
+  header: { alignItems: "center", marginBottom: 30 },
+  appTitle: {
+    fontSize: 28,
+    fontWeight: "bold",
+    color: "#0077cc",
+    marginBottom: 5,
+  },
+  subTitle: { fontSize: 18, fontWeight: "bold", color: "#333" },
+  card: {
+    backgroundColor: "#fff",
+    padding: 20,
+    borderRadius: 12,
+    elevation: 2,
+    marginBottom: 15,
+  },
+  cardTitle: {
+    fontSize: 16,
+    fontWeight: "bold",
+    color: "#333",
+    marginBottom: 5,
+  },
+  cardDesc: { fontSize: 12, color: "#666", marginBottom: 15 },
+  input: {
+    backgroundColor: "#f9f9f9",
+    borderWidth: 1,
+    borderColor: "#ddd",
+    padding: 12,
+    borderRadius: 8,
+    fontSize: 16,
+    marginBottom: 15,
+  },
+  btnPrimary: {
+    backgroundColor: "#0077cc",
+    paddingVertical: 14,
+    borderRadius: 8,
+    alignItems: "center",
+  },
+  btnPrimaryText: { color: "#fff", fontSize: 16, fontWeight: "bold" },
+});
+
+export default TeamSetupScreen;
+</file>
+
 <file path="src/screens/VideoListScreen.js">
 import React, { useEffect, useState } from 'react';
 import { View, Text, FlatList, TouchableOpacity, StyleSheet } from 'react-native';
@@ -9988,6 +10642,7 @@ const WorkspaceHomeScreen = ({
   isAdmin,
   currentUser,
   notices,
+  setNotices,
   posts,
   setPosts,
   isOffline,
@@ -9997,7 +10652,10 @@ const WorkspaceHomeScreen = ({
   userProfiles = {},
 }) => {
   const currentUserProfile = userProfiles[currentUser] || {};
-  const userRole = isAdmin ? "owner" : currentUserProfile.role || "member";
+
+  const userRole =
+    global.TEST_ROLE ||
+    (isAdmin ? "owner" : currentUserProfile.role || "member");
 
   const roleNameMap = {
     owner: "管理者(監督)",
@@ -10033,7 +10691,6 @@ const WorkspaceHomeScreen = ({
     return level;
   };
 
-  // カレンダーアイコンに表示する危険アラートの数
   const unreadMedicalDangerCount = medicalRecords
     ? medicalRecords.filter((r) => {
         if (r.isReviewed) return false;
@@ -10063,20 +10720,6 @@ const WorkspaceHomeScreen = ({
       name: "トレーニング",
       isReadOnly: false,
       shareScope: "team",
-      allowedMembers: ["all"],
-    },
-    {
-      id: "ch_3",
-      name: "Aチーム限定",
-      isReadOnly: false,
-      shareScope: "group",
-      allowedMembers: ["キャプテン"],
-    },
-    {
-      id: "ch_staff",
-      name: "スタッフ会議室",
-      isReadOnly: false,
-      shareScope: "coach",
       allowedMembers: ["all"],
     },
   ]);
@@ -10374,6 +11017,43 @@ const WorkspaceHomeScreen = ({
     );
   };
 
+  // ★ 修正：共有元のチャンネル名（post.channel）をタイトルに含めるようにしました！
+  const handleShareToNotice = (post) => {
+    Alert.alert(
+      "掲示板へ共有",
+      `「${post.channel}」の投稿を掲示板に共有しますか？`,
+      [
+        { text: "キャンセル", style: "cancel" },
+        {
+          text: "共有する",
+          onPress: () => {
+            const newNotice = {
+              id: "notice_" + Date.now().toString(),
+              title: `【${post.channel}より】${post.user} の投稿`, // ← ココが賢くなりました！
+              content: post.content,
+              date: new Date().toLocaleDateString("ja-JP"),
+              author: displayUserName,
+              readBy: [currentUser],
+              important: false,
+            };
+
+            if (typeof setNotices === "function") {
+              setNotices([newNotice, ...notices]);
+            } else if (notices && Array.isArray(notices)) {
+              notices.unshift(newNotice);
+            }
+
+            Alert.alert(
+              "共有完了",
+              "掲示板に共有しました！\n「掲示板」タブをご確認ください。",
+            );
+            setActiveLongPressPostId(null);
+          },
+        },
+      ],
+    );
+  };
+
   const renderContentWithMentions = (text) => {
     const parts = text.split(/(@\S+)/g);
     return parts.map((part, index) =>
@@ -10553,6 +11233,14 @@ const WorkspaceHomeScreen = ({
                     {post.isPinned ? "📌 固定を解除" : "📌 固定する"}
                   </Text>
                 </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.longPressMenuItem}
+                  onPress={() => handleShareToNotice(post)}
+                >
+                  <Text style={styles.longPressMenuText}>📋 掲示板に共有</Text>
+                </TouchableOpacity>
+
                 <TouchableOpacity
                   style={styles.longPressMenuItem}
                   onPress={() => handleDeletePost(post.id)}
@@ -10818,7 +11506,6 @@ const WorkspaceHomeScreen = ({
               <Text style={styles.menuLabel}>掲示板</Text>
             </TouchableOpacity>
 
-            {/* ★変更：「部活日記」「メディカル」から「振り返り」「カレンダー」に変更 */}
             <TouchableOpacity
               style={styles.menuItem}
               onPress={() => navigation.navigate("Diary")}
@@ -11809,78 +12496,181 @@ import {
   addDoc,
   serverTimestamp,
   doc,
-  getDoc,
-  getDocs,
   query,
   orderBy,
   onSnapshot,
-  where
-} from 'firebase/firestore';
-import { db } from '../firebase';
+  setDoc,
+  getDoc,
+  updateDoc,
+  arrayUnion,
+  arrayRemove,
+} from "firebase/firestore";
+import { db } from "../firebase";
 
-// videos: { title, sourceType, videoUrl, createdBy, createdAt }
-export async function addVideo({ title, videoUrl, sourceType = 'url', createdBy = 'anon' }) {
-  const ref = await addDoc(collection(db, 'videos'), {
-    title,
-    sourceType,
-    videoUrl,
-    createdBy,
+// ==========================================
+// 📁 プロジェクト関連
+// ==========================================
+
+export function subscribeProjects(teamId, callback) {
+  if (!teamId) return () => {};
+  const projectsRef = collection(db, "teams", teamId, "projects");
+  const q = query(projectsRef, orderBy("createdAt", "desc"));
+  const unsubscribe = onSnapshot(q, (snapshot) => {
+    const projectsData = snapshot.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
+    callback(projectsData);
+  });
+  return unsubscribe;
+}
+
+export async function createProject(teamId, projectData) {
+  if (!teamId) throw new Error("チームIDがありません。");
+  const projectsRef = collection(db, "teams", teamId, "projects");
+  await addDoc(projectsRef, {
+    ...projectData,
+    teamId: teamId,
     createdAt: serverTimestamp(),
-  });
-  return ref.id;
-}
-
-export async function getVideo(videoId) {
-  const snap = await getDoc(doc(db, 'videos', videoId));
-  return snap.exists() ? { id: snap.id, ...snap.data() } : null;
-}
-
-export async function listVideosOnce() {
-  const q = query(collection(db, 'videos'), orderBy('createdAt', 'desc'));
-  const snap = await getDocs(q);
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
-}
-
-export function subscribeVideos(callback) {
-  const q = query(collection(db, 'videos'), orderBy('createdAt', 'desc'));
-  return onSnapshot(q, (snap) => {
-    const arr = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    callback(arr);
+    updatedAt: serverTimestamp(),
   });
 }
 
-// events: /videos/{videoId}/events
-// event: { tagTypes: string[], startSec: number, endSec: number, note?, createdAt, createdBy }
-export async function addEvent(videoId, event) {
-  return addDoc(collection(db, 'videos', videoId, 'events'), {
-    ...event,
-    createdAt: serverTimestamp(),
-  });
-}
-
-export async function listEventsOnce(videoId) {
-  const q = query(
-    collection(db, 'videos', videoId, 'events'),
-    orderBy('startSec', 'asc')
+export async function updateProject(teamId, projectId, updateData) {
+  if (!teamId || !projectId) throw new Error("IDが不足しています");
+  const projectRef = doc(db, "teams", teamId, "projects", projectId);
+  await setDoc(
+    projectRef,
+    {
+      ...updateData,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true },
   );
-  const snap = await getDocs(q);
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
 }
 
-export function subscribeEvents(videoId, callback, filters = null) {
-  // 最初は全件購読、重くなったら where で絞る
-  let qbase = query(
-    collection(db, 'videos', videoId, 'events'),
-    orderBy('startSec', 'asc')
+// ==========================================
+// 🏟️ チーム設定・設定画面関連（招待コード・学年・ポジション）
+// ==========================================
+
+export async function getTeamInviteCode(teamId) {
+  if (!teamId) return null;
+  try {
+    const teamRef = doc(db, "teams", teamId);
+    const teamSnap = await getDoc(teamRef);
+    if (teamSnap.exists() && teamSnap.data().inviteCode) {
+      return teamSnap.data().inviteCode;
+    }
+    return "未発行";
+  } catch (error) {
+    console.log("招待コード取得エラー:", error);
+    return "取得エラー(権限不足)";
+  }
+}
+
+// ★ チーム情報をリアルタイムで取得する関数（学年・ポジション用）
+export function subscribeTeamData(teamId, callback) {
+  if (!teamId) return () => {};
+  const teamRef = doc(db, "teams", teamId);
+  return onSnapshot(teamRef, (docSnap) => {
+    if (docSnap.exists()) {
+      callback(docSnap.data());
+    }
+  });
+}
+
+// ★ チームの配列データ（学年、ポジション）を追加する関数
+export async function addTeamArrayItem(teamId, field, value) {
+  const teamRef = doc(db, "teams", teamId);
+  await updateDoc(teamRef, {
+    [field]: arrayUnion(value),
+  });
+}
+
+// ★ チームの配列データ（学年、ポジション）を削除する関数
+export async function removeTeamArrayItem(teamId, field, value) {
+  const teamRef = doc(db, "teams", teamId);
+  await updateDoc(teamRef, {
+    [field]: arrayRemove(value),
+  });
+}
+
+// ==========================================
+// 🚀 新規登録フロー（招待コードを使った正規ルート完全版）
+// ==========================================
+
+export async function executeRegistration(
+  uid,
+  role,
+  userName,
+  teamName,
+  inviteCodeInput,
+) {
+  const userRef = doc(db, "users", uid);
+  await setDoc(
+    userRef,
+    {
+      name: userName,
+      createdAt: serverTimestamp(),
+    },
+    { merge: true },
   );
 
-  // 例: where を足したいならここに条件追加（AND条件に注意）
-  // if (filters?.tag) { ... }
+  if (role === "admin") {
+    // 👑 管理者としてチームを新規作成
+    const newTeamRef = doc(collection(db, "teams"));
+    const teamId = newTeamRef.id;
+    const generatedInviteCode = Math.random()
+      .toString(36)
+      .substring(2, 8)
+      .toUpperCase();
 
-  return onSnapshot(qbase, (snap) => {
-    const arr = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    callback(arr);
-  });
+    await setDoc(newTeamRef, {
+      name: teamName,
+      createdBy: uid,
+      inviteCode: generatedInviteCode,
+      createdAt: serverTimestamp(),
+    });
+
+    const memberRef = doc(db, "teams", teamId, "members", uid);
+    await setDoc(memberRef, {
+      role: "admin",
+      joinedAt: serverTimestamp(),
+    });
+
+    await setDoc(userRef, { activeTeamId: teamId }, { merge: true });
+
+    const inviteRef = doc(db, "invites", generatedInviteCode);
+    await setDoc(inviteRef, {
+      teamId: teamId,
+      active: true,
+      createdBy: uid,
+      createdAt: serverTimestamp(),
+    });
+    return { inviteCode: generatedInviteCode, teamId, type: "create" };
+  } else {
+    // 👤 部員として招待コードを使って参加
+    const inviteCode = inviteCodeInput.trim().toUpperCase();
+    const inviteRef = doc(db, "invites", inviteCode);
+    const inviteSnap = await getDoc(inviteRef);
+
+    if (!inviteSnap.exists() || !inviteSnap.data().active) {
+      throw new Error("無効な招待コードです。");
+    }
+
+    const teamId = inviteSnap.data().teamId;
+    const memberRef = doc(db, "teams", teamId, "members", uid);
+
+    await setDoc(memberRef, {
+      role: "member",
+      inviteCode: inviteCode,
+      joinedAt: serverTimestamp(),
+    });
+
+    await setDoc(userRef, { activeTeamId: teamId }, { merge: true });
+
+    return { teamId, type: "join" };
+  }
 }
 </file>
 

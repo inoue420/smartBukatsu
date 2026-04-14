@@ -17,12 +17,16 @@ import {
   Platform,
   Alert,
   ScrollView,
+  StatusBar,
+  useWindowDimensions,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Video, ResizeMode } from "expo-av";
 import YoutubePlayer from "react-native-youtube-iframe";
+import * as ScreenOrientation from "expo-screen-orientation";
 
 import { useAuth } from "../AuthContext";
+import { auth } from "../firebase";
 import { createProject } from "../services/firestoreService";
 
 export default function ProjectListScreen({
@@ -35,17 +39,19 @@ export default function ProjectListScreen({
 }) {
   const currentUserProfile = userProfiles[currentUser] || {};
 
-  // ★ ここが修正の要！ global.TEST_ROLE があれば最優先で採用する！
   const userRole =
     global.TEST_ROLE ||
     (isAdmin ? "owner" : currentUserProfile.role || "member");
+  const canCreateProject = ["owner", "admin", "staff", "captain"].includes(
+    userRole,
+  );
 
-  // owner, staff, captain なら「＋新規追加」ボタンを表示する
-  const canCreateProject = ["owner", "staff", "captain"].includes(userRole);
+  const { user, activeTeamId } = useAuth();
 
-  const { activeTeamId } = useAuth();
+  const [activeTab, setActiveTab] = useState("list");
 
-  const [activeTab, setActiveTab] = useState("summary");
+  const { width, height } = useWindowDimensions();
+  const isLandscape = width > height;
 
   const highlightData = useMemo(() => {
     const data = {};
@@ -83,6 +89,34 @@ export default function ProjectListScreen({
 
   const videoRef = useRef(null);
   const youtubeRef = useRef(null);
+
+  useEffect(() => {
+    ScreenOrientation.unlockAsync().catch(() => {});
+    return () => {
+      ScreenOrientation.lockAsync(
+        ScreenOrientation.OrientationLock.PORTRAIT_UP,
+      ).catch(() => {});
+    };
+  }, []);
+
+  const openLandscapeMode = async () => {
+    try {
+      await ScreenOrientation.lockAsync(
+        ScreenOrientation.OrientationLock.LANDSCAPE_RIGHT,
+      );
+    } catch (e) {}
+  };
+
+  const closeLandscapeMode = async () => {
+    try {
+      await ScreenOrientation.lockAsync(
+        ScreenOrientation.OrientationLock.PORTRAIT_UP,
+      );
+      setTimeout(async () => {
+        await ScreenOrientation.unlockAsync();
+      }, 2000);
+    } catch (e) {}
+  };
 
   useEffect(() => {
     if (
@@ -189,33 +223,60 @@ export default function ProjectListScreen({
   const [type, setType] = useState("試合");
   const [participants, setParticipants] = useState("team");
   const [videoUrl, setVideoUrl] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
 
+  // ==========================================
+  // 🚀 本番用：プロジェクト作成機能（最終形態）
+  // ==========================================
   const handleCreateProject = async () => {
     if (title.trim() === "") {
-      Alert.alert("エラー", "プロジェクト名を入力してください。");
-      return;
+      return Alert.alert("エラー", "プロジェクト名を入力してください。");
     }
+    if (!activeTeamId) {
+      return Alert.alert(
+        "エラー",
+        "チーム情報がありません。再度ログインしてください。",
+      );
+    }
+
+    // 🚨 トラップ防止：テストボタンから入っている場合（本物のIDがない場合）は弾く！
+    const realUid = auth.currentUser?.uid || user?.uid;
+    if (!realUid) {
+      return Alert.alert(
+        "認証エラー",
+        "テストボタン（裏口）から入室しているため、保存権限がありません。\nお手数ですが一度ログアウトし、正規の新規登録からやり直してください！",
+      );
+    }
+
+    // ★ 修正：ルールが求めている「status」「tags」「memos」の空データをしっかり同封する！
     const newProject = {
-      title,
-      type,
-      participants,
+      title: title.trim(),
+      type: type,
+      participants: participants,
       videoUrl: videoUrl.trim(),
       date: new Date().toLocaleDateString("ja-JP"),
       status: "active",
       tags: [],
       memos: [],
+      createdBy: realUid,
     };
 
+    setIsSaving(true);
     try {
       await createProject(activeTeamId, newProject);
+
       setIsModalVisible(false);
       setTitle("");
       setType("試合");
       setParticipants("team");
       setVideoUrl("");
+
+      Alert.alert("成功", "プロジェクトを作成しました！");
     } catch (error) {
-      Alert.alert("エラー", "プロジェクトの作成に失敗しました。");
-      console.error(error);
+      console.error("プロジェクト保存エラー:", error);
+      Alert.alert("エラー", "保存に失敗しました。");
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -257,175 +318,259 @@ export default function ProjectListScreen({
     );
   };
 
-  return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity
-          style={styles.backButton}
-          onPress={() => navigation.goBack()}
+  const renderTagSelector = () => (
+    <View
+      style={[
+        styles.tagSelectorWrapper,
+        isLandscape && styles.fsTagSelectorWrapper,
+      ]}
+    >
+      <ScrollView
+        horizontal={!isLandscape}
+        showsHorizontalScrollIndicator={false}
+      >
+        <View
+          style={
+            isLandscape
+              ? { flexDirection: "row", flexWrap: "wrap" }
+              : { flexDirection: "row" }
+          }
         >
-          <Text style={styles.backButtonText}>◁ ホーム</Text>
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>📁 プロジェクト</Text>
-        <View style={{ width: 60 }} />
+          {availableTags.map((tag) => (
+            <TouchableOpacity
+              key={tag}
+              style={[
+                styles.summaryTagBtn,
+                selectedHighlightTag === tag && styles.summaryTagBtnActive,
+                isLandscape && { marginBottom: 10 },
+              ]}
+              onPress={() => handleSelectTag(tag)}
+            >
+              <Text
+                style={[
+                  styles.summaryTagBtnText,
+                  selectedHighlightTag === tag &&
+                    styles.summaryTagBtnTextActive,
+                ]}
+              >
+                {tag}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      </ScrollView>
+    </View>
+  );
+
+  const renderVideoPlayer = () => (
+    <View
+      style={[styles.videoPlayerArea, isLandscape && styles.fsVideoPlayerArea]}
+    >
+      {ytId ? (
+        <View
+          style={[
+            styles.youtubeContainer,
+            isLandscape && styles.fsYoutubeContainer,
+            { pointerEvents: "auto" },
+          ]}
+        >
+          <YoutubePlayer
+            ref={youtubeRef}
+            height={isLandscape ? height : 200}
+            play={isPlaying}
+            videoId={ytId}
+            onChangeState={onYoutubeStateChange}
+            initialPlayerParams={{ controls: 0, rel: 0 }}
+          />
+        </View>
+      ) : (
+        <Video
+          ref={videoRef}
+          source={{ uri: currentClip.url }}
+          style={styles.videoComponent}
+          resizeMode={ResizeMode.CONTAIN}
+          onPlaybackStatusUpdate={handlePlaybackStatusUpdate}
+          useNativeControls={false}
+          shouldPlay={isPlaying}
+        />
+      )}
+
+      <View style={styles.videoOverlay}>
+        <Text style={styles.overlayProjectName}>{currentClip.project}</Text>
+        <Text style={styles.overlayTag}>🏷️ {selectedHighlightTag}</Text>
       </View>
 
-      <View style={styles.tabContainer}>
-        {[
-          { id: "summary", label: "ハイライトまとめ" },
-          { id: "list", label: "プロジェクト一覧" },
-        ].map((tab) => (
+      <View style={[styles.videoControls, { zIndex: 100 }]}>
+        <TouchableOpacity
+          style={styles.playBtn}
+          onPress={() => setIsPlaying(!isPlaying)}
+        >
+          <Text style={styles.playBtnText}>{isPlaying ? "⏸" : "▶"}</Text>
+        </TouchableOpacity>
+        <Text style={styles.videoTimeDisplay}>{formatTime(videoTime)}</Text>
+        <TouchableOpacity
+          style={styles.fullscreenBtn}
+          onPress={isLandscape ? closeLandscapeMode : openLandscapeMode}
+        >
+          <Text style={styles.fullscreenBtnText}>
+            {isLandscape ? "><" : "[  ]"}
+          </Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+
+  const renderPlaylist = () => (
+    <View style={{ flex: 1 }}>
+      <View
+        style={[styles.playlistHeader, isLandscape && styles.fsPlaylistHeader]}
+      >
+        <Text style={[styles.playlistTitle, isLandscape && { color: "#fff" }]}>
+          連続再生 ({currentClips.length}件)
+        </Text>
+        {!isLandscape && (
+          <Text style={styles.playlistSub}>
+            ※再生が終わると自動で次に進みます
+          </Text>
+        )}
+      </View>
+      <ScrollView
+        style={[styles.playlistScroll, isLandscape && { paddingHorizontal: 0 }]}
+        showsVerticalScrollIndicator={false}
+      >
+        {currentClips.map((clip, index) => (
           <TouchableOpacity
-            key={tab.id}
-            style={[styles.tab, activeTab === tab.id && styles.activeTab]}
-            onPress={() => {
-              setActiveTab(tab.id);
-              setIsPlaying(false);
-            }}
+            key={clip.id}
+            style={[
+              styles.clipCard,
+              currentClipIndex === index && styles.clipCardActive,
+            ]}
+            onPress={() => handleSelectClip(index)}
           >
             <Text
               style={[
-                styles.tabText,
-                activeTab === tab.id && styles.activeTabText,
+                styles.clipCardNumber,
+                currentClipIndex === index && { color: "#0077cc" },
               ]}
             >
-              {tab.label}
+              {index + 1}
             </Text>
+            <View style={{ flex: 1 }}>
+              <Text
+                style={[
+                  styles.clipCardTitle,
+                  currentClipIndex === index && { color: "#0077cc" },
+                ]}
+              >
+                {clip.project}
+              </Text>
+              <Text style={styles.clipCardSub}>
+                ⏱ {formatTime(clip.start)} 〜 {formatTime(clip.end)} / by{" "}
+                {clip.user}
+              </Text>
+            </View>
+            {currentClipIndex === index && isPlaying ? (
+              <Text style={styles.playingIcon}>▶ 再生中</Text>
+            ) : null}
           </TouchableOpacity>
         ))}
-      </View>
+        <View style={{ height: 30 }} />
+      </ScrollView>
+    </View>
+  );
 
-      <View style={styles.content}>
+  return (
+    <SafeAreaView
+      style={[
+        styles.container,
+        isLandscape && { backgroundColor: "#000", padding: 0 },
+      ]}
+    >
+      <StatusBar hidden={isLandscape} />
+
+      {!isLandscape && (
+        <View style={styles.header}>
+          <TouchableOpacity
+            style={styles.backButton}
+            onPress={() => navigation.goBack()}
+          >
+            <Text style={styles.backButtonText}>◁ ホーム</Text>
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>📁 プロジェクト</Text>
+          <View style={{ width: 60 }} />
+        </View>
+      )}
+
+      {!isLandscape && (
+        <View style={styles.tabContainer}>
+          {[
+            { id: "list", label: "プロジェクト一覧" },
+            { id: "summary", label: "ハイライトまとめ" },
+          ].map((tab) => (
+            <TouchableOpacity
+              key={tab.id}
+              style={[styles.tab, activeTab === tab.id && styles.activeTab]}
+              onPress={() => {
+                setActiveTab(tab.id);
+                setIsPlaying(false);
+              }}
+            >
+              <Text
+                style={[
+                  styles.tabText,
+                  activeTab === tab.id && styles.activeTabText,
+                ]}
+              >
+                {tab.label}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
+
+      <View style={[styles.content, isLandscape && { padding: 0 }]}>
         {activeTab === "summary" ? (
-          <View style={styles.summaryContainer}>
-            <View style={styles.tagSelectorWrapper}>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                {availableTags.map((tag) => (
-                  <TouchableOpacity
-                    key={tag}
-                    style={[
-                      styles.summaryTagBtn,
-                      selectedHighlightTag === tag &&
-                        styles.summaryTagBtnActive,
-                    ]}
-                    onPress={() => handleSelectTag(tag)}
+          <View
+            style={[
+              styles.summaryContainer,
+              isLandscape && { flexDirection: "row", marginHorizontal: 0 },
+            ]}
+          >
+            <View style={isLandscape ? styles.fsVideoCol : {}}>
+              {!isLandscape && renderTagSelector()}
+
+              {currentClips.length === 0 ? (
+                <View
+                  style={{
+                    flex: 1,
+                    justifyContent: "center",
+                    alignItems: "center",
+                  }}
+                >
+                  <Text
+                    style={[styles.emptyText, isLandscape && { color: "#fff" }]}
                   >
-                    <Text
-                      style={[
-                        styles.summaryTagBtnText,
-                        selectedHighlightTag === tag &&
-                          styles.summaryTagBtnTextActive,
-                      ]}
-                    >
-                      {tag}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
+                    タグが付けられたシーンはありません。
+                  </Text>
+                </View>
+              ) : (
+                renderVideoPlayer()
+              )}
             </View>
 
-            {currentClips.length === 0 ? (
-              <View
-                style={{
-                  flex: 1,
-                  justifyContent: "center",
-                  alignItems: "center",
-                }}
-              >
-                <Text style={styles.emptyText}>
-                  タグが付けられたシーンはありません。
-                </Text>
-                <Text style={styles.emptySubText}>
-                  動画詳細画面でタグ付けを行うと、ここに表示されます。
-                </Text>
-              </View>
-            ) : (
-              <>
-                <View style={styles.videoPlayerArea}>
-                  {ytId ? (
-                    <View style={styles.youtubeContainer}>
-                      <YoutubePlayer
-                        ref={youtubeRef}
-                        height={200}
-                        play={isPlaying}
-                        videoId={ytId}
-                        onChangeState={onYoutubeStateChange}
-                        initialPlayerParams={{ controls: 0, rel: 0 }}
-                      />
-                    </View>
-                  ) : (
-                    <Video
-                      ref={videoRef}
-                      source={{ uri: currentClip.url }}
-                      style={styles.videoComponent}
-                      resizeMode={ResizeMode.CONTAIN}
-                      onPlaybackStatusUpdate={handlePlaybackStatusUpdate}
-                      useNativeControls={false}
-                      shouldPlay={isPlaying}
-                    />
-                  )}
-                  <View style={styles.videoOverlay}>
-                    <Text style={styles.overlayProjectName}>
-                      {currentClip.project}
-                    </Text>
-                    <Text style={styles.overlayTag}>
-                      🏷️ {selectedHighlightTag}
-                    </Text>
-                  </View>
-                </View>
-
-                <View style={styles.playlistHeader}>
-                  <Text style={styles.playlistTitle}>
-                    連続再生リスト ({currentClips.length}件)
-                  </Text>
-                  <Text style={styles.playlistSub}>
-                    ※再生が終わると自動で次に進みます
-                  </Text>
-                </View>
-                <ScrollView
-                  style={styles.playlistScroll}
-                  showsVerticalScrollIndicator={false}
-                >
-                  {currentClips.map((clip, index) => (
-                    <TouchableOpacity
-                      key={clip.id}
-                      style={[
-                        styles.clipCard,
-                        currentClipIndex === index && styles.clipCardActive,
-                      ]}
-                      onPress={() => handleSelectClip(index)}
-                    >
-                      <Text
-                        style={[
-                          styles.clipCardNumber,
-                          currentClipIndex === index && { color: "#0077cc" },
-                        ]}
-                      >
-                        {index + 1}
-                      </Text>
-                      <View style={{ flex: 1 }}>
-                        <Text
-                          style={[
-                            styles.clipCardTitle,
-                            currentClipIndex === index && { color: "#0077cc" },
-                          ]}
-                        >
-                          {clip.project}
-                        </Text>
-                        <Text style={styles.clipCardSub}>
-                          ⏱ {formatTime(clip.start)} 〜 {formatTime(clip.end)} /
-                          by {clip.user}
-                        </Text>
-                      </View>
-                      {currentClipIndex === index && isPlaying ? (
-                        <Text style={styles.playingIcon}>▶ 再生中</Text>
-                      ) : null}
-                    </TouchableOpacity>
-                  ))}
-                  <View style={{ height: 30 }} />
-                </ScrollView>
-              </>
-            )}
+            <View
+              style={
+                isLandscape
+                  ? styles.fsUiCol
+                  : {
+                      flex: 1,
+                      display: currentClips.length === 0 ? "none" : "flex",
+                    }
+              }
+            >
+              {isLandscape && renderTagSelector()}
+              {currentClips.length > 0 && renderPlaylist()}
+            </View>
           </View>
         ) : (
           <>
@@ -508,7 +653,7 @@ export default function ProjectListScreen({
                     全体
                   </Text>
                 </TouchableOpacity>
-                {["owner", "staff"].includes(userRole) && (
+                {["owner", "admin", "staff"].includes(userRole) && (
                   <TouchableOpacity
                     style={[
                       styles.typeBtn,
@@ -541,14 +686,18 @@ export default function ProjectListScreen({
                 <TouchableOpacity
                   style={styles.cancelBtn}
                   onPress={() => setIsModalVisible(false)}
+                  disabled={isSaving}
                 >
                   <Text style={styles.cancelBtnText}>キャンセル</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                  style={styles.submitBtn}
+                  style={[styles.submitBtn, isSaving && { opacity: 0.7 }]}
                   onPress={handleCreateProject}
+                  disabled={isSaving}
                 >
-                  <Text style={styles.submitBtnText}>作成する</Text>
+                  <Text style={styles.submitBtnText}>
+                    {isSaving ? "保存中..." : "作成する"}
+                  </Text>
                 </TouchableOpacity>
               </View>
             </ScrollView>
@@ -577,7 +726,6 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     textAlign: "center",
   },
-
   tabContainer: {
     flexDirection: "row",
     backgroundColor: "#fff",
@@ -594,7 +742,6 @@ const styles = StyleSheet.create({
   activeTab: { borderBottomColor: "#0077cc" },
   tabText: { fontSize: 14, color: "#666", fontWeight: "bold" },
   activeTabText: { color: "#0077cc" },
-
   content: { flex: 1, padding: 15 },
   topRow: {
     flexDirection: "row",
@@ -611,13 +758,6 @@ const styles = StyleSheet.create({
   },
   createBtnText: { color: "#fff", fontWeight: "bold", fontSize: 13 },
   emptyText: { textAlign: "center", color: "#888", marginTop: 30 },
-  emptySubText: {
-    textAlign: "center",
-    color: "#aaa",
-    fontSize: 12,
-    marginTop: 10,
-  },
-
   card: {
     backgroundColor: "#fff",
     padding: 15,
@@ -680,12 +820,13 @@ const styles = StyleSheet.create({
   },
   videoOverlay: {
     position: "absolute",
-    bottom: 10,
+    top: 10,
     left: 10,
     right: 10,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
+    zIndex: 50,
   },
   overlayProjectName: {
     color: "#fff",
@@ -704,6 +845,71 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     fontSize: 12,
     fontWeight: "bold",
+  },
+  videoControls: {
+    position: "absolute",
+    bottom: 10,
+    left: 10,
+    right: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(0,0,0,0.6)",
+    padding: 10,
+    borderRadius: 8,
+  },
+  playBtn: { marginRight: 10, padding: 5 },
+  playBtnText: { color: "#fff", fontSize: 24 },
+  videoTimeDisplay: {
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "bold",
+    fontFamily: "monospace",
+    marginLeft: "auto",
+  },
+  fullscreenBtn: {
+    marginLeft: 15,
+    paddingHorizontal: 5,
+    justifyContent: "center",
+  },
+  fullscreenBtnText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "bold",
+    letterSpacing: 1,
+  },
+
+  fsVideoCol: {
+    flex: 0.65,
+    backgroundColor: "#000",
+    justifyContent: "center",
+    position: "relative",
+  },
+  fsUiCol: {
+    flex: 0.35,
+    backgroundColor: "#1e293b",
+    paddingTop: 10,
+    paddingHorizontal: 10,
+  },
+  fsVideoPlayerArea: {
+    width: "100%",
+    height: "100%",
+  },
+  fsYoutubeContainer: {
+    width: "100%",
+    justifyContent: "center",
+  },
+  fsTagSelectorWrapper: {
+    borderBottomWidth: 0,
+    paddingBottom: 10,
+    paddingHorizontal: 0,
+  },
+  fsPlaylistHeader: {
+    backgroundColor: "transparent",
+    padding: 0,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: "#334155",
+    marginBottom: 10,
   },
 
   playlistHeader: {

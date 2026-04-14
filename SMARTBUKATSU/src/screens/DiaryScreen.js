@@ -86,10 +86,11 @@ const DiaryScreen = ({
   const isStaffOrAbove = ["owner", "staff"].includes(userRole);
 
   const roleNameMap = {
-    owner: "管理者(監督)",
-    staff: "コーチ(スタッフ)",
+    owner: `${currentUser}(監督)`,
+    admin: `${currentUser}(管理者)`,
+    staff: `${currentUser}(コーチ)`,
     captain: `${currentUser}(キャプテン)`,
-    member: `${currentUser}(あなた)`,
+    member: currentUser, // 「(あなた)」や「佐藤(自分)」を削除し、純粋な名前のみに！
   };
   const displayUserName = roleNameMap[userRole] || currentUser;
 
@@ -122,7 +123,10 @@ const DiaryScreen = ({
   const [showLinkInput, setShowLinkInput] = useState(false);
   // ========================================
 
-  const [activeTab, setActiveTab] = useState("unread");
+  // ★ 修正：デフォルトのタブを「unread(未読)」から「all(すべて)」に変更しました！
+  // これにより、確認済みにしてもリストに残り続けます。
+  const [activeTab, setActiveTab] = useState("all");
+
   const [searchQuery, setSearchQuery] = useState("");
   const [isFilterModalVisible, setIsFilterModalVisible] = useState(false);
   const [expandedDates, setExpandedDates] = useState({});
@@ -580,6 +584,19 @@ const DiaryScreen = ({
             contentContainerStyle={{ paddingHorizontal: 15 }}
           >
             <TouchableOpacity
+              onPress={() => setActiveTab("all")}
+              style={[styles.tabBtn, activeTab === "all" && styles.tabActive]}
+            >
+              <Text
+                style={[
+                  styles.tabText,
+                  activeTab === "all" && styles.tabTextActive,
+                ]}
+              >
+                すべて
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
               onPress={() => setActiveTab("unread")}
               style={[
                 styles.tabBtn,
@@ -641,19 +658,6 @@ const DiaryScreen = ({
                 ]}
               >
                 ⭐ スター
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={() => setActiveTab("all")}
-              style={[styles.tabBtn, activeTab === "all" && styles.tabActive]}
-            >
-              <Text
-                style={[
-                  styles.tabText,
-                  activeTab === "all" && styles.tabTextActive,
-                ]}
-              >
-                すべて
               </Text>
             </TouchableOpacity>
           </ScrollView>

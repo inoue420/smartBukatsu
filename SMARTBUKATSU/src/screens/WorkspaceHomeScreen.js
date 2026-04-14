@@ -23,6 +23,7 @@ const WorkspaceHomeScreen = ({
   isAdmin,
   currentUser,
   notices,
+  setNotices,
   posts,
   setPosts,
   isOffline,
@@ -33,16 +34,16 @@ const WorkspaceHomeScreen = ({
 }) => {
   const currentUserProfile = userProfiles[currentUser] || {};
 
-  // ★ ここが修正の要！ グローバル変数(global.TEST_ROLE)があれば最優先にする！
   const userRole =
     global.TEST_ROLE ||
     (isAdmin ? "owner" : currentUserProfile.role || "member");
 
   const roleNameMap = {
-    owner: "管理者(監督)",
-    staff: "コーチ(スタッフ)",
+    owner: `${currentUser}(監督)`,
+    admin: `${currentUser}(管理者)`,
+    staff: `${currentUser}(コーチ)`,
     captain: `${currentUser}(キャプテン)`,
-    member: `${currentUser}(あなた)`,
+    member: currentUser, // 「(あなた)」や「佐藤(自分)」を削除し、純粋な名前のみに！
   };
   const displayUserName = roleNameMap[userRole] || currentUser;
 
@@ -101,20 +102,6 @@ const WorkspaceHomeScreen = ({
       name: "トレーニング",
       isReadOnly: false,
       shareScope: "team",
-      allowedMembers: ["all"],
-    },
-    {
-      id: "ch_3",
-      name: "Aチーム限定",
-      isReadOnly: false,
-      shareScope: "group",
-      allowedMembers: ["キャプテン"],
-    },
-    {
-      id: "ch_staff",
-      name: "スタッフ会議室",
-      isReadOnly: false,
-      shareScope: "coach",
       allowedMembers: ["all"],
     },
   ]);
@@ -412,6 +399,43 @@ const WorkspaceHomeScreen = ({
     );
   };
 
+  // ★ 修正：共有元のチャンネル名（post.channel）をタイトルに含めるようにしました！
+  const handleShareToNotice = (post) => {
+    Alert.alert(
+      "掲示板へ共有",
+      `「${post.channel}」の投稿を掲示板に共有しますか？`,
+      [
+        { text: "キャンセル", style: "cancel" },
+        {
+          text: "共有する",
+          onPress: () => {
+            const newNotice = {
+              id: "notice_" + Date.now().toString(),
+              title: `【${post.channel}より】${post.user} の投稿`, // ← ココが賢くなりました！
+              content: post.content,
+              date: new Date().toLocaleDateString("ja-JP"),
+              author: displayUserName,
+              readBy: [currentUser],
+              important: false,
+            };
+
+            if (typeof setNotices === "function") {
+              setNotices([newNotice, ...notices]);
+            } else if (notices && Array.isArray(notices)) {
+              notices.unshift(newNotice);
+            }
+
+            Alert.alert(
+              "共有完了",
+              "掲示板に共有しました！\n「掲示板」タブをご確認ください。",
+            );
+            setActiveLongPressPostId(null);
+          },
+        },
+      ],
+    );
+  };
+
   const renderContentWithMentions = (text) => {
     const parts = text.split(/(@\S+)/g);
     return parts.map((part, index) =>
@@ -591,6 +615,14 @@ const WorkspaceHomeScreen = ({
                     {post.isPinned ? "📌 固定を解除" : "📌 固定する"}
                   </Text>
                 </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.longPressMenuItem}
+                  onPress={() => handleShareToNotice(post)}
+                >
+                  <Text style={styles.longPressMenuText}>📋 掲示板に共有</Text>
+                </TouchableOpacity>
+
                 <TouchableOpacity
                   style={styles.longPressMenuItem}
                   onPress={() => handleDeletePost(post.id)}

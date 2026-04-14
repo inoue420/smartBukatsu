@@ -11,8 +11,13 @@ import {
   KeyboardAvoidingView,
   Platform,
   Keyboard,
+  ActivityIndicator,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+
+// ★追加：Firestore通信用の関数とAuth情報をインポート
+import { useAuth } from "../AuthContext";
+import { createNotice, updateNotice } from "../services/firestoreService";
 
 const NoticeBoardScreen = ({
   navigation,
@@ -23,20 +28,20 @@ const NoticeBoardScreen = ({
   isOffline,
   userProfiles = {},
 }) => {
-  // 実際の設定データからロールを取得
+  const { activeTeamId } = useAuth(); // ★追加：チームIDを取得
+
   const currentUserProfile = userProfiles[currentUser] || {};
   const userRole =
     global.TEST_ROLE ||
     (isAdmin ? "owner" : currentUserProfile.role || "member");
 
-  // 掲示板に投稿・削除できる権限（監督、スタッフ、キャプテン）
   const canManageNotices = ["owner", "staff", "captain"].includes(userRole);
 
   const roleNameMap = {
     owner: "管理者(監督)",
     staff: "コーチ(スタッフ)",
     captain: `${currentUser}(キャプテン)`,
-    member: `${currentUser}(あなた)`,
+    member: currentUser, // 純粋な名前のみ
   };
   const displayUserName = roleNameMap[userRole] || currentUser;
 
@@ -44,13 +49,14 @@ const NoticeBoardScreen = ({
   const [isCreateModalVisible, setIsCreateModalVisible] = useState(false);
   const [selectedNotice, setSelectedNotice] = useState(null);
 
-  // 投稿用のステート
   const [newTitle, setNewTitle] = useState("");
   const [newContent, setNewContent] = useState("");
   const [isImportant, setIsImportant] = useState(false);
   const [editingNoticeId, setEditingNoticeId] = useState(null);
 
-  // フィルタリングと論理削除の除外
+  // ★追加：非同期処理中のローディング状態を管理するステート
+  const [isSaving, setIsSaving] = useState(false);
+
   let filteredNotices = notices.filter((n) => {
     if (n.status === "deleted") return false;
     if (searchQuery.trim() !== "") {
@@ -63,73 +69,99 @@ const NoticeBoardScreen = ({
     return true;
   });
 
-  // 重要なお知らせを上に、あとは日付順にソート
   filteredNotices.sort((a, b) => {
     if (a.isImportant && !b.isImportant) return -1;
     if (!a.isImportant && b.isImportant) return 1;
     return new Date(b.createdAt) - new Date(a.createdAt);
   });
 
-  const handleOpenNotice = (notice) => {
+  // ★修正：既読をつける処理を非同期化（Firestore更新）
+  const handleOpenNotice = async (notice) => {
     setSelectedNotice(notice);
 
-    // 未読の場合は既読リストに追加
     if (!notice.readBy.includes(currentUser)) {
-      const updatedNotices = notices.map((n) => {
-        if (n.id === notice.id) {
-          return { ...n, readBy: [...n.readBy, currentUser] };
-        }
-        return n;
-      });
-      setNotices(updatedNotices);
+      try {
+        const safeTeamId = activeTeamId || "test_team";
+        const newReadBy = [...notice.readBy, currentUser];
+
+        // データベースに既読を記録
+        await updateNotice(safeTeamId, notice.id, { readBy: newReadBy });
+
+        // 画面の見た目も更新
+        const updatedNotices = notices.map((n) =>
+          n.id === notice.id ? { ...n, readBy: newReadBy } : n,
+        );
+        setNotices(updatedNotices);
+      } catch (error) {
+        console.log("既読の更新に失敗:", error);
+      }
     }
   };
 
-  const handleSaveNotice = () => {
+  // ★修正：非同期処理（async/await）とローディングUIの実装
+  const handleSaveNotice = async () => {
     if (newTitle.trim() === "" || newContent.trim() === "") {
       Alert.alert("エラー", "タイトルと本文を入力してください。");
       return;
     }
 
-    if (editingNoticeId) {
-      // 編集処理
-      const updatedNotices = notices.map((n) => {
-        if (n.id === editingNoticeId) {
-          return {
-            ...n,
-            title: newTitle,
-            content: newContent,
-            isImportant: isImportant,
-          };
-        }
-        return n;
-      });
-      setNotices(updatedNotices);
-      Alert.alert("修正完了", "お知らせを更新しました。");
-    } else {
-      // 新規作成処理
-      const today = new Date();
-      const dateString = `${today.getFullYear()}/${String(today.getMonth() + 1).padStart(2, "0")}/${String(today.getDate()).padStart(2, "0")}`;
+    setIsSaving(true); // 通信開始（ボタンをローディング状態にする）
+    try {
+      const safeTeamId = activeTeamId || "test_team";
 
-      const newNotice = {
-        id: "notice_" + Date.now().toString(),
-        title: newTitle,
-        content: newContent,
-        author: displayUserName,
-        date: dateString,
-        createdAt: Date.now(),
-        isImportant: isImportant,
-        readBy: [currentUser], // 作成者は最初から既読
-        status: isOffline ? "pending" : "sent",
-      };
-      setNotices([newNotice, ...notices]);
+      if (editingNoticeId) {
+        // ✏️ 編集の非同期処理
+        await updateNotice(safeTeamId, editingNoticeId, {
+          title: newTitle.trim(),
+          content: newContent.trim(),
+          isImportant: isImportant,
+        });
+
+        // 画面上のリストを更新（ステップ3で不要になります）
+        const updatedNotices = notices.map((n) =>
+          n.id === editingNoticeId
+            ? { ...n, title: newTitle, content: newContent, isImportant }
+            : n,
+        );
+        setNotices(updatedNotices);
+        Alert.alert("修正完了", "お知らせを更新しました。");
+      } else {
+        // 🆕 新規作成の非同期処理
+        const today = new Date();
+        const dateString = `${today.getFullYear()}/${String(today.getMonth() + 1).padStart(2, "0")}/${String(today.getDate()).padStart(2, "0")}`;
+
+        const newNotice = {
+          title: newTitle.trim(),
+          content: newContent.trim(),
+          author: displayUserName,
+          date: dateString,
+          isImportant: isImportant,
+          readBy: [currentUser],
+          status: isOffline ? "pending" : "active",
+        };
+
+        // Firestoreへ保存
+        await createNotice(safeTeamId, newNotice);
+
+        // 画面上のリストを更新（ダミーID付与。ステップ3で不要になります）
+        setNotices([
+          { ...newNotice, id: "notice_" + Date.now(), createdAt: Date.now() },
+          ...notices,
+        ]);
+      }
+
+      setIsCreateModalVisible(false);
+      resetForm();
+    } catch (error) {
+      console.error(error);
+      Alert.alert("エラー", "保存に失敗しました。");
+    } finally {
+      setIsSaving(false); // 通信終了（ボタンを元の状態に戻す）
+      Keyboard.dismiss();
     }
-
-    setIsCreateModalVisible(false);
-    resetForm();
-    Keyboard.dismiss();
   };
 
+  // ★修正：削除処理を非同期化（Firestore更新）
   const handleDeleteNotice = (noticeId) => {
     Alert.alert(
       "削除の確認",
@@ -139,20 +171,24 @@ const NoticeBoardScreen = ({
         {
           text: "削除",
           style: "destructive",
-          onPress: () => {
-            // 論理削除
-            const updatedNotices = notices.map((n) =>
-              n.id === noticeId
-                ? {
-                    ...n,
-                    status: "deleted",
-                    deletedBy: displayUserName,
-                    deletedAt: new Date().toISOString(),
-                  }
-                : n,
-            );
-            setNotices(updatedNotices);
-            setSelectedNotice(null);
+          onPress: async () => {
+            try {
+              const safeTeamId = activeTeamId || "test_team";
+              // Firestoreのステータスをdeletedに更新
+              await updateNotice(safeTeamId, noticeId, {
+                status: "deleted",
+                deletedBy: displayUserName,
+              });
+
+              // 画面上のリストを更新
+              const updatedNotices = notices.map((n) =>
+                n.id === noticeId ? { ...n, status: "deleted" } : n,
+              );
+              setNotices(updatedNotices);
+              setSelectedNotice(null);
+            } catch (error) {
+              Alert.alert("エラー", "削除に失敗しました。");
+            }
           },
         },
       ],
@@ -187,9 +223,7 @@ const NoticeBoardScreen = ({
         <Text style={styles.headerTitle}>
           {isOffline ? "オフライン表示中" : "📋 掲示板"}
         </Text>
-        <View style={styles.headerRight}>
-          {/* 手動のオフラインボタン等は完全に撤去済 */}
-        </View>
+        <View style={styles.headerRight} />
       </View>
 
       {isOffline && (
@@ -267,7 +301,6 @@ const NoticeBoardScreen = ({
         )}
       </ScrollView>
 
-      {/* 投稿権限があるユーザーのみFABを表示 */}
       {canManageNotices && (
         <TouchableOpacity
           style={[styles.fab, isOffline && { backgroundColor: "#f39c12" }]}
@@ -280,7 +313,6 @@ const NoticeBoardScreen = ({
         </TouchableOpacity>
       )}
 
-      {/* お知らせ詳細モーダル */}
       <Modal
         visible={selectedNotice !== null}
         transparent={true}
@@ -324,7 +356,6 @@ const NoticeBoardScreen = ({
                   </View>
                 </View>
 
-                {/* 自分が作成した投稿、または管理者なら編集・削除が可能 */}
                 {canManageNotices &&
                   (selectedNotice.author === displayUserName ||
                     ["owner", "staff"].includes(userRole)) && (
@@ -349,7 +380,6 @@ const NoticeBoardScreen = ({
         </SafeAreaView>
       </Modal>
 
-      {/* お知らせ作成・編集モーダル */}
       <Modal
         visible={isCreateModalVisible}
         transparent={true}
@@ -364,8 +394,13 @@ const NoticeBoardScreen = ({
               <View style={styles.detailHeader}>
                 <TouchableOpacity
                   onPress={() => setIsCreateModalVisible(false)}
+                  disabled={isSaving} // 通信中は閉じられないようにする
                 >
-                  <Text style={styles.closeBtn}>キャンセル</Text>
+                  <Text
+                    style={[styles.closeBtn, isSaving && { color: "#aaa" }]}
+                  >
+                    キャンセル
+                  </Text>
                 </TouchableOpacity>
                 <Text style={styles.detailHeaderTitle}>
                   {editingNoticeId ? "お知らせの修正" : "新規お知らせ作成"}
@@ -380,6 +415,7 @@ const NoticeBoardScreen = ({
                   placeholder="例: 明日の練習時間について"
                   value={newTitle}
                   onChangeText={setNewTitle}
+                  editable={!isSaving}
                 />
 
                 <Text style={styles.inputLabel}>本文</Text>
@@ -389,6 +425,7 @@ const NoticeBoardScreen = ({
                   value={newContent}
                   onChangeText={setNewContent}
                   multiline
+                  editable={!isSaving}
                 />
 
                 <TouchableOpacity
@@ -396,7 +433,8 @@ const NoticeBoardScreen = ({
                     styles.importantToggle,
                     isImportant && styles.importantToggleActive,
                   ]}
-                  onPress={() => setIsImportant(!isImportant)}
+                  onPress={() => !isSaving && setIsImportant(!isImportant)}
+                  disabled={isSaving}
                 >
                   <Text
                     style={[
@@ -414,16 +452,22 @@ const NoticeBoardScreen = ({
                   style={[
                     styles.submitButton,
                     isOffline && { backgroundColor: "#f39c12" },
+                    isSaving && { opacity: 0.7 }, // 送信中は半透明に
                   ]}
                   onPress={handleSaveNotice}
+                  disabled={isSaving} // 送信中は押せないようにする（連打防止）
                 >
-                  <Text style={styles.submitButtonText}>
-                    {editingNoticeId
-                      ? "修正を保存"
-                      : isOffline
-                        ? "待機リストに保存"
-                        : "チームに送信"}
-                  </Text>
+                  {isSaving ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text style={styles.submitButtonText}>
+                      {editingNoticeId
+                        ? "修正を保存"
+                        : isOffline
+                          ? "待機リストに保存"
+                          : "チームに送信"}
+                    </Text>
+                  )}
                 </TouchableOpacity>
                 <View style={{ height: 50 }} />
               </ScrollView>
@@ -698,7 +742,9 @@ const styles = StyleSheet.create({
     paddingVertical: 15,
     borderRadius: 10,
     alignItems: "center",
+    justifyContent: "center",
     marginTop: 30,
+    height: 50,
   },
   submitButtonText: { color: "#fff", fontSize: 18, fontWeight: "bold" },
 });
