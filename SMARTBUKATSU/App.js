@@ -4,13 +4,16 @@ import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { Alert, LogBox, ActivityIndicator, View } from "react-native";
 import NetInfo from "@react-native-community/netinfo";
 
+// コンテキストとサービス
 import { AuthProvider, useAuth } from "./src/AuthContext";
-// ★変更：subscribeNotices を追加でインポート！
 import {
   subscribeProjects,
+  subscribeDailyReports,
   subscribeNotices,
+  subscribePersonalEvents, // ★個人の予定を監視
 } from "./src/services/firestoreService";
 
+// 画面
 import LoginScreen from "./src/screens/LoginScreen";
 import TeamSetupScreen from "./src/screens/TeamSetupScreen";
 import WorkspaceHomeScreen from "./src/screens/WorkspaceHomeScreen";
@@ -53,29 +56,41 @@ function AppContent() {
   const [dailyReports, setDailyReports] = useState([]);
   const [personalEvents, setPersonalEvents] = useState([]);
 
-  // ★変更：プロジェクトに加えて、掲示板のデータもリアルタイム監視を開始！
+  // ========================================================
+  // ★ Firestore本番同期（個人予定の同期も追加）
+  // ========================================================
   useEffect(() => {
     if (user && activeTeamId) {
-      console.log("Firestore購読開始 (Team ID):", activeTeamId);
+      console.log("🔥 Firestore本番同期を開始:", activeTeamId);
 
-      const unsubProjects = subscribeProjects(
-        activeTeamId,
-        (fetchedProjects) => {
-          setProjects(fetchedProjects);
-        },
-      );
+      const unsubProjects = subscribeProjects(activeTeamId, (fetched) => {
+        setProjects(fetched);
+      });
 
-      const unsubNotices = subscribeNotices(activeTeamId, (fetchedNotices) => {
-        setNotices(fetchedNotices);
+      const unsubReports = subscribeDailyReports(activeTeamId, (fetched) => {
+        setDailyReports(fetched);
+      });
+
+      const unsubNotices = subscribeNotices(activeTeamId, (fetched) => {
+        setNotices(fetched);
+      });
+
+      // ★ ログインユーザー本人の個人予定のみ同期
+      const unsubPersonal = subscribePersonalEvents(user.uid, (fetched) => {
+        setPersonalEvents(fetched);
       });
 
       return () => {
         unsubProjects();
+        unsubReports();
         unsubNotices();
+        unsubPersonal();
       };
     } else {
       setProjects([]);
+      setDailyReports([]);
       setNotices([]);
+      setPersonalEvents([]);
     }
   }, [user, activeTeamId]);
 
@@ -120,7 +135,7 @@ function AppContent() {
             <WorkspaceHomeScreen
               {...props}
               isAdmin={authIsAdmin}
-              currentUser={userName}
+              currentUser={userName || user?.email || "ユーザー"}
               notices={notices}
               setNotices={setNotices}
               posts={posts}
@@ -139,7 +154,7 @@ function AppContent() {
             <NoticeBoardScreen
               {...props}
               isAdmin={authIsAdmin}
-              currentUser={userName}
+              currentUser={userName || user?.email || "ユーザー"}
               notices={notices}
               setNotices={setNotices}
               isOffline={isOffline}
@@ -153,7 +168,7 @@ function AppContent() {
             <DiaryScreen
               {...props}
               isAdmin={authIsAdmin}
-              currentUser={userName}
+              currentUser={userName || user?.email || "ユーザー"}
               isOffline={isOffline}
               grades={grades}
               positions={positions}
@@ -172,7 +187,7 @@ function AppContent() {
             <CalendarScreen
               {...props}
               isAdmin={authIsAdmin}
-              currentUser={userName}
+              currentUser={userName || user?.email || "ユーザー"}
               projects={projects}
               setProjects={setProjects}
               dailyReports={dailyReports}
@@ -189,7 +204,7 @@ function AppContent() {
             <ProjectListScreen
               {...props}
               isAdmin={authIsAdmin}
-              currentUser={userName}
+              currentUser={userName || user?.email || "ユーザー"}
               projects={projects}
               setProjects={setProjects}
               userProfiles={userProfiles}
@@ -202,7 +217,7 @@ function AppContent() {
             <ProjectDetailScreen
               {...props}
               isAdmin={authIsAdmin}
-              currentUser={userName}
+              currentUser={userName || user?.email || "ユーザー"}
               clubMembers={clubMembers}
               userProfiles={userProfiles}
               projects={projects}
@@ -216,7 +231,7 @@ function AppContent() {
             <SettingsScreen
               {...props}
               isAdmin={authIsAdmin}
-              currentUser={userName}
+              currentUser={userName || user?.email || "ユーザー"}
               clubMembers={clubMembers}
               setClubMembers={setClubMembers}
               grades={grades}

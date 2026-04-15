@@ -14,6 +14,14 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+// ★ Firestore通信用の関数をインポート
+import { useAuth } from "../AuthContext";
+import {
+  createDailyReport,
+  updateDailyReport,
+  deleteDailyReport,
+} from "../services/firestoreService";
+
 const OptionGroup = ({ options, selected, onSelect, color = "#0077cc" }) => (
   <View style={styles.optionGroup}>
     {options.map((opt) => (
@@ -79,6 +87,8 @@ const DiaryScreen = ({
     autoEscalate: true,
   },
 }) => {
+  const { activeTeamId } = useAuth(); // ★ チームID取得
+
   const currentUserProfile = userProfiles[currentUser] || {};
   const userRole =
     global.TEST_ROLE ||
@@ -86,11 +96,10 @@ const DiaryScreen = ({
   const isStaffOrAbove = ["owner", "staff"].includes(userRole);
 
   const roleNameMap = {
-    owner: `${currentUser}(監督)`,
-    admin: `${currentUser}(管理者)`,
-    staff: `${currentUser}(コーチ)`,
+    owner: "管理者(監督)",
+    staff: "コーチ(スタッフ)",
     captain: `${currentUser}(キャプテン)`,
-    member: currentUser, // 「(あなた)」や「佐藤(自分)」を削除し、純粋な名前のみに！
+    member: currentUser, // 純粋な名前のみ
   };
   const displayUserName = roleNameMap[userRole] || currentUser;
 
@@ -123,10 +132,7 @@ const DiaryScreen = ({
   const [showLinkInput, setShowLinkInput] = useState(false);
   // ========================================
 
-  // ★ 修正：デフォルトのタブを「unread(未読)」から「all(すべて)」に変更しました！
-  // これにより、確認済みにしてもリストに残り続けます。
   const [activeTab, setActiveTab] = useState("all");
-
   const [searchQuery, setSearchQuery] = useState("");
   const [isFilterModalVisible, setIsFilterModalVisible] = useState(false);
   const [expandedDates, setExpandedDates] = useState({});
@@ -189,24 +195,8 @@ const DiaryScreen = ({
   if (isStaffOrAbove) {
     if (activeTab === "unread") {
       processedReports = processedReports.filter((d) => !d.isReviewed);
-    } else if (activeTab === "needs_reply") {
-      processedReports = processedReports.filter(
-        (d) =>
-          d.comments.filter((c) =>
-            ["監督", "コーチ", "アシスタント", "管理者"].some((role) =>
-              c.user.includes(role),
-            ),
-          ).length === 0,
-      );
-    } else if (activeTab === "replied") {
-      processedReports = processedReports.filter(
-        (d) =>
-          d.comments.filter((c) =>
-            ["監督", "コーチ", "アシスタント", "管理者"].some((role) =>
-              c.user.includes(role),
-            ),
-          ).length > 0,
-      );
+    } else if (activeTab === "needs_followup") {
+      processedReports = processedReports.filter((d) => d.isFollowUp === true);
     } else if (activeTab === "danger") {
       processedReports = processedReports.filter(
         (d) => getAlertLevel(d) === "danger",
@@ -247,65 +237,76 @@ const DiaryScreen = ({
     });
   };
 
+  // ★ 各種ステータス更新機能（ローカル優先＋Firestore）
+  const updateReportStatusAsync = async (reportId, updates) => {
+    try {
+      const safeTeamId = activeTeamId || "test_team";
+      await updateDailyReport(safeTeamId, reportId, updates);
+    } catch (error) {
+      console.log("Firestore更新エラー:", error);
+    }
+  };
+
   const handleToggleStar = (reportId) => {
-    const newReports = dailyReports.map((d) =>
-      d.id === reportId ? { ...d, isStarred: !d.isStarred } : d,
+    const report = dailyReports.find((d) => d.id === reportId);
+    const newVal = !report?.isStarred;
+
+    // UI即時反映
+    setDailyReports((prev) =>
+      prev.map((d) => (d.id === reportId ? { ...d, isStarred: newVal } : d)),
     );
-    setDailyReports(newReports);
-    if (selectedReport && selectedReport.id === reportId)
-      setSelectedReport({
-        ...selectedReport,
-        isStarred: !selectedReport.isStarred,
-      });
+    if (selectedReport?.id === reportId)
+      setSelectedReport((prev) => ({ ...prev, isStarred: newVal }));
+
+    // 裏で送信
+    updateReportStatusAsync(reportId, { isStarred: newVal });
   };
 
   const handleToggleFollowUp = (reportId) => {
-    const newReports = dailyReports.map((d) =>
-      d.id === reportId ? { ...d, isFollowUp: !d.isFollowUp } : d,
+    const report = dailyReports.find((d) => d.id === reportId);
+    const newVal = !report?.isFollowUp;
+
+    // UI即時反映
+    setDailyReports((prev) =>
+      prev.map((d) => (d.id === reportId ? { ...d, isFollowUp: newVal } : d)),
     );
-    setDailyReports(newReports);
-    if (selectedReport && selectedReport.id === reportId)
-      setSelectedReport({
-        ...selectedReport,
-        isFollowUp: !selectedReport.isFollowUp,
-      });
+    if (selectedReport?.id === reportId)
+      setSelectedReport((prev) => ({ ...prev, isFollowUp: newVal }));
+
+    // 裏で送信
+    updateReportStatusAsync(reportId, { isFollowUp: newVal });
   };
 
   const handleChangeShareScope = (reportId) => {
     const report = dailyReports.find((d) => d.id === reportId);
     const isCurrentlyAll = report?.sharedWith === "all";
 
-    if (isCurrentlyAll) {
-      Alert.alert("共有範囲の変更", "スタッフのみの公開に戻しますか？", [
+    Alert.alert(
+      "共有範囲の変更",
+      isCurrentlyAll
+        ? "スタッフのみの公開に戻しますか？"
+        : "チーム全体に公開し、Home画面の「# 共有日記」に通知しますか？\n（※メディカル情報は非公開になります）",
+      [
         { text: "キャンセル", style: "cancel" },
         {
-          text: "戻す",
+          text: isCurrentlyAll ? "戻す" : "公開する",
           onPress: () => {
-            const newReports = dailyReports.map((d) =>
-              d.id === reportId ? { ...d, sharedWith: "staff" } : d,
-            );
-            setDailyReports(newReports);
-            if (selectedReport && selectedReport.id === reportId)
-              setSelectedReport({ ...selectedReport, sharedWith: "staff" });
-          },
-        },
-      ]);
-    } else {
-      Alert.alert(
-        "共有範囲の変更",
-        "チーム全体に公開し、Home画面の「# 共有日記」に通知しますか？\n（※メディカル情報は非公開になります）",
-        [
-          { text: "キャンセル", style: "cancel" },
-          {
-            text: "公開する",
-            onPress: () => {
-              const newReports = dailyReports.map((d) =>
-                d.id === reportId ? { ...d, sharedWith: "all" } : d,
-              );
-              setDailyReports(newReports);
-              if (selectedReport && selectedReport.id === reportId)
-                setSelectedReport({ ...selectedReport, sharedWith: "all" });
+            const newVal = isCurrentlyAll ? "staff" : "all";
 
+            // UI即時反映
+            setDailyReports((prev) =>
+              prev.map((d) =>
+                d.id === reportId ? { ...d, sharedWith: newVal } : d,
+              ),
+            );
+            if (selectedReport?.id === reportId)
+              setSelectedReport((prev) => ({ ...prev, sharedWith: newVal }));
+
+            // 裏で送信
+            updateReportStatusAsync(reportId, { sharedWith: newVal });
+
+            // ホーム画面への共有機能（ローカルのみの仮実装維持）
+            if (!isCurrentlyAll) {
               const sharedPost = {
                 id: "post_shared_" + Date.now().toString(),
                 channel: "共有日記",
@@ -322,11 +323,11 @@ const DiaryScreen = ({
                 status: isOffline ? "pending" : "sent",
               };
               setPosts([sharedPost, ...posts]);
-            },
+            }
           },
-        ],
-      );
-    }
+        },
+      ],
+    );
   };
 
   const handleDiscardDraft = () => {
@@ -354,7 +355,6 @@ const DiaryScreen = ({
     setPainLevel(5);
     setSinceWhen("");
     setTreatment("");
-
     setPracticeContent("");
     setAchievement(3);
     setGoodPoint("");
@@ -367,81 +367,96 @@ const DiaryScreen = ({
     setShowLinkInput(false);
   };
 
-  const handleCreateOrEditReport = () => {
+  // ★ 新規保存・編集機能（ローカル優先＋Firestore）
+  const handleCreateOrEditReport = async () => {
     if (hasPain && !painPart.trim()) {
       Alert.alert("入力エラー", "痛む部位を入力してください。");
       return;
     }
 
-    if (editingReportId) {
-      const updated = dailyReports.map((r) => {
-        if (r.id === editingReportId) {
-          return {
-            ...r,
-            condition,
-            fatigue,
-            sleep,
-            isParticipating,
-            hasPain,
-            painDetails: hasPain
-              ? { part: painPart, level: painLevel, sinceWhen, treatment }
-              : null,
-            practiceContent,
-            achievement,
-            goodPoint,
-            badPoint,
-            nextTask,
-            images,
-            memo,
-            highlightLink,
-          };
-        }
-        return r;
-      });
-      setDailyReports(updated);
-      Alert.alert("修正完了", "振り返りを修正しました。");
-    } else {
-      const today = new Date();
-      const dateString = `${today.getFullYear()}/${String(today.getMonth() + 1).padStart(2, "0")}/${String(today.getDate()).padStart(2, "0")}`;
-      const newReport = {
-        id: "rep_" + Date.now().toString(),
-        date: dateString,
-        author: currentUser,
-        condition,
-        fatigue,
-        sleep,
-        isParticipating,
-        hasPain,
-        painDetails: hasPain
-          ? { part: painPart, level: painLevel, sinceWhen, treatment }
-          : null,
-        practiceContent,
-        achievement,
-        goodPoint,
-        badPoint,
-        nextTask,
-        images,
-        memo,
-        highlightLink,
-        status: isOffline ? "pending" : "sent",
-        isReviewed: false,
-        isStarred: false,
-        isFollowUp: false,
-        sharedWith: "staff",
-        createdAt: Date.now(),
-        comments: [],
-      };
-      setDailyReports([newReport, ...dailyReports]);
+    const safeTeamId = activeTeamId || "test_team";
+    const painDetailsData = hasPain
+      ? { part: painPart, level: painLevel, sinceWhen, treatment }
+      : null;
+
+    try {
+      if (editingReportId) {
+        const updateData = {
+          condition,
+          fatigue,
+          sleep,
+          isParticipating,
+          hasPain,
+          painDetails: painDetailsData,
+          practiceContent,
+          achievement,
+          goodPoint,
+          badPoint,
+          nextTask,
+          images,
+          memo,
+          highlightLink,
+        };
+
+        // UI即時反映
+        const updated = dailyReports.map((r) =>
+          r.id === editingReportId ? { ...r, ...updateData } : r,
+        );
+        setDailyReports(updated);
+
+        // 裏で送信
+        await updateDailyReport(safeTeamId, editingReportId, updateData);
+        Alert.alert("修正完了", "振り返りを修正しました。");
+      } else {
+        const today = new Date();
+        const dateString = `${today.getFullYear()}/${String(today.getMonth() + 1).padStart(2, "0")}/${String(today.getDate()).padStart(2, "0")}`;
+
+        const newReport = {
+          id: "rep_" + Date.now().toString(),
+          date: dateString,
+          author: currentUser,
+          condition,
+          fatigue,
+          sleep,
+          isParticipating,
+          hasPain,
+          painDetails: painDetailsData,
+          practiceContent,
+          achievement,
+          goodPoint,
+          badPoint,
+          nextTask,
+          images,
+          memo,
+          highlightLink,
+          status: isOffline ? "pending" : "sent",
+          isReviewed: false,
+          isStarred: false,
+          isFollowUp: false,
+          sharedWith: "staff",
+          createdAt: Date.now(),
+          comments: [],
+        };
+
+        // UI即時反映
+        setDailyReports([newReport, ...dailyReports]);
+
+        // 裏で送信
+        await createDailyReport(safeTeamId, newReport);
+        Alert.alert("記録完了", "本日の振り返りを記録しました。");
+      }
+    } catch (error) {
+      console.log("Firestore保存エラー:", error);
+    } finally {
+      setIsCreateModalVisible(false);
+      resetForm();
+      Keyboard.dismiss();
     }
-    setIsCreateModalVisible(false);
-    resetForm();
-    Keyboard.dismiss();
   };
 
   const handleOpenEdit = () => {
     if (!selectedReport) return;
     setEditingReportId(selectedReport.id);
-
     setCondition(selectedReport.condition || "良い");
     setFatigue(
       selectedReport.fatigue !== undefined ? selectedReport.fatigue : 5,
@@ -455,7 +470,6 @@ const DiaryScreen = ({
       setSinceWhen(selectedReport.painDetails.sinceWhen || "");
       setTreatment(selectedReport.painDetails.treatment || "");
     }
-
     setPracticeContent(selectedReport.practiceContent || "");
     setAchievement(selectedReport.achievement || 3);
     setGoodPoint(selectedReport.goodPoint || "");
@@ -471,8 +485,45 @@ const DiaryScreen = ({
     setSelectedReport(null);
   };
 
-  const handleSendComment = () => {
+  // ★ 削除機能（Firestore連携）
+  const handleDeleteReport = () => {
+    Alert.alert(
+      "確認",
+      "この日報を削除しますか？\n（この操作は取り消せません）",
+      [
+        { text: "キャンセル", style: "cancel" },
+        {
+          text: "削除する",
+          style: "destructive",
+          onPress: async () => {
+            if (!selectedReport) return;
+            const reportId = selectedReport.id;
+
+            // UI即時反映（画面から消す）
+            setDailyReports((prev) =>
+              prev.map((r) =>
+                r.id === reportId ? { ...r, status: "deleted" } : r,
+              ),
+            );
+            setSelectedReport(null);
+
+            // 裏で送信
+            try {
+              const safeTeamId = activeTeamId || "test_team";
+              await deleteDailyReport(safeTeamId, reportId);
+            } catch (error) {
+              console.log("Firestore削除エラー:", error);
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  // ★ コメント送信機能（ローカル優先＋Firestore）
+  const handleSendComment = async () => {
     if (commentText.trim() === "") return;
+
     const newComment = {
       id: "c_" + Date.now().toString(),
       user: displayUserName,
@@ -482,36 +533,53 @@ const DiaryScreen = ({
     };
 
     const isStaffComment = isStaffOrAbove;
+    const currentComments = selectedReport.comments || [];
+    const newComments = [...currentComments, newComment];
 
-    const updated = dailyReports.map((r) => {
-      if (r.id === selectedReport.id) {
-        return {
-          ...r,
-          comments: [...r.comments, newComment],
-          isReviewed: isStaffComment ? true : r.isReviewed,
-        };
-      }
-      return r;
-    });
-    setDailyReports(updated);
-
+    // UI即時反映
+    setDailyReports((prev) =>
+      prev.map((r) =>
+        r.id === selectedReport.id
+          ? {
+              ...r,
+              comments: newComments,
+              isReviewed: isStaffComment ? true : r.isReviewed,
+            }
+          : r,
+      ),
+    );
     setSelectedReport((prev) => ({
       ...prev,
       isReviewed: isStaffComment ? true : prev.isReviewed,
-      comments: [...prev.comments, newComment],
+      comments: newComments,
     }));
 
     setCommentText("");
     Keyboard.dismiss();
+
+    // 裏で送信
+    try {
+      const safeTeamId = activeTeamId || "test_team";
+      await updateDailyReport(safeTeamId, selectedReport.id, {
+        comments: newComments,
+        isReviewed: isStaffComment ? true : selectedReport.isReviewed,
+      });
+    } catch (e) {
+      console.log("Firestore更新エラー:", e);
+    }
   };
 
   const handleMarkAsReviewed = () => {
-    const updated = dailyReports.map((r) => {
-      if (r.id === selectedReport.id) return { ...r, isReviewed: true };
-      return r;
-    });
-    setDailyReports(updated);
+    // UI即時反映
+    setDailyReports((prev) =>
+      prev.map((r) =>
+        r.id === selectedReport.id ? { ...r, isReviewed: true } : r,
+      ),
+    );
     setSelectedReport((prev) => ({ ...prev, isReviewed: true }));
+
+    // 裏で送信
+    updateReportStatusAsync(selectedReport.id, { isReviewed: true });
   };
 
   const renderStars = (rating, onSelect = null) => {
@@ -540,15 +608,9 @@ const DiaryScreen = ({
   const unreviewedCount = isStaffOrAbove
     ? processedReports.filter((d) => !d.isReviewed).length
     : 0;
-  const needsReplyCount = isStaffOrAbove
-    ? processedReports.filter(
-        (d) =>
-          d.comments.filter((c) =>
-            ["監督", "コーチ", "アシスタント", "管理者"].some((role) =>
-              c.user.includes(role),
-            ),
-          ).length === 0,
-      ).length
+
+  const needsFollowUpCount = isStaffOrAbove
+    ? processedReports.filter((d) => d.isFollowUp === true).length
     : 0;
 
   return (
@@ -628,22 +690,24 @@ const DiaryScreen = ({
                 🚨 危険
               </Text>
             </TouchableOpacity>
+
             <TouchableOpacity
-              onPress={() => setActiveTab("needs_reply")}
+              onPress={() => setActiveTab("needs_followup")}
               style={[
                 styles.tabBtn,
-                activeTab === "needs_reply" && styles.tabActive,
+                activeTab === "needs_followup" && styles.tabActive,
               ]}
             >
               <Text
                 style={[
                   styles.tabText,
-                  activeTab === "needs_reply" && styles.tabTextActive,
+                  activeTab === "needs_followup" && styles.tabTextActive,
                 ]}
               >
-                要返信 ({needsReplyCount})
+                🚩 要フォロー ({needsFollowUpCount})
               </Text>
             </TouchableOpacity>
+
             <TouchableOpacity
               onPress={() => setActiveTab("starred")}
               style={[
@@ -727,6 +791,11 @@ const DiaryScreen = ({
                           >
                             {report.sharedWith === "all" && (
                               <Text style={styles.badgeShared}>📢 共有</Text>
+                            )}
+                            {report.isFollowUp && (
+                              <Text style={{ fontSize: 14, marginRight: 5 }}>
+                                📌
+                              </Text>
                             )}
                             {report.isStarred && (
                               <Text style={{ fontSize: 14, marginRight: 5 }}>
@@ -837,6 +906,7 @@ const DiaryScreen = ({
                       {selectedReport.isStarred ? "⭐ スター済" : "☆ スター"}
                     </Text>
                   </TouchableOpacity>
+
                   <TouchableOpacity
                     onPress={() => handleToggleFollowUp(selectedReport.id)}
                     style={[
@@ -846,10 +916,11 @@ const DiaryScreen = ({
                   >
                     <Text style={styles.actionBtnText}>
                       {selectedReport.isFollowUp
-                        ? "🎌 フォロー中"
+                        ? "📌 フォロー中"
                         : "🚩 要フォロー"}
                     </Text>
                   </TouchableOpacity>
+
                   <TouchableOpacity
                     onPress={() => handleChangeShareScope(selectedReport.id)}
                     style={[
@@ -873,9 +944,18 @@ const DiaryScreen = ({
                   const isMyReport =
                     currentUser === selectedReport.author &&
                     ["member", "captain"].includes(userRole);
-                  const timeElapsed = Date.now() - selectedReport.createdAt;
+
+                  const timeElapsed =
+                    Date.now() - (selectedReport.createdAt || 0);
+
+                  // ★ 本人が編集・削除できる条件（30分以内 ＆ 未確認）
                   const isEditable =
                     timeElapsed < 30 * 60 * 1000 && !selectedReport.isReviewed;
+
+                  // ★ 管理者はいつでも削除可能にする
+                  const canDelete =
+                    (isMyReport && isEditable) || isStaffOrAbove;
+                  const canEdit = isMyReport && isEditable;
 
                   return (
                     <ScrollView
@@ -897,7 +977,12 @@ const DiaryScreen = ({
                           <Text style={styles.cardDate}>
                             {selectedReport.date}
                           </Text>
-                          <View style={{ flexDirection: "row" }}>
+                          <View
+                            style={{
+                              flexDirection: "row",
+                              alignItems: "center",
+                            }}
+                          >
                             {isStaffOrAbove && !selectedReport.isReviewed && (
                               <TouchableOpacity
                                 style={styles.markReviewedBtn}
@@ -908,13 +993,37 @@ const DiaryScreen = ({
                                 </Text>
                               </TouchableOpacity>
                             )}
-                            {isMyReport && isEditable && (
-                              <TouchableOpacity
-                                style={styles.editBtn}
-                                onPress={handleOpenEdit}
-                              >
-                                <Text style={styles.editBtnText}>✏️ 修正</Text>
-                              </TouchableOpacity>
+
+                            {/* ★ 修正ボタンと削除ボタンの表示制御（分離） */}
+                            {(canEdit || canDelete) && (
+                              <View style={styles.editActionRow}>
+                                {canEdit && (
+                                  <TouchableOpacity
+                                    style={styles.editBtn}
+                                    onPress={handleOpenEdit}
+                                  >
+                                    <Text style={styles.editBtnText}>
+                                      ✏️ 修正
+                                    </Text>
+                                  </TouchableOpacity>
+                                )}
+                                {canDelete && (
+                                  <TouchableOpacity
+                                    style={[
+                                      styles.editBtn,
+                                      {
+                                        backgroundColor: "#e74c3c",
+                                        marginLeft: canEdit ? 8 : 0,
+                                      },
+                                    ]}
+                                    onPress={handleDeleteReport}
+                                  >
+                                    <Text style={styles.editBtnText}>
+                                      🗑️ 削除
+                                    </Text>
+                                  </TouchableOpacity>
+                                )}
+                              </View>
                             )}
                           </View>
                         </View>
@@ -1067,7 +1176,7 @@ const DiaryScreen = ({
                         💬 コーチとのやり取り
                       </Text>
                       <View style={styles.threadArea}>
-                        {selectedReport.comments.map((c) => {
+                        {(selectedReport.comments || []).map((c) => {
                           const isMe = c.user === displayUserName;
                           return (
                             <View
@@ -1202,7 +1311,7 @@ const DiaryScreen = ({
                 style={styles.createScroll}
                 keyboardShouldPersistTaps="handled"
               >
-                {/* === 日記入力部分（先に表示） === */}
+                {/* === 日記入力部分 === */}
                 <View style={styles.formSection}>
                   <Text style={styles.formSectionTitle}>📝 練習の振り返り</Text>
                   <Text style={styles.inputLabel}>🏃 練習内容</Text>
@@ -1266,7 +1375,7 @@ const DiaryScreen = ({
                   />
                 </View>
 
-                {/* === メディカル入力部分（後に表示） === */}
+                {/* === メディカル入力部分 === */}
                 <View style={[styles.formSection, { marginTop: 20 }]}>
                   <Text style={styles.formSectionTitle}>🏥 コンディション</Text>
                   <Text style={styles.inputLabel}>😀 全体的な体調</Text>
@@ -1631,7 +1740,7 @@ const styles = StyleSheet.create({
     marginRight: 5,
   },
   markReviewedBtnText: { color: "#fff", fontSize: 12, fontWeight: "bold" },
-  editActionRow: { flexDirection: "row" },
+  editActionRow: { flexDirection: "row", alignItems: "center" },
   editBtn: {
     backgroundColor: "#f39c12",
     paddingHorizontal: 10,

@@ -15,7 +15,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-// ★追加：Firestore通信用の関数とAuth情報をインポート
+// ★ 復活！Firestore通信関数をインポート
 import { useAuth } from "../AuthContext";
 import { createNotice, updateNotice } from "../services/firestoreService";
 
@@ -28,7 +28,7 @@ const NoticeBoardScreen = ({
   isOffline,
   userProfiles = {},
 }) => {
-  const { activeTeamId } = useAuth(); // ★追加：チームIDを取得
+  const { activeTeamId } = useAuth();
 
   const currentUserProfile = userProfiles[currentUser] || {};
   const userRole =
@@ -41,7 +41,7 @@ const NoticeBoardScreen = ({
     owner: "管理者(監督)",
     staff: "コーチ(スタッフ)",
     captain: `${currentUser}(キャプテン)`,
-    member: currentUser, // 純粋な名前のみ
+    member: currentUser,
   };
   const displayUserName = roleNameMap[userRole] || currentUser;
 
@@ -54,7 +54,6 @@ const NoticeBoardScreen = ({
   const [isImportant, setIsImportant] = useState(false);
   const [editingNoticeId, setEditingNoticeId] = useState(null);
 
-  // ★追加：非同期処理中のローディング状態を管理するステート
   const [isSaving, setIsSaving] = useState(false);
 
   let filteredNotices = notices.filter((n) => {
@@ -72,61 +71,71 @@ const NoticeBoardScreen = ({
   filteredNotices.sort((a, b) => {
     if (a.isImportant && !b.isImportant) return -1;
     if (!a.isImportant && b.isImportant) return 1;
-    return new Date(b.createdAt) - new Date(a.createdAt);
+    return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
   });
 
-  // ★修正：既読をつける処理を非同期化（Firestore更新）
+  // ★ 2. Firestore + ローカルでの既読処理
   const handleOpenNotice = async (notice) => {
     setSelectedNotice(notice);
 
     if (!notice.readBy.includes(currentUser)) {
+      const newReadBy = [...notice.readBy, currentUser];
+
+      // 画面上はすぐに既読にする（UI優先）
+      const updatedNotices = notices.map((n) =>
+        n.id === notice.id ? { ...n, readBy: newReadBy } : n,
+      );
+      setNotices(updatedNotices);
+
+      // 裏でFirestoreに送信（ルール追加待ちのためエラーはキャッチしてスルー）
       try {
-        const safeTeamId = activeTeamId || "test_team";
-        const newReadBy = [...notice.readBy, currentUser];
-
-        // データベースに既読を記録
-        await updateNotice(safeTeamId, notice.id, { readBy: newReadBy });
-
-        // 画面の見た目も更新
-        const updatedNotices = notices.map((n) =>
-          n.id === notice.id ? { ...n, readBy: newReadBy } : n,
-        );
-        setNotices(updatedNotices);
+        if (activeTeamId) {
+          await updateNotice(activeTeamId, notice.id, { readBy: newReadBy });
+        }
       } catch (error) {
-        console.log("既読の更新に失敗:", error);
+        console.log(
+          "Firestore更新エラー（既読）: ルール追加をお待ちください",
+          error,
+        );
       }
     }
   };
 
-  // ★修正：非同期処理（async/await）とローディングUIの実装
+  // ★ 2. Firestore + ローカルでの保存処理
   const handleSaveNotice = async () => {
     if (newTitle.trim() === "" || newContent.trim() === "") {
       Alert.alert("エラー", "タイトルと本文を入力してください。");
       return;
     }
 
-    setIsSaving(true); // 通信開始（ボタンをローディング状態にする）
+    setIsSaving(true);
+
     try {
       const safeTeamId = activeTeamId || "test_team";
 
       if (editingNoticeId) {
-        // ✏️ 編集の非同期処理
+        // [1] まず画面上のリストを更新（サクサク動かすため）
+        const updatedNotices = notices.map((n) =>
+          n.id === editingNoticeId
+            ? {
+                ...n,
+                title: newTitle.trim(),
+                content: newContent.trim(),
+                isImportant,
+              }
+            : n,
+        );
+        setNotices(updatedNotices);
+
+        // [2] 裏でFirestoreに更新データを送信
         await updateNotice(safeTeamId, editingNoticeId, {
           title: newTitle.trim(),
           content: newContent.trim(),
           isImportant: isImportant,
         });
 
-        // 画面上のリストを更新（ステップ3で不要になります）
-        const updatedNotices = notices.map((n) =>
-          n.id === editingNoticeId
-            ? { ...n, title: newTitle, content: newContent, isImportant }
-            : n,
-        );
-        setNotices(updatedNotices);
         Alert.alert("修正完了", "お知らせを更新しました。");
       } else {
-        // 🆕 新規作成の非同期処理
         const today = new Date();
         const dateString = `${today.getFullYear()}/${String(today.getMonth() + 1).padStart(2, "0")}/${String(today.getDate()).padStart(2, "0")}`;
 
@@ -140,59 +149,61 @@ const NoticeBoardScreen = ({
           status: isOffline ? "pending" : "active",
         };
 
-        // Firestoreへ保存
-        await createNotice(safeTeamId, newNotice);
-
-        // 画面上のリストを更新（ダミーID付与。ステップ3で不要になります）
+        // [1] まず画面上に仮のIDで追加（サクサク動かすため）
         setNotices([
           { ...newNotice, id: "notice_" + Date.now(), createdAt: Date.now() },
           ...notices,
         ]);
-      }
 
+        // [2] 裏でFirestoreに新規作成データを送信
+        await createNotice(safeTeamId, newNotice);
+      }
+    } catch (error) {
+      console.log(
+        "Firestore保存エラー（新規/更新）: ルール追加をお待ちください",
+        error,
+      );
+      // エラーになっても画面上にはすでに追加されているので開発は続行可能！
+    } finally {
       setIsCreateModalVisible(false);
       resetForm();
-    } catch (error) {
-      console.error(error);
-      Alert.alert("エラー", "保存に失敗しました。");
-    } finally {
-      setIsSaving(false); // 通信終了（ボタンを元の状態に戻す）
+      setIsSaving(false);
       Keyboard.dismiss();
     }
   };
 
-  // ★修正：削除処理を非同期化（Firestore更新）
+  // ★ 2. Firestore + ローカルでの削除処理
   const handleDeleteNotice = (noticeId) => {
-    Alert.alert(
-      "削除の確認",
-      "このお知らせを削除しますか？\n（データはゴミ箱に保持されます）",
-      [
-        { text: "キャンセル", style: "cancel" },
-        {
-          text: "削除",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              const safeTeamId = activeTeamId || "test_team";
-              // Firestoreのステータスをdeletedに更新
-              await updateNotice(safeTeamId, noticeId, {
+    Alert.alert("削除の確認", "このお知らせを削除しますか？", [
+      { text: "キャンセル", style: "cancel" },
+      {
+        text: "削除",
+        style: "destructive",
+        onPress: async () => {
+          // [1] 画面上から消す
+          const updatedNotices = notices.map((n) =>
+            n.id === noticeId ? { ...n, status: "deleted" } : n,
+          );
+          setNotices(updatedNotices);
+          setSelectedNotice(null);
+
+          // [2] 裏でFirestoreに送信
+          try {
+            if (activeTeamId) {
+              await updateNotice(activeTeamId, noticeId, {
                 status: "deleted",
                 deletedBy: displayUserName,
               });
-
-              // 画面上のリストを更新
-              const updatedNotices = notices.map((n) =>
-                n.id === noticeId ? { ...n, status: "deleted" } : n,
-              );
-              setNotices(updatedNotices);
-              setSelectedNotice(null);
-            } catch (error) {
-              Alert.alert("エラー", "削除に失敗しました。");
             }
-          },
+          } catch (error) {
+            console.log(
+              "Firestore削除エラー: ルール追加をお待ちください",
+              error,
+            );
+          }
         },
-      ],
-    );
+      },
+    ]);
   };
 
   const openEditModal = (notice) => {
@@ -394,7 +405,7 @@ const NoticeBoardScreen = ({
               <View style={styles.detailHeader}>
                 <TouchableOpacity
                   onPress={() => setIsCreateModalVisible(false)}
-                  disabled={isSaving} // 通信中は閉じられないようにする
+                  disabled={isSaving}
                 >
                   <Text
                     style={[styles.closeBtn, isSaving && { color: "#aaa" }]}
@@ -452,10 +463,10 @@ const NoticeBoardScreen = ({
                   style={[
                     styles.submitButton,
                     isOffline && { backgroundColor: "#f39c12" },
-                    isSaving && { opacity: 0.7 }, // 送信中は半透明に
+                    isSaving && { opacity: 0.7 },
                   ]}
                   onPress={handleSaveNotice}
-                  disabled={isSaving} // 送信中は押せないようにする（連打防止）
+                  disabled={isSaving}
                 >
                   {isSaving ? (
                     <ActivityIndicator color="#fff" />

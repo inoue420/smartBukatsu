@@ -22,8 +22,13 @@ import * as ScreenOrientation from "expo-screen-orientation";
 import { useAuth } from "../AuthContext";
 import { updateProject } from "../services/firestoreService";
 
-// ★ 修正：setProjects を受け取るように追加
-const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
+const ProjectDetailScreen = ({
+  route,
+  navigation,
+  currentUser,
+  projects,
+  setProjects,
+}) => {
   const { project: routeProject, userRole = "member" } = route.params || {};
 
   const project =
@@ -46,7 +51,7 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
     admin: `${currentUser}(管理者)`,
     staff: `${currentUser}(コーチ)`,
     captain: `${currentUser}(キャプテン)`,
-    member: currentUser, // 「(あなた)」や「佐藤(自分)」を削除し、純粋な名前のみに！
+    member: currentUser,
   };
   const displayUserName = roleNameMap[userRole] || currentUser;
 
@@ -61,7 +66,6 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
 
   const [activeTab, setActiveTab] = useState("tag");
 
-  // ★ 修正：初期タグを変更！
   const [quickTags, setQuickTags] = useState(["ナイスプレー", "得点", "罰則"]);
   const [isAddQuickTagModalVisible, setIsAddQuickTagModalVisible] =
     useState(false);
@@ -161,9 +165,12 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
     if (status.isLoaded) {
       const currentTime = Math.floor(status.positionMillis / 1000);
       setVideoTime(currentTime);
-      setIsPlaying(status.isPlaying);
-      if (status.durationMillis)
+      if (status.durationMillis) {
         setVideoDuration(Math.floor(status.durationMillis / 1000));
+      }
+      if (status.didJustFinish) {
+        setIsPlaying(false);
+      }
     }
   };
 
@@ -171,10 +178,6 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
     if (state === "playing") setIsPlaying(true);
     else if (state === "paused" || state === "ended") setIsPlaying(false);
   }, []);
-
-  const togglePlay = () => {
-    setIsPlaying(!isPlaying);
-  };
 
   const jumpToTime = async (seconds) => {
     if (youtubeVideoId && youtubeRef.current) {
@@ -211,7 +214,6 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
     setVideoTime(newTime);
   };
 
-  // --- ★修正：タグをアプリ全体（projects）にも反映させる ---
   const handleAddTag = async (label) => {
     const newTag = {
       id: "tag_" + Date.now(),
@@ -225,7 +227,6 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
 
     setLocalTags(newTags);
 
-    // ★ 追加：アプリ全体のプロジェクトリストも更新する（一覧画面のハイライトに反映）
     if (setProjects) {
       setProjects((prev) =>
         prev.map((p) => (p.id === project.id ? { ...p, tags: newTags } : p)),
@@ -244,7 +245,6 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
     const newTags = localTags.filter((t) => t.id !== id);
     setLocalTags(newTags);
 
-    // ★ 全体リストからも削除
     if (setProjects) {
       setProjects((prev) =>
         prev.map((p) => (p.id === project.id ? { ...p, tags: newTags } : p)),
@@ -277,7 +277,6 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
 
     setLocalTags(newTags);
 
-    // ★ 全体リストにも追加
     if (setProjects) {
       setProjects((prev) =>
         prev.map((p) => (p.id === project.id ? { ...p, tags: newTags } : p)),
@@ -295,7 +294,6 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
     }
   };
 
-  // --- ★メモも同様に全体に反映させる ---
   const handleAddMemo = async () => {
     if (newMemoText.trim() === "") return;
     const newMemo = {
@@ -379,7 +377,7 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
           style={styles.videoComponent}
           resizeMode={ResizeMode.CONTAIN}
           onPlaybackStatusUpdate={handlePlaybackStatusUpdate}
-          useNativeControls={false}
+          useNativeControls={true} // ★スマホ標準の再生バーを使用するよう変更！
           shouldPlay={isPlaying}
           onError={() => {
             Alert.alert(
@@ -404,9 +402,7 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
           <TouchableOpacity style={styles.skipBtn} onPress={skipBackward}>
             <Text style={styles.skipBtnText}>⏪ 5s</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.playBtn} onPress={togglePlay}>
-            <Text style={styles.playBtnText}>{isPlaying ? "⏸" : "▶"}</Text>
-          </TouchableOpacity>
+          {/* ★ 問題のあったオリジナルの再生ボタンを完全に削除しました */}
           <TouchableOpacity style={styles.skipBtn} onPress={skipForward}>
             <Text style={styles.skipBtnText}>5s ⏩</Text>
           </TouchableOpacity>
