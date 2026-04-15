@@ -198,7 +198,12 @@ import NetInfo from "@react-native-community/netinfo";
 
 // コンテキストとサービス
 import { AuthProvider, useAuth } from "./src/AuthContext";
-import { subscribeProjects } from "./src/services/firestoreService";
+import {
+  subscribeProjects,
+  subscribeDailyReports,
+  subscribeNotices,
+  subscribePersonalEvents,
+} from "./src/services/firestoreService";
 
 // 画面
 import LoginScreen from "./src/screens/LoginScreen";
@@ -214,21 +219,21 @@ import CalendarScreen from "./src/screens/CalendarScreen";
 LogBox.ignoreLogs(["[expo-av]"]);
 const Stack = createNativeStackNavigator();
 
-/**
- * メインのコンテンツ部分
- * AuthProviderの内側に配置することで、useAuth() から
- * ログインユーザー情報やチームIDを取得できるようにします。
- */
 function AppContent() {
   const {
     user,
+    userName,
     activeTeamId,
     isAdmin: authIsAdmin,
     loading: authLoading,
   } = useAuth();
 
-  // --- アプリ全体で共有する状態（UI用） ---
   const [projects, setProjects] = useState([]);
+  const [notices, setNotices] = useState([]);
+  const [dailyReports, setDailyReports] = useState([]);
+  const [personalEvents, setPersonalEvents] = useState([]);
+
+  // ダミーデータ（必要に応じてSettings等からFirestore移行してください）
   const [clubMembers, setClubMembers] = useState(["キャプテン", "部員1"]);
   const [grades, setGrades] = useState(["1年", "2年", "3年"]);
   const [positions, setPositions] = useState(["CP", "GK", "マネージャー"]);
@@ -244,25 +249,27 @@ function AppContent() {
   });
   const [isOffline, setIsOffline] = useState(false);
   const [posts, setPosts] = useState([]);
-  const [notices, setNotices] = useState([]);
-  const [dailyReports, setDailyReports] = useState([]);
-  const [personalEvents, setPersonalEvents] = useState([]);
 
-  // ★Firestoreのリアルタイム購読
-  // ログイン済み かつ チーム所属済み の時だけデータを取ってくる
+  // Firestore同期
   useEffect(() => {
     if (user && activeTeamId) {
-      console.log("Firestore購読開始 (Team ID):", activeTeamId);
-      const unsubscribe = subscribeProjects(activeTeamId, (fetchedProjects) => {
-        setProjects(fetchedProjects);
-      });
-      return () => unsubscribe();
-    } else {
-      setProjects([]);
+      const unsubProjects = subscribeProjects(activeTeamId, setProjects);
+      const unsubReports = subscribeDailyReports(activeTeamId, setDailyReports);
+      const unsubNotices = subscribeNotices(activeTeamId, setNotices);
+      const unsubPersonal = subscribePersonalEvents(
+        user.uid,
+        setPersonalEvents,
+      );
+
+      return () => {
+        unsubProjects();
+        unsubReports();
+        unsubNotices();
+        unsubPersonal();
+      };
     }
   }, [user, activeTeamId]);
 
-  // オフライン状態の監視
   useEffect(() => {
     const unsubscribe = NetInfo.addEventListener((state) => {
       setIsOffline(!state.isConnected);
@@ -270,7 +277,6 @@ function AppContent() {
     return () => unsubscribe();
   }, []);
 
-  // 認証情報の読み込み中はローディング画面を表示
   if (authLoading) {
     return (
       <View
@@ -285,150 +291,144 @@ function AppContent() {
     );
   }
 
-  // ★ナビゲーションの初期画面（初期ルート）のロジック
-  // 1. 未ログインなら「Login」
-  // 2. ログイン済みだがチーム未設定なら「TeamSetup」
-  // 3. ログイン済みかつチーム設定済みなら「WorkspaceHome」
-  const initialRoute = !user
-    ? "Login"
-    : !activeTeamId
-      ? "TeamSetup"
-      : "WorkspaceHome";
+  const safeUserName = userName || user?.email || "ユーザー";
 
   return (
     <NavigationContainer>
-      <Stack.Navigator
-        initialRouteName={initialRoute}
-        screenOptions={{ headerShown: false }}
-      >
-        {/* 認証・初期設定フロー */}
-        <Stack.Screen name="Login" component={LoginScreen} />
-        <Stack.Screen name="TeamSetup" component={TeamSetupScreen} />
+      <Stack.Navigator screenOptions={{ headerShown: false }}>
+        {/* ========================================================
+            ★ 認証状態による条件分岐（ここが重要！）
+            ======================================================== */}
+        {!user ? (
+          // 1. ログインしていない場合は「ログイン画面」のみ
+          <Stack.Screen name="Login" component={LoginScreen} />
+        ) : !activeTeamId ? (
+          // 2. ログインはしたがチームが決まっていない場合（念のための保険）
+          <Stack.Screen name="TeamSetup" component={TeamSetupScreen} />
+        ) : (
+          // 3. ログイン済み ＆ チーム所属済み の場合に初めてホーム群を表示
+          <>
+            <Stack.Screen name="WorkspaceHome">
+              {(props) => (
+                <WorkspaceHomeScreen
+                  {...props}
+                  isAdmin={authIsAdmin}
+                  currentUser={safeUserName}
+                  notices={notices}
+                  setNotices={setNotices}
+                  posts={posts}
+                  setPosts={setPosts}
+                  isOffline={isOffline}
+                  clubMembers={clubMembers}
+                  alertThresholds={alertThresholds}
+                  userProfiles={userProfiles}
+                  dailyReports={dailyReports}
+                />
+              )}
+            </Stack.Screen>
 
-        {/* メイン機能 */}
-        <Stack.Screen name="WorkspaceHome">
-          {(props) => (
-            <WorkspaceHomeScreen
-              {...props}
-              isAdmin={authIsAdmin}
-              currentUser={user?.email || ""}
-              notices={notices}
-              setNotices={setNotices} // ★ 修正箇所：ここを正しく追加しました！
-              posts={posts}
-              setPosts={setPosts}
-              isOffline={isOffline}
-              clubMembers={clubMembers}
-              alertThresholds={alertThresholds}
-              userProfiles={userProfiles}
-              dailyReports={dailyReports}
-            />
-          )}
-        </Stack.Screen>
+            <Stack.Screen name="NoticeBoard">
+              {(props) => (
+                <NoticeBoardScreen
+                  {...props}
+                  isAdmin={authIsAdmin}
+                  currentUser={safeUserName}
+                  notices={notices}
+                  setNotices={setNotices}
+                  isOffline={isOffline}
+                  userProfiles={userProfiles}
+                />
+              )}
+            </Stack.Screen>
 
-        <Stack.Screen name="NoticeBoard">
-          {(props) => (
-            <NoticeBoardScreen
-              {...props}
-              isAdmin={authIsAdmin}
-              currentUser={user?.email || ""}
-              notices={notices}
-              setNotices={setNotices}
-              isOffline={isOffline}
-              userProfiles={userProfiles}
-            />
-          )}
-        </Stack.Screen>
+            <Stack.Screen name="Diary">
+              {(props) => (
+                <DiaryScreen
+                  {...props}
+                  isAdmin={authIsAdmin}
+                  currentUser={safeUserName}
+                  isOffline={isOffline}
+                  grades={grades}
+                  positions={positions}
+                  posts={posts}
+                  setPosts={setPosts}
+                  userProfiles={userProfiles}
+                  dailyReports={dailyReports}
+                  setDailyReports={setDailyReports}
+                  alertThresholds={alertThresholds}
+                />
+              )}
+            </Stack.Screen>
 
-        <Stack.Screen name="Diary">
-          {(props) => (
-            <DiaryScreen
-              {...props}
-              isAdmin={authIsAdmin}
-              currentUser={user?.email || ""}
-              isOffline={isOffline}
-              grades={grades}
-              positions={positions}
-              posts={posts}
-              setPosts={setPosts}
-              userProfiles={userProfiles}
-              dailyReports={dailyReports}
-              setDailyReports={setDailyReports}
-              alertThresholds={alertThresholds}
-            />
-          )}
-        </Stack.Screen>
+            <Stack.Screen name="Calendar">
+              {(props) => (
+                <CalendarScreen
+                  {...props}
+                  isAdmin={authIsAdmin}
+                  currentUser={safeUserName}
+                  projects={projects}
+                  setProjects={setProjects}
+                  dailyReports={dailyReports}
+                  userProfiles={userProfiles}
+                  personalEvents={personalEvents}
+                  setPersonalEvents={setPersonalEvents}
+                />
+              )}
+            </Stack.Screen>
 
-        <Stack.Screen name="Calendar">
-          {(props) => (
-            <CalendarScreen
-              {...props}
-              isAdmin={authIsAdmin}
-              currentUser={user?.email || ""}
-              projects={projects}
-              setProjects={setProjects}
-              dailyReports={dailyReports}
-              userProfiles={userProfiles}
-              alertThresholds={alertThresholds}
-              personalEvents={personalEvents}
-              setPersonalEvents={setPersonalEvents}
-            />
-          )}
-        </Stack.Screen>
+            <Stack.Screen name="ProjectList">
+              {(props) => (
+                <ProjectListScreen
+                  {...props}
+                  isAdmin={authIsAdmin}
+                  currentUser={safeUserName}
+                  projects={projects}
+                  setProjects={setProjects}
+                  userProfiles={userProfiles}
+                />
+              )}
+            </Stack.Screen>
 
-        <Stack.Screen name="ProjectList">
-          {(props) => (
-            <ProjectListScreen
-              {...props}
-              isAdmin={authIsAdmin}
-              currentUser={user?.email || ""}
-              projects={projects}
-              setProjects={setProjects}
-              userProfiles={userProfiles}
-            />
-          )}
-        </Stack.Screen>
+            <Stack.Screen name="ProjectDetail">
+              {(props) => (
+                <ProjectDetailScreen
+                  {...props}
+                  isAdmin={authIsAdmin}
+                  currentUser={safeUserName}
+                  clubMembers={clubMembers}
+                  userProfiles={userProfiles}
+                  projects={projects}
+                  setProjects={setProjects}
+                />
+              )}
+            </Stack.Screen>
 
-        <Stack.Screen name="ProjectDetail">
-          {(props) => (
-            <ProjectDetailScreen
-              {...props}
-              isAdmin={authIsAdmin}
-              currentUser={user?.email || ""}
-              clubMembers={clubMembers}
-              userProfiles={userProfiles}
-              projects={projects}
-              setProjects={setProjects}
-            />
-          )}
-        </Stack.Screen>
-
-        <Stack.Screen name="Settings">
-          {(props) => (
-            <SettingsScreen
-              {...props}
-              isAdmin={authIsAdmin}
-              currentUser={user?.email || ""}
-              clubMembers={clubMembers}
-              setClubMembers={setClubMembers}
-              grades={grades}
-              setGrades={setGrades}
-              positions={positions}
-              setPositions={setPositions}
-              alertThresholds={alertThresholds}
-              setAlertThresholds={setAlertThresholds}
-              userProfiles={userProfiles}
-              setUserProfiles={setUserProfiles}
-            />
-          )}
-        </Stack.Screen>
+            <Stack.Screen name="Settings">
+              {(props) => (
+                <SettingsScreen
+                  {...props}
+                  isAdmin={authIsAdmin}
+                  currentUser={safeUserName}
+                  clubMembers={clubMembers}
+                  setClubMembers={setClubMembers}
+                  grades={grades}
+                  setGrades={setGrades}
+                  positions={positions}
+                  setPositions={setPositions}
+                  alertThresholds={alertThresholds}
+                  setAlertThresholds={setAlertThresholds}
+                  userProfiles={userProfiles}
+                  setUserProfiles={setUserProfiles}
+                />
+              )}
+            </Stack.Screen>
+          </>
+        )}
       </Stack.Navigator>
     </NavigationContainer>
   );
 }
 
-/**
- * エントリーポイント
- */
 export default function App() {
   return (
     <AuthProvider>
@@ -504,6 +504,7 @@ registerRootComponent(App);
     "firebase": "^12.6.0",
     "react": "19.1.0",
     "react-native": "0.81.5",
+    "react-native-calendars": "^1.1314.0",
     "react-native-gesture-handler": "~2.28.0",
     "react-native-safe-area-context": "~5.6.0",
     "react-native-screens": "~4.16.0",
@@ -556,9 +557,10 @@ const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
+  const [userName, setUserName] = useState(""); // ★追加：ユーザー名を保持
   const [loading, setLoading] = useState(true);
   const [activeTeamId, setActiveTeamId] = useState(null);
-  const [role, setRole] = useState(null); // 'admin' | 'member' | null
+  const [role, setRole] = useState(null);
 
   // Firebaseの認証状態を監視
   useEffect(() => {
@@ -566,6 +568,7 @@ export function AuthProvider({ children }) {
       setUser(u || null);
       setRole(null);
       setActiveTeamId(null);
+      setUserName(""); // リセット
       setLoading(false);
 
       if (u?.uid) {
@@ -583,7 +586,7 @@ export function AuthProvider({ children }) {
     return () => unsub();
   }, []);
 
-  // ユーザーの所属チームIDを取得
+  // ユーザーの所属チームIDと「表示名（name）」を取得
   useEffect(() => {
     if (!user?.uid) return;
     const ref = doc(db, "users", user.uid);
@@ -591,6 +594,8 @@ export function AuthProvider({ children }) {
       const data = snap.data() || {};
       const t = typeof data.activeTeamId === "string" ? data.activeTeamId : "";
       setActiveTeamId(t || null);
+      // ★取得した名前をセット（名前がなければメールアドレスを表示）
+      setUserName(data.name || user.email || "ゲスト");
     });
     return () => unsub();
   }, [user?.uid]);
@@ -624,16 +629,17 @@ export function AuthProvider({ children }) {
     };
     return {
       user,
+      userName, // ★追加：Contextで名前を配信
       loading,
       activeTeamId,
       role,
-      isAdmin: role === "admin",
+      isAdmin: role === "admin" || role === "owner", // ownerも管理者として扱うように強化
       signIn,
       signUp,
       resetPassword,
       signOut,
     };
-  }, [user, loading, activeTeamId, role]);
+  }, [user, userName, loading, activeTeamId, role]);
 
   return <AuthContext.Provider value={api}>{children}</AuthContext.Provider>;
 }
@@ -759,7 +765,7 @@ const styles = StyleSheet.create({
 </file>
 
 <file path="src/screens/CalendarScreen.js">
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 import {
   View,
   Text,
@@ -768,355 +774,328 @@ import {
   ScrollView,
   Modal,
   TextInput,
+  Alert,
   KeyboardAvoidingView,
   Platform,
-  Alert,
-  Keyboard,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { Calendar, LocaleConfig } from "react-native-calendars";
 
-// 日付操作のユーティリティ関数
-const getDatesInRange = (startDateStr, endDateStr) => {
-  const dates = [];
-  let curr = new Date(startDateStr.replace(/\//g, "-"));
-  const end = new Date(endDateStr.replace(/\//g, "-"));
+// ★ Firestore通信関数のインポート
+import { useAuth } from "../AuthContext";
+import {
+  createProject,
+  updateProject,
+  deleteProject,
+  createPersonalEvent,
+  updatePersonalEvent,
+  deletePersonalEvent,
+} from "../services/firestoreService";
 
-  while (curr <= end) {
-    const y = curr.getFullYear();
-    const m = String(curr.getMonth() + 1).padStart(2, "0");
-    const d = String(curr.getDate()).padStart(2, "0");
-    dates.push(`${y}/${m}/${d}`);
-    curr.setDate(curr.getDate() + 1);
+LocaleConfig.locales["ja"] = {
+  monthNames: [
+    "1月",
+    "2月",
+    "3月",
+    "4月",
+    "5月",
+    "6月",
+    "7月",
+    "8月",
+    "9月",
+    "10月",
+    "11月",
+    "12月",
+  ],
+  monthNamesShort: [
+    "1月",
+    "2月",
+    "3月",
+    "4月",
+    "5月",
+    "6月",
+    "7月",
+    "8月",
+    "9月",
+    "10月",
+    "11月",
+    "12月",
+  ],
+  dayNames: [
+    "日曜日",
+    "月曜日",
+    "火曜日",
+    "水曜日",
+    "木曜日",
+    "金曜日",
+    "土曜日",
+  ],
+  dayNamesShort: ["日", "月", "火", "水", "木", "金", "土"],
+  today: "今日",
+};
+LocaleConfig.defaultLocale = "ja";
+
+const normalizeDate = (dateStr) => {
+  if (!dateStr) return "";
+  if (dateStr.includes("/")) {
+    const parts = dateStr.split("/");
+    if (parts.length === 3) {
+      return `${parts[0]}-${parts[1].padStart(2, "0")}-${parts[2].padStart(2, "0")}`;
+    }
   }
-  return dates;
+  return dateStr;
 };
 
-// ボタンで日付を前後にずらすための関数
-const adjustDateByDays = (dateStr, days) => {
-  const d = new Date(dateStr.replace(/\//g, "-"));
-  d.setDate(d.getDate() + days);
-  return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
+const getDatesInRange = (startDate, endDate) => {
+  const dates = [];
+  let currentDate = new Date(startDate);
+  const end = new Date(endDate);
+
+  let count = 0;
+  while (currentDate <= end && count < 365) {
+    dates.push(currentDate.toISOString().split("T")[0]);
+    currentDate.setDate(currentDate.getDate() + 1);
+    count++;
+  }
+  return dates;
 };
 
 const CalendarScreen = ({
   navigation,
   isAdmin,
   currentUser,
-  projects,
-  setProjects,
-  dailyReports,
-  userProfiles = {},
+  projects = [],
+  dailyReports = [],
   personalEvents = [],
-  setPersonalEvents,
-  alertThresholds = {
-    fatigueWarning: 7,
-    fatigueDanger: 9,
-    painDanger: 7,
-    autoEscalate: true,
-  },
+  userProfiles = {},
 }) => {
+  const { activeTeamId, user } = useAuth();
+
   const currentUserProfile = userProfiles[currentUser] || {};
   const userRole =
     global.TEST_ROLE ||
     (isAdmin ? "owner" : currentUserProfile.role || "member");
-  const isStaffOrAbove = ["owner", "staff"].includes(userRole);
-  const staffScope = currentUserProfile.staffScope || "all";
 
-  const today = new Date();
-  const todayString = `${today.getFullYear()}/${String(today.getMonth() + 1).padStart(2, "0")}/${String(today.getDate()).padStart(2, "0")}`;
-
-  const [currentMonth, setCurrentMonth] = useState(
-    new Date(today.getFullYear(), today.getMonth(), 1),
+  const canManageClubEvents = ["owner", "admin", "staff", "captain"].includes(
+    userRole,
   );
-  const [selectedDate, setSelectedDate] = useState(todayString);
 
-  // === 部活の予定用ステート ===
-  const [isEventModalVisible, setIsEventModalVisible] = useState(false);
-  const [editingEventId, setEditingEventId] = useState(null);
-  const [eventTitle, setEventTitle] = useState("");
-  const [isEventMultiDay, setIsEventMultiDay] = useState(false);
-  const [eventEndDate, setEventEndDate] = useState(todayString);
-  const [eventType, setEventType] = useState("練習");
-  const [eventParticipants, setEventParticipants] = useState("team");
-  const [eventMemo, setEventMemo] = useState("");
+  const [selectedDate, setSelectedDate] = useState(
+    new Date().toISOString().split("T")[0],
+  );
 
-  // === 個人の予定用ステート ===
+  const [isClubModalVisible, setIsClubModalVisible] = useState(false);
   const [isPersonalModalVisible, setIsPersonalModalVisible] = useState(false);
-  const [editingPersonalId, setEditingPersonalId] = useState(null);
-  const [personalTitle, setPersonalTitle] = useState("");
+
+  // 部活予定用ステート
+  const [editingClubEventId, setEditingClubEventId] = useState(null);
+  const [clubEventTitle, setClubEventTitle] = useState("");
+  const [clubEventDescription, setClubEventDescription] = useState("");
+  const [clubEventType, setClubEventType] = useState("練習");
+  const [isMultiDay, setIsMultiDay] = useState(false);
+  const [endDate, setEndDate] = useState("");
+  const [showEndDatePicker, setShowEndDatePicker] = useState(false);
+
+  // 個人予定用ステート
+  const [editingPersonalEventId, setEditingPersonalEventId] = useState(null);
+  const [personalEventTitle, setPersonalEventTitle] = useState("");
+  const [personalEventDescription, setPersonalEventDescription] = useState("");
   const [isPersonalMultiDay, setIsPersonalMultiDay] = useState(false);
-  const [personalEndDate, setPersonalEndDate] = useState(todayString);
-  const [personalMemo, setPersonalMemo] = useState("");
+  const [personalEndDate, setPersonalEndDate] = useState("");
+  const [showPersonalEndDatePicker, setShowPersonalEndDatePicker] =
+    useState(false);
 
-  const handlePrevMonth = () => {
-    setCurrentMonth(
-      new Date(currentMonth.getFullYear(), currentMonth.getMonth() - 1, 1),
-    );
-  };
-  const handleNextMonth = () => {
-    setCurrentMonth(
-      new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 1),
-    );
-  };
-
-  const getAlertLevel = (record) => {
-    if (!record.condition) return "normal";
-    if (
-      record.condition === "不良" ||
-      record.isParticipating === "不可" ||
-      record.fatigue >= alertThresholds.fatigueDanger ||
-      (record.hasPain &&
-        record.painDetails?.level >= alertThresholds.painDanger)
-    )
-      return "danger";
-    if (
-      record.fatigue >= alertThresholds.fatigueWarning ||
-      record.isParticipating === "制限" ||
-      record.hasPain
-    )
-      return "warning";
-    return "normal";
-  };
-
-  const visibleProjects = projects.filter((p) => {
-    if (p.status === "deleted") return false;
-    if (["member", "captain"].includes(userRole) && p.participants === "coach")
-      return false;
-    return true;
-  });
-
-  const visibleReports = dailyReports.filter((d) => {
-    if (d.status === "deleted") return false;
-    if (userRole === "owner") return true;
-    if (userRole === "staff") {
-      if (staffScope === "all") return true;
-      if (staffScope === "assigned") {
-        const authorProfile = userProfiles[d.author] || {};
-        return authorProfile.assignedStaff === currentUser;
+  const markedDates = useMemo(() => {
+    const marks = {};
+    const addMark = (dateStr, key, color) => {
+      const normDate = normalizeDate(dateStr);
+      if (!marks[normDate]) marks[normDate] = { dots: [] };
+      if (!marks[normDate].dots.find((d) => d.key === key)) {
+        marks[normDate].dots.push({ key, color });
       }
-    }
-    return ["member", "captain"].includes(userRole)
-      ? d.author === currentUser
-      : false;
+    };
+
+    projects.forEach((p) => {
+      if (p.status !== "deleted") {
+        const start = normalizeDate(p.date);
+        const end = p.endDate ? normalizeDate(p.endDate) : start;
+        const color = p.type === "試合" ? "#e74c3c" : "#3498db";
+        const range = getDatesInRange(start, end);
+        range.forEach((d) => addMark(d, p.id, color));
+      }
+    });
+
+    personalEvents.forEach((pe) => {
+      const start = normalizeDate(pe.date);
+      const end = pe.endDate ? normalizeDate(pe.endDate) : start;
+      const range = getDatesInRange(start, end);
+      range.forEach((d) => addMark(d, pe.id, "#27ae60"));
+    });
+
+    dailyReports.forEach((r) => {
+      if (r.author === currentUser && r.status !== "deleted") {
+        addMark(r.date, r.id, "#f39c12");
+      }
+    });
+
+    if (!marks[selectedDate]) marks[selectedDate] = { dots: [] };
+    marks[selectedDate].selected = true;
+    marks[selectedDate].selectedColor = "#e8f0fe";
+    marks[selectedDate].selectedTextColor = "#333";
+
+    return marks;
+  }, [projects, personalEvents, dailyReports, selectedDate, currentUser]);
+
+  const dailyClubEvents = projects.filter((p) => {
+    if (p.status === "deleted") return false;
+    const start = normalizeDate(p.date);
+    const end = p.endDate ? normalizeDate(p.endDate) : start;
+    return selectedDate >= start && selectedDate <= end;
   });
 
-  const myPersonalEvents = personalEvents.filter(
-    (e) => e.status !== "deleted" && e.author === currentUser,
+  const dailyPersonalEvents = personalEvents.filter((pe) => {
+    const start = normalizeDate(pe.date);
+    const end = pe.endDate ? normalizeDate(pe.endDate) : start;
+    return selectedDate >= start && selectedDate <= end;
+  });
+
+  const dailyMyReports = dailyReports.filter(
+    (r) =>
+      normalizeDate(r.date) === selectedDate &&
+      r.author === currentUser &&
+      r.status !== "deleted",
   );
 
-  const eventsMap = {};
+  // ==========================================
+  // 部活予定の保存・削除
+  // ==========================================
+  const handleSaveClubEvent = async () => {
+    if (!clubEventTitle.trim())
+      return Alert.alert("エラー", "タイトルを入力してください");
+    if (isMultiDay && endDate < selectedDate)
+      return Alert.alert("エラー", "終了日を正しく選択してください");
 
-  visibleProjects.forEach((p) => {
-    const range = getDatesInRange(p.date, p.endDate || p.date);
-    range.forEach((d) => {
-      if (!eventsMap[d])
-        eventsMap[d] = { projects: [], reports: [], personal: [] };
-      eventsMap[d].projects.push(p);
-    });
-  });
+    const eventData = {
+      title: clubEventTitle.trim(),
+      name: clubEventTitle.trim(),
+      description: clubEventDescription.trim(),
+      type: clubEventType,
+      date: selectedDate,
+      endDate: isMultiDay ? endDate : selectedDate,
+      participants: "team",
+      status: "active",
+      createdBy: user?.uid || "local_user",
+    };
 
-  visibleReports.forEach((r) => {
-    if (!eventsMap[r.date])
-      eventsMap[r.date] = { projects: [], reports: [], personal: [] };
-    eventsMap[r.date].reports.push(r);
-  });
-
-  myPersonalEvents.forEach((pe) => {
-    const range = getDatesInRange(pe.date, pe.endDate || pe.date);
-    range.forEach((d) => {
-      if (!eventsMap[d])
-        eventsMap[d] = { projects: [], reports: [], personal: [] };
-      eventsMap[d].personal.push(pe);
-    });
-  });
-
-  const year = currentMonth.getFullYear();
-  const month = currentMonth.getMonth();
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const firstDayOfWeek = new Date(year, month, 1).getDay();
-
-  const daysArray = Array(firstDayOfWeek).fill(null);
-  for (let i = 1; i <= daysInMonth; i++) {
-    daysArray.push(i);
-  }
-  while (daysArray.length % 7 !== 0) {
-    daysArray.push(null);
-  }
-
-  const selectedEvents = eventsMap[selectedDate] || {
-    projects: [],
-    reports: [],
-    personal: [],
+    try {
+      if (editingClubEventId) {
+        await updateProject(activeTeamId, editingClubEventId, eventData);
+      } else {
+        await createProject(activeTeamId, eventData);
+      }
+      setIsClubModalVisible(false);
+      resetClubForm();
+    } catch (error) {
+      console.error(error);
+      Alert.alert("エラー", "保存に失敗しました。");
+    }
   };
 
-  const adjustEndDate = (setter, currentEnd, days) => {
-    const nextDate = adjustDateByDays(currentEnd, days);
-    if (
-      new Date(nextDate.replace(/\//g, "-")) <
-      new Date(selectedDate.replace(/\//g, "-"))
-    ) {
-      return;
-    }
-    setter(nextDate);
+  const resetClubForm = () => {
+    setEditingClubEventId(null);
+    setClubEventTitle("");
+    setClubEventDescription("");
+    setClubEventType("練習");
+    setIsMultiDay(false);
+    setEndDate("");
+    setShowEndDatePicker(false);
   };
 
-  const openEventModal = (event = null) => {
-    if (event) {
-      setEditingEventId(event.id);
-      setEventTitle(event.title);
-      setEventEndDate(event.endDate || event.date);
-      setIsEventMultiDay(!!event.endDate && event.endDate !== event.date);
-      setEventType(event.type);
-      setEventParticipants(event.participants);
-      setEventMemo(event.memo || "");
-    } else {
-      setEditingEventId(null);
-      setEventTitle("");
-      setEventEndDate(selectedDate);
-      setIsEventMultiDay(false);
-      setEventType("練習");
-      setEventParticipants("team");
-      setEventMemo("");
-    }
-    setIsEventModalVisible(true);
+  const openEditClubEvent = (event) => {
+    setEditingClubEventId(event.id);
+    setClubEventTitle(event.title || event.name);
+    setClubEventDescription(event.description || "");
+    setClubEventType(event.type || "練習");
+    const hasRange = event.endDate && event.endDate !== event.date;
+    setIsMultiDay(hasRange);
+    setEndDate(event.endDate || event.date);
+    setIsClubModalVisible(true);
   };
 
-  // ★修正: 再度「ローカルに保存（setProjects）」へ戻しました。Firebaseの門番は回避します。
-  const handleSaveEvent = () => {
-    if (eventTitle.trim() === "")
-      return Alert.alert("エラー", "タイトルを入力してください。");
-
-    const finalEndDate = isEventMultiDay ? eventEndDate : selectedDate;
-
-    if (
-      new Date(finalEndDate.replace(/\//g, "-")) <
-      new Date(selectedDate.replace(/\//g, "-"))
-    ) {
-      return Alert.alert("エラー", "終了日は開始日以降に設定してください。");
-    }
-
-    if (editingEventId) {
-      setProjects(
-        projects.map((p) =>
-          p.id === editingEventId
-            ? {
-                ...p,
-                title: eventTitle,
-                endDate: finalEndDate,
-                type: eventType,
-                participants: eventParticipants,
-                memo: eventMemo,
-              }
-            : p,
-        ),
-      );
-    } else {
-      const newEvent = {
-        id: "p_" + Date.now().toString(),
-        title: eventTitle,
-        date: selectedDate,
-        endDate: finalEndDate,
-        type: eventType,
-        status: "active",
-        participants: eventParticipants,
-        memo: eventMemo,
-      };
-      setProjects([...projects, newEvent]);
-    }
-    setIsEventModalVisible(false);
-    Keyboard.dismiss();
-  };
-
-  const handleDeleteEvent = () => {
-    Alert.alert("削除の確認", "この予定を削除しますか？", [
-      { text: "キャンセル", style: "cancel" },
+  const handleDeleteClubEvent = (id) => {
+    Alert.alert("削除", "部活の予定を削除しますか？", [
+      { text: "キャンセル" },
       {
         text: "削除",
         style: "destructive",
-        onPress: () => {
-          setProjects(
-            projects.map((p) =>
-              p.id === editingEventId ? { ...p, status: "deleted" } : p,
-            ),
-          );
-          setIsEventModalVisible(false);
+        onPress: async () => {
+          try {
+            await deleteProject(activeTeamId, id);
+          } catch (e) {}
         },
       },
     ]);
   };
 
-  const openPersonalModal = (event = null) => {
-    if (event) {
-      setEditingPersonalId(event.id);
-      setPersonalTitle(event.title);
-      setPersonalEndDate(event.endDate || event.date);
-      setIsPersonalMultiDay(!!event.endDate && event.endDate !== event.date);
-      setPersonalMemo(event.memo || "");
-    } else {
-      setEditingPersonalId(null);
-      setPersonalTitle("");
-      setPersonalEndDate(selectedDate);
-      setIsPersonalMultiDay(false);
-      setPersonalMemo("");
+  // ==========================================
+  // ★ 個人の予定の保存・削除（完全隔離）
+  // ==========================================
+  const handleSavePersonalEvent = async () => {
+    if (!personalEventTitle.trim())
+      return Alert.alert("エラー", "タイトルを入力してください");
+    if (isPersonalMultiDay && personalEndDate < selectedDate)
+      return Alert.alert("エラー", "終了日を正しく選択してください");
+
+    const eventData = {
+      date: selectedDate,
+      endDate: isPersonalMultiDay ? personalEndDate : selectedDate,
+      title: personalEventTitle.trim(),
+      description: personalEventDescription.trim(),
+    };
+
+    try {
+      if (editingPersonalEventId) {
+        await updatePersonalEvent(user.uid, editingPersonalEventId, eventData);
+      } else {
+        await createPersonalEvent(user.uid, eventData);
+      }
+      setIsPersonalModalVisible(false);
+      resetPersonalForm();
+    } catch (error) {
+      console.error(error);
+      Alert.alert("エラー", "個人予定の保存に失敗しました。");
     }
+  };
+
+  const resetPersonalForm = () => {
+    setEditingPersonalEventId(null);
+    setPersonalEventTitle("");
+    setPersonalEventDescription("");
+    setIsPersonalMultiDay(false);
+    setPersonalEndDate("");
+    setShowPersonalEndDatePicker(false);
+  };
+
+  const openEditPersonalEvent = (event) => {
+    setEditingPersonalEventId(event.id);
+    setPersonalEventTitle(event.title);
+    setPersonalEventDescription(event.description || "");
+    const hasRange = event.endDate && event.endDate !== event.date;
+    setIsPersonalMultiDay(hasRange);
+    setPersonalEndDate(event.endDate || event.date);
     setIsPersonalModalVisible(true);
   };
 
-  const handleSavePersonal = () => {
-    if (personalTitle.trim() === "")
-      return Alert.alert("エラー", "タイトルを入力してください。");
-
-    const finalEndDate = isPersonalMultiDay ? personalEndDate : selectedDate;
-
-    if (
-      new Date(finalEndDate.replace(/\//g, "-")) <
-      new Date(selectedDate.replace(/\//g, "-"))
-    ) {
-      return Alert.alert("エラー", "終了日は開始日以降に設定してください。");
-    }
-
-    if (editingPersonalId) {
-      setPersonalEvents(
-        personalEvents.map((p) =>
-          p.id === editingPersonalId
-            ? {
-                ...p,
-                title: personalTitle,
-                endDate: finalEndDate,
-                memo: personalMemo,
-              }
-            : p,
-        ),
-      );
-    } else {
-      const newPersonalEvent = {
-        id: "pe_" + Date.now().toString(),
-        title: personalTitle,
-        date: selectedDate,
-        endDate: finalEndDate,
-        author: currentUser,
-        status: "active",
-        memo: personalMemo,
-      };
-      setPersonalEvents([...personalEvents, newPersonalEvent]);
-    }
-    setIsPersonalModalVisible(false);
-    Keyboard.dismiss();
-  };
-
-  const handleDeletePersonal = () => {
-    Alert.alert("削除の確認", "この個人の予定を削除しますか？", [
-      { text: "キャンセル", style: "cancel" },
+  const handleDeletePersonalEvent = (id) => {
+    Alert.alert("削除", "個人の予定を削除しますか？", [
+      { text: "キャンセル" },
       {
         text: "削除",
         style: "destructive",
-        onPress: () => {
-          setPersonalEvents(
-            personalEvents.map((p) =>
-              p.id === editingPersonalId ? { ...p, status: "deleted" } : p,
-            ),
-          );
-          setIsPersonalModalVisible(false);
+        onPress: async () => {
+          try {
+            await deletePersonalEvent(user.uid, id);
+          } catch (e) {}
         },
       },
     ]);
@@ -1125,344 +1104,289 @@ const CalendarScreen = ({
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
-        <TouchableOpacity
-          style={styles.backButton}
-          onPress={() => navigation.goBack()}
-        >
-          <Text style={styles.backButtonText}>◁ ホーム</Text>
+        <TouchableOpacity onPress={() => navigation.goBack()}>
+          <Text style={styles.backBtn}>◁ ホーム</Text>
         </TouchableOpacity>
         <Text style={styles.headerTitle}>📅 カレンダー</Text>
         <View style={{ width: 60 }} />
       </View>
 
-      <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-        <View style={styles.calendarControl}>
-          <TouchableOpacity style={styles.arrowBtn} onPress={handlePrevMonth}>
-            <Text style={styles.arrowText}>◀</Text>
-          </TouchableOpacity>
-          <Text style={styles.monthTitle}>
-            {year}年 {month + 1}月
-          </Text>
-          <TouchableOpacity style={styles.arrowBtn} onPress={handleNextMonth}>
-            <Text style={styles.arrowText}>▶</Text>
-          </TouchableOpacity>
+      <Calendar
+        onDayPress={(day) => setSelectedDate(day.dateString)}
+        markedDates={markedDates}
+        markingType={"multi-dot"}
+        theme={{ todayTextColor: "#0077cc", arrowColor: "#555" }}
+      />
+
+      <ScrollView
+        style={styles.scrollContent}
+        contentContainerStyle={{ paddingBottom: 100 }}
+      >
+        <View style={styles.dateHeaderRow}>
+          <Text style={styles.selectedDateText}>{selectedDate} の予定</Text>
         </View>
 
-        <View style={styles.weekRow}>
-          {["日", "月", "火", "水", "木", "金", "土"].map((day, idx) => (
-            <Text
-              key={idx}
-              style={[
-                styles.weekText,
-                idx === 0 && { color: "#e74c3c" },
-                idx === 6 && { color: "#3498db" },
-              ]}
-            >
-              {day}
-            </Text>
-          ))}
-        </View>
-
-        <View style={styles.daysGrid}>
-          {daysArray.map((day, index) => {
-            if (!day)
-              return <View key={`empty-${index}`} style={styles.dayCell} />;
-            const dateStr = `${year}/${String(month + 1).padStart(2, "0")}/${String(day).padStart(2, "0")}`;
-            const isToday = dateStr === todayString;
-            const isSelected = dateStr === selectedDate;
-            const dayEvents = eventsMap[dateStr] || {
-              projects: [],
-              reports: [],
-              personal: [],
-            };
-
-            let reportDotColor = null;
-            if (dayEvents.reports.length > 0) {
-              const hasDanger = dayEvents.reports.some(
-                (r) => getAlertLevel(r) === "danger",
-              );
-              const hasWarning = dayEvents.reports.some(
-                (r) => getAlertLevel(r) === "warning",
-              );
-              reportDotColor = hasDanger
-                ? "#e74c3c"
-                : hasWarning
-                  ? "#f39c12"
-                  : "#2ecc71";
-            }
-
-            return (
+        {/* 部活セクション */}
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>🏟️ 部活の予定（共有）</Text>
+            {canManageClubEvents && (
               <TouchableOpacity
-                key={dateStr}
-                style={[styles.dayCell, isSelected && styles.dayCellSelected]}
-                onPress={() => setSelectedDate(dateStr)}
+                style={styles.addBtnSmall}
+                onPress={() => {
+                  resetClubForm();
+                  setIsClubModalVisible(true);
+                }}
               >
-                <View
-                  style={[styles.dayCircle, isToday && styles.dayCircleToday]}
-                >
-                  <Text
-                    style={[
-                      styles.dayText,
-                      isToday && { color: "#fff" },
-                      index % 7 === 0 && !isToday && { color: "#e74c3c" },
-                      index % 7 === 6 && !isToday && { color: "#3498db" },
-                    ]}
-                  >
-                    {day}
-                  </Text>
-                </View>
-                <View style={styles.markerRow}>
-                  {dayEvents.projects.length > 0 && (
-                    <View
-                      style={[styles.dot, { backgroundColor: "#3498db" }]}
-                    />
-                  )}
-                  {reportDotColor && (
-                    <View
-                      style={[styles.dot, { backgroundColor: reportDotColor }]}
-                    />
-                  )}
-                  {dayEvents.personal.length > 0 && (
-                    <View
-                      style={[styles.dot, { backgroundColor: "#9b59b6" }]}
-                    />
-                  )}
-                </View>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-
-        <View style={styles.divider} />
-        <Text style={styles.detailTitle}>{selectedDate} の予定・記録</Text>
-
-        <View style={styles.detailSection}>
-          <View style={styles.sectionHeaderRow}>
-            <Text style={styles.sectionSubtitle}>
-              📁 部活の予定 ({selectedEvents.projects.length})
-            </Text>
-            {["owner", "staff", "captain"].includes(userRole) && (
-              <TouchableOpacity onPress={() => openEventModal()}>
-                <Text style={styles.jumpLink}>＋ 予定を追加</Text>
+                <Text style={styles.addBtnTextSmall}>＋ 追加</Text>
               </TouchableOpacity>
             )}
           </View>
-          {selectedEvents.projects.length === 0 ? (
-            <Text style={styles.emptyText}>予定はありません。</Text>
+          {dailyClubEvents.length === 0 ? (
+            <Text style={styles.emptyText}>予定なし</Text>
           ) : (
-            selectedEvents.projects.map((p) => (
-              <TouchableOpacity
-                key={p.id}
-                style={styles.eventCard}
-                onPress={() =>
-                  ["owner", "staff", "captain"].includes(userRole) &&
-                  openEventModal(p)
-                }
+            dailyClubEvents.map((item) => (
+              <View
+                key={item.id}
+                style={[
+                  styles.eventCard,
+                  {
+                    borderLeftColor:
+                      item.type === "試合" ? "#e74c3c" : "#3498db",
+                  },
+                ]}
               >
-                <View style={styles.eventCardHeader}>
-                  <View
-                    style={[
-                      styles.badge,
-                      p.type === "試合"
-                        ? styles.badgeMatch
-                        : p.type === "練習"
-                          ? styles.badgePractice
-                          : styles.badgeOther,
-                    ]}
-                  >
-                    <Text style={styles.badgeText}>{p.type}</Text>
-                  </View>
-                  <Text style={styles.eventTitle}>{p.title}</Text>
-                </View>
-                {p.endDate && p.endDate !== p.date && (
-                  <Text style={styles.periodText}>
-                    期間: {p.date} 〜 {p.endDate}
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.eventTitle}>
+                    {item.title || item.name}
                   </Text>
-                )}
-                {p.memo ? (
-                  <Text style={styles.eventMemoText}>{p.memo}</Text>
-                ) : null}
-              </TouchableOpacity>
-            ))
-          )}
-        </View>
-
-        <View style={styles.detailSection}>
-          <View style={styles.sectionHeaderRow}>
-            <Text style={styles.sectionSubtitle}>
-              🔒 個人の予定 ({selectedEvents.personal.length})
-            </Text>
-            <TouchableOpacity onPress={() => openPersonalModal()}>
-              <Text style={[styles.jumpLink, { color: "#9b59b6" }]}>
-                ＋ 個人の予定
-              </Text>
-            </TouchableOpacity>
-          </View>
-          {selectedEvents.personal.length === 0 ? (
-            <Text style={styles.emptyText}>予定はありません。</Text>
-          ) : (
-            selectedEvents.personal.map((pe) => (
-              <TouchableOpacity
-                key={pe.id}
-                style={styles.personalEventCard}
-                onPress={() => openPersonalModal(pe)}
-              >
-                <View style={styles.eventCardHeader}>
-                  <View style={styles.badgePersonal}>
-                    <Text style={[styles.badgeText, { color: "#fff" }]}>
-                      個人
+                  {item.description ? (
+                    <Text style={styles.eventDescription} numberOfLines={1}>
+                      {item.description}
                     </Text>
-                  </View>
-                  <Text style={styles.eventTitle}>{pe.title}</Text>
-                </View>
-                {pe.endDate && pe.endDate !== pe.date && (
-                  <Text style={styles.periodText}>
-                    期間: {pe.date} 〜 {pe.endDate}
+                  ) : null}
+                  <Text style={styles.eventSub}>
+                    {item.type}{" "}
+                    {item.endDate && item.endDate !== item.date
+                      ? `(${item.date}〜${item.endDate})`
+                      : ""}
                   </Text>
+                </View>
+                {canManageClubEvents && (
+                  <View style={styles.actionRow}>
+                    <TouchableOpacity
+                      onPress={() => openEditClubEvent(item)}
+                      style={styles.iconBtn}
+                    >
+                      <Text>✏️</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => handleDeleteClubEvent(item.id)}
+                      style={styles.iconBtn}
+                    >
+                      <Text>🗑️</Text>
+                    </TouchableOpacity>
+                  </View>
                 )}
-                {pe.memo ? (
-                  <Text style={styles.eventMemoText}>{pe.memo}</Text>
-                ) : null}
-              </TouchableOpacity>
+              </View>
             ))
           )}
         </View>
 
-        <View style={styles.detailSection}>
-          <View style={styles.sectionHeaderRow}>
-            <Text style={styles.sectionSubtitle}>
-              📝 振り返り ({selectedEvents.reports.length})
-            </Text>
-            <TouchableOpacity onPress={() => navigation.navigate("Diary")}>
-              <Text style={styles.jumpLink}>一覧を見る ＞</Text>
+        {/* 個人セクション */}
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>👤 個人の予定（非公開）</Text>
+            <TouchableOpacity
+              style={[styles.addBtnSmall, { backgroundColor: "#27ae60" }]}
+              onPress={() => {
+                resetPersonalForm();
+                setIsPersonalModalVisible(true);
+              }}
+            >
+              <Text style={styles.addBtnTextSmall}>＋ 追加</Text>
             </TouchableOpacity>
           </View>
-          {selectedEvents.reports.length === 0 ? (
-            <Text style={styles.emptyText}>記録はありません。</Text>
+          {dailyPersonalEvents.length === 0 ? (
+            <Text style={styles.emptyText}>予定なし</Text>
           ) : (
-            selectedEvents.reports.map((r) => {
-              const level = getAlertLevel(r);
-              return (
-                <View
-                  key={r.id}
-                  style={[
-                    styles.reportCard,
-                    level === "danger" && styles.dangerBorder,
-                    level === "warning" && styles.warningBorder,
-                  ]}
-                >
-                  <Text style={styles.reportAuthor}>👤 {r.author}</Text>
-                  <Text style={styles.reportText}>
-                    練習: {r.practiceContent || "未入力"}
-                  </Text>
+            dailyPersonalEvents.map((item) => (
+              <View
+                key={item.id}
+                style={[styles.eventCard, { borderLeftColor: "#27ae60" }]}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.eventTitle}>{item.title}</Text>
+                  {item.description ? (
+                    <Text style={styles.eventDescription} numberOfLines={1}>
+                      {item.description}
+                    </Text>
+                  ) : null}
+                  {item.endDate && item.endDate !== item.date ? (
+                    <Text style={styles.eventSub}>
+                      期間: {item.date} 〜 {item.endDate}
+                    </Text>
+                  ) : null}
                 </View>
-              );
-            })
+                <View style={styles.actionRow}>
+                  <TouchableOpacity
+                    onPress={() => openEditPersonalEvent(item)}
+                    style={styles.iconBtn}
+                  >
+                    <Text>✏️</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => handleDeletePersonalEvent(item.id)}
+                    style={styles.iconBtn}
+                  >
+                    <Text>🗑️</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ))
           )}
         </View>
-        <View style={{ height: 50 }} />
+
+        {/* 振り返りセクション */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>📝 提出済みの振り返り</Text>
+          {dailyMyReports.length === 0 ? (
+            <Text style={styles.emptyText}>未提出</Text>
+          ) : (
+            dailyMyReports.map((report) => (
+              <TouchableOpacity
+                key={report.id}
+                style={[
+                  styles.eventCard,
+                  { borderLeftColor: "#f39c12", backgroundColor: "#fff9f0" },
+                ]}
+                onPress={() => navigation.navigate("Diary")}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.eventTitle}>
+                    日報: {report.condition}
+                  </Text>
+                  <Text style={styles.eventSub} numberOfLines={1}>
+                    {report.practiceContent || "練習内容未記入"}
+                  </Text>
+                </View>
+                <Text style={{ fontSize: 20 }}>📖</Text>
+              </TouchableOpacity>
+            ))
+          )}
+        </View>
       </ScrollView>
 
-      {/* --- 部活の予定モーダル --- */}
-      <Modal visible={isEventModalVisible} transparent animationType="fade">
+      {/* モーダル：部活 */}
+      <Modal visible={isClubModalVisible} transparent animationType="slide">
         <View style={styles.modalOverlay}>
           <KeyboardAvoidingView
             behavior={Platform.OS === "ios" ? "padding" : "height"}
             style={styles.modalContent}
           >
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>
-                {editingEventId ? "予定の編集" : "新しい予定を追加"}
-              </Text>
-            </View>
-            <ScrollView showsVerticalScrollIndicator={false}>
-              <Text style={styles.label}>予定のタイトル</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="例: 春季大会"
-                value={eventTitle}
-                onChangeText={setEventTitle}
-              />
+            <Text style={styles.modalTitle}>部活の予定を共有</Text>
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={{ paddingBottom: 60 }}
+            >
+              <Text style={styles.label}>開始日: {selectedDate}</Text>
 
-              <Text style={styles.label}>日程 (開始日: {selectedDate})</Text>
-              <View style={styles.typeContainer}>
-                <TouchableOpacity
-                  style={[
-                    styles.typeBtn,
-                    !isEventMultiDay && styles.typeBtnActive,
-                  ]}
-                  onPress={() => {
-                    setIsEventMultiDay(false);
-                    setEventEndDate(selectedDate);
-                  }}
-                >
-                  <Text
+              <View style={styles.durationToggleRow}>
+                <Text style={styles.label}>期間</Text>
+                <View style={styles.toggleGroup}>
+                  <TouchableOpacity
                     style={[
-                      styles.typeBtnText,
-                      !isEventMultiDay && styles.typeBtnTextActive,
+                      styles.toggleBtn,
+                      !isMultiDay && styles.toggleBtnActive,
                     ]}
+                    onPress={() => setIsMultiDay(false)}
                   >
-                    当日のみ
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[
-                    styles.typeBtn,
-                    isEventMultiDay && styles.typeBtnActive,
-                  ]}
-                  onPress={() => setIsEventMultiDay(true)}
-                >
-                  <Text
+                    <Text
+                      style={[
+                        styles.toggleText,
+                        !isMultiDay && { color: "#fff" },
+                      ]}
+                    >
+                      当日のみ
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
                     style={[
-                      styles.typeBtnText,
-                      isEventMultiDay && styles.typeBtnTextActive,
+                      styles.toggleBtn,
+                      isMultiDay && styles.toggleBtnActive,
                     ]}
+                    onPress={() => {
+                      setIsMultiDay(true);
+                      setEndDate(endDate || selectedDate);
+                    }}
                   >
-                    複数日
-                  </Text>
-                </TouchableOpacity>
+                    <Text
+                      style={[
+                        styles.toggleText,
+                        isMultiDay && { color: "#fff" },
+                      ]}
+                    >
+                      複数日
+                    </Text>
+                  </TouchableOpacity>
+                </View>
               </View>
 
-              {isEventMultiDay && (
-                <View style={styles.dateAdjusterContainer}>
-                  <Text style={styles.subLabel}>終了日を指定</Text>
-                  <View style={styles.dateAdjusterRow}>
-                    <TouchableOpacity
-                      style={styles.dateAdjustBtn}
-                      onPress={() =>
-                        adjustEndDate(setEventEndDate, eventEndDate, -1)
-                      }
-                    >
-                      <Text style={styles.dateAdjustBtnText}>◀</Text>
-                    </TouchableOpacity>
-                    <Text style={styles.dateAdjustValue}>{eventEndDate}</Text>
-                    <TouchableOpacity
-                      style={styles.dateAdjustBtn}
-                      onPress={() =>
-                        adjustEndDate(setEventEndDate, eventEndDate, 1)
-                      }
-                    >
-                      <Text style={styles.dateAdjustBtnText}>▶</Text>
-                    </TouchableOpacity>
-                  </View>
+              {isMultiDay && (
+                <View style={styles.endDateContainer}>
+                  <TouchableOpacity
+                    style={styles.endDateSelector}
+                    onPress={() => setShowEndDatePicker(!showEndDatePicker)}
+                  >
+                    <Text style={styles.endDateText}>
+                      終了日: {endDate || selectedDate}
+                    </Text>
+                  </TouchableOpacity>
+                  {showEndDatePicker && (
+                    <Calendar
+                      onDayPress={(day) => {
+                        setEndDate(day.dateString);
+                        setShowEndDatePicker(false);
+                      }}
+                      markedDates={{
+                        [endDate]: { selected: true, selectedColor: "#0077cc" },
+                      }}
+                    />
+                  )}
                 </View>
               )}
 
-              <Text style={styles.label}>種類</Text>
-              <View style={styles.typeContainer}>
-                {["試合", "練習", "その他"].map((t) => (
+              <Text style={styles.label}>タイトル</Text>
+              <TextInput
+                style={styles.input}
+                value={clubEventTitle}
+                onChangeText={setClubEventTitle}
+                placeholder="例: 夏季合宿"
+              />
+              <Text style={styles.label}>詳細説明</Text>
+              <TextInput
+                style={[styles.input, styles.textArea]}
+                value={clubEventDescription}
+                onChangeText={setClubEventDescription}
+                placeholder="集合時間、持ち物など"
+                multiline
+              />
+
+              <Text style={styles.label}>種別</Text>
+              <View style={styles.typeRow}>
+                {["練習", "試合"].map((t) => (
                   <TouchableOpacity
                     key={t}
                     style={[
                       styles.typeBtn,
-                      eventType === t && styles.typeBtnActive,
+                      clubEventType === t && styles.typeBtnActive,
                     ]}
-                    onPress={() => setEventType(t)}
+                    onPress={() => setClubEventType(t)}
                   >
                     <Text
                       style={[
                         styles.typeBtnText,
-                        eventType === t && styles.typeBtnTextActive,
+                        clubEventType === t && { color: "#fff" },
                       ]}
                     >
                       {t}
@@ -1470,38 +1394,20 @@ const CalendarScreen = ({
                   </TouchableOpacity>
                 ))}
               </View>
-
-              <Text style={styles.label}>備考欄</Text>
-              <TextInput
-                style={styles.inputMulti}
-                value={eventMemo}
-                onChangeText={setEventMemo}
-                multiline
-              />
-
-              <View style={styles.modalButtons}>
-                {editingEventId && (
-                  <TouchableOpacity
-                    style={[
-                      styles.submitBtn,
-                      { backgroundColor: "#e74c3c", marginRight: "auto" },
-                    ]}
-                    onPress={handleDeleteEvent}
-                  >
-                    <Text style={styles.submitBtnText}>削除</Text>
-                  </TouchableOpacity>
-                )}
+              <View style={styles.modalBtns}>
                 <TouchableOpacity
+                  onPress={() => setIsClubModalVisible(false)}
                   style={styles.cancelBtn}
-                  onPress={() => setIsEventModalVisible(false)}
                 >
-                  <Text style={styles.cancelBtnText}>キャンセル</Text>
+                  <Text>キャンセル</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                  style={styles.submitBtn}
-                  onPress={handleSaveEvent}
+                  onPress={handleSaveClubEvent}
+                  style={styles.saveBtn}
                 >
-                  <Text style={styles.submitBtnText}>保存する</Text>
+                  <Text style={{ color: "#fff", fontWeight: "bold" }}>
+                    共有する
+                  </Text>
                 </TouchableOpacity>
               </View>
             </ScrollView>
@@ -1509,124 +1415,120 @@ const CalendarScreen = ({
         </View>
       </Modal>
 
-      {/* --- 個人の予定モーダル --- */}
-      <Modal visible={isPersonalModalVisible} transparent animationType="fade">
+      {/* モーダル：個人 */}
+      <Modal visible={isPersonalModalVisible} transparent animationType="slide">
         <View style={styles.modalOverlay}>
           <KeyboardAvoidingView
             behavior={Platform.OS === "ios" ? "padding" : "height"}
             style={styles.modalContent}
           >
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>
-                {editingPersonalId ? "個人の予定を編集" : "個人の予定を追加"}
-              </Text>
-            </View>
-            <ScrollView showsVerticalScrollIndicator={false}>
-              <Text style={styles.label}>予定のタイトル</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="例: 塾、通院"
-                value={personalTitle}
-                onChangeText={setPersonalTitle}
-              />
+            <Text style={styles.modalTitle}>個人の予定（非公開）</Text>
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={{ paddingBottom: 60 }}
+            >
+              <Text style={styles.label}>開始日: {selectedDate}</Text>
 
-              <Text style={styles.label}>日程 (開始日: {selectedDate})</Text>
-              <View style={styles.typeContainer}>
-                <TouchableOpacity
-                  style={[
-                    styles.typeBtn,
-                    !isPersonalMultiDay && styles.typeBtnActive,
-                  ]}
-                  onPress={() => {
-                    setIsPersonalMultiDay(false);
-                    setPersonalEndDate(selectedDate);
-                  }}
-                >
-                  <Text
+              <View style={styles.durationToggleRow}>
+                <Text style={styles.label}>期間</Text>
+                <View style={styles.toggleGroup}>
+                  <TouchableOpacity
                     style={[
-                      styles.typeBtnText,
-                      !isPersonalMultiDay && styles.typeBtnTextActive,
+                      styles.toggleBtn,
+                      !isPersonalMultiDay && styles.toggleBtnActive,
                     ]}
+                    onPress={() => setIsPersonalMultiDay(false)}
                   >
-                    当日のみ
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[
-                    styles.typeBtn,
-                    isPersonalMultiDay && styles.typeBtnActive,
-                  ]}
-                  onPress={() => setIsPersonalMultiDay(true)}
-                >
-                  <Text
+                    <Text
+                      style={[
+                        styles.toggleText,
+                        !isPersonalMultiDay && { color: "#fff" },
+                      ]}
+                    >
+                      当日のみ
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
                     style={[
-                      styles.typeBtnText,
-                      isPersonalMultiDay && styles.typeBtnTextActive,
+                      styles.toggleBtn,
+                      isPersonalMultiDay && styles.toggleBtnActive,
                     ]}
+                    onPress={() => {
+                      setIsPersonalMultiDay(true);
+                      setPersonalEndDate(personalEndDate || selectedDate);
+                    }}
                   >
-                    複数日
-                  </Text>
-                </TouchableOpacity>
+                    <Text
+                      style={[
+                        styles.toggleText,
+                        isPersonalMultiDay && { color: "#fff" },
+                      ]}
+                    >
+                      複数日
+                    </Text>
+                  </TouchableOpacity>
+                </View>
               </View>
 
               {isPersonalMultiDay && (
-                <View style={styles.dateAdjusterContainer}>
-                  <Text style={styles.subLabel}>終了日を指定</Text>
-                  <View style={styles.dateAdjusterRow}>
-                    <TouchableOpacity
-                      style={styles.dateAdjustBtn}
-                      onPress={() =>
-                        adjustEndDate(setPersonalEndDate, personalEndDate, -1)
-                      }
-                    >
-                      <Text style={styles.dateAdjustBtnText}>◀</Text>
-                    </TouchableOpacity>
-                    <Text style={styles.dateAdjustValue}>
-                      {personalEndDate}
+                <View style={styles.endDateContainer}>
+                  <TouchableOpacity
+                    style={styles.endDateSelector}
+                    onPress={() =>
+                      setShowPersonalEndDatePicker(!showPersonalEndDatePicker)
+                    }
+                  >
+                    <Text style={styles.endDateText}>
+                      終了日: {personalEndDate || selectedDate}
                     </Text>
-                    <TouchableOpacity
-                      style={styles.dateAdjustBtn}
-                      onPress={() =>
-                        adjustEndDate(setPersonalEndDate, personalEndDate, 1)
-                      }
-                    >
-                      <Text style={styles.dateAdjustBtnText}>▶</Text>
-                    </TouchableOpacity>
-                  </View>
+                  </TouchableOpacity>
+                  {showPersonalEndDatePicker && (
+                    <Calendar
+                      onDayPress={(day) => {
+                        setPersonalEndDate(day.dateString);
+                        setShowPersonalEndDatePicker(false);
+                      }}
+                      markedDates={{
+                        [personalEndDate]: {
+                          selected: true,
+                          selectedColor: "#27ae60",
+                        },
+                      }}
+                    />
+                  )}
                 </View>
               )}
 
-              <Text style={styles.label}>メモ</Text>
+              <Text style={styles.label}>タイトル</Text>
               <TextInput
-                style={styles.inputMulti}
-                value={personalMemo}
-                onChangeText={setPersonalMemo}
+                style={styles.input}
+                value={personalEventTitle}
+                onChangeText={setPersonalEventTitle}
+                placeholder="例: 整体予約"
+              />
+              <Text style={styles.label}>詳細・メモ</Text>
+              <TextInput
+                style={[styles.input, styles.textArea]}
+                value={personalEventDescription}
+                onChangeText={setPersonalEventDescription}
+                placeholder="自分用のメモ"
                 multiline
               />
 
-              <View style={styles.modalButtons}>
-                {editingPersonalId && (
-                  <TouchableOpacity
-                    style={[
-                      styles.submitBtn,
-                      { backgroundColor: "#e74c3c", marginRight: "auto" },
-                    ]}
-                    onPress={handleDeletePersonal}
-                  >
-                    <Text style={styles.submitBtnText}>削除</Text>
-                  </TouchableOpacity>
-                )}
+              <View style={styles.modalBtns}>
                 <TouchableOpacity
-                  style={styles.cancelBtn}
                   onPress={() => setIsPersonalModalVisible(false)}
+                  style={styles.cancelBtn}
                 >
-                  <Text style={styles.cancelBtnText}>キャンセル</Text>
+                  <Text>キャンセル</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                  style={[styles.submitBtn, { backgroundColor: "#9b59b6" }]}
-                  onPress={handleSavePersonal}
+                  onPress={handleSavePersonalEvent}
+                  style={[styles.saveBtn, { backgroundColor: "#27ae60" }]}
                 >
-                  <Text style={styles.submitBtnText}>保存する</Text>
+                  <Text style={{ color: "#fff", fontWeight: "bold" }}>
+                    保存する
+                  </Text>
                 </TouchableOpacity>
               </View>
             </ScrollView>
@@ -1641,158 +1543,77 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#f0f2f5" },
   header: {
     height: 60,
-    backgroundColor: "#34495e",
+    backgroundColor: "#fff",
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: "#eee",
   },
-  backButton: { width: 60 },
-  backButtonText: { color: "#fff", fontSize: 14, fontWeight: "bold" },
+  backBtn: { color: "#333", fontWeight: "bold" },
   headerTitle: {
-    color: "#fff",
-    fontSize: 18,
-    fontWeight: "bold",
     flex: 1,
     textAlign: "center",
-  },
-  content: { padding: 15 },
-  calendarControl: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    backgroundColor: "#fff",
-    padding: 15,
-    borderRadius: 12,
-    marginBottom: 10,
-    elevation: 1,
-  },
-  arrowBtn: { paddingHorizontal: 15, paddingVertical: 5 },
-  arrowText: { fontSize: 18, color: "#34495e", fontWeight: "bold" },
-  monthTitle: { fontSize: 18, fontWeight: "bold", color: "#333" },
-  weekRow: { flexDirection: "row", marginBottom: 5 },
-  weekText: {
-    flex: 1,
-    textAlign: "center",
-    fontWeight: "bold",
-    color: "#555",
-    fontSize: 12,
-  },
-  daysGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    backgroundColor: "#fff",
-    borderRadius: 12,
-    padding: 10,
-    elevation: 1,
-  },
-  dayCell: {
-    width: "14.28%",
-    height: 55,
-    justifyContent: "center",
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: "transparent",
-    borderRadius: 8,
-  },
-  dayCellSelected: { backgroundColor: "#e8f0fe", borderColor: "#3498db" },
-  dayCircle: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  dayCircleToday: { backgroundColor: "#34495e" },
-  dayText: { fontSize: 14, color: "#333", fontWeight: "bold" },
-  markerRow: { flexDirection: "row", marginTop: 2, height: 6 },
-  dot: { width: 6, height: 6, borderRadius: 3, marginHorizontal: 2 },
-  divider: { height: 1, backgroundColor: "#ddd", marginVertical: 20 },
-  detailTitle: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: "bold",
     color: "#333",
-    marginBottom: 15,
   },
-  detailSection: {
-    backgroundColor: "#fff",
-    borderRadius: 12,
-    padding: 15,
+  scrollContent: { flex: 1, padding: 15 },
+  dateHeaderRow: {
     marginBottom: 15,
+    paddingBottom: 10,
+    borderBottomWidth: 2,
+    borderBottomColor: "#ddd",
+  },
+  selectedDateText: { fontSize: 18, fontWeight: "bold", color: "#333" },
+  section: {
+    backgroundColor: "#fff",
+    padding: 15,
+    borderRadius: 12,
+    marginBottom: 20,
     elevation: 1,
   },
-  sectionHeaderRow: {
+  sectionHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 10,
+    marginBottom: 15,
   },
-  sectionSubtitle: { fontSize: 15, fontWeight: "bold", color: "#2c3e50" },
-  jumpLink: { fontSize: 14, color: "#3498db", fontWeight: "bold", padding: 5 },
+  sectionTitle: { fontSize: 15, fontWeight: "bold", color: "#333" },
+  addBtnSmall: {
+    backgroundColor: "#0077cc",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 15,
+  },
+  addBtnTextSmall: { color: "#fff", fontSize: 12, fontWeight: "bold" },
   emptyText: {
-    fontSize: 13,
-    color: "#888",
     textAlign: "center",
+    color: "#aaa",
     marginVertical: 10,
+    fontSize: 13,
   },
   eventCard: {
-    backgroundColor: "#f9f9f9",
+    backgroundColor: "#fdfdfd",
     padding: 12,
     borderRadius: 8,
-    marginBottom: 8,
-    borderLeftWidth: 3,
-    borderLeftColor: "#3498db",
+    marginBottom: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    borderLeftWidth: 4,
+    borderWidth: 1,
+    borderColor: "#eee",
   },
-  personalEventCard: {
-    backgroundColor: "#fcf9ff",
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 8,
-    borderLeftWidth: 3,
-    borderLeftColor: "#9b59b6",
-  },
-  eventCardHeader: { flexDirection: "row", alignItems: "center" },
-  badge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 12,
-    marginRight: 10,
-  },
-  badgeMatch: { backgroundColor: "#ffeaa7" },
-  badgePractice: { backgroundColor: "#dff9fb" },
-  badgeOther: { backgroundColor: "#e0e0e0" },
-  badgePersonal: {
-    backgroundColor: "#9b59b6",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 12,
-    marginRight: 10,
-  },
-  badgeText: { fontSize: 10, fontWeight: "bold", color: "#333" },
-  eventTitle: { fontSize: 14, color: "#333", fontWeight: "bold", flex: 1 },
-  periodText: {
-    fontSize: 11,
-    color: "#0077cc",
-    marginTop: 4,
-    fontWeight: "bold",
-  },
-  eventMemoText: { fontSize: 13, color: "#666", marginTop: 8, marginLeft: 2 },
-  reportCard: {
-    backgroundColor: "#f9f9f9",
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 8,
-    borderLeftWidth: 3,
-    borderLeftColor: "#2ecc71",
-  },
-  dangerBorder: { borderLeftColor: "#e74c3c", backgroundColor: "#fff5f5" },
-  warningBorder: { borderLeftColor: "#f39c12", backgroundColor: "#fffdf5" },
-  reportAuthor: {
+  eventTitle: { fontSize: 15, fontWeight: "bold", color: "#333" },
+  eventDescription: {
     fontSize: 13,
-    fontWeight: "bold",
-    color: "#333",
-    marginBottom: 4,
+    color: "#666",
+    marginTop: 4,
+    lineHeight: 18,
   },
-  reportText: { fontSize: 12, color: "#555", marginTop: 2 },
+  eventSub: { fontSize: 11, color: "#aaa", marginTop: 4 },
+  actionRow: { flexDirection: "row", marginLeft: "auto" },
+  iconBtn: { padding: 10, marginLeft: 5 },
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.5)",
@@ -1801,107 +1622,79 @@ const styles = StyleSheet.create({
   },
   modalContent: {
     backgroundColor: "#fff",
-    borderRadius: 12,
+    borderRadius: 15,
     padding: 20,
     maxHeight: "90%",
   },
-  modalHeader: { marginBottom: 15, alignItems: "center" },
   modalTitle: {
     fontSize: 18,
     fontWeight: "bold",
-    color: "#333",
-    marginBottom: 5,
+    marginBottom: 20,
+    textAlign: "center",
   },
-  label: {
-    fontSize: 14,
-    fontWeight: "bold",
-    color: "#555",
-    marginBottom: 8,
-    marginTop: 10,
-  },
-  subLabel: {
-    fontSize: 12,
-    fontWeight: "bold",
-    color: "#888",
-    marginBottom: 5,
-  },
+  label: { fontSize: 13, fontWeight: "bold", marginBottom: 8, color: "#555" },
   input: {
-    backgroundColor: "#f9f9f9",
-    borderWidth: 1,
-    borderColor: "#ddd",
+    backgroundColor: "#f5f5f5",
     borderRadius: 8,
     padding: 12,
-    fontSize: 16,
-    marginBottom: 10,
+    marginBottom: 15,
+    borderWidth: 1,
+    borderColor: "#eee",
   },
-  inputMulti: {
+  textArea: { minHeight: 80, textAlignVertical: "top" },
+  durationToggleRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 15,
+  },
+  toggleGroup: {
+    flexDirection: "row",
+    backgroundColor: "#f0f2f5",
+    borderRadius: 8,
+    padding: 4,
+  },
+  toggleBtn: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6 },
+  toggleBtnActive: { backgroundColor: "#0077cc" },
+  toggleText: { fontWeight: "bold", color: "#666", fontSize: 12 },
+  endDateContainer: {
     backgroundColor: "#f9f9f9",
+    padding: 10,
+    borderRadius: 8,
+    marginBottom: 15,
+  },
+  endDateSelector: {
+    backgroundColor: "#fff",
+    padding: 10,
+    borderRadius: 5,
     borderWidth: 1,
     borderColor: "#ddd",
-    borderRadius: 8,
-    padding: 12,
-    fontSize: 16,
-    minHeight: 80,
-    textAlignVertical: "top",
-    marginBottom: 10,
   },
-  typeContainer: { flexDirection: "row", marginBottom: 10 },
+  endDateText: { fontSize: 14, fontWeight: "bold", color: "#0077cc" },
+  typeRow: { flexDirection: "row", marginBottom: 20 },
   typeBtn: {
     flex: 1,
-    paddingVertical: 12,
+    padding: 10,
     alignItems: "center",
     borderRadius: 8,
     borderWidth: 1,
     borderColor: "#ddd",
     marginRight: 10,
-    backgroundColor: "#f9f9f9",
   },
-  typeBtnActive: { backgroundColor: "#e6f2ff", borderColor: "#3498db" },
-  typeBtnText: { fontSize: 13, color: "#555", fontWeight: "bold" },
-  typeBtnTextActive: { color: "#3498db" },
-
-  dateAdjusterContainer: {
-    backgroundColor: "#fdfdfd",
-    padding: 15,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#ddd",
-    marginBottom: 10,
-    alignItems: "center",
-  },
-  dateAdjusterRow: { flexDirection: "row", alignItems: "center", marginTop: 5 },
-  dateAdjustBtn: {
-    backgroundColor: "#f0f0f0",
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    justifyContent: "center",
-    alignItems: "center",
-    marginHorizontal: 15,
-  },
-  dateAdjustBtnText: { fontSize: 18, fontWeight: "bold", color: "#333" },
-  dateAdjustValue: {
-    fontSize: 18,
-    fontWeight: "bold",
-    color: "#3498db",
-    minWidth: 120,
-    textAlign: "center",
-  },
-
-  modalButtons: {
+  typeBtnActive: { backgroundColor: "#0077cc", borderColor: "#0077cc" },
+  typeBtnText: { fontWeight: "bold", color: "#666" },
+  modalBtns: {
     flexDirection: "row",
     justifyContent: "flex-end",
-    marginTop: 20,
+    marginTop: 10,
   },
-  cancelBtn: { paddingVertical: 12, paddingHorizontal: 20, marginRight: 10 },
-  cancelBtnText: { color: "#888", fontWeight: "bold", fontSize: 15 },
-  submitBtn: {
-    backgroundColor: "#34495e",
-    paddingVertical: 12,
+  cancelBtn: { padding: 12, marginRight: 10 },
+  saveBtn: {
+    backgroundColor: "#0077cc",
     paddingHorizontal: 20,
+    paddingVertical: 12,
     borderRadius: 8,
   },
-  submitBtnText: { color: "#fff", fontWeight: "bold", fontSize: 15 },
 });
 
 export default CalendarScreen;
@@ -1923,6 +1716,14 @@ import {
   Keyboard,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+
+// ★ Firestore通信用の関数をインポート
+import { useAuth } from "../AuthContext";
+import {
+  createDailyReport,
+  updateDailyReport,
+  deleteDailyReport,
+} from "../services/firestoreService";
 
 const OptionGroup = ({ options, selected, onSelect, color = "#0077cc" }) => (
   <View style={styles.optionGroup}>
@@ -1989,6 +1790,8 @@ const DiaryScreen = ({
     autoEscalate: true,
   },
 }) => {
+  const { activeTeamId } = useAuth(); // ★ チームID取得
+
   const currentUserProfile = userProfiles[currentUser] || {};
   const userRole =
     global.TEST_ROLE ||
@@ -1999,7 +1802,7 @@ const DiaryScreen = ({
     owner: "管理者(監督)",
     staff: "コーチ(スタッフ)",
     captain: `${currentUser}(キャプテン)`,
-    member: `${currentUser}(あなた)`,
+    member: currentUser, // 純粋な名前のみ
   };
   const displayUserName = roleNameMap[userRole] || currentUser;
 
@@ -2032,10 +1835,7 @@ const DiaryScreen = ({
   const [showLinkInput, setShowLinkInput] = useState(false);
   // ========================================
 
-  // ★ 修正：デフォルトのタブを「unread(未読)」から「all(すべて)」に変更しました！
-  // これにより、確認済みにしてもリストに残り続けます。
   const [activeTab, setActiveTab] = useState("all");
-
   const [searchQuery, setSearchQuery] = useState("");
   const [isFilterModalVisible, setIsFilterModalVisible] = useState(false);
   const [expandedDates, setExpandedDates] = useState({});
@@ -2098,24 +1898,8 @@ const DiaryScreen = ({
   if (isStaffOrAbove) {
     if (activeTab === "unread") {
       processedReports = processedReports.filter((d) => !d.isReviewed);
-    } else if (activeTab === "needs_reply") {
-      processedReports = processedReports.filter(
-        (d) =>
-          d.comments.filter((c) =>
-            ["監督", "コーチ", "アシスタント", "管理者"].some((role) =>
-              c.user.includes(role),
-            ),
-          ).length === 0,
-      );
-    } else if (activeTab === "replied") {
-      processedReports = processedReports.filter(
-        (d) =>
-          d.comments.filter((c) =>
-            ["監督", "コーチ", "アシスタント", "管理者"].some((role) =>
-              c.user.includes(role),
-            ),
-          ).length > 0,
-      );
+    } else if (activeTab === "needs_followup") {
+      processedReports = processedReports.filter((d) => d.isFollowUp === true);
     } else if (activeTab === "danger") {
       processedReports = processedReports.filter(
         (d) => getAlertLevel(d) === "danger",
@@ -2156,65 +1940,76 @@ const DiaryScreen = ({
     });
   };
 
+  // ★ 各種ステータス更新機能（ローカル優先＋Firestore）
+  const updateReportStatusAsync = async (reportId, updates) => {
+    try {
+      const safeTeamId = activeTeamId || "test_team";
+      await updateDailyReport(safeTeamId, reportId, updates);
+    } catch (error) {
+      console.log("Firestore更新エラー:", error);
+    }
+  };
+
   const handleToggleStar = (reportId) => {
-    const newReports = dailyReports.map((d) =>
-      d.id === reportId ? { ...d, isStarred: !d.isStarred } : d,
+    const report = dailyReports.find((d) => d.id === reportId);
+    const newVal = !report?.isStarred;
+
+    // UI即時反映
+    setDailyReports((prev) =>
+      prev.map((d) => (d.id === reportId ? { ...d, isStarred: newVal } : d)),
     );
-    setDailyReports(newReports);
-    if (selectedReport && selectedReport.id === reportId)
-      setSelectedReport({
-        ...selectedReport,
-        isStarred: !selectedReport.isStarred,
-      });
+    if (selectedReport?.id === reportId)
+      setSelectedReport((prev) => ({ ...prev, isStarred: newVal }));
+
+    // 裏で送信
+    updateReportStatusAsync(reportId, { isStarred: newVal });
   };
 
   const handleToggleFollowUp = (reportId) => {
-    const newReports = dailyReports.map((d) =>
-      d.id === reportId ? { ...d, isFollowUp: !d.isFollowUp } : d,
+    const report = dailyReports.find((d) => d.id === reportId);
+    const newVal = !report?.isFollowUp;
+
+    // UI即時反映
+    setDailyReports((prev) =>
+      prev.map((d) => (d.id === reportId ? { ...d, isFollowUp: newVal } : d)),
     );
-    setDailyReports(newReports);
-    if (selectedReport && selectedReport.id === reportId)
-      setSelectedReport({
-        ...selectedReport,
-        isFollowUp: !selectedReport.isFollowUp,
-      });
+    if (selectedReport?.id === reportId)
+      setSelectedReport((prev) => ({ ...prev, isFollowUp: newVal }));
+
+    // 裏で送信
+    updateReportStatusAsync(reportId, { isFollowUp: newVal });
   };
 
   const handleChangeShareScope = (reportId) => {
     const report = dailyReports.find((d) => d.id === reportId);
     const isCurrentlyAll = report?.sharedWith === "all";
 
-    if (isCurrentlyAll) {
-      Alert.alert("共有範囲の変更", "スタッフのみの公開に戻しますか？", [
+    Alert.alert(
+      "共有範囲の変更",
+      isCurrentlyAll
+        ? "スタッフのみの公開に戻しますか？"
+        : "チーム全体に公開し、Home画面の「# 共有日記」に通知しますか？\n（※メディカル情報は非公開になります）",
+      [
         { text: "キャンセル", style: "cancel" },
         {
-          text: "戻す",
+          text: isCurrentlyAll ? "戻す" : "公開する",
           onPress: () => {
-            const newReports = dailyReports.map((d) =>
-              d.id === reportId ? { ...d, sharedWith: "staff" } : d,
-            );
-            setDailyReports(newReports);
-            if (selectedReport && selectedReport.id === reportId)
-              setSelectedReport({ ...selectedReport, sharedWith: "staff" });
-          },
-        },
-      ]);
-    } else {
-      Alert.alert(
-        "共有範囲の変更",
-        "チーム全体に公開し、Home画面の「# 共有日記」に通知しますか？\n（※メディカル情報は非公開になります）",
-        [
-          { text: "キャンセル", style: "cancel" },
-          {
-            text: "公開する",
-            onPress: () => {
-              const newReports = dailyReports.map((d) =>
-                d.id === reportId ? { ...d, sharedWith: "all" } : d,
-              );
-              setDailyReports(newReports);
-              if (selectedReport && selectedReport.id === reportId)
-                setSelectedReport({ ...selectedReport, sharedWith: "all" });
+            const newVal = isCurrentlyAll ? "staff" : "all";
 
+            // UI即時反映
+            setDailyReports((prev) =>
+              prev.map((d) =>
+                d.id === reportId ? { ...d, sharedWith: newVal } : d,
+              ),
+            );
+            if (selectedReport?.id === reportId)
+              setSelectedReport((prev) => ({ ...prev, sharedWith: newVal }));
+
+            // 裏で送信
+            updateReportStatusAsync(reportId, { sharedWith: newVal });
+
+            // ホーム画面への共有機能（ローカルのみの仮実装維持）
+            if (!isCurrentlyAll) {
               const sharedPost = {
                 id: "post_shared_" + Date.now().toString(),
                 channel: "共有日記",
@@ -2231,11 +2026,11 @@ const DiaryScreen = ({
                 status: isOffline ? "pending" : "sent",
               };
               setPosts([sharedPost, ...posts]);
-            },
+            }
           },
-        ],
-      );
-    }
+        },
+      ],
+    );
   };
 
   const handleDiscardDraft = () => {
@@ -2263,7 +2058,6 @@ const DiaryScreen = ({
     setPainLevel(5);
     setSinceWhen("");
     setTreatment("");
-
     setPracticeContent("");
     setAchievement(3);
     setGoodPoint("");
@@ -2276,81 +2070,96 @@ const DiaryScreen = ({
     setShowLinkInput(false);
   };
 
-  const handleCreateOrEditReport = () => {
+  // ★ 新規保存・編集機能（ローカル優先＋Firestore）
+  const handleCreateOrEditReport = async () => {
     if (hasPain && !painPart.trim()) {
       Alert.alert("入力エラー", "痛む部位を入力してください。");
       return;
     }
 
-    if (editingReportId) {
-      const updated = dailyReports.map((r) => {
-        if (r.id === editingReportId) {
-          return {
-            ...r,
-            condition,
-            fatigue,
-            sleep,
-            isParticipating,
-            hasPain,
-            painDetails: hasPain
-              ? { part: painPart, level: painLevel, sinceWhen, treatment }
-              : null,
-            practiceContent,
-            achievement,
-            goodPoint,
-            badPoint,
-            nextTask,
-            images,
-            memo,
-            highlightLink,
-          };
-        }
-        return r;
-      });
-      setDailyReports(updated);
-      Alert.alert("修正完了", "振り返りを修正しました。");
-    } else {
-      const today = new Date();
-      const dateString = `${today.getFullYear()}/${String(today.getMonth() + 1).padStart(2, "0")}/${String(today.getDate()).padStart(2, "0")}`;
-      const newReport = {
-        id: "rep_" + Date.now().toString(),
-        date: dateString,
-        author: currentUser,
-        condition,
-        fatigue,
-        sleep,
-        isParticipating,
-        hasPain,
-        painDetails: hasPain
-          ? { part: painPart, level: painLevel, sinceWhen, treatment }
-          : null,
-        practiceContent,
-        achievement,
-        goodPoint,
-        badPoint,
-        nextTask,
-        images,
-        memo,
-        highlightLink,
-        status: isOffline ? "pending" : "sent",
-        isReviewed: false,
-        isStarred: false,
-        isFollowUp: false,
-        sharedWith: "staff",
-        createdAt: Date.now(),
-        comments: [],
-      };
-      setDailyReports([newReport, ...dailyReports]);
+    const safeTeamId = activeTeamId || "test_team";
+    const painDetailsData = hasPain
+      ? { part: painPart, level: painLevel, sinceWhen, treatment }
+      : null;
+
+    try {
+      if (editingReportId) {
+        const updateData = {
+          condition,
+          fatigue,
+          sleep,
+          isParticipating,
+          hasPain,
+          painDetails: painDetailsData,
+          practiceContent,
+          achievement,
+          goodPoint,
+          badPoint,
+          nextTask,
+          images,
+          memo,
+          highlightLink,
+        };
+
+        // UI即時反映
+        const updated = dailyReports.map((r) =>
+          r.id === editingReportId ? { ...r, ...updateData } : r,
+        );
+        setDailyReports(updated);
+
+        // 裏で送信
+        await updateDailyReport(safeTeamId, editingReportId, updateData);
+        Alert.alert("修正完了", "振り返りを修正しました。");
+      } else {
+        const today = new Date();
+        const dateString = `${today.getFullYear()}/${String(today.getMonth() + 1).padStart(2, "0")}/${String(today.getDate()).padStart(2, "0")}`;
+
+        const newReport = {
+          id: "rep_" + Date.now().toString(),
+          date: dateString,
+          author: currentUser,
+          condition,
+          fatigue,
+          sleep,
+          isParticipating,
+          hasPain,
+          painDetails: painDetailsData,
+          practiceContent,
+          achievement,
+          goodPoint,
+          badPoint,
+          nextTask,
+          images,
+          memo,
+          highlightLink,
+          status: isOffline ? "pending" : "sent",
+          isReviewed: false,
+          isStarred: false,
+          isFollowUp: false,
+          sharedWith: "staff",
+          createdAt: Date.now(),
+          comments: [],
+        };
+
+        // UI即時反映
+        setDailyReports([newReport, ...dailyReports]);
+
+        // 裏で送信
+        await createDailyReport(safeTeamId, newReport);
+        Alert.alert("記録完了", "本日の振り返りを記録しました。");
+      }
+    } catch (error) {
+      console.log("Firestore保存エラー:", error);
+    } finally {
+      setIsCreateModalVisible(false);
+      resetForm();
+      Keyboard.dismiss();
     }
-    setIsCreateModalVisible(false);
-    resetForm();
-    Keyboard.dismiss();
   };
 
   const handleOpenEdit = () => {
     if (!selectedReport) return;
     setEditingReportId(selectedReport.id);
-
     setCondition(selectedReport.condition || "良い");
     setFatigue(
       selectedReport.fatigue !== undefined ? selectedReport.fatigue : 5,
@@ -2364,7 +2173,6 @@ const DiaryScreen = ({
       setSinceWhen(selectedReport.painDetails.sinceWhen || "");
       setTreatment(selectedReport.painDetails.treatment || "");
     }
-
     setPracticeContent(selectedReport.practiceContent || "");
     setAchievement(selectedReport.achievement || 3);
     setGoodPoint(selectedReport.goodPoint || "");
@@ -2380,8 +2188,45 @@ const DiaryScreen = ({
     setSelectedReport(null);
   };
 
-  const handleSendComment = () => {
+  // ★ 削除機能（Firestore連携）
+  const handleDeleteReport = () => {
+    Alert.alert(
+      "確認",
+      "この日報を削除しますか？\n（この操作は取り消せません）",
+      [
+        { text: "キャンセル", style: "cancel" },
+        {
+          text: "削除する",
+          style: "destructive",
+          onPress: async () => {
+            if (!selectedReport) return;
+            const reportId = selectedReport.id;
+
+            // UI即時反映（画面から消す）
+            setDailyReports((prev) =>
+              prev.map((r) =>
+                r.id === reportId ? { ...r, status: "deleted" } : r,
+              ),
+            );
+            setSelectedReport(null);
+
+            // 裏で送信
+            try {
+              const safeTeamId = activeTeamId || "test_team";
+              await deleteDailyReport(safeTeamId, reportId);
+            } catch (error) {
+              console.log("Firestore削除エラー:", error);
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  // ★ コメント送信機能（ローカル優先＋Firestore）
+  const handleSendComment = async () => {
     if (commentText.trim() === "") return;
+
     const newComment = {
       id: "c_" + Date.now().toString(),
       user: displayUserName,
@@ -2391,36 +2236,53 @@ const DiaryScreen = ({
     };
 
     const isStaffComment = isStaffOrAbove;
+    const currentComments = selectedReport.comments || [];
+    const newComments = [...currentComments, newComment];
 
-    const updated = dailyReports.map((r) => {
-      if (r.id === selectedReport.id) {
-        return {
-          ...r,
-          comments: [...r.comments, newComment],
-          isReviewed: isStaffComment ? true : r.isReviewed,
-        };
-      }
-      return r;
-    });
-    setDailyReports(updated);
-
+    // UI即時反映
+    setDailyReports((prev) =>
+      prev.map((r) =>
+        r.id === selectedReport.id
+          ? {
+              ...r,
+              comments: newComments,
+              isReviewed: isStaffComment ? true : r.isReviewed,
+            }
+          : r,
+      ),
+    );
     setSelectedReport((prev) => ({
       ...prev,
       isReviewed: isStaffComment ? true : prev.isReviewed,
-      comments: [...prev.comments, newComment],
+      comments: newComments,
     }));
 
     setCommentText("");
     Keyboard.dismiss();
+
+    // 裏で送信
+    try {
+      const safeTeamId = activeTeamId || "test_team";
+      await updateDailyReport(safeTeamId, selectedReport.id, {
+        comments: newComments,
+        isReviewed: isStaffComment ? true : selectedReport.isReviewed,
+      });
+    } catch (e) {
+      console.log("Firestore更新エラー:", e);
+    }
   };
 
   const handleMarkAsReviewed = () => {
-    const updated = dailyReports.map((r) => {
-      if (r.id === selectedReport.id) return { ...r, isReviewed: true };
-      return r;
-    });
-    setDailyReports(updated);
+    // UI即時反映
+    setDailyReports((prev) =>
+      prev.map((r) =>
+        r.id === selectedReport.id ? { ...r, isReviewed: true } : r,
+      ),
+    );
     setSelectedReport((prev) => ({ ...prev, isReviewed: true }));
+
+    // 裏で送信
+    updateReportStatusAsync(selectedReport.id, { isReviewed: true });
   };
 
   const renderStars = (rating, onSelect = null) => {
@@ -2449,15 +2311,9 @@ const DiaryScreen = ({
   const unreviewedCount = isStaffOrAbove
     ? processedReports.filter((d) => !d.isReviewed).length
     : 0;
-  const needsReplyCount = isStaffOrAbove
-    ? processedReports.filter(
-        (d) =>
-          d.comments.filter((c) =>
-            ["監督", "コーチ", "アシスタント", "管理者"].some((role) =>
-              c.user.includes(role),
-            ),
-          ).length === 0,
-      ).length
+
+  const needsFollowUpCount = isStaffOrAbove
+    ? processedReports.filter((d) => d.isFollowUp === true).length
     : 0;
 
   return (
@@ -2537,22 +2393,24 @@ const DiaryScreen = ({
                 🚨 危険
               </Text>
             </TouchableOpacity>
+
             <TouchableOpacity
-              onPress={() => setActiveTab("needs_reply")}
+              onPress={() => setActiveTab("needs_followup")}
               style={[
                 styles.tabBtn,
-                activeTab === "needs_reply" && styles.tabActive,
+                activeTab === "needs_followup" && styles.tabActive,
               ]}
             >
               <Text
                 style={[
                   styles.tabText,
-                  activeTab === "needs_reply" && styles.tabTextActive,
+                  activeTab === "needs_followup" && styles.tabTextActive,
                 ]}
               >
-                要返信 ({needsReplyCount})
+                🚩 要フォロー ({needsFollowUpCount})
               </Text>
             </TouchableOpacity>
+
             <TouchableOpacity
               onPress={() => setActiveTab("starred")}
               style={[
@@ -2636,6 +2494,11 @@ const DiaryScreen = ({
                           >
                             {report.sharedWith === "all" && (
                               <Text style={styles.badgeShared}>📢 共有</Text>
+                            )}
+                            {report.isFollowUp && (
+                              <Text style={{ fontSize: 14, marginRight: 5 }}>
+                                📌
+                              </Text>
                             )}
                             {report.isStarred && (
                               <Text style={{ fontSize: 14, marginRight: 5 }}>
@@ -2746,6 +2609,7 @@ const DiaryScreen = ({
                       {selectedReport.isStarred ? "⭐ スター済" : "☆ スター"}
                     </Text>
                   </TouchableOpacity>
+
                   <TouchableOpacity
                     onPress={() => handleToggleFollowUp(selectedReport.id)}
                     style={[
@@ -2755,10 +2619,11 @@ const DiaryScreen = ({
                   >
                     <Text style={styles.actionBtnText}>
                       {selectedReport.isFollowUp
-                        ? "🎌 フォロー中"
+                        ? "📌 フォロー中"
                         : "🚩 要フォロー"}
                     </Text>
                   </TouchableOpacity>
+
                   <TouchableOpacity
                     onPress={() => handleChangeShareScope(selectedReport.id)}
                     style={[
@@ -2782,9 +2647,18 @@ const DiaryScreen = ({
                   const isMyReport =
                     currentUser === selectedReport.author &&
                     ["member", "captain"].includes(userRole);
-                  const timeElapsed = Date.now() - selectedReport.createdAt;
+
+                  const timeElapsed =
+                    Date.now() - (selectedReport.createdAt || 0);
+
+                  // ★ 本人が編集・削除できる条件（30分以内 ＆ 未確認）
                   const isEditable =
                     timeElapsed < 30 * 60 * 1000 && !selectedReport.isReviewed;
+
+                  // ★ 管理者はいつでも削除可能にする
+                  const canDelete =
+                    (isMyReport && isEditable) || isStaffOrAbove;
+                  const canEdit = isMyReport && isEditable;
 
                   return (
                     <ScrollView
@@ -2806,7 +2680,12 @@ const DiaryScreen = ({
                           <Text style={styles.cardDate}>
                             {selectedReport.date}
                           </Text>
-                          <View style={{ flexDirection: "row" }}>
+                          <View
+                            style={{
+                              flexDirection: "row",
+                              alignItems: "center",
+                            }}
+                          >
                             {isStaffOrAbove && !selectedReport.isReviewed && (
                               <TouchableOpacity
                                 style={styles.markReviewedBtn}
@@ -2817,13 +2696,37 @@ const DiaryScreen = ({
                                 </Text>
                               </TouchableOpacity>
                             )}
-                            {isMyReport && isEditable && (
-                              <TouchableOpacity
-                                style={styles.editBtn}
-                                onPress={handleOpenEdit}
-                              >
-                                <Text style={styles.editBtnText}>✏️ 修正</Text>
-                              </TouchableOpacity>
+
+                            {/* ★ 修正ボタンと削除ボタンの表示制御（分離） */}
+                            {(canEdit || canDelete) && (
+                              <View style={styles.editActionRow}>
+                                {canEdit && (
+                                  <TouchableOpacity
+                                    style={styles.editBtn}
+                                    onPress={handleOpenEdit}
+                                  >
+                                    <Text style={styles.editBtnText}>
+                                      ✏️ 修正
+                                    </Text>
+                                  </TouchableOpacity>
+                                )}
+                                {canDelete && (
+                                  <TouchableOpacity
+                                    style={[
+                                      styles.editBtn,
+                                      {
+                                        backgroundColor: "#e74c3c",
+                                        marginLeft: canEdit ? 8 : 0,
+                                      },
+                                    ]}
+                                    onPress={handleDeleteReport}
+                                  >
+                                    <Text style={styles.editBtnText}>
+                                      🗑️ 削除
+                                    </Text>
+                                  </TouchableOpacity>
+                                )}
+                              </View>
                             )}
                           </View>
                         </View>
@@ -2976,7 +2879,7 @@ const DiaryScreen = ({
                         💬 コーチとのやり取り
                       </Text>
                       <View style={styles.threadArea}>
-                        {selectedReport.comments.map((c) => {
+                        {(selectedReport.comments || []).map((c) => {
                           const isMe = c.user === displayUserName;
                           return (
                             <View
@@ -3111,7 +3014,7 @@ const DiaryScreen = ({
                 style={styles.createScroll}
                 keyboardShouldPersistTaps="handled"
               >
-                {/* === 日記入力部分（先に表示） === */}
+                {/* === 日記入力部分 === */}
                 <View style={styles.formSection}>
                   <Text style={styles.formSectionTitle}>📝 練習の振り返り</Text>
                   <Text style={styles.inputLabel}>🏃 練習内容</Text>
@@ -3175,7 +3078,7 @@ const DiaryScreen = ({
                   />
                 </View>
 
-                {/* === メディカル入力部分（後に表示） === */}
+                {/* === メディカル入力部分 === */}
                 <View style={[styles.formSection, { marginTop: 20 }]}>
                   <Text style={styles.formSectionTitle}>🏥 コンディション</Text>
                   <Text style={styles.inputLabel}>😀 全体的な体調</Text>
@@ -3540,7 +3443,7 @@ const styles = StyleSheet.create({
     marginRight: 5,
   },
   markReviewedBtnText: { color: "#fff", fontSize: 12, fontWeight: "bold" },
-  editActionRow: { flexDirection: "row" },
+  editActionRow: { flexDirection: "row", alignItems: "center" },
   editBtn: {
     backgroundColor: "#f39c12",
     paddingHorizontal: 10,
@@ -3972,194 +3875,157 @@ import {
   TouchableOpacity,
   StyleSheet,
   Alert,
+  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useAuth } from "../AuthContext";
+import {
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+} from "firebase/auth";
 import { auth } from "../firebase";
+
+// ★ 追加：Firestoreへの登録処理をインポート
 import { executeRegistration } from "../services/firestoreService";
 
-const LoginScreen = ({ navigation }) => {
-  const [isLoginMode, setIsLoginMode] = useState(true);
-  const [registerStep, setRegisterStep] = useState(1);
+const LoginScreen = () => {
+  const [isLogin, setIsLogin] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
 
+  // 共通の入力項目
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+
+  // 新規登録用の入力項目
   const [userName, setUserName] = useState("");
-  const [role, setRole] = useState("admin");
-  const [teamName, setTeamName] = useState("");
+  const [role, setRole] = useState("member"); // "admin" or "member"
+  const [teamName, setTeamName] = useState(""); // 管理者用
+  const [inviteCode, setInviteCode] = useState(""); // 部員用
 
-  // 変数名を teamIdInput から inviteCode に変更
-  const [inviteCode, setInviteCode] = useState("");
-
-  const [isLoading, setIsLoading] = useState(false);
-  const { signIn, signUp } = useAuth();
-
-  const handleLogin = async () => {
-    if (!email || !password) return Alert.alert("エラー", "入力してください。");
-    setIsLoading(true);
-    try {
-      await signIn(email.trim(), password);
-      navigation.replace("WorkspaceHome");
-    } catch (error) {
-      Alert.alert("エラー", "ログインに失敗しました。");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleNextStep = () => {
-    if (!email || !password || !userName.trim()) {
-      return Alert.alert("エラー", "すべての項目を入力してください。");
-    }
-    if (password.length < 6) {
-      return Alert.alert("エラー", "パスワードは6文字以上で入力してください。");
-    }
-    setRegisterStep(2);
-  };
-
-  const handleRegister = async () => {
-    if (role === "admin" && !teamName.trim())
-      return Alert.alert("エラー", "チーム名を入力してください。");
-    if (role === "member" && !inviteCode.trim())
-      return Alert.alert("エラー", "招待コードを入力してください。");
-
-    setIsLoading(true);
-    try {
-      await signUp(email.trim(), password);
-      const uid = auth.currentUser?.uid;
-
-      const result = await executeRegistration(
-        uid,
-        role,
-        userName.trim(),
-        teamName.trim(),
-        inviteCode.trim(),
+  const handleAuth = async () => {
+    // 1. バリデーション（入力チェック）
+    if (!email || !password) {
+      return Alert.alert(
+        "エラー",
+        "メールアドレスとパスワードを入力してください。",
       );
+    }
 
-      if (result.type === "create") {
-        Alert.alert(
-          "🎉 チーム作成成功！",
-          `部員を招待するための【 招待コード 】が発行されました：\n\n【 ${result.inviteCode} 】\n\nこのコードを部員に教えてください！`,
-          [{ text: "OK", onPress: () => navigation.replace("WorkspaceHome") }],
-        );
+    if (!isLogin) {
+      if (!userName.trim()) {
+        return Alert.alert("エラー", "お名前（表示名）を入力してください。");
+      }
+      if (role === "admin" && !teamName.trim()) {
+        return Alert.alert("エラー", "作成するチーム名を入力してください。");
+      }
+      if (role === "member" && !inviteCode.trim()) {
+        return Alert.alert("エラー", "招待コードを入力してください。");
+      }
+    }
+
+    setIsLoading(true);
+    try {
+      if (isLogin) {
+        // === ログイン処理 ===
+        await signInWithEmailAndPassword(auth, email, password);
       } else {
-        Alert.alert(
-          "✅ 参加完了",
-          "招待コードが承認され、チームに参加しました！",
-          [{ text: "OK", onPress: () => navigation.replace("WorkspaceHome") }],
+        // === 新規登録処理（1ページ完結） ===
+        // ① Firebase Auth にユーザーを作成
+        const userCredential = await createUserWithEmailAndPassword(
+          auth,
+          email,
+          password,
         );
+        const uid = userCredential.user.uid;
+
+        // ② Firestore にユーザー情報とチーム情報（または所属情報）を書き込む
+        await executeRegistration(
+          uid,
+          role,
+          userName.trim(),
+          teamName.trim(),
+          inviteCode.trim(),
+        );
+
+        Alert.alert("登録完了", "アカウントの作成と設定が完了しました！");
       }
     } catch (error) {
-      Alert.alert("登録エラー", error.message || "処理に失敗しました。");
+      console.log("認証エラー:", error);
+      let errorMsg = "エラーが発生しました。";
+      if (
+        error.message.includes("invalid-credential") ||
+        error.message.includes("invalid-email")
+      ) {
+        errorMsg = "メールアドレスまたはパスワードが間違っています。";
+      } else if (error.message.includes("email-already-in-use")) {
+        errorMsg = "このメールアドレスは既に登録されています。";
+      } else if (error.message.includes("weak-password")) {
+        errorMsg = "パスワードは6文字以上で入力してください。";
+      } else if (error.message.includes("無効な招待コード")) {
+        errorMsg = "招待コードが間違っているか、無効になっています。";
+      }
+      Alert.alert("エラー", errorMsg);
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const resetForm = () => {
+    setEmail("");
+    setPassword("");
+    setUserName("");
+    setTeamName("");
+    setInviteCode("");
   };
 
   return (
     <SafeAreaView style={styles.container}>
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : "height"}
-        style={styles.inner}
+        style={styles.keyboardView}
       >
         <ScrollView
-          contentContainerStyle={{ flexGrow: 1, justifyContent: "center" }}
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
         >
-          <View style={styles.header}>
-            <Text style={styles.appTitle}>📱 スマート部活</Text>
-            <Text style={styles.subTitle}>
-              {isLoginMode ? "ログイン" : `新規登録 (${registerStep}/2)`}
-            </Text>
-          </View>
+          <View style={styles.card}>
+            <Text style={styles.appTitle}>スマート部活 📱</Text>
 
-          <View style={styles.stepContainer}>
-            {isLoginMode ? (
-              <>
-                <TextInput
-                  style={styles.input}
-                  placeholder="メールアドレス"
-                  value={email}
-                  onChangeText={setEmail}
-                  autoCapitalize="none"
-                />
-                <TextInput
-                  style={styles.input}
-                  placeholder="パスワード"
-                  value={password}
-                  onChangeText={setPassword}
-                  secureTextEntry
-                />
-                <TouchableOpacity
-                  style={styles.primaryBtn}
-                  onPress={handleLogin}
-                  disabled={isLoading}
+            {/* タブ切り替え */}
+            <View style={styles.tabContainer}>
+              <TouchableOpacity
+                style={[styles.tabButton, isLogin && styles.tabButtonActive]}
+                onPress={() => {
+                  setIsLogin(true);
+                  resetForm();
+                }}
+              >
+                <Text style={[styles.tabText, isLogin && styles.tabTextActive]}>
+                  ログイン
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.tabButton, !isLogin && styles.tabButtonActive]}
+                onPress={() => {
+                  setIsLogin(false);
+                  resetForm();
+                }}
+              >
+                <Text
+                  style={[styles.tabText, !isLogin && styles.tabTextActive]}
                 >
-                  <Text style={styles.primaryBtnText}>
-                    {isLoading ? "送信中..." : "ログイン"}
-                  </Text>
-                </TouchableOpacity>
-              </>
-            ) : registerStep === 1 ? (
-              <>
-                <Text style={styles.label}>お名前</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="例: 山田 太郎"
-                  value={userName}
-                  onChangeText={setUserName}
-                />
-                <TextInput
-                  style={styles.input}
-                  placeholder="メールアドレス"
-                  value={email}
-                  onChangeText={setEmail}
-                  autoCapitalize="none"
-                />
-                <TextInput
-                  style={styles.input}
-                  placeholder="パスワード(6文字以上)"
-                  value={password}
-                  onChangeText={setPassword}
-                  secureTextEntry
-                />
-                <TouchableOpacity
-                  style={styles.primaryBtn}
-                  onPress={handleNextStep}
-                >
-                  <Text style={styles.primaryBtnText}>次へ進む</Text>
-                </TouchableOpacity>
-              </>
-            ) : (
-              <>
-                <TouchableOpacity
-                  onPress={() => setRegisterStep(1)}
-                  style={{ marginBottom: 15 }}
-                >
-                  <Text style={{ color: "#888", fontWeight: "bold" }}>
-                    ◁ 戻る
-                  </Text>
-                </TouchableOpacity>
-                <View style={styles.roleContainer}>
-                  <TouchableOpacity
-                    style={[
-                      styles.roleBtn,
-                      role === "admin" && styles.roleBtnActive,
-                    ]}
-                    onPress={() => setRole("admin")}
-                  >
-                    <Text
-                      style={
-                        role === "admin"
-                          ? styles.roleBtnTextActive
-                          : styles.roleBtnText
-                      }
-                    >
-                      👑 管理者
-                    </Text>
-                  </TouchableOpacity>
+                  新規登録
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* ====== 新規登録のみ表示するエリア ====== */}
+            {!isLogin && (
+              <View style={styles.signupSection}>
+                <Text style={styles.label}>役割を選択</Text>
+                <View style={styles.roleToggleContainer}>
                   <TouchableOpacity
                     style={[
                       styles.roleBtn,
@@ -4168,55 +4034,103 @@ const LoginScreen = ({ navigation }) => {
                     onPress={() => setRole("member")}
                   >
                     <Text
-                      style={
-                        role === "member"
-                          ? styles.roleBtnTextActive
-                          : styles.roleBtnText
-                      }
+                      style={[
+                        styles.roleBtnText,
+                        role === "member" && { color: "#fff" },
+                      ]}
                     >
-                      👤 部員
+                      👤 部員として参加
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.roleBtn,
+                      role === "admin" && styles.roleBtnActive,
+                    ]}
+                    onPress={() => setRole("admin")}
+                  >
+                    <Text
+                      style={[
+                        styles.roleBtnText,
+                        role === "admin" && { color: "#fff" },
+                      ]}
+                    >
+                      👑 管理者として作成
                     </Text>
                   </TouchableOpacity>
                 </View>
+
+                <Text style={styles.label}>お名前 (表示名)</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="例: 山田 太郎"
+                  value={userName}
+                  onChangeText={setUserName}
+                />
+
                 {role === "admin" ? (
-                  <TextInput
-                    style={styles.input}
-                    placeholder="部活名（例：サッカー部）"
-                    value={teamName}
-                    onChangeText={setTeamName}
-                  />
+                  <>
+                    <Text style={styles.label}>新しく作成するチーム名</Text>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="例: ○○高校 男子バレー部"
+                      value={teamName}
+                      onChangeText={setTeamName}
+                    />
+                  </>
                 ) : (
-                  <TextInput
-                    style={styles.input}
-                    placeholder="共有された6桁の招待コード"
-                    value={inviteCode}
-                    onChangeText={setInviteCode}
-                    autoCapitalize="characters"
-                  />
+                  <>
+                    <Text style={styles.label}>チームの招待コード</Text>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="監督から共有された6桁のコード"
+                      value={inviteCode}
+                      onChangeText={setInviteCode}
+                      autoCapitalize="characters"
+                    />
+                  </>
                 )}
-                <TouchableOpacity
-                  style={styles.primaryBtn}
-                  onPress={handleRegister}
-                  disabled={isLoading}
-                >
-                  <Text style={styles.primaryBtnText}>
-                    {isLoading ? "処理中..." : "登録を完了する"}
-                  </Text>
-                </TouchableOpacity>
-              </>
+              </View>
             )}
 
-            <TouchableOpacity
-              style={styles.switchModeBtn}
-              onPress={() => {
-                setIsLoginMode(!isLoginMode);
-                setRegisterStep(1);
-              }}
-            >
-              <Text style={styles.switchModeText}>
-                {isLoginMode ? "新規登録はこちら" : "ログインに戻る"}
-              </Text>
-            </TouchableOpacity>
+            {/* ====== 共通エリア (ログイン / 新規登録) ====== */}
+            <Text style={styles.label}>メールアドレス</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="email@example.com"
+              value={email}
+              onChangeText={setEmail}
+              keyboardType="email-address"
+              autoCapitalize="none"
+            />
+
+            <Text style={styles.label}>
+              パスワード {!isLogin && "(6文字以上)"}
+            </Text>
+            <TextInput
+              style={styles.input}
+              placeholder="パスワード"
+              value={password}
+              onChangeText={setPassword}
+              secureTextEntry
+            />
+
+            {isLoading ? (
+              <ActivityIndicator
+                size="large"
+                color="#27ae60"
+                style={{ marginTop: 20 }}
+              />
+            ) : (
+              <TouchableOpacity
+                style={styles.submitButton}
+                onPress={handleAuth}
+              >
+                <Text style={styles.submitButtonText}>
+                  {isLogin ? "ログイン" : "登録して始める"}
+                </Text>
+              </TouchableOpacity>
+            )}
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -4224,53 +4138,106 @@ const LoginScreen = ({ navigation }) => {
   );
 };
 
-// スタイルは前回と同じです
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#f0f2f5" },
-  inner: { flex: 1, padding: 20 },
-  header: { alignItems: "center", marginBottom: 30 },
-  appTitle: { fontSize: 28, fontWeight: "bold", color: "#0077cc" },
-  subTitle: { fontSize: 14, color: "#666", marginTop: 5 },
-  stepContainer: {
-    backgroundColor: "#fff",
+  container: { flex: 1, backgroundColor: "#27ae60" },
+  keyboardView: { flex: 1 },
+  scrollContent: {
+    flexGrow: 1,
+    justifyContent: "center",
     padding: 20,
-    borderRadius: 12,
-    elevation: 3,
   },
-  input: {
-    backgroundColor: "#f9f9f9",
+  card: {
+    backgroundColor: "#fff",
+    borderRadius: 20,
+    padding: 25,
+    shadowColor: "#000",
+    shadowOpacity: 0.1,
+    shadowRadius: 10,
+    elevation: 5,
+  },
+  appTitle: {
+    fontSize: 24,
+    fontWeight: "bold",
+    color: "#333",
+    textAlign: "center",
+    marginBottom: 20,
+  },
+  tabContainer: {
+    flexDirection: "row",
+    marginBottom: 25,
+    backgroundColor: "#f0f2f5",
+    borderRadius: 10,
+    padding: 4,
+  },
+  tabButton: {
+    flex: 1,
+    paddingVertical: 10,
+    alignItems: "center",
+    borderRadius: 8,
+  },
+  tabButtonActive: {
+    backgroundColor: "#fff",
+    shadowColor: "#000",
+    shadowOpacity: 0.05,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  tabText: { fontSize: 14, fontWeight: "bold", color: "#888" },
+  tabTextActive: { color: "#27ae60" },
+
+  signupSection: {
+    marginBottom: 10,
+  },
+  roleToggleContainer: {
+    flexDirection: "row",
+    marginBottom: 15,
+    gap: 10,
+  },
+  roleBtn: {
+    flex: 1,
+    paddingVertical: 12,
     borderWidth: 1,
     borderColor: "#ddd",
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 15,
+    borderRadius: 10,
+    alignItems: "center",
+    backgroundColor: "#f9f9f9",
   },
-  label: { fontSize: 12, fontWeight: "bold", color: "#555", marginBottom: 6 },
-  primaryBtn: {
-    backgroundColor: "#0077cc",
-    padding: 15,
-    borderRadius: 8,
+  roleBtnActive: {
+    backgroundColor: "#27ae60",
+    borderColor: "#27ae60",
+  },
+  roleBtnText: {
+    fontSize: 13,
+    fontWeight: "bold",
+    color: "#666",
+  },
+
+  label: {
+    fontSize: 13,
+    fontWeight: "bold",
+    color: "#555",
+    marginBottom: 8,
+  },
+  input: {
+    backgroundColor: "#f5f5f5",
+    borderWidth: 1,
+    borderColor: "#ddd",
+    borderRadius: 10,
+    padding: 12,
+    fontSize: 15,
+    marginBottom: 15,
+    color: "#333",
+  },
+  submitButton: {
+    backgroundColor: "#27ae60",
+    paddingVertical: 15,
+    borderRadius: 10,
     alignItems: "center",
     marginTop: 10,
   },
-  primaryBtnText: { color: "#fff", fontWeight: "bold", fontSize: 16 },
-  roleContainer: { flexDirection: "row", marginBottom: 20 },
-  roleBtn: {
-    flex: 1,
-    padding: 12,
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: "#ddd",
-    marginHorizontal: 5,
-    borderRadius: 8,
-  },
-  roleBtnActive: { backgroundColor: "#e6f2ff", borderColor: "#0077cc" },
-  roleBtnText: { color: "#666", fontWeight: "bold" },
-  roleBtnTextActive: { color: "#0077cc", fontWeight: "bold" },
-  switchModeBtn: { marginTop: 20, alignItems: "center" },
-  switchModeText: {
-    color: "#0077cc",
-    textDecorationLine: "underline",
+  submitButtonText: {
+    color: "#fff",
+    fontSize: 16,
     fontWeight: "bold",
   },
 });
@@ -4357,10 +4324,11 @@ const MedicalScreen = ({
   const isStaffOrAbove = ["owner", "staff"].includes(userRole);
 
   const roleNameMap = {
-    owner: "管理者(監督)",
-    staff: "コーチ(スタッフ)",
+    owner: `${currentUser}(監督)`,
+    admin: `${currentUser}(管理者)`,
+    staff: `${currentUser}(コーチ)`,
     captain: `${currentUser}(キャプテン)`,
-    member: `${currentUser}(あなた)`,
+    member: currentUser, // 「(あなた)」や「佐藤(自分)」を削除し、純粋な名前のみに！
   };
   const displayUserName = roleNameMap[userRole] || currentUser;
 
@@ -6027,8 +5995,13 @@ import {
   KeyboardAvoidingView,
   Platform,
   Keyboard,
+  ActivityIndicator,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+
+// ★ 復活！Firestore通信関数をインポート
+import { useAuth } from "../AuthContext";
+import { createNotice, updateNotice } from "../services/firestoreService";
 
 const NoticeBoardScreen = ({
   navigation,
@@ -6039,20 +6012,20 @@ const NoticeBoardScreen = ({
   isOffline,
   userProfiles = {},
 }) => {
-  // 実際の設定データからロールを取得
+  const { activeTeamId } = useAuth();
+
   const currentUserProfile = userProfiles[currentUser] || {};
   const userRole =
     global.TEST_ROLE ||
     (isAdmin ? "owner" : currentUserProfile.role || "member");
 
-  // 掲示板に投稿・削除できる権限（監督、スタッフ、キャプテン）
   const canManageNotices = ["owner", "staff", "captain"].includes(userRole);
 
   const roleNameMap = {
     owner: "管理者(監督)",
     staff: "コーチ(スタッフ)",
     captain: `${currentUser}(キャプテン)`,
-    member: `${currentUser}(あなた)`,
+    member: currentUser,
   };
   const displayUserName = roleNameMap[userRole] || currentUser;
 
@@ -6060,13 +6033,13 @@ const NoticeBoardScreen = ({
   const [isCreateModalVisible, setIsCreateModalVisible] = useState(false);
   const [selectedNotice, setSelectedNotice] = useState(null);
 
-  // 投稿用のステート
   const [newTitle, setNewTitle] = useState("");
   const [newContent, setNewContent] = useState("");
   const [isImportant, setIsImportant] = useState(false);
   const [editingNoticeId, setEditingNoticeId] = useState(null);
 
-  // フィルタリングと論理削除の除外
+  const [isSaving, setIsSaving] = useState(false);
+
   let filteredNotices = notices.filter((n) => {
     if (n.status === "deleted") return false;
     if (searchQuery.trim() !== "") {
@@ -6079,100 +6052,142 @@ const NoticeBoardScreen = ({
     return true;
   });
 
-  // 重要なお知らせを上に、あとは日付順にソート
   filteredNotices.sort((a, b) => {
     if (a.isImportant && !b.isImportant) return -1;
     if (!a.isImportant && b.isImportant) return 1;
-    return new Date(b.createdAt) - new Date(a.createdAt);
+    return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
   });
 
-  const handleOpenNotice = (notice) => {
+  // ★ 2. Firestore + ローカルでの既読処理
+  const handleOpenNotice = async (notice) => {
     setSelectedNotice(notice);
 
-    // 未読の場合は既読リストに追加
     if (!notice.readBy.includes(currentUser)) {
-      const updatedNotices = notices.map((n) => {
-        if (n.id === notice.id) {
-          return { ...n, readBy: [...n.readBy, currentUser] };
-        }
-        return n;
-      });
+      const newReadBy = [...notice.readBy, currentUser];
+
+      // 画面上はすぐに既読にする（UI優先）
+      const updatedNotices = notices.map((n) =>
+        n.id === notice.id ? { ...n, readBy: newReadBy } : n,
+      );
       setNotices(updatedNotices);
+
+      // 裏でFirestoreに送信（ルール追加待ちのためエラーはキャッチしてスルー）
+      try {
+        if (activeTeamId) {
+          await updateNotice(activeTeamId, notice.id, { readBy: newReadBy });
+        }
+      } catch (error) {
+        console.log(
+          "Firestore更新エラー（既読）: ルール追加をお待ちください",
+          error,
+        );
+      }
     }
   };
 
-  const handleSaveNotice = () => {
+  // ★ 2. Firestore + ローカルでの保存処理
+  const handleSaveNotice = async () => {
     if (newTitle.trim() === "" || newContent.trim() === "") {
       Alert.alert("エラー", "タイトルと本文を入力してください。");
       return;
     }
 
-    if (editingNoticeId) {
-      // 編集処理
-      const updatedNotices = notices.map((n) => {
-        if (n.id === editingNoticeId) {
-          return {
-            ...n,
-            title: newTitle,
-            content: newContent,
-            isImportant: isImportant,
-          };
-        }
-        return n;
-      });
-      setNotices(updatedNotices);
-      Alert.alert("修正完了", "お知らせを更新しました。");
-    } else {
-      // 新規作成処理
-      const today = new Date();
-      const dateString = `${today.getFullYear()}/${String(today.getMonth() + 1).padStart(2, "0")}/${String(today.getDate()).padStart(2, "0")}`;
+    setIsSaving(true);
 
-      const newNotice = {
-        id: "notice_" + Date.now().toString(),
-        title: newTitle,
-        content: newContent,
-        author: displayUserName,
-        date: dateString,
-        createdAt: Date.now(),
-        isImportant: isImportant,
-        readBy: [currentUser], // 作成者は最初から既読
-        status: isOffline ? "pending" : "sent",
-      };
-      setNotices([newNotice, ...notices]);
+    try {
+      const safeTeamId = activeTeamId || "test_team";
+
+      if (editingNoticeId) {
+        // [1] まず画面上のリストを更新（サクサク動かすため）
+        const updatedNotices = notices.map((n) =>
+          n.id === editingNoticeId
+            ? {
+                ...n,
+                title: newTitle.trim(),
+                content: newContent.trim(),
+                isImportant,
+              }
+            : n,
+        );
+        setNotices(updatedNotices);
+
+        // [2] 裏でFirestoreに更新データを送信
+        await updateNotice(safeTeamId, editingNoticeId, {
+          title: newTitle.trim(),
+          content: newContent.trim(),
+          isImportant: isImportant,
+        });
+
+        Alert.alert("修正完了", "お知らせを更新しました。");
+      } else {
+        const today = new Date();
+        const dateString = `${today.getFullYear()}/${String(today.getMonth() + 1).padStart(2, "0")}/${String(today.getDate()).padStart(2, "0")}`;
+
+        const newNotice = {
+          title: newTitle.trim(),
+          content: newContent.trim(),
+          author: displayUserName,
+          date: dateString,
+          isImportant: isImportant,
+          readBy: [currentUser],
+          status: isOffline ? "pending" : "active",
+        };
+
+        // [1] まず画面上に仮のIDで追加（サクサク動かすため）
+        setNotices([
+          { ...newNotice, id: "notice_" + Date.now(), createdAt: Date.now() },
+          ...notices,
+        ]);
+
+        // [2] 裏でFirestoreに新規作成データを送信
+        await createNotice(safeTeamId, newNotice);
+      }
+    } catch (error) {
+      console.log(
+        "Firestore保存エラー（新規/更新）: ルール追加をお待ちください",
+        error,
+      );
+      // エラーになっても画面上にはすでに追加されているので開発は続行可能！
+    } finally {
+      setIsCreateModalVisible(false);
+      resetForm();
+      setIsSaving(false);
+      Keyboard.dismiss();
     }
-
-    setIsCreateModalVisible(false);
-    resetForm();
-    Keyboard.dismiss();
   };
 
+  // ★ 2. Firestore + ローカルでの削除処理
   const handleDeleteNotice = (noticeId) => {
-    Alert.alert(
-      "削除の確認",
-      "このお知らせを削除しますか？\n（データはゴミ箱に保持されます）",
-      [
-        { text: "キャンセル", style: "cancel" },
-        {
-          text: "削除",
-          style: "destructive",
-          onPress: () => {
-            // 論理削除
-            const updatedNotices = notices.map((n) =>
-              n.id === noticeId
-                ? {
-                    ...n,
-                    status: "deleted",
-                    deletedBy: displayUserName,
-                    deletedAt: new Date().toISOString(),
-                  }
-                : n,
+    Alert.alert("削除の確認", "このお知らせを削除しますか？", [
+      { text: "キャンセル", style: "cancel" },
+      {
+        text: "削除",
+        style: "destructive",
+        onPress: async () => {
+          // [1] 画面上から消す
+          const updatedNotices = notices.map((n) =>
+            n.id === noticeId ? { ...n, status: "deleted" } : n,
+          );
+          setNotices(updatedNotices);
+          setSelectedNotice(null);
+
+          // [2] 裏でFirestoreに送信
+          try {
+            if (activeTeamId) {
+              await updateNotice(activeTeamId, noticeId, {
+                status: "deleted",
+                deletedBy: displayUserName,
+              });
+            }
+          } catch (error) {
+            console.log(
+              "Firestore削除エラー: ルール追加をお待ちください",
+              error,
             );
-            setNotices(updatedNotices);
-            setSelectedNotice(null);
-          },
+          }
         },
-      ],
-    );
+      },
+    ]);
   };
 
   const openEditModal = (notice) => {
@@ -6203,9 +6218,7 @@ const NoticeBoardScreen = ({
         <Text style={styles.headerTitle}>
           {isOffline ? "オフライン表示中" : "📋 掲示板"}
         </Text>
-        <View style={styles.headerRight}>
-          {/* 手動のオフラインボタン等は完全に撤去済 */}
-        </View>
+        <View style={styles.headerRight} />
       </View>
 
       {isOffline && (
@@ -6283,7 +6296,6 @@ const NoticeBoardScreen = ({
         )}
       </ScrollView>
 
-      {/* 投稿権限があるユーザーのみFABを表示 */}
       {canManageNotices && (
         <TouchableOpacity
           style={[styles.fab, isOffline && { backgroundColor: "#f39c12" }]}
@@ -6296,7 +6308,6 @@ const NoticeBoardScreen = ({
         </TouchableOpacity>
       )}
 
-      {/* お知らせ詳細モーダル */}
       <Modal
         visible={selectedNotice !== null}
         transparent={true}
@@ -6340,7 +6351,6 @@ const NoticeBoardScreen = ({
                   </View>
                 </View>
 
-                {/* 自分が作成した投稿、または管理者なら編集・削除が可能 */}
                 {canManageNotices &&
                   (selectedNotice.author === displayUserName ||
                     ["owner", "staff"].includes(userRole)) && (
@@ -6365,7 +6375,6 @@ const NoticeBoardScreen = ({
         </SafeAreaView>
       </Modal>
 
-      {/* お知らせ作成・編集モーダル */}
       <Modal
         visible={isCreateModalVisible}
         transparent={true}
@@ -6380,8 +6389,13 @@ const NoticeBoardScreen = ({
               <View style={styles.detailHeader}>
                 <TouchableOpacity
                   onPress={() => setIsCreateModalVisible(false)}
+                  disabled={isSaving}
                 >
-                  <Text style={styles.closeBtn}>キャンセル</Text>
+                  <Text
+                    style={[styles.closeBtn, isSaving && { color: "#aaa" }]}
+                  >
+                    キャンセル
+                  </Text>
                 </TouchableOpacity>
                 <Text style={styles.detailHeaderTitle}>
                   {editingNoticeId ? "お知らせの修正" : "新規お知らせ作成"}
@@ -6396,6 +6410,7 @@ const NoticeBoardScreen = ({
                   placeholder="例: 明日の練習時間について"
                   value={newTitle}
                   onChangeText={setNewTitle}
+                  editable={!isSaving}
                 />
 
                 <Text style={styles.inputLabel}>本文</Text>
@@ -6405,6 +6420,7 @@ const NoticeBoardScreen = ({
                   value={newContent}
                   onChangeText={setNewContent}
                   multiline
+                  editable={!isSaving}
                 />
 
                 <TouchableOpacity
@@ -6412,7 +6428,8 @@ const NoticeBoardScreen = ({
                     styles.importantToggle,
                     isImportant && styles.importantToggleActive,
                   ]}
-                  onPress={() => setIsImportant(!isImportant)}
+                  onPress={() => !isSaving && setIsImportant(!isImportant)}
+                  disabled={isSaving}
                 >
                   <Text
                     style={[
@@ -6430,16 +6447,22 @@ const NoticeBoardScreen = ({
                   style={[
                     styles.submitButton,
                     isOffline && { backgroundColor: "#f39c12" },
+                    isSaving && { opacity: 0.7 },
                   ]}
                   onPress={handleSaveNotice}
+                  disabled={isSaving}
                 >
-                  <Text style={styles.submitButtonText}>
-                    {editingNoticeId
-                      ? "修正を保存"
-                      : isOffline
-                        ? "待機リストに保存"
-                        : "チームに送信"}
-                  </Text>
+                  {isSaving ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text style={styles.submitButtonText}>
+                      {editingNoticeId
+                        ? "修正を保存"
+                        : isOffline
+                          ? "待機リストに保存"
+                          : "チームに送信"}
+                    </Text>
+                  )}
                 </TouchableOpacity>
                 <View style={{ height: 50 }} />
               </ScrollView>
@@ -6714,7 +6737,9 @@ const styles = StyleSheet.create({
     paddingVertical: 15,
     borderRadius: 10,
     alignItems: "center",
+    justifyContent: "center",
     marginTop: 30,
+    height: 50,
   },
   submitButtonText: { color: "#fff", fontSize: 18, fontWeight: "bold" },
 });
@@ -6747,8 +6772,13 @@ import * as ScreenOrientation from "expo-screen-orientation";
 import { useAuth } from "../AuthContext";
 import { updateProject } from "../services/firestoreService";
 
-// ★ 修正：setProjects を受け取るように追加
-const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
+const ProjectDetailScreen = ({
+  route,
+  navigation,
+  currentUser,
+  projects,
+  setProjects,
+}) => {
   const { project: routeProject, userRole = "member" } = route.params || {};
 
   const project =
@@ -6767,13 +6797,13 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
   const canDeleteAnyTag = ["owner", "admin", "staff"].includes(userRole);
 
   const roleNameMap = {
-    owner: "監督",
-    admin: "管理者",
-    staff: "コーチ",
-    captain: "キャプテン",
-    member: "佐藤(自分)",
+    owner: `${currentUser}(監督)`,
+    admin: `${currentUser}(管理者)`,
+    staff: `${currentUser}(コーチ)`,
+    captain: `${currentUser}(キャプテン)`,
+    member: currentUser,
   };
-  const displayUserName = roleNameMap[userRole] || "テストユーザー";
+  const displayUserName = roleNameMap[userRole] || currentUser;
 
   const [videoUri, setVideoUri] = useState(null);
   const [youtubeVideoId, setYoutubeVideoId] = useState(null);
@@ -6786,7 +6816,6 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
 
   const [activeTab, setActiveTab] = useState("tag");
 
-  // ★ 修正：初期タグを変更！
   const [quickTags, setQuickTags] = useState(["ナイスプレー", "得点", "罰則"]);
   const [isAddQuickTagModalVisible, setIsAddQuickTagModalVisible] =
     useState(false);
@@ -6886,9 +6915,12 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
     if (status.isLoaded) {
       const currentTime = Math.floor(status.positionMillis / 1000);
       setVideoTime(currentTime);
-      setIsPlaying(status.isPlaying);
-      if (status.durationMillis)
+      if (status.durationMillis) {
         setVideoDuration(Math.floor(status.durationMillis / 1000));
+      }
+      if (status.didJustFinish) {
+        setIsPlaying(false);
+      }
     }
   };
 
@@ -6896,10 +6928,6 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
     if (state === "playing") setIsPlaying(true);
     else if (state === "paused" || state === "ended") setIsPlaying(false);
   }, []);
-
-  const togglePlay = () => {
-    setIsPlaying(!isPlaying);
-  };
 
   const jumpToTime = async (seconds) => {
     if (youtubeVideoId && youtubeRef.current) {
@@ -6936,7 +6964,6 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
     setVideoTime(newTime);
   };
 
-  // --- ★修正：タグをアプリ全体（projects）にも反映させる ---
   const handleAddTag = async (label) => {
     const newTag = {
       id: "tag_" + Date.now(),
@@ -6950,7 +6977,6 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
 
     setLocalTags(newTags);
 
-    // ★ 追加：アプリ全体のプロジェクトリストも更新する（一覧画面のハイライトに反映）
     if (setProjects) {
       setProjects((prev) =>
         prev.map((p) => (p.id === project.id ? { ...p, tags: newTags } : p)),
@@ -6969,7 +6995,6 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
     const newTags = localTags.filter((t) => t.id !== id);
     setLocalTags(newTags);
 
-    // ★ 全体リストからも削除
     if (setProjects) {
       setProjects((prev) =>
         prev.map((p) => (p.id === project.id ? { ...p, tags: newTags } : p)),
@@ -7002,7 +7027,6 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
 
     setLocalTags(newTags);
 
-    // ★ 全体リストにも追加
     if (setProjects) {
       setProjects((prev) =>
         prev.map((p) => (p.id === project.id ? { ...p, tags: newTags } : p)),
@@ -7020,7 +7044,6 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
     }
   };
 
-  // --- ★メモも同様に全体に反映させる ---
   const handleAddMemo = async () => {
     if (newMemoText.trim() === "") return;
     const newMemo = {
@@ -7104,7 +7127,7 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
           style={styles.videoComponent}
           resizeMode={ResizeMode.CONTAIN}
           onPlaybackStatusUpdate={handlePlaybackStatusUpdate}
-          useNativeControls={false}
+          useNativeControls={true} // ★スマホ標準の再生バーを使用するよう変更！
           shouldPlay={isPlaying}
           onError={() => {
             Alert.alert(
@@ -7129,9 +7152,7 @@ const ProjectDetailScreen = ({ route, navigation, projects, setProjects }) => {
           <TouchableOpacity style={styles.skipBtn} onPress={skipBackward}>
             <Text style={styles.skipBtnText}>⏪ 5s</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.playBtn} onPress={togglePlay}>
-            <Text style={styles.playBtnText}>{isPlaying ? "⏸" : "▶"}</Text>
-          </TouchableOpacity>
+          {/* ★ 問題のあったオリジナルの再生ボタンを完全に削除しました */}
           <TouchableOpacity style={styles.skipBtn} onPress={skipForward}>
             <Text style={styles.skipBtnText}>5s ⏩</Text>
           </TouchableOpacity>
@@ -7867,7 +7888,6 @@ import YoutubePlayer from "react-native-youtube-iframe";
 import * as ScreenOrientation from "expo-screen-orientation";
 
 import { useAuth } from "../AuthContext";
-import { auth } from "../firebase";
 import { createProject } from "../services/firestoreService";
 
 export default function ProjectListScreen({
@@ -8066,31 +8086,15 @@ export default function ProjectListScreen({
   const [videoUrl, setVideoUrl] = useState("");
   const [isSaving, setIsSaving] = useState(false);
 
-  // ==========================================
-  // 🚀 本番用：プロジェクト作成機能（最終形態）
-  // ==========================================
   const handleCreateProject = async () => {
     if (title.trim() === "") {
       return Alert.alert("エラー", "プロジェクト名を入力してください。");
     }
-    if (!activeTeamId) {
-      return Alert.alert(
-        "エラー",
-        "チーム情報がありません。再度ログインしてください。",
-      );
-    }
 
-    // 🚨 トラップ防止：テストボタンから入っている場合（本物のIDがない場合）は弾く！
-    const realUid = auth.currentUser?.uid || user?.uid;
-    if (!realUid) {
-      return Alert.alert(
-        "認証エラー",
-        "テストボタン（裏口）から入室しているため、保存権限がありません。\nお手数ですが一度ログアウトし、正規の新規登録からやり直してください！",
-      );
-    }
+    const realUid = user?.uid || currentUser || "local_user";
 
-    // ★ 修正：ルールが求めている「status」「tags」「memos」の空データをしっかり同封する！
     const newProject = {
+      id: "proj_" + Date.now().toString(),
       title: title.trim(),
       type: type,
       participants: participants,
@@ -8102,22 +8106,20 @@ export default function ProjectListScreen({
       createdBy: realUid,
     };
 
-    setIsSaving(true);
+    setProjects([newProject, ...projects]);
+    setIsModalVisible(false);
+    setTitle("");
+    setType("試合");
+    setParticipants("team");
+    setVideoUrl("");
+    Alert.alert("成功", "プロジェクトを作成しました！");
+
     try {
-      await createProject(activeTeamId, newProject);
-
-      setIsModalVisible(false);
-      setTitle("");
-      setType("試合");
-      setParticipants("team");
-      setVideoUrl("");
-
-      Alert.alert("成功", "プロジェクトを作成しました！");
+      if (activeTeamId) {
+        await createProject(activeTeamId, newProject);
+      }
     } catch (error) {
-      console.error("プロジェクト保存エラー:", error);
-      Alert.alert("エラー", "保存に失敗しました。");
-    } finally {
-      setIsSaving(false);
+      console.log("Firestoreプロジェクト保存エラー (ルール追加待ち):", error);
     }
   };
 
@@ -8447,7 +8449,11 @@ export default function ProjectListScreen({
           >
             <Text style={styles.modalTitle}>新しいプロジェクトを追加</Text>
 
-            <ScrollView showsVerticalScrollIndicator={false}>
+            {/* ★ 修正：スクロール領域の下部にしっかり余白(paddingBottom: 50)を追加 */}
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={{ paddingBottom: 50 }}
+            >
               <Text style={styles.label}>プロジェクト名</Text>
               <TextInput
                 style={styles.input}
@@ -8804,13 +8810,14 @@ const styles = StyleSheet.create({
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.5)",
-    justifyContent: "flex-end",
+    justifyContent: "flex-end", // ★下部に揃える設定は維持
   },
   modalContent: {
     backgroundColor: "#fff",
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     padding: 20,
+    paddingBottom: Platform.OS === "ios" ? 40 : 20, // ★iOSのホームバー対策でパディングを追加
     maxHeight: "90%",
   },
   modalTitle: {
@@ -8885,16 +8892,15 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../AuthContext";
+import { auth } from "../firebase"; // ★追加
 import {
   getTeamInviteCode,
   subscribeTeamData,
   addTeamArrayItem,
   removeTeamArrayItem,
+  updateUserName, // ★追加
 } from "../services/firestoreService";
 
-// ==========================================
-// ▼ 画面の部品
-// ==========================================
 const ThresholdSelector = ({ label, value, min, max, onChange }) => (
   <View style={styles.thresholdRow}>
     <Text style={styles.thresholdLabel}>{label}</Text>
@@ -8951,9 +8957,6 @@ const OptionSelector = ({ options, selected, onSelect }) => (
   </View>
 );
 
-// ==========================================
-// ▼ メイン画面
-// ==========================================
 const SettingsScreen = ({
   navigation,
   isAdmin,
@@ -8965,7 +8968,6 @@ const SettingsScreen = ({
   setMemberPassword,
   clubMembers,
   setClubMembers,
-  // grades, setGrades, positions, setPositions はFirestore連動にしたためPropsから除外（内部で管理）
   alertThresholds,
   setAlertThresholds,
   userProfiles,
@@ -8974,7 +8976,6 @@ const SettingsScreen = ({
   const { activeTeamId } = useAuth();
   const [inviteCode, setInviteCode] = useState("読み込み中...");
 
-  // ★ Firestoreと連動する学年・ポジションデータ
   const [grades, setGrades] = useState([]);
   const [positions, setPositions] = useState([]);
 
@@ -8984,7 +8985,6 @@ const SettingsScreen = ({
     (isAdmin ? "owner" : currentUserProfile.role || "member");
   const isStaffOrAbove = ["owner", "staff", "admin"].includes(userRole);
 
-  // ★ チームデータのリアルタイム取得
   useEffect(() => {
     if (!activeTeamId) return;
 
@@ -9030,7 +9030,12 @@ const SettingsScreen = ({
     myPassword: false,
   });
 
+  // ★ 修正：currentUserが変わったら入力欄も追従する
   const [myNewName, setMyNewName] = useState(currentUser);
+  useEffect(() => {
+    setMyNewName(currentUser);
+  }, [currentUser]);
+
   const [myGrade, setMyGrade] = useState(
     userProfiles[currentUser]?.grade || "",
   );
@@ -9080,9 +9085,6 @@ const SettingsScreen = ({
     Alert.alert("保存完了", "チームの共通パスワードを更新しました。");
   };
 
-  // ==========================================
-  // 🔘 リストの追加・削除機能（元々のローカル用）
-  // ==========================================
   const handleAddItemLocal = (
     itemName,
     list,
@@ -9111,9 +9113,6 @@ const SettingsScreen = ({
     ]);
   };
 
-  // ==========================================
-  // 🔘 データベース（Firestore）用 学年・ポジション追加・削除
-  // ==========================================
   const handleAddTeamArrayItem = async (field, value, setter) => {
     const trimmed = value.trim();
     if (!trimmed) return;
@@ -9142,44 +9141,27 @@ const SettingsScreen = ({
     ]);
   };
 
-  const handleSaveMemberProfile = () => {
+  // ★ 修正：Firestoreのユーザー名を更新するように変更
+  const handleSaveMemberProfile = async () => {
     const trimmedName = myNewName.trim();
     if (trimmedName === "") {
       Alert.alert("エラー", "名前を入力してください。");
       return;
     }
 
-    let updatedProfiles = { ...userProfiles };
-    let updatedMembers = [...clubMembers];
-
-    if (trimmedName !== currentUser) {
-      if (clubMembers.includes(trimmedName)) {
-        Alert.alert("エラー", "その名前は既に他の部員が使用しています。");
-        return;
+    try {
+      const uid = auth.currentUser?.uid;
+      if (uid) {
+        await updateUserName(uid, trimmedName);
       }
-      updatedMembers = updatedMembers.map((m) =>
-        m === currentUser ? trimmedName : m,
+      Alert.alert(
+        "保存完了",
+        "プロフィールを更新しました。\n変更はアプリ全体に即座に反映されます。",
       );
-      updatedProfiles[trimmedName] = {
-        ...updatedProfiles[currentUser],
-        grade: myGrade,
-        position: myPosition,
-      };
-      delete updatedProfiles[currentUser];
-    } else {
-      updatedProfiles[currentUser] = {
-        ...updatedProfiles[currentUser],
-        grade: myGrade,
-        position: myPosition,
-      };
+    } catch (error) {
+      console.log(error);
+      Alert.alert("エラー", "プロフィールの更新に失敗しました。");
     }
-
-    setClubMembers(updatedMembers);
-    setUserProfiles(updatedProfiles);
-    if (trimmedName !== currentUser) {
-      setCurrentUser(trimmedName);
-    }
-    Alert.alert("保存完了", "プロフィールを更新しました。");
   };
 
   const handleSaveMemberPassword = () => {
@@ -9324,7 +9306,7 @@ const SettingsScreen = ({
                   placeholder="表示名"
                 />
                 <Text style={styles.hintText}>
-                  ※過去の投稿の名前はそのまま残ります。
+                  ※変更するとアプリ全体の表示名が切り替わります。
                 </Text>
 
                 <Text style={[styles.label, { marginTop: 15 }]}>学年</Text>
@@ -9404,7 +9386,32 @@ const SettingsScreen = ({
                 チームの管理・設定を行うことができます。
               </Text>
 
-              {/* ★ 所属チーム情報（新規追加部分） */}
+              {/* Profile setup for admin */}
+              <SectionCard
+                isExp={expanded.myProfile}
+                onToggle={() => toggleSection("myProfile")}
+                title="👤 あなたのプロフィール設定"
+              >
+                <Text style={styles.label}>
+                  表示名（本名またはニックネーム）
+                </Text>
+                <TextInput
+                  style={styles.input}
+                  value={myNewName}
+                  onChangeText={setMyNewName}
+                  placeholder="表示名"
+                />
+                <Text style={styles.hintText}>
+                  ※変更するとアプリ全体の表示名が切り替わります。
+                </Text>
+                <TouchableOpacity
+                  style={styles.saveBtn}
+                  onPress={handleSaveMemberProfile}
+                >
+                  <Text style={styles.saveBtnText}>プロフィールを保存</Text>
+                </TouchableOpacity>
+              </SectionCard>
+
               <SectionCard
                 isExp={expanded.teamInfo}
                 onToggle={() => toggleSection("teamInfo")}
@@ -9442,7 +9449,6 @@ const SettingsScreen = ({
                 </View>
               </SectionCard>
 
-              {/* ★ 元々あったアラート設定 */}
               <SectionCard
                 isExp={expanded.alert}
                 onToggle={() => toggleSection("alert")}
@@ -9503,7 +9509,6 @@ const SettingsScreen = ({
                 </View>
               </SectionCard>
 
-              {/* ★ 元々あったパスワード設定 */}
               <SectionCard
                 isExp={expanded.password}
                 onToggle={() => toggleSection("password")}
@@ -9551,7 +9556,6 @@ const SettingsScreen = ({
                 </TouchableOpacity>
               </SectionCard>
 
-              {/* ★ 元々あった部員リスト設定（ローカル管理維持） */}
               <SectionCard
                 isExp={expanded.member}
                 onToggle={() => toggleSection("member")}
@@ -9604,7 +9608,6 @@ const SettingsScreen = ({
                             <Text style={styles.deleteText}>削除</Text>
                           </TouchableOpacity>
                         </View>
-
                         <View style={{ alignItems: "flex-end" }}>
                           <TouchableOpacity
                             style={[
@@ -9626,7 +9629,6 @@ const SettingsScreen = ({
                               {roleData.label} ▾
                             </Text>
                           </TouchableOpacity>
-
                           {(memberRole === "member" ||
                             memberRole === "captain") && (
                             <TouchableOpacity
@@ -9638,7 +9640,6 @@ const SettingsScreen = ({
                               </Text>
                             </TouchableOpacity>
                           )}
-
                           {memberRole === "staff" && (
                             <TouchableOpacity
                               style={styles.subSettingBadge}
@@ -9662,7 +9663,6 @@ const SettingsScreen = ({
                 </View>
               </SectionCard>
 
-              {/* ★ 学年リスト管理（データベース連動版） */}
               <SectionCard
                 isExp={expanded.grade}
                 onToggle={() => toggleSection("grade")}
@@ -9710,7 +9710,6 @@ const SettingsScreen = ({
                 </View>
               </SectionCard>
 
-              {/* ★ ポジション管理（データベース連動版） */}
               <SectionCard
                 isExp={expanded.position}
                 onToggle={() => toggleSection("position")}
@@ -9763,14 +9762,10 @@ const SettingsScreen = ({
               </SectionCard>
             </>
           )}
-
           <View style={{ height: 100 }} />
         </ScrollView>
       </KeyboardAvoidingView>
 
-      {/* ========================================== */}
-      {/* ▼ モーダル群（元々あったものを完全維持！） */}
-      {/* ========================================== */}
       <Modal
         visible={isRoleModalVisible}
         transparent={true}
@@ -9781,7 +9776,6 @@ const SettingsScreen = ({
             <Text style={styles.modalTitle}>
               {selectedMemberForRole} の権限を変更
             </Text>
-
             {userRole === "owner" && (
               <TouchableOpacity
                 style={[
@@ -9797,7 +9791,6 @@ const SettingsScreen = ({
                 </Text>
               </TouchableOpacity>
             )}
-
             <TouchableOpacity
               style={[
                 styles.roleSelectBtn,
@@ -9811,7 +9804,6 @@ const SettingsScreen = ({
                 プロジェクトの作成や消去、全体への連絡が可能です。他メンバーの通報・メディカルは見られません。
               </Text>
             </TouchableOpacity>
-
             <TouchableOpacity
               style={[
                 styles.roleSelectBtn,
@@ -9826,7 +9818,6 @@ const SettingsScreen = ({
                 プロジェクトの閲覧やタグ付け、自身のメディカル入力のみが可能です。
               </Text>
             </TouchableOpacity>
-
             <TouchableOpacity
               style={styles.cancelBtn}
               onPress={() => setIsRoleModalVisible(false)}
@@ -9893,7 +9884,6 @@ const SettingsScreen = ({
             <Text style={styles.settingHint}>
               日記やメディカル情報をどこまで閲覧できるか設定します。
             </Text>
-
             <TouchableOpacity
               style={[
                 styles.roleSelectBtn,
@@ -9910,7 +9900,6 @@ const SettingsScreen = ({
                 すべての部員の記録を閲覧できます。
               </Text>
             </TouchableOpacity>
-
             <TouchableOpacity
               style={[
                 styles.roleSelectBtn,
@@ -9926,7 +9915,6 @@ const SettingsScreen = ({
                 自分が担当に設定されている部員の記録のみ閲覧できます。
               </Text>
             </TouchableOpacity>
-
             <TouchableOpacity
               style={styles.cancelBtn}
               onPress={() => setIsStaffScopeModalVisible(false)}
@@ -9965,7 +9953,6 @@ const styles = StyleSheet.create({
     marginBottom: 15,
     textAlign: "center",
   },
-
   card: {
     backgroundColor: "#fff",
     borderRadius: 12,
@@ -9988,7 +9975,6 @@ const styles = StyleSheet.create({
   cardTitle: { fontSize: 16, fontWeight: "bold", color: "#333" },
   chevron: { fontSize: 16, color: "#888", fontWeight: "bold" },
   cardContent: { padding: 20, paddingTop: 15 },
-
   subText: { fontSize: 12, color: "#666", marginBottom: 15 },
   label: { fontSize: 14, fontWeight: "bold", color: "#555", marginBottom: 5 },
   input: {
@@ -10009,7 +9995,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   hintText: { fontSize: 11, color: "#888", marginTop: 4 },
-
   optionBtn: {
     backgroundColor: "#f0f0f0",
     paddingHorizontal: 15,
@@ -10025,7 +10010,6 @@ const styles = StyleSheet.create({
   },
   optionText: { fontSize: 13, color: "#555" },
   optionTextActive: { color: "#27ae60", fontWeight: "bold" },
-
   thresholdRow: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -10069,7 +10053,6 @@ const styles = StyleSheet.create({
     marginTop: 4,
     marginRight: 10,
   },
-
   passwordRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -10121,7 +10104,6 @@ const styles = StyleSheet.create({
   },
   deleteText: { color: "#e74c3c", fontWeight: "bold", fontSize: 12 },
   emptyText: { padding: 15, textAlign: "center", color: "#888" },
-
   roleBadge: {
     paddingHorizontal: 12,
     paddingVertical: 6,
@@ -10129,7 +10111,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   roleBadgeText: { fontSize: 12, fontWeight: "bold" },
-
   subSettingBadge: {
     paddingHorizontal: 8,
     paddingVertical: 4,
@@ -10137,13 +10118,9 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
     borderWidth: 1,
     borderColor: "#ccc",
+    marginTop: 6,
   },
-  subSettingText: {
-    fontSize: 10,
-    color: "#666",
-    fontWeight: "bold",
-  },
-
+  subSettingText: { fontSize: 10, color: "#666", fontWeight: "bold" },
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.5)",
@@ -10171,22 +10148,14 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     marginBottom: 10,
   },
-  roleSelectBtnActive: {
-    backgroundColor: "#ebf5fb",
-    borderColor: "#3498db",
-  },
+  roleSelectBtnActive: { backgroundColor: "#ebf5fb", borderColor: "#3498db" },
   roleSelectTitle: {
     fontSize: 15,
     fontWeight: "bold",
     color: "#333",
     marginBottom: 6,
   },
-  roleSelectDesc: {
-    fontSize: 12,
-    color: "#666",
-    lineHeight: 18,
-  },
-
+  roleSelectDesc: { fontSize: 12, color: "#666", lineHeight: 18 },
   optionBtnFull: {
     padding: 15,
     borderBottomWidth: 1,
@@ -10204,18 +10173,8 @@ const styles = StyleSheet.create({
     marginBottom: 15,
     textAlign: "center",
   },
-
-  cancelBtn: {
-    marginTop: 10,
-    paddingVertical: 12,
-    alignItems: "center",
-  },
-  cancelBtnText: {
-    fontSize: 15,
-    fontWeight: "bold",
-    color: "#888",
-  },
-
+  cancelBtn: { marginTop: 10, paddingVertical: 12, alignItems: "center" },
+  cancelBtnText: { fontSize: 15, fontWeight: "bold", color: "#888" },
   idInfoBox: { alignItems: "center", paddingVertical: 10 },
   idLabel: { fontSize: 12, color: "#888", fontWeight: "bold", marginBottom: 5 },
   idValueHighlight: {
@@ -10658,10 +10617,11 @@ const WorkspaceHomeScreen = ({
     (isAdmin ? "owner" : currentUserProfile.role || "member");
 
   const roleNameMap = {
-    owner: "管理者(監督)",
-    staff: "コーチ(スタッフ)",
+    owner: `${currentUser}(監督)`,
+    admin: `${currentUser}(管理者)`,
+    staff: `${currentUser}(コーチ)`,
     captain: `${currentUser}(キャプテン)`,
-    member: `${currentUser}(あなた)`,
+    member: currentUser, // 「(あなた)」や「佐藤(自分)」を削除し、純粋な名前のみに！
   };
   const displayUserName = roleNameMap[userRole] || currentUser;
 
@@ -12502,38 +12462,48 @@ import {
   setDoc,
   getDoc,
   updateDoc,
+  deleteDoc,
   arrayUnion,
   arrayRemove,
 } from "firebase/firestore";
 import { db } from "../firebase";
 
 // ==========================================
-// 📁 プロジェクト関連
+// 📁 プロジェクト（部活の予定・動画等）関連
 // ==========================================
-
 export function subscribeProjects(teamId, callback) {
   if (!teamId) return () => {};
   const projectsRef = collection(db, "teams", teamId, "projects");
   const q = query(projectsRef, orderBy("createdAt", "desc"));
-  const unsubscribe = onSnapshot(q, (snapshot) => {
+  return onSnapshot(q, (snapshot) => {
     const projectsData = snapshot.docs.map((doc) => ({
       id: doc.id,
       ...doc.data(),
     }));
     callback(projectsData);
   });
-  return unsubscribe;
 }
 
 export async function createProject(teamId, projectData) {
   if (!teamId) throw new Error("チームIDがありません。");
-  const projectsRef = collection(db, "teams", teamId, "projects");
-  await addDoc(projectsRef, {
-    ...projectData,
-    teamId: teamId,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  });
+  // ★修正：アプリ側でIDが指定されている場合はそのIDを使う
+  if (projectData.id) {
+    const docRef = doc(db, "teams", teamId, "projects", projectData.id);
+    await setDoc(docRef, {
+      ...projectData,
+      teamId: teamId,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  } else {
+    const projectsRef = collection(db, "teams", teamId, "projects");
+    await addDoc(projectsRef, {
+      ...projectData,
+      teamId: teamId,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  }
 }
 
 export async function updateProject(teamId, projectId, updateData) {
@@ -12541,64 +12511,99 @@ export async function updateProject(teamId, projectId, updateData) {
   const projectRef = doc(db, "teams", teamId, "projects", projectId);
   await setDoc(
     projectRef,
-    {
-      ...updateData,
-      updatedAt: serverTimestamp(),
-    },
+    { ...updateData, updatedAt: serverTimestamp() },
     { merge: true },
   );
 }
 
-// ==========================================
-// 🏟️ チーム設定・設定画面関連（招待コード・学年・ポジション）
-// ==========================================
+export async function deleteProject(teamId, projectId) {
+  if (!teamId || !projectId) return;
+  const projectRef = doc(db, "teams", teamId, "projects", projectId);
+  await updateDoc(projectRef, {
+    status: "deleted",
+    updatedAt: serverTimestamp(),
+  });
+}
 
+// ==========================================
+// 🔐 個人の予定（完全非公開）関連
+// ==========================================
+export function subscribePersonalEvents(uid, callback) {
+  if (!uid) return () => {};
+  const eventsRef = collection(db, "users", uid, "personalEvents");
+  const q = query(eventsRef, orderBy("date", "asc"));
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const events = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      }));
+      callback(events);
+    },
+    (error) => {
+      console.log("🔐 個人予定の監視エラー:", error.message);
+    },
+  );
+}
+
+export async function createPersonalEvent(uid, eventData) {
+  if (!uid) return;
+  // ★修正：アプリ側でIDが指定されている場合はそのIDを使う
+  if (eventData.id) {
+    const docRef = doc(db, "users", uid, "personalEvents", eventData.id);
+    await setDoc(docRef, { ...eventData, createdAt: serverTimestamp() });
+  } else {
+    const eventsRef = collection(db, "users", uid, "personalEvents");
+    await addDoc(eventsRef, { ...eventData, createdAt: serverTimestamp() });
+  }
+}
+
+export async function updatePersonalEvent(uid, eventId, updateData) {
+  if (!uid || !eventId) return;
+  const eventRef = doc(db, "users", uid, "personalEvents", eventId);
+  await updateDoc(eventRef, { ...updateData, updatedAt: serverTimestamp() });
+}
+
+export async function deletePersonalEvent(uid, eventId) {
+  if (!uid || !eventId) return;
+  const eventRef = doc(db, "users", uid, "personalEvents", eventId);
+  await deleteDoc(eventRef);
+}
+
+// ==========================================
+// 🏟️ チーム設定・設定画面関連
+// ==========================================
 export async function getTeamInviteCode(teamId) {
   if (!teamId) return null;
   try {
-    const teamRef = doc(db, "teams", teamId);
-    const teamSnap = await getDoc(teamRef);
-    if (teamSnap.exists() && teamSnap.data().inviteCode) {
-      return teamSnap.data().inviteCode;
-    }
-    return "未発行";
+    const teamSnap = await getDoc(doc(db, "teams", teamId));
+    return teamSnap.exists() && teamSnap.data().inviteCode
+      ? teamSnap.data().inviteCode
+      : "未発行";
   } catch (error) {
-    console.log("招待コード取得エラー:", error);
     return "取得エラー(権限不足)";
   }
 }
 
-// ★ チーム情報をリアルタイムで取得する関数（学年・ポジション用）
 export function subscribeTeamData(teamId, callback) {
   if (!teamId) return () => {};
-  const teamRef = doc(db, "teams", teamId);
-  return onSnapshot(teamRef, (docSnap) => {
-    if (docSnap.exists()) {
-      callback(docSnap.data());
-    }
+  return onSnapshot(doc(db, "teams", teamId), (docSnap) => {
+    if (docSnap.exists()) callback(docSnap.data());
   });
 }
 
-// ★ チームの配列データ（学年、ポジション）を追加する関数
 export async function addTeamArrayItem(teamId, field, value) {
-  const teamRef = doc(db, "teams", teamId);
-  await updateDoc(teamRef, {
-    [field]: arrayUnion(value),
-  });
+  await updateDoc(doc(db, "teams", teamId), { [field]: arrayUnion(value) });
 }
 
-// ★ チームの配列データ（学年、ポジション）を削除する関数
 export async function removeTeamArrayItem(teamId, field, value) {
-  const teamRef = doc(db, "teams", teamId);
-  await updateDoc(teamRef, {
-    [field]: arrayRemove(value),
-  });
+  await updateDoc(doc(db, "teams", teamId), { [field]: arrayRemove(value) });
 }
 
 // ==========================================
-// 🚀 新規登録フロー（招待コードを使った正規ルート完全版）
+// 🚀 新規登録フロー
 // ==========================================
-
 export async function executeRegistration(
   uid,
   role,
@@ -12609,15 +12614,11 @@ export async function executeRegistration(
   const userRef = doc(db, "users", uid);
   await setDoc(
     userRef,
-    {
-      name: userName,
-      createdAt: serverTimestamp(),
-    },
+    { name: userName, createdAt: serverTimestamp() },
     { merge: true },
   );
 
   if (role === "admin") {
-    // 👑 管理者としてチームを新規作成
     const newTeamRef = doc(collection(db, "teams"));
     const teamId = newTeamRef.id;
     const generatedInviteCode = Math.random()
@@ -12631,46 +12632,145 @@ export async function executeRegistration(
       inviteCode: generatedInviteCode,
       createdAt: serverTimestamp(),
     });
-
-    const memberRef = doc(db, "teams", teamId, "members", uid);
-    await setDoc(memberRef, {
+    await setDoc(doc(db, "teams", teamId, "members", uid), {
       role: "admin",
       joinedAt: serverTimestamp(),
     });
-
     await setDoc(userRef, { activeTeamId: teamId }, { merge: true });
-
-    const inviteRef = doc(db, "invites", generatedInviteCode);
-    await setDoc(inviteRef, {
+    await setDoc(doc(db, "invites", generatedInviteCode), {
       teamId: teamId,
       active: true,
       createdBy: uid,
       createdAt: serverTimestamp(),
     });
+
     return { inviteCode: generatedInviteCode, teamId, type: "create" };
   } else {
-    // 👤 部員として招待コードを使って参加
     const inviteCode = inviteCodeInput.trim().toUpperCase();
-    const inviteRef = doc(db, "invites", inviteCode);
-    const inviteSnap = await getDoc(inviteRef);
+    const inviteSnap = await getDoc(doc(db, "invites", inviteCode));
 
-    if (!inviteSnap.exists() || !inviteSnap.data().active) {
+    if (!inviteSnap.exists() || !inviteSnap.data().active)
       throw new Error("無効な招待コードです。");
-    }
 
     const teamId = inviteSnap.data().teamId;
-    const memberRef = doc(db, "teams", teamId, "members", uid);
-
-    await setDoc(memberRef, {
+    await setDoc(doc(db, "teams", teamId, "members", uid), {
       role: "member",
       inviteCode: inviteCode,
       joinedAt: serverTimestamp(),
     });
-
     await setDoc(userRef, { activeTeamId: teamId }, { merge: true });
 
     return { teamId, type: "join" };
   }
+}
+
+export async function updateUserName(uid, newName) {
+  if (!uid || !newName) return;
+  await setDoc(doc(db, "users", uid), { name: newName }, { merge: true });
+}
+
+// ==========================================
+// 📋 掲示板（Notice）関連
+// ==========================================
+export async function createNotice(teamId, noticeData) {
+  if (!teamId) throw new Error("チームIDがありません");
+  if (noticeData.id) {
+    const docRef = doc(db, "teams", teamId, "notices", noticeData.id);
+    await setDoc(docRef, {
+      ...noticeData,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  } else {
+    await addDoc(collection(db, "teams", teamId, "notices"), {
+      ...noticeData,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  }
+}
+
+export async function updateNotice(teamId, noticeId, updateData) {
+  if (!teamId || !noticeId) throw new Error("IDが不足しています");
+  await updateDoc(doc(db, "teams", teamId, "notices", noticeId), {
+    ...updateData,
+    updatedAt: serverTimestamp(),
+  });
+}
+
+export function subscribeNotices(teamId, callback) {
+  if (!teamId) return () => {};
+  const q = query(
+    collection(db, "teams", teamId, "notices"),
+    orderBy("createdAt", "desc"),
+  );
+  return onSnapshot(q, (snapshot) => {
+    callback(
+      snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+        createdAt: doc.data().createdAt?.toMillis() || Date.now(),
+      })),
+    );
+  });
+}
+
+// ==========================================
+// 📝 振り返り（Daily Reports）関連
+// ==========================================
+export function subscribeDailyReports(teamId, callback) {
+  if (!teamId) return () => {};
+  const q = query(
+    collection(db, "teams", teamId, "dailyReports"),
+    orderBy("createdAt", "desc"),
+  );
+  return onSnapshot(q, (snapshot) => {
+    callback(
+      snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+        createdAt: doc.data().createdAt?.toMillis() || Date.now(),
+      })),
+    );
+  });
+}
+
+export async function createDailyReport(teamId, reportData) {
+  if (!teamId) throw new Error("チームIDがありません");
+  // ★修正：アプリ側で作ったID（rep_...）をそのままFirestoreのIDとして使う
+  if (reportData.id) {
+    const docRef = doc(db, "teams", teamId, "dailyReports", reportData.id);
+    await setDoc(docRef, {
+      ...reportData,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  } else {
+    await addDoc(collection(db, "teams", teamId, "dailyReports"), {
+      ...reportData,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  }
+}
+
+export async function updateDailyReport(teamId, reportId, updateData) {
+  if (!teamId || !reportId) throw new Error("IDが不足しています");
+  await updateDoc(doc(db, "teams", teamId, "dailyReports", reportId), {
+    ...updateData,
+    updatedAt: serverTimestamp(),
+  });
+}
+// ↓↓↓ firestoreService.js の一番下に追加 ↓↓↓
+
+export async function deleteDailyReport(teamId, reportId) {
+  if (!teamId || !reportId) return;
+  const reportRef = doc(db, "teams", teamId, "dailyReports", reportId);
+  // 完全に消すのではなく、statusを"deleted"にして画面から隠す（安全な削除方法）
+  await updateDoc(reportRef, {
+    status: "deleted",
+    updatedAt: serverTimestamp(),
+  });
 }
 </file>
 

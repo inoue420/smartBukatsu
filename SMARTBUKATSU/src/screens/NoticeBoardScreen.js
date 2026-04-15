@@ -15,7 +15,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-// ★ 復活！Firestore通信関数をインポート
+// ★ Firestore通信関数をインポート
 import { useAuth } from "../AuthContext";
 import { createNotice, updateNotice } from "../services/firestoreService";
 
@@ -35,10 +35,14 @@ const NoticeBoardScreen = ({
     global.TEST_ROLE ||
     (isAdmin ? "owner" : currentUserProfile.role || "member");
 
-  const canManageNotices = ["owner", "staff", "captain"].includes(userRole);
+  // ★ 修正: 管理者(admin)を含めるように強化
+  const canManageNotices = ["owner", "admin", "staff", "captain"].includes(
+    userRole,
+  );
 
   const roleNameMap = {
     owner: "管理者(監督)",
+    admin: "管理者",
     staff: "コーチ(スタッフ)",
     captain: `${currentUser}(キャプテン)`,
     member: currentUser,
@@ -74,7 +78,6 @@ const NoticeBoardScreen = ({
     return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
   });
 
-  // ★ 2. Firestore + ローカルでの既読処理
   const handleOpenNotice = async (notice) => {
     setSelectedNotice(notice);
 
@@ -87,21 +90,17 @@ const NoticeBoardScreen = ({
       );
       setNotices(updatedNotices);
 
-      // 裏でFirestoreに送信（ルール追加待ちのためエラーはキャッチしてスルー）
+      // 裏でFirestoreに送信
       try {
         if (activeTeamId) {
           await updateNotice(activeTeamId, notice.id, { readBy: newReadBy });
         }
       } catch (error) {
-        console.log(
-          "Firestore更新エラー（既読）: ルール追加をお待ちください",
-          error,
-        );
+        console.log("Firestore更新エラー（既読）", error);
       }
     }
   };
 
-  // ★ 2. Firestore + ローカルでの保存処理
   const handleSaveNotice = async () => {
     if (newTitle.trim() === "" || newContent.trim() === "") {
       Alert.alert("エラー", "タイトルと本文を入力してください。");
@@ -114,7 +113,6 @@ const NoticeBoardScreen = ({
       const safeTeamId = activeTeamId || "test_team";
 
       if (editingNoticeId) {
-        // [1] まず画面上のリストを更新（サクサク動かすため）
         const updatedNotices = notices.map((n) =>
           n.id === editingNoticeId
             ? {
@@ -127,7 +125,6 @@ const NoticeBoardScreen = ({
         );
         setNotices(updatedNotices);
 
-        // [2] 裏でFirestoreに更新データを送信
         await updateNotice(safeTeamId, editingNoticeId, {
           title: newTitle.trim(),
           content: newContent.trim(),
@@ -149,21 +146,15 @@ const NoticeBoardScreen = ({
           status: isOffline ? "pending" : "active",
         };
 
-        // [1] まず画面上に仮のIDで追加（サクサク動かすため）
         setNotices([
           { ...newNotice, id: "notice_" + Date.now(), createdAt: Date.now() },
           ...notices,
         ]);
 
-        // [2] 裏でFirestoreに新規作成データを送信
         await createNotice(safeTeamId, newNotice);
       }
     } catch (error) {
-      console.log(
-        "Firestore保存エラー（新規/更新）: ルール追加をお待ちください",
-        error,
-      );
-      // エラーになっても画面上にはすでに追加されているので開発は続行可能！
+      console.log("Firestore保存エラー（新規/更新）", error);
     } finally {
       setIsCreateModalVisible(false);
       resetForm();
@@ -172,7 +163,6 @@ const NoticeBoardScreen = ({
     }
   };
 
-  // ★ 2. Firestore + ローカルでの削除処理
   const handleDeleteNotice = (noticeId) => {
     Alert.alert("削除の確認", "このお知らせを削除しますか？", [
       { text: "キャンセル", style: "cancel" },
@@ -180,14 +170,12 @@ const NoticeBoardScreen = ({
         text: "削除",
         style: "destructive",
         onPress: async () => {
-          // [1] 画面上から消す
           const updatedNotices = notices.map((n) =>
             n.id === noticeId ? { ...n, status: "deleted" } : n,
           );
           setNotices(updatedNotices);
           setSelectedNotice(null);
 
-          // [2] 裏でFirestoreに送信
           try {
             if (activeTeamId) {
               await updateNotice(activeTeamId, noticeId, {
@@ -196,10 +184,7 @@ const NoticeBoardScreen = ({
               });
             }
           } catch (error) {
-            console.log(
-              "Firestore削除エラー: ルール追加をお待ちください",
-              error,
-            );
+            console.log("Firestore削除エラー", error);
           }
         },
       },
@@ -367,24 +352,51 @@ const NoticeBoardScreen = ({
                   </View>
                 </View>
 
-                {canManageNotices &&
-                  (selectedNotice.author === displayUserName ||
-                    ["owner", "staff"].includes(userRole)) && (
+                {/* ★ 修正: 共有投稿の編集ブロック・削除制限を追加 */}
+                {(() => {
+                  const isSharedPost =
+                    selectedNotice.isSharedPost ||
+                    (selectedNotice.title.includes("より】") &&
+                      selectedNotice.title.includes("の投稿"));
+
+                  const isStaffOrAbove = ["owner", "admin", "staff"].includes(
+                    userRole,
+                  );
+                  const isAuthor = selectedNotice.author === displayUserName;
+
+                  // 編集：共有投稿は誰も不可。通常投稿は「管理者」か「書いた本人(キャプテン等)」が可能
+                  const canEdit =
+                    !isSharedPost &&
+                    (isStaffOrAbove || (canManageNotices && isAuthor));
+
+                  // 削除：共有投稿は「管理者」のみ。通常投稿は「管理者」か「書いた本人」
+                  const canDelete = isSharedPost
+                    ? isStaffOrAbove
+                    : isStaffOrAbove || (canManageNotices && isAuthor);
+
+                  if (!canEdit && !canDelete) return null;
+
+                  return (
                     <View style={styles.adminActionRow}>
-                      <TouchableOpacity
-                        style={styles.editBtn}
-                        onPress={() => openEditModal(selectedNotice)}
-                      >
-                        <Text style={styles.editBtnText}>✏️ 修正する</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        style={styles.deleteBtn}
-                        onPress={() => handleDeleteNotice(selectedNotice.id)}
-                      >
-                        <Text style={styles.deleteBtnText}>🗑 削除する</Text>
-                      </TouchableOpacity>
+                      {canEdit && (
+                        <TouchableOpacity
+                          style={styles.editBtn}
+                          onPress={() => openEditModal(selectedNotice)}
+                        >
+                          <Text style={styles.editBtnText}>✏️ 修正する</Text>
+                        </TouchableOpacity>
+                      )}
+                      {canDelete && (
+                        <TouchableOpacity
+                          style={styles.deleteBtn}
+                          onPress={() => handleDeleteNotice(selectedNotice.id)}
+                        >
+                          <Text style={styles.deleteBtnText}>🗑 削除する</Text>
+                        </TouchableOpacity>
+                      )}
                     </View>
-                  )}
+                  );
+                })()}
               </ScrollView>
             )}
           </View>

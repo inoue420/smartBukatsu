@@ -15,13 +15,24 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../AuthContext";
-import { auth } from "../firebase"; // ★追加
+import { auth } from "../firebase";
+
+// ★ Firebase Auth のパスワード変更用関数
+import {
+  EmailAuthProvider,
+  reauthenticateWithCredential,
+  updatePassword,
+} from "firebase/auth";
+
 import {
   getTeamInviteCode,
   subscribeTeamData,
+  updateTeamName,
   addTeamArrayItem,
   removeTeamArrayItem,
-  updateUserName, // ★追加
+  updateUserName,
+  updateTeamMember,
+  removeTeamMember,
 } from "../services/firestoreService";
 
 const ThresholdSelector = ({ label, value, min, max, onChange }) => (
@@ -84,13 +95,7 @@ const SettingsScreen = ({
   navigation,
   isAdmin,
   currentUser,
-  setCurrentUser,
-  adminPassword,
-  setAdminPassword,
-  memberPassword,
-  setMemberPassword,
   clubMembers,
-  setClubMembers,
   alertThresholds,
   setAlertThresholds,
   userProfiles,
@@ -99,14 +104,29 @@ const SettingsScreen = ({
   const { activeTeamId } = useAuth();
   const [inviteCode, setInviteCode] = useState("読み込み中...");
 
-  const [grades, setGrades] = useState([]);
-  const [positions, setPositions] = useState([]);
+  const [grades, setGrades] = useState(["1年生", "2年生", "3年生"]);
+  const [positions, setPositions] = useState([
+    "キャプテン",
+    "マネージャー",
+    "GK",
+    "CP",
+  ]);
+
+  const [currentTeamName, setCurrentTeamName] = useState("");
 
   const currentUserProfile = userProfiles[currentUser] || {};
   const userRole =
     global.TEST_ROLE ||
     (isAdmin ? "owner" : currentUserProfile.role || "member");
   const isStaffOrAbove = ["owner", "staff", "admin"].includes(userRole);
+
+  const roleConfig = {
+    owner: { label: "監督(オーナー)", color: "#e74c3c", bg: "#fceeea" },
+    admin: { label: "管理者", color: "#e74c3c", bg: "#fceeea" },
+    staff: { label: "スタッフ", color: "#9b59b6", bg: "#f5eef8" },
+    captain: { label: "キャプテン", color: "#e67e22", bg: "#fdf2e9" },
+    member: { label: "一般部員", color: "#3498db", bg: "#ebf5fb" },
+  };
 
   useEffect(() => {
     if (!activeTeamId) return;
@@ -122,8 +142,10 @@ const SettingsScreen = ({
 
     const unsubscribe = subscribeTeamData(activeTeamId, (data) => {
       if (data) {
-        setGrades(data.grades || []);
-        setPositions(data.positions || []);
+        if (data.grades && data.grades.length > 0) setGrades(data.grades);
+        if (data.positions && data.positions.length > 0)
+          setPositions(data.positions);
+        if (data.name) setCurrentTeamName(data.name);
       }
     });
 
@@ -133,27 +155,19 @@ const SettingsScreen = ({
     };
   }, [activeTeamId, isStaffOrAbove]);
 
-  const [newAdminPass, setNewAdminPass] = useState(adminPassword);
-  const [newMemberPass, setNewMemberPass] = useState(memberPassword);
-  const [showAdminPass, setShowAdminPass] = useState(false);
-  const [showMemberPass, setShowMemberPass] = useState(false);
-
-  const [newMemberName, setNewMemberName] = useState("");
   const [newGradeName, setNewGradeName] = useState("");
   const [newPositionName, setNewPositionName] = useState("");
 
   const [expanded, setExpanded] = useState({
-    teamInfo: true,
+    teamInfo: false,
     alert: false,
-    password: false,
     member: false,
     grade: false,
     position: false,
-    myProfile: true,
+    myProfile: false,
     myPassword: false,
   });
 
-  // ★ 修正：currentUserが変わったら入力欄も追従する
   const [myNewName, setMyNewName] = useState(currentUser);
   useEffect(() => {
     setMyNewName(currentUser);
@@ -165,10 +179,11 @@ const SettingsScreen = ({
   const [myPosition, setMyPosition] = useState(
     userProfiles[currentUser]?.position || "",
   );
-  const [myPassword, setMyPassword] = useState(
-    userProfiles[currentUser]?.password || "",
-  );
-  const [showMyPassword, setShowMyPassword] = useState(false);
+
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [showCurrentPassword, setShowCurrentPassword] = useState(false);
+  const [newPassword, setNewPassword] = useState("");
+  const [showNewPassword, setShowNewPassword] = useState(false);
 
   const [isRoleModalVisible, setIsRoleModalVisible] = useState(false);
   const [selectedMemberForRole, setSelectedMemberForRole] = useState(null);
@@ -181,14 +196,6 @@ const SettingsScreen = ({
     useState(false);
   const [selectedStaffForScope, setSelectedStaffForScope] = useState(null);
 
-  const roleConfig = {
-    owner: { label: "監督(オーナー)", color: "#e74c3c", bg: "#fceeea" },
-    admin: { label: "管理者", color: "#e74c3c", bg: "#fceeea" },
-    staff: { label: "スタッフ", color: "#9b59b6", bg: "#f5eef8" },
-    captain: { label: "キャプテン", color: "#e67e22", bg: "#fdf2e9" },
-    member: { label: "一般部員", color: "#3498db", bg: "#ebf5fb" },
-  };
-
   const staffList = clubMembers.filter((m) => {
     const r = userProfiles[m]?.role;
     return r === "owner" || r === "staff" || r === "admin";
@@ -198,42 +205,18 @@ const SettingsScreen = ({
     setExpanded((prev) => ({ ...prev, [sectionKey]: !prev[sectionKey] }));
   };
 
-  const handleSavePasswords = () => {
-    if (newAdminPass.trim() === "" || newMemberPass.trim() === "") {
-      Alert.alert("エラー", "パスワードは空にできません。");
+  const handleSaveTeamName = async () => {
+    const trimmed = currentTeamName.trim();
+    if (!trimmed) {
+      Alert.alert("エラー", "チーム名を入力してください。");
       return;
     }
-    setAdminPassword(newAdminPass);
-    setMemberPassword(newMemberPass);
-    Alert.alert("保存完了", "チームの共通パスワードを更新しました。");
-  };
-
-  const handleAddItemLocal = (
-    itemName,
-    list,
-    setList,
-    setNewItemName,
-    label,
-  ) => {
-    const trimmed = itemName.trim();
-    if (trimmed === "") return;
-    if (list.includes(trimmed)) {
-      Alert.alert("エラー", `その${label}は既に登録されています。`);
-      return;
+    try {
+      await updateTeamName(activeTeamId, trimmed);
+      Alert.alert("保存完了", "チーム名を更新しました。");
+    } catch (e) {
+      Alert.alert("エラー", "チーム名の更新に失敗しました。");
     }
-    setList([...list, trimmed]);
-    setNewItemName("");
-  };
-
-  const handleDeleteItemLocal = (itemName, list, setList, label) => {
-    Alert.alert(`${label}の削除`, `${itemName} をリストから削除しますか？`, [
-      { text: "キャンセル", style: "cancel" },
-      {
-        text: "削除",
-        style: "destructive",
-        onPress: () => setList(list.filter((item) => item !== itemName)),
-      },
-    ]);
   };
 
   const handleAddTeamArrayItem = async (field, value, setter) => {
@@ -264,7 +247,6 @@ const SettingsScreen = ({
     ]);
   };
 
-  // ★ 修正：Firestoreのユーザー名を更新するように変更
   const handleSaveMemberProfile = async () => {
     const trimmedName = myNewName.trim();
     if (trimmedName === "") {
@@ -276,43 +258,96 @@ const SettingsScreen = ({
       const uid = auth.currentUser?.uid;
       if (uid) {
         await updateUserName(uid, trimmedName);
+        if (activeTeamId) {
+          await updateTeamMember(activeTeamId, uid, { name: trimmedName });
+        }
       }
       Alert.alert(
         "保存完了",
         "プロフィールを更新しました。\n変更はアプリ全体に即座に反映されます。",
       );
     } catch (error) {
-      console.log(error);
       Alert.alert("エラー", "プロフィールの更新に失敗しました。");
     }
   };
 
-  const handleSaveMemberPassword = () => {
-    if (myPassword.trim() === "") {
-      Alert.alert("エラー", "パスワードは空にできません。");
+  const handleChangeAuthPassword = async () => {
+    if (!currentPassword || !newPassword) {
+      Alert.alert(
+        "エラー",
+        "現在のパスワードと新しいパスワードを入力してください。",
+      );
       return;
     }
-    setUserProfiles((prev) => ({
-      ...prev,
-      [currentUser]: { ...(prev[currentUser] || {}), password: myPassword },
-    }));
-    Alert.alert(
-      "保存完了",
-      "自分専用のパスワードを設定しました。次回のログインから使用できます。",
-    );
+    if (newPassword.length < 6) {
+      Alert.alert("エラー", "新しいパスワードは6文字以上で入力してください。");
+      return;
+    }
+
+    const user = auth.currentUser;
+    if (!user || !user.email) {
+      Alert.alert("エラー", "ユーザー情報の取得に失敗しました。");
+      return;
+    }
+
+    try {
+      const credential = EmailAuthProvider.credential(
+        user.email,
+        currentPassword,
+      );
+      await reauthenticateWithCredential(user, credential);
+
+      await updatePassword(user, newPassword);
+
+      Alert.alert(
+        "成功",
+        "パスワードを変更しました。\n次回から新しいパスワードでログインしてください。",
+      );
+      setCurrentPassword("");
+      setNewPassword("");
+    } catch (error) {
+      console.log(error);
+      let msg = "パスワードの変更に失敗しました。";
+      if (
+        error.code === "auth/invalid-credential" ||
+        error.code === "auth/wrong-password"
+      ) {
+        msg = "現在のパスワードが間違っています。";
+      } else if (error.code === "auth/too-many-requests") {
+        msg =
+          "試行回数が多すぎます。しばらく時間を置いてから再度お試しください。";
+      }
+      Alert.alert("エラー", msg);
+    }
+  };
+
+  const handleDeleteMember = (name, uid) => {
+    if (!uid) {
+      Alert.alert("エラー", "ユーザー情報を取得できませんでした。");
+      return;
+    }
+    Alert.alert("部員の削除", `${name} さんをチームから完全に削除しますか？`, [
+      { text: "キャンセル", style: "cancel" },
+      {
+        text: "削除する",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await removeTeamMember(activeTeamId, uid);
+          } catch (e) {
+            Alert.alert("エラー", "削除に失敗しました。");
+          }
+        },
+      },
+    ]);
   };
 
   const handleOpenRoleModal = (memberName) => {
-    if (memberName === "管理者" || memberName === "監督") {
-      Alert.alert("エラー", "デフォルト管理者の権限は変更できません。");
-      return;
-    }
     const targetRole = userProfiles[memberName]?.role || "member";
     if (targetRole === "owner") {
       Alert.alert("操作エラー", "監督(オーナー)の権限は変更できません。");
       return;
     }
-
     if (
       userRole === "staff" &&
       targetRole === "staff" &&
@@ -329,21 +364,23 @@ const SettingsScreen = ({
     setIsRoleModalVisible(true);
   };
 
-  const handleChangeRole = (newRole) => {
+  const handleChangeRole = async (newRole) => {
     if (!selectedMemberForRole) return;
-    setUserProfiles((prev) => ({
-      ...prev,
-      [selectedMemberForRole]: {
-        ...(prev[selectedMemberForRole] || {}),
-        role: newRole,
-      },
-    }));
-    setIsRoleModalVisible(false);
-    Alert.alert(
-      "設定完了",
-      `${selectedMemberForRole} の権限を「${roleConfig[newRole].label}」に変更しました。`,
-    );
-    setSelectedMemberForRole(null);
+    const uid = userProfiles[selectedMemberForRole]?.uid;
+
+    try {
+      if (uid && activeTeamId) {
+        await updateTeamMember(activeTeamId, uid, { role: newRole });
+      }
+      setIsRoleModalVisible(false);
+      Alert.alert(
+        "設定完了",
+        `${selectedMemberForRole} の権限を「${roleConfig[newRole].label}」に変更しました。`,
+      );
+      setSelectedMemberForRole(null);
+    } catch (e) {
+      Alert.alert("エラー", "権限の変更に失敗しました。");
+    }
   };
 
   const handleOpenAssignStaffModal = (memberName) => {
@@ -351,17 +388,20 @@ const SettingsScreen = ({
     setIsAssignStaffModalVisible(true);
   };
 
-  const handleAssignStaff = (staffName) => {
+  const handleAssignStaff = async (staffName) => {
     if (!selectedMemberForAssign) return;
-    setUserProfiles((prev) => ({
-      ...prev,
-      [selectedMemberForAssign]: {
-        ...(prev[selectedMemberForAssign] || {}),
-        assignedStaff: staffName === "未設定" ? null : staffName,
-      },
-    }));
-    setIsAssignStaffModalVisible(false);
-    setSelectedMemberForAssign(null);
+    const uid = userProfiles[selectedMemberForAssign]?.uid;
+    const assignedStaff = staffName === "未設定" ? null : staffName;
+
+    try {
+      if (uid && activeTeamId) {
+        await updateTeamMember(activeTeamId, uid, { assignedStaff });
+      }
+      setIsAssignStaffModalVisible(false);
+      setSelectedMemberForAssign(null);
+    } catch (e) {
+      Alert.alert("エラー", "担当の変更に失敗しました。");
+    }
   };
 
   const handleOpenStaffScopeModal = (staffName) => {
@@ -369,17 +409,19 @@ const SettingsScreen = ({
     setIsStaffScopeModalVisible(true);
   };
 
-  const handleStaffScope = (scope) => {
+  const handleStaffScope = async (scope) => {
     if (!selectedStaffForScope) return;
-    setUserProfiles((prev) => ({
-      ...prev,
-      [selectedStaffForScope]: {
-        ...(prev[selectedStaffForScope] || {}),
-        staffScope: scope,
-      },
-    }));
-    setIsStaffScopeModalVisible(false);
-    setSelectedStaffForScope(null);
+    const uid = userProfiles[selectedStaffForScope]?.uid;
+
+    try {
+      if (uid && activeTeamId) {
+        await updateTeamMember(activeTeamId, uid, { staffScope: scope });
+      }
+      setIsStaffScopeModalVisible(false);
+      setSelectedStaffForScope(null);
+    } catch (e) {
+      Alert.alert("エラー", "閲覧範囲の変更に失敗しました。");
+    }
   };
 
   const copyToClipboard = (text, label) => {
@@ -389,6 +431,64 @@ const SettingsScreen = ({
       `${label}をコピーしました。部員に送ってください。`,
     );
   };
+
+  const PasswordSection = () => (
+    <SectionCard
+      isExp={expanded.myPassword}
+      onToggle={() => toggleSection("myPassword")}
+      title="🔑 アカウントのパスワード変更"
+    >
+      <Text style={styles.subText}>
+        ログインに使用するパスワードを変更します。（※セキュリティ上、現在のパスワードは確認用に入力が必要です）
+      </Text>
+
+      <Text style={styles.label}>現在のパスワード</Text>
+      <View style={styles.passwordRow}>
+        <TextInput
+          style={styles.passwordInput}
+          placeholder="現在のパスワードを入力"
+          secureTextEntry={!showCurrentPassword}
+          value={currentPassword}
+          onChangeText={setCurrentPassword}
+          autoCapitalize="none"
+        />
+        <TouchableOpacity
+          style={styles.toggleBtn}
+          onPress={() => setShowCurrentPassword(!showCurrentPassword)}
+        >
+          <Text style={styles.toggleBtnText}>
+            {showCurrentPassword ? "隠す" : "表示"}
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      <Text style={styles.label}>新しいパスワード (6文字以上)</Text>
+      <View style={styles.passwordRow}>
+        <TextInput
+          style={styles.passwordInput}
+          placeholder="新しく設定するパスワード"
+          secureTextEntry={!showNewPassword}
+          value={newPassword}
+          onChangeText={setNewPassword}
+          autoCapitalize="none"
+        />
+        <TouchableOpacity
+          style={styles.toggleBtn}
+          onPress={() => setShowNewPassword(!showNewPassword)}
+        >
+          <Text style={styles.toggleBtnText}>
+            {showNewPassword ? "隠す" : "表示"}
+          </Text>
+        </TouchableOpacity>
+      </View>
+      <TouchableOpacity
+        style={[styles.saveBtn, { backgroundColor: "#3498db", marginTop: 5 }]}
+        onPress={handleChangeAuthPassword}
+      >
+        <Text style={styles.saveBtnText}>パスワードを変更する</Text>
+      </TouchableOpacity>
+    </SectionCard>
+  );
 
   return (
     <SafeAreaView style={styles.container}>
@@ -413,6 +513,27 @@ const SettingsScreen = ({
               <Text style={styles.sectionDescription}>
                 自分のプロフィールやパスワードを変更できます。
               </Text>
+
+              <SectionCard
+                isExp={expanded.teamInfo}
+                onToggle={() => toggleSection("teamInfo")}
+                title="🏟️ 所属チーム情報"
+              >
+                <Text style={styles.label}>チーム名</Text>
+                <View style={styles.readOnlyBox}>
+                  <Text style={styles.readOnlyText}>
+                    {currentTeamName || "---"}
+                  </Text>
+                </View>
+                <Text style={[styles.label, { marginTop: 15 }]}>
+                  あなたの権限
+                </Text>
+                <View style={styles.readOnlyBox}>
+                  <Text style={styles.readOnlyText}>
+                    {roleConfig[userRole]?.label || "一般部員"}
+                  </Text>
+                </View>
+              </SectionCard>
 
               <SectionCard
                 isExp={expanded.myProfile}
@@ -466,42 +587,8 @@ const SettingsScreen = ({
                 </TouchableOpacity>
               </SectionCard>
 
-              <SectionCard
-                isExp={expanded.myPassword}
-                onToggle={() => toggleSection("myPassword")}
-                title="🔑 自分専用パスワードの設定"
-              >
-                <Text style={styles.subText}>
-                  チーム共通パスワードの代わりに、自分だけがログインできる秘密のパスワードを設定します。
-                </Text>
-                <Text style={styles.label}>自分専用パスワード</Text>
-                <View style={styles.passwordRow}>
-                  <TextInput
-                    style={styles.passwordInput}
-                    placeholder="未設定"
-                    secureTextEntry={!showMyPassword}
-                    value={myPassword}
-                    onChangeText={setMyPassword}
-                  />
-                  <TouchableOpacity
-                    style={styles.toggleBtn}
-                    onPress={() => setShowMyPassword(!showMyPassword)}
-                  >
-                    <Text style={styles.toggleBtnText}>
-                      {showMyPassword ? "隠す" : "表示"}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-                <TouchableOpacity
-                  style={[
-                    styles.saveBtn,
-                    { backgroundColor: "#3498db", marginTop: 5 },
-                  ]}
-                  onPress={handleSaveMemberPassword}
-                >
-                  <Text style={styles.saveBtnText}>パスワードを設定</Text>
-                </TouchableOpacity>
-              </SectionCard>
+              {/* ★ パスワード変更セクションを部員設定の一番下に移動 */}
+              <PasswordSection />
             </>
           ) : (
             <>
@@ -509,7 +596,6 @@ const SettingsScreen = ({
                 チームの管理・設定を行うことができます。
               </Text>
 
-              {/* Profile setup for admin */}
               <SectionCard
                 isExp={expanded.myProfile}
                 onToggle={() => toggleSection("myProfile")}
@@ -540,7 +626,30 @@ const SettingsScreen = ({
                 onToggle={() => toggleSection("teamInfo")}
                 title="🏟️ 所属チーム・入部用コード"
               >
-                <View style={styles.idInfoBox}>
+                <Text style={styles.label}>チーム名</Text>
+                <TextInput
+                  style={styles.input}
+                  value={currentTeamName}
+                  onChangeText={setCurrentTeamName}
+                  placeholder="例: ○○高校 野球部"
+                />
+                <TouchableOpacity
+                  style={[styles.saveBtn, { marginTop: 5, marginBottom: 20 }]}
+                  onPress={handleSaveTeamName}
+                >
+                  <Text style={styles.saveBtnText}>チーム名を保存</Text>
+                </TouchableOpacity>
+
+                <View
+                  style={[
+                    styles.idInfoBox,
+                    {
+                      borderTopWidth: 1,
+                      borderTopColor: "#eee",
+                      paddingTop: 15,
+                    },
+                  ]}
+                >
                   <Text style={styles.idLabel}>
                     部員に教える【招待コード】:
                   </Text>
@@ -633,79 +742,17 @@ const SettingsScreen = ({
               </SectionCard>
 
               <SectionCard
-                isExp={expanded.password}
-                onToggle={() => toggleSection("password")}
-                title="🔑 チームパスワード設定"
-              >
-                <Text style={styles.label}>管理者・スタッフ用パスワード</Text>
-                <View style={styles.passwordRow}>
-                  <TextInput
-                    style={styles.passwordInput}
-                    value={newAdminPass}
-                    onChangeText={setNewAdminPass}
-                    secureTextEntry={!showAdminPass}
-                  />
-                  <TouchableOpacity
-                    style={styles.toggleBtn}
-                    onPress={() => setShowAdminPass(!showAdminPass)}
-                  >
-                    <Text style={styles.toggleBtnText}>
-                      {showAdminPass ? "隠す" : "表示"}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-                <Text style={styles.label}>部員用共通パスワード（初期）</Text>
-                <View style={styles.passwordRow}>
-                  <TextInput
-                    style={styles.passwordInput}
-                    value={newMemberPass}
-                    onChangeText={setNewMemberPass}
-                    secureTextEntry={!showMemberPass}
-                  />
-                  <TouchableOpacity
-                    style={styles.toggleBtn}
-                    onPress={() => setShowMemberPass(!showMemberPass)}
-                  >
-                    <Text style={styles.toggleBtnText}>
-                      {showMemberPass ? "隠す" : "表示"}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-                <TouchableOpacity
-                  style={styles.saveBtn}
-                  onPress={handleSavePasswords}
-                >
-                  <Text style={styles.saveBtnText}>パスワードを保存</Text>
-                </TouchableOpacity>
-              </SectionCard>
-
-              <SectionCard
                 isExp={expanded.member}
                 onToggle={() => toggleSection("member")}
                 title="👥 部員リスト・権限・担当管理"
               >
-                <View style={styles.addMemberRow}>
-                  <TextInput
-                    style={styles.inputFlex}
-                    placeholder="新しい部員の名前"
-                    value={newMemberName}
-                    onChangeText={setNewMemberName}
-                  />
-                  <TouchableOpacity
-                    style={styles.addMemberBtn}
-                    onPress={() =>
-                      handleAddItemLocal(
-                        newMemberName,
-                        clubMembers,
-                        setClubMembers,
-                        setNewMemberName,
-                        "部員",
-                      )
-                    }
-                  >
-                    <Text style={styles.addMemberBtnText}>追加</Text>
-                  </TouchableOpacity>
-                </View>
+                <Text
+                  style={[styles.hintText, { marginBottom: 15, fontSize: 13 }]}
+                >
+                  ※
+                  新しい部員は、招待コードを使ってアプリに登録すると自動的にここに追加されます。
+                </Text>
+
                 <View style={styles.memberList}>
                   {clubMembers.map((name) => {
                     const profile = userProfiles[name] || {};
@@ -720,12 +767,7 @@ const SettingsScreen = ({
                           <Text style={styles.memberName}>{name}</Text>
                           <TouchableOpacity
                             onPress={() =>
-                              handleDeleteItemLocal(
-                                name,
-                                clubMembers,
-                                setClubMembers,
-                                "部員",
-                              )
+                              handleDeleteMember(name, profile.uid)
                             }
                           >
                             <Text style={styles.deleteText}>削除</Text>
@@ -883,12 +925,16 @@ const SettingsScreen = ({
                   )}
                 </View>
               </SectionCard>
+
+              {/* ★ パスワード変更セクションを管理者設定の一番下に移動 */}
+              <PasswordSection />
             </>
           )}
           <View style={{ height: 100 }} />
         </ScrollView>
       </KeyboardAvoidingView>
 
+      {/* モーダル群 */}
       <Modal
         visible={isRoleModalVisible}
         transparent={true}
@@ -1107,6 +1153,18 @@ const styles = StyleSheet.create({
     padding: 12,
     borderRadius: 8,
     fontSize: 16,
+  },
+  readOnlyBox: {
+    backgroundColor: "#f5f5f5",
+    borderWidth: 1,
+    borderColor: "#eee",
+    padding: 12,
+    borderRadius: 8,
+  },
+  readOnlyText: {
+    fontSize: 16,
+    color: "#555",
+    fontWeight: "bold",
   },
   inputFlex: {
     flex: 1,

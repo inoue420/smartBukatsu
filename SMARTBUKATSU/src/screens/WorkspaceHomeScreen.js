@@ -15,6 +15,9 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import { useAuth } from "../AuthContext";
+import { createNotice } from "../services/firestoreService";
+
 const REACTION_EMOJIS = ["👍", "❤️", "😂", "🔥", "👀", "🙏"];
 const REPORT_REASONS = ["暴言・誹謗中傷", "スパム・宣伝", "その他"];
 
@@ -22,6 +25,7 @@ const WorkspaceHomeScreen = ({
   navigation,
   isAdmin,
   currentUser,
+  teamName,
   notices,
   setNotices,
   posts,
@@ -32,6 +36,8 @@ const WorkspaceHomeScreen = ({
   alertThresholds,
   userProfiles = {},
 }) => {
+  const { activeTeamId } = useAuth();
+
   const currentUserProfile = userProfiles[currentUser] || {};
 
   const userRole =
@@ -43,12 +49,12 @@ const WorkspaceHomeScreen = ({
     admin: `${currentUser}(管理者)`,
     staff: `${currentUser}(コーチ)`,
     captain: `${currentUser}(キャプテン)`,
-    member: currentUser, // 「(あなた)」や「佐藤(自分)」を削除し、純粋な名前のみに！
+    member: currentUser,
   };
   const displayUserName = roleNameMap[userRole] || currentUser;
 
-  const isStaffOrAbove = ["owner", "staff"].includes(userRole);
-  const canCreateChannel = ["owner", "staff"].includes(userRole);
+  const isStaffOrAbove = ["owner", "staff", "admin"].includes(userRole);
+  const canCreateChannel = ["owner", "staff", "admin"].includes(userRole);
 
   const unreadNoticeCount = notices.filter(
     (n) => !n.readBy.includes(currentUser),
@@ -207,7 +213,7 @@ const WorkspaceHomeScreen = ({
       attachments: [],
       replies: [],
       reported: [],
-      readCount: 0,
+      readBy: [currentUser], // ★ 自分が書いたものは既読扱い
       isPinned: false,
       status: isOffline ? "pending" : "sent",
     };
@@ -224,7 +230,7 @@ const WorkspaceHomeScreen = ({
         return {
           ...post,
           replies: [
-            ...post.replies,
+            ...(post.replies || []),
             {
               id: Date.now().toString(),
               user: displayUserName,
@@ -399,7 +405,6 @@ const WorkspaceHomeScreen = ({
     );
   };
 
-  // ★ 修正：共有元のチャンネル名（post.channel）をタイトルに含めるようにしました！
   const handleShareToNotice = (post) => {
     Alert.alert(
       "掲示板へ共有",
@@ -408,21 +413,33 @@ const WorkspaceHomeScreen = ({
         { text: "キャンセル", style: "cancel" },
         {
           text: "共有する",
-          onPress: () => {
+          onPress: async () => {
+            const noticeId = "notice_" + Date.now().toString();
             const newNotice = {
-              id: "notice_" + Date.now().toString(),
-              title: `【${post.channel}より】${post.user} の投稿`, // ← ココが賢くなりました！
+              id: noticeId,
+              title: `【${post.channel}より】${post.user} の投稿`,
               content: post.content,
               date: new Date().toLocaleDateString("ja-JP"),
               author: displayUserName,
               readBy: [currentUser],
-              important: false,
+              isImportant: false,
+              isSharedPost: true,
+              createdAt: Date.now(),
+              status: "active",
             };
 
             if (typeof setNotices === "function") {
               setNotices([newNotice, ...notices]);
             } else if (notices && Array.isArray(notices)) {
               notices.unshift(newNotice);
+            }
+
+            try {
+              if (activeTeamId) {
+                await createNotice(activeTeamId, newNotice);
+              }
+            } catch (error) {
+              console.log("Firestore共有エラー:", error);
             }
 
             Alert.alert(
@@ -483,6 +500,7 @@ const WorkspaceHomeScreen = ({
       return 0;
     });
 
+  // ★ 投稿カードのレンダリング
   const renderPostCard = (post, isPinnedArea = false) => {
     if (isReportedByMe(post) && !isStaffOrAbove)
       return (
@@ -494,7 +512,15 @@ const WorkspaceHomeScreen = ({
       );
     const isPending = post.status === "pending";
 
-    const validReplies = post.replies.filter((r) => r.status !== "deleted");
+    const validReplies = post.replies
+      ? post.replies.filter((r) => r.status !== "deleted")
+      : [];
+
+    // ★ 展開状態と未読判定
+    const isExpanded = expandedPostId === post.id;
+    const isUnread =
+      post.user !== displayUserName &&
+      !(post.readBy || []).includes(currentUser);
 
     return (
       <TouchableOpacity
@@ -507,8 +533,24 @@ const WorkspaceHomeScreen = ({
             styles.adminReportedCard,
           isPending && styles.pendingCard,
           isPinnedArea && { marginBottom: 10 },
+          // 未読カードを強調する場合はここに追加
         ]}
-        activeOpacity={0.9}
+        activeOpacity={0.8}
+        onPress={() => {
+          if (!isPending) {
+            toggleThread(post.id);
+            // ★ タップして詳細を開いたら既読にする
+            if (isUnread) {
+              setPosts(
+                posts.map((p) =>
+                  p.id === post.id
+                    ? { ...p, readBy: [...(p.readBy || []), currentUser] }
+                    : p,
+                ),
+              );
+            }
+          }
+        }}
         onLongPress={() => !isPending && setActiveLongPressPostId(post.id)}
         delayLongPress={300}
       >
@@ -531,13 +573,20 @@ const WorkspaceHomeScreen = ({
           >
             <Text style={styles.userIconText}>{post.user.charAt(0)}</Text>
           </View>
-          <Text style={styles.postUser}>{post.user}</Text>
+          <Text style={[styles.postUser, isUnread && { fontWeight: "900" }]}>
+            {post.user}
+          </Text>
+
+          {/* ★ 未読の場合は赤点アイコンを表示 */}
+          {isUnread && <View style={styles.unreadDot} />}
+
           <Text style={styles.postTime}>
             {isPending ? "待機中..." : post.time}
           </Text>
         </View>
 
-        {post.replyTo && (
+        {/* 引用部分は展開時のみ表示 */}
+        {post.replyTo && isExpanded && (
           <View style={styles.quoteContainer}>
             <Text style={styles.quoteUser}>{post.replyTo.user}</Text>
             <Text style={styles.quoteContent} numberOfLines={2}>
@@ -545,25 +594,50 @@ const WorkspaceHomeScreen = ({
             </Text>
           </View>
         )}
-        <Text style={styles.postContent}>
+
+        {/* ★ 本文をコンパクト化（ピン留めエリアは全文表示） */}
+        <Text
+          style={styles.postContent}
+          numberOfLines={isExpanded || isPinnedArea ? undefined : 4}
+        >
           {renderContentWithMentions(post.content)}
         </Text>
 
-        {!isPending && !isPinnedArea && (
+        {/* ★ 未展開時のコンパクトなフッター */}
+        {!isPending && !isExpanded && !isPinnedArea && (
+          <View style={styles.compactFooter}>
+            <Text style={styles.compactFooterText}>
+              タップして詳細を表示{" "}
+              {validReplies.length > 0 ? `(💬 ${validReplies.length}件)` : ""}
+            </Text>
+            {Object.keys(post.reactions || {}).length > 0 && (
+              <View style={styles.compactReactions}>
+                {Object.entries(post.reactions || {}).map(([emoji, count]) => (
+                  <Text key={emoji} style={styles.compactReactionText}>
+                    {emoji}
+                    {count}
+                  </Text>
+                ))}
+              </View>
+            )}
+          </View>
+        )}
+
+        {/* 展開時のアクションバー */}
+        {!isPending && isExpanded && !isPinnedArea && (
           <View style={styles.actionBar}>
-            <TouchableOpacity
-              style={styles.replyButton}
-              onPress={() => toggleThread(post.id)}
-            >
-              <Text style={styles.replyButtonText}>
+            <View style={styles.actionLeft}>
+              <Text style={styles.replyCountText}>
                 💬{" "}
                 {validReplies.length > 0
                   ? `${validReplies.length}件の返信`
-                  : "返信"}
+                  : "返信なし"}
               </Text>
-            </TouchableOpacity>
+            </View>
             <View style={styles.actionRight}>
-              <Text style={styles.readCountText}>既読 {post.readCount}</Text>
+              <Text style={styles.readCountText}>
+                既読 {post.readBy?.length || 0}
+              </Text>
               <View style={styles.reactionsContainer}>
                 {Object.entries(post.reactions || {}).map(([emoji, count]) => (
                   <TouchableOpacity
@@ -603,6 +677,7 @@ const WorkspaceHomeScreen = ({
           </View>
         )}
 
+        {/* ロングプレスメニュー（そのまま） */}
         {activeLongPressPostId === post.id && !isPending && (
           <View style={styles.longPressMenu}>
             {isStaffOrAbove && (
@@ -672,6 +747,7 @@ const WorkspaceHomeScreen = ({
           </View>
         )}
 
+        {/* スレッドエリア */}
         {expandedPostId === post.id && !isPending && !isPinnedArea && (
           <View style={styles.threadContainer}>
             <View style={styles.replyInputContainer}>
@@ -828,10 +904,30 @@ const WorkspaceHomeScreen = ({
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
-        <View style={[styles.header, isOffline && styles.headerOffline]}>
-          <Text style={styles.headerTitle}>
-            {isOffline ? "オフライン表示中" : "スマート部活"}
-          </Text>
+        <View
+          style={[
+            styles.header,
+            isOffline && styles.headerOffline,
+            { paddingVertical: 10, height: "auto", minHeight: 60 },
+          ]}
+        >
+          <View style={{ flex: 1, justifyContent: "center" }}>
+            <Text style={styles.headerTitle} numberOfLines={1}>
+              {isOffline
+                ? "オフライン表示中"
+                : `🏢 ${teamName || "チーム未設定"}`}
+            </Text>
+            <Text
+              style={{
+                color: "#e6f2ff",
+                fontSize: 11,
+                marginTop: 2,
+                fontWeight: "bold",
+              }}
+            >
+              こんにちは、{displayUserName} さん
+            </Text>
+          </View>
           <View style={styles.headerRight}>
             {isStaffOrAbove && (
               <TouchableOpacity
@@ -856,9 +952,11 @@ const WorkspaceHomeScreen = ({
 
             <TouchableOpacity
               style={styles.logoutBtn}
-              onPress={() =>
-                navigation.reset({ index: 0, routes: [{ name: "Login" }] })
-              }
+              onPress={() => {
+                const { signOut } = require("firebase/auth");
+                const { auth } = require("../firebase");
+                signOut(auth).catch((e) => console.log(e));
+              }}
             >
               <Text style={styles.logoutBtnText}>ログアウト</Text>
             </TouchableOpacity>
@@ -1534,6 +1632,17 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   reportedMaskText: { color: "#888", fontSize: 12, fontStyle: "italic" },
+
+  // ★ 未読ドットのスタイル
+  unreadDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "#e74c3c",
+    marginRight: 8,
+    marginLeft: 5,
+  },
+
   postHeader: { flexDirection: "row", alignItems: "center", marginBottom: 10 },
   userIcon: {
     width: 36,
@@ -1566,9 +1675,38 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: "#333",
     lineHeight: 22,
-    marginBottom: 10,
+    marginBottom: 5, // コンパクト化に伴い下余白を少し削減
   },
   mentionText: { color: "#0077cc", fontWeight: "bold" },
+
+  // ★ コンパクトなフッター用のスタイル
+  compactFooter: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: "#f5f5f5",
+  },
+  compactFooterText: {
+    fontSize: 12,
+    color: "#888",
+    fontWeight: "bold",
+  },
+  compactReactions: {
+    flexDirection: "row",
+  },
+  compactReactionText: {
+    fontSize: 11,
+    color: "#555",
+    backgroundColor: "#f0f0f0",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 10,
+    marginLeft: 5,
+  },
+
   actionBar: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -1576,8 +1714,11 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: "#f0f0f0",
     paddingTop: 10,
+    marginTop: 10,
     zIndex: 2,
   },
+  actionLeft: { flex: 1 },
+  replyCountText: { color: "#555", fontSize: 13, fontWeight: "bold" },
   actionRight: { flexDirection: "row", alignItems: "center" },
   readCountText: { fontSize: 12, color: "#888", marginRight: 10 },
   replyButton: {
@@ -1849,7 +1990,7 @@ const styles = StyleSheet.create({
   dashboardHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
-    paddingTop: Platform.OS === "ios" ? 60 : 30, // ★ノッチ・ステータスバー対応
+    paddingTop: Platform.OS === "ios" ? 60 : 30,
     paddingBottom: 20,
     paddingHorizontal: 20,
     backgroundColor: "#fff",

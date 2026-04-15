@@ -33,7 +33,6 @@ export function subscribeProjects(teamId, callback) {
 
 export async function createProject(teamId, projectData) {
   if (!teamId) throw new Error("チームIDがありません。");
-  // ★修正：アプリ側でIDが指定されている場合はそのIDを使う
   if (projectData.id) {
     const docRef = doc(db, "teams", teamId, "projects", projectData.id);
     await setDoc(docRef, {
@@ -88,15 +87,12 @@ export function subscribePersonalEvents(uid, callback) {
       }));
       callback(events);
     },
-    (error) => {
-      console.log("🔐 個人予定の監視エラー:", error.message);
-    },
+    (error) => console.log("🔐 個人予定の監視エラー:", error.message),
   );
 }
 
 export async function createPersonalEvent(uid, eventData) {
   if (!uid) return;
-  // ★修正：アプリ側でIDが指定されている場合はそのIDを使う
   if (eventData.id) {
     const docRef = doc(db, "users", uid, "personalEvents", eventData.id);
     await setDoc(docRef, { ...eventData, createdAt: serverTimestamp() });
@@ -140,12 +136,50 @@ export function subscribeTeamData(teamId, callback) {
   });
 }
 
+// ★ 追加：チーム名を変更する関数
+export async function updateTeamName(teamId, newName) {
+  if (!teamId || !newName) return;
+  const teamRef = doc(db, "teams", teamId);
+  await updateDoc(teamRef, { name: newName, updatedAt: serverTimestamp() });
+}
+
 export async function addTeamArrayItem(teamId, field, value) {
   await updateDoc(doc(db, "teams", teamId), { [field]: arrayUnion(value) });
 }
 
 export async function removeTeamArrayItem(teamId, field, value) {
   await updateDoc(doc(db, "teams", teamId), { [field]: arrayRemove(value) });
+}
+
+export function subscribeTeamMembers(teamId, callback) {
+  if (!teamId) return () => {};
+  const q = query(
+    collection(db, "teams", teamId, "members"),
+    orderBy("joinedAt", "asc"),
+  );
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const members = snapshot.docs.map((doc) => ({
+        uid: doc.id,
+        ...doc.data(),
+      }));
+      callback(members);
+    },
+    (error) => console.log("部員取得エラー:", error.message),
+  );
+}
+
+export async function updateTeamMember(teamId, uid, updateData) {
+  if (!teamId || !uid) return;
+  const memberRef = doc(db, "teams", teamId, "members", uid);
+  await updateDoc(memberRef, updateData);
+}
+
+export async function removeTeamMember(teamId, uid) {
+  if (!teamId || !uid) return;
+  const memberRef = doc(db, "teams", teamId, "members", uid);
+  await deleteDoc(memberRef);
 }
 
 // ==========================================
@@ -178,9 +212,13 @@ export async function executeRegistration(
       createdBy: uid,
       inviteCode: generatedInviteCode,
       createdAt: serverTimestamp(),
+      grades: ["1年生", "2年生", "3年生"], // 初期状態
+      positions: ["キャプテン", "マネージャー", "GK", "CP"], // 初期状態
     });
+
     await setDoc(doc(db, "teams", teamId, "members", uid), {
       role: "admin",
+      name: userName,
       joinedAt: serverTimestamp(),
     });
     await setDoc(userRef, { activeTeamId: teamId }, { merge: true });
@@ -202,6 +240,7 @@ export async function executeRegistration(
     const teamId = inviteSnap.data().teamId;
     await setDoc(doc(db, "teams", teamId, "members", uid), {
       role: "member",
+      name: userName,
       inviteCode: inviteCode,
       joinedAt: serverTimestamp(),
     });
@@ -284,7 +323,6 @@ export function subscribeDailyReports(teamId, callback) {
 
 export async function createDailyReport(teamId, reportData) {
   if (!teamId) throw new Error("チームIDがありません");
-  // ★修正：アプリ側で作ったID（rep_...）をそのままFirestoreのIDとして使う
   if (reportData.id) {
     const docRef = doc(db, "teams", teamId, "dailyReports", reportData.id);
     await setDoc(docRef, {
@@ -308,12 +346,10 @@ export async function updateDailyReport(teamId, reportId, updateData) {
     updatedAt: serverTimestamp(),
   });
 }
-// ↓↓↓ firestoreService.js の一番下に追加 ↓↓↓
 
 export async function deleteDailyReport(teamId, reportId) {
   if (!teamId || !reportId) return;
   const reportRef = doc(db, "teams", teamId, "dailyReports", reportId);
-  // 完全に消すのではなく、statusを"deleted"にして画面から隠す（安全な削除方法）
   await updateDoc(reportRef, {
     status: "deleted",
     updatedAt: serverTimestamp(),

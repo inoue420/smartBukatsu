@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
-import { Alert, LogBox, ActivityIndicator, View } from "react-native";
+import { Alert, LogBox, ActivityIndicator, View, Text } from "react-native";
 import NetInfo from "@react-native-community/netinfo";
 
 // コンテキストとサービス
@@ -10,7 +10,9 @@ import {
   subscribeProjects,
   subscribeDailyReports,
   subscribeNotices,
-  subscribePersonalEvents, // ★個人の予定を監視
+  subscribePersonalEvents,
+  subscribeTeamData,
+  subscribeTeamMembers,
 } from "./src/services/firestoreService";
 
 // 画面
@@ -37,13 +39,23 @@ function AppContent() {
   } = useAuth();
 
   const [projects, setProjects] = useState([]);
-  const [clubMembers, setClubMembers] = useState(["キャプテン", "部員1"]);
-  const [grades, setGrades] = useState(["1年", "2年", "3年"]);
-  const [positions, setPositions] = useState(["CP", "GK", "マネージャー"]);
-  const [userProfiles, setUserProfiles] = useState({
-    キャプテン: { role: "captain" },
-    部員1: { role: "member" },
-  });
+  const [notices, setNotices] = useState([]);
+  const [dailyReports, setDailyReports] = useState([]);
+  const [personalEvents, setPersonalEvents] = useState([]);
+  const [teamName, setTeamName] = useState("ロード中...");
+
+  const [clubMembers, setClubMembers] = useState([]);
+  const [userProfiles, setUserProfiles] = useState({});
+
+  // ★ 修正：初期状態を新しい仕様に合わせる
+  const [grades, setGrades] = useState(["1年生", "2年生", "3年生"]);
+  const [positions, setPositions] = useState([
+    "キャプテン",
+    "マネージャー",
+    "GK",
+    "CP",
+  ]);
+
   const [alertThresholds, setAlertThresholds] = useState({
     fatigueWarning: 7,
     fatigueDanger: 9,
@@ -52,32 +64,58 @@ function AppContent() {
   });
   const [isOffline, setIsOffline] = useState(false);
   const [posts, setPosts] = useState([]);
-  const [notices, setNotices] = useState([]);
-  const [dailyReports, setDailyReports] = useState([]);
-  const [personalEvents, setPersonalEvents] = useState([]);
 
-  // ========================================================
-  // ★ Firestore本番同期（個人予定の同期も追加）
-  // ========================================================
+  const [isResolvingTeam, setIsResolvingTeam] = useState(false);
+
+  useEffect(() => {
+    if (user && !activeTeamId) {
+      setIsResolvingTeam(true);
+      const timer = setTimeout(() => setIsResolvingTeam(false), 1500);
+      return () => clearTimeout(timer);
+    } else if (user && activeTeamId) {
+      setIsResolvingTeam(false);
+    }
+  }, [user, activeTeamId]);
+
+  // Firestore同期
   useEffect(() => {
     if (user && activeTeamId) {
-      console.log("🔥 Firestore本番同期を開始:", activeTeamId);
+      const unsubProjects = subscribeProjects(activeTeamId, setProjects);
+      const unsubReports = subscribeDailyReports(activeTeamId, setDailyReports);
+      const unsubNotices = subscribeNotices(activeTeamId, setNotices);
+      const unsubPersonal = subscribePersonalEvents(
+        user.uid,
+        setPersonalEvents,
+      );
 
-      const unsubProjects = subscribeProjects(activeTeamId, (fetched) => {
-        setProjects(fetched);
+      // ★ 修正：チーム名だけでなく、学年とポジションも同期させる
+      const unsubTeam = subscribeTeamData(activeTeamId, (data) => {
+        if (data) {
+          if (data.name) setTeamName(data.name);
+          if (data.grades && data.grades.length > 0) setGrades(data.grades);
+          if (data.positions && data.positions.length > 0)
+            setPositions(data.positions);
+        }
       });
 
-      const unsubReports = subscribeDailyReports(activeTeamId, (fetched) => {
-        setDailyReports(fetched);
-      });
-
-      const unsubNotices = subscribeNotices(activeTeamId, (fetched) => {
-        setNotices(fetched);
-      });
-
-      // ★ ログインユーザー本人の個人予定のみ同期
-      const unsubPersonal = subscribePersonalEvents(user.uid, (fetched) => {
-        setPersonalEvents(fetched);
+      const unsubMembers = subscribeTeamMembers(activeTeamId, (membersData) => {
+        const names = [];
+        const profiles = {};
+        membersData.forEach((m) => {
+          let mName = m.name || "名称未設定";
+          if (profiles[mName]) {
+            mName = `${mName}_${m.uid.substring(0, 4)}`;
+          }
+          names.push(mName);
+          profiles[mName] = {
+            uid: m.uid,
+            role: m.role || "member",
+            assignedStaff: m.assignedStaff || null,
+            staffScope: m.staffScope || "all",
+          };
+        });
+        setClubMembers(names);
+        setUserProfiles(profiles);
       });
 
       return () => {
@@ -85,12 +123,12 @@ function AppContent() {
         unsubReports();
         unsubNotices();
         unsubPersonal();
+        unsubTeam();
+        unsubMembers();
       };
     } else {
-      setProjects([]);
-      setDailyReports([]);
-      setNotices([]);
-      setPersonalEvents([]);
+      setClubMembers([]);
+      setUserProfiles({});
     }
   }, [user, activeTeamId]);
 
@@ -115,136 +153,154 @@ function AppContent() {
     );
   }
 
-  const initialRoute = !user
-    ? "Login"
-    : !activeTeamId
-      ? "TeamSetup"
-      : "WorkspaceHome";
+  const safeUserName = userName || user?.email || "ユーザー";
 
   return (
     <NavigationContainer>
-      <Stack.Navigator
-        initialRouteName={initialRoute}
-        screenOptions={{ headerShown: false }}
-      >
-        <Stack.Screen name="Login" component={LoginScreen} />
-        <Stack.Screen name="TeamSetup" component={TeamSetupScreen} />
+      <Stack.Navigator screenOptions={{ headerShown: false }}>
+        {!user ? (
+          <Stack.Screen name="Login" component={LoginScreen} />
+        ) : !activeTeamId && isResolvingTeam ? (
+          <Stack.Screen name="LoadingTeam">
+            {() => (
+              <View
+                style={{
+                  flex: 1,
+                  justifyContent: "center",
+                  alignItems: "center",
+                  backgroundColor: "#27ae60",
+                }}
+              >
+                <ActivityIndicator size="large" color="#fff" />
+                <Text
+                  style={{ color: "#fff", marginTop: 15, fontWeight: "bold" }}
+                >
+                  アカウントを設定中...
+                </Text>
+              </View>
+            )}
+          </Stack.Screen>
+        ) : !activeTeamId ? (
+          <Stack.Screen name="TeamSetup" component={TeamSetupScreen} />
+        ) : (
+          <>
+            <Stack.Screen name="WorkspaceHome">
+              {(props) => (
+                <WorkspaceHomeScreen
+                  {...props}
+                  isAdmin={authIsAdmin}
+                  currentUser={safeUserName}
+                  teamName={teamName}
+                  notices={notices}
+                  setNotices={setNotices}
+                  posts={posts}
+                  setPosts={setPosts}
+                  isOffline={isOffline}
+                  clubMembers={clubMembers}
+                  alertThresholds={alertThresholds}
+                  userProfiles={userProfiles}
+                  dailyReports={dailyReports}
+                />
+              )}
+            </Stack.Screen>
 
-        <Stack.Screen name="WorkspaceHome">
-          {(props) => (
-            <WorkspaceHomeScreen
-              {...props}
-              isAdmin={authIsAdmin}
-              currentUser={userName || user?.email || "ユーザー"}
-              notices={notices}
-              setNotices={setNotices}
-              posts={posts}
-              setPosts={setPosts}
-              isOffline={isOffline}
-              clubMembers={clubMembers}
-              alertThresholds={alertThresholds}
-              userProfiles={userProfiles}
-              dailyReports={dailyReports}
-            />
-          )}
-        </Stack.Screen>
+            <Stack.Screen name="NoticeBoard">
+              {(props) => (
+                <NoticeBoardScreen
+                  {...props}
+                  isAdmin={authIsAdmin}
+                  currentUser={safeUserName}
+                  notices={notices}
+                  setNotices={setNotices}
+                  isOffline={isOffline}
+                  userProfiles={userProfiles}
+                />
+              )}
+            </Stack.Screen>
 
-        <Stack.Screen name="NoticeBoard">
-          {(props) => (
-            <NoticeBoardScreen
-              {...props}
-              isAdmin={authIsAdmin}
-              currentUser={userName || user?.email || "ユーザー"}
-              notices={notices}
-              setNotices={setNotices}
-              isOffline={isOffline}
-              userProfiles={userProfiles}
-            />
-          )}
-        </Stack.Screen>
+            <Stack.Screen name="Diary">
+              {(props) => (
+                <DiaryScreen
+                  {...props}
+                  isAdmin={authIsAdmin}
+                  currentUser={safeUserName}
+                  isOffline={isOffline}
+                  grades={grades}
+                  positions={positions}
+                  posts={posts}
+                  setPosts={setPosts}
+                  userProfiles={userProfiles}
+                  dailyReports={dailyReports}
+                  setDailyReports={setDailyReports}
+                  alertThresholds={alertThresholds}
+                />
+              )}
+            </Stack.Screen>
 
-        <Stack.Screen name="Diary">
-          {(props) => (
-            <DiaryScreen
-              {...props}
-              isAdmin={authIsAdmin}
-              currentUser={userName || user?.email || "ユーザー"}
-              isOffline={isOffline}
-              grades={grades}
-              positions={positions}
-              posts={posts}
-              setPosts={setPosts}
-              userProfiles={userProfiles}
-              dailyReports={dailyReports}
-              setDailyReports={setDailyReports}
-              alertThresholds={alertThresholds}
-            />
-          )}
-        </Stack.Screen>
+            <Stack.Screen name="Calendar">
+              {(props) => (
+                <CalendarScreen
+                  {...props}
+                  isAdmin={authIsAdmin}
+                  currentUser={safeUserName}
+                  projects={projects}
+                  setProjects={setProjects}
+                  dailyReports={dailyReports}
+                  userProfiles={userProfiles}
+                  personalEvents={personalEvents}
+                  setPersonalEvents={setPersonalEvents}
+                />
+              )}
+            </Stack.Screen>
 
-        <Stack.Screen name="Calendar">
-          {(props) => (
-            <CalendarScreen
-              {...props}
-              isAdmin={authIsAdmin}
-              currentUser={userName || user?.email || "ユーザー"}
-              projects={projects}
-              setProjects={setProjects}
-              dailyReports={dailyReports}
-              userProfiles={userProfiles}
-              alertThresholds={alertThresholds}
-              personalEvents={personalEvents}
-              setPersonalEvents={setPersonalEvents}
-            />
-          )}
-        </Stack.Screen>
+            <Stack.Screen name="ProjectList">
+              {(props) => (
+                <ProjectListScreen
+                  {...props}
+                  isAdmin={authIsAdmin}
+                  currentUser={safeUserName}
+                  projects={projects}
+                  setProjects={setProjects}
+                  userProfiles={userProfiles}
+                />
+              )}
+            </Stack.Screen>
 
-        <Stack.Screen name="ProjectList">
-          {(props) => (
-            <ProjectListScreen
-              {...props}
-              isAdmin={authIsAdmin}
-              currentUser={userName || user?.email || "ユーザー"}
-              projects={projects}
-              setProjects={setProjects}
-              userProfiles={userProfiles}
-            />
-          )}
-        </Stack.Screen>
+            <Stack.Screen name="ProjectDetail">
+              {(props) => (
+                <ProjectDetailScreen
+                  {...props}
+                  isAdmin={authIsAdmin}
+                  currentUser={safeUserName}
+                  clubMembers={clubMembers}
+                  userProfiles={userProfiles}
+                  projects={projects}
+                  setProjects={setProjects}
+                />
+              )}
+            </Stack.Screen>
 
-        <Stack.Screen name="ProjectDetail">
-          {(props) => (
-            <ProjectDetailScreen
-              {...props}
-              isAdmin={authIsAdmin}
-              currentUser={userName || user?.email || "ユーザー"}
-              clubMembers={clubMembers}
-              userProfiles={userProfiles}
-              projects={projects}
-              setProjects={setProjects}
-            />
-          )}
-        </Stack.Screen>
-
-        <Stack.Screen name="Settings">
-          {(props) => (
-            <SettingsScreen
-              {...props}
-              isAdmin={authIsAdmin}
-              currentUser={userName || user?.email || "ユーザー"}
-              clubMembers={clubMembers}
-              setClubMembers={setClubMembers}
-              grades={grades}
-              setGrades={setGrades}
-              positions={positions}
-              setPositions={setPositions}
-              alertThresholds={alertThresholds}
-              setAlertThresholds={setAlertThresholds}
-              userProfiles={userProfiles}
-              setUserProfiles={setUserProfiles}
-            />
-          )}
-        </Stack.Screen>
+            <Stack.Screen name="Settings">
+              {(props) => (
+                <SettingsScreen
+                  {...props}
+                  isAdmin={authIsAdmin}
+                  currentUser={safeUserName}
+                  clubMembers={clubMembers}
+                  setClubMembers={setClubMembers}
+                  grades={grades}
+                  setGrades={setGrades}
+                  positions={positions}
+                  setPositions={setPositions}
+                  alertThresholds={alertThresholds}
+                  setAlertThresholds={setAlertThresholds}
+                  userProfiles={userProfiles}
+                  setUserProfiles={setUserProfiles}
+                />
+              )}
+            </Stack.Screen>
+          </>
+        )}
       </Stack.Navigator>
     </NavigationContainer>
   );

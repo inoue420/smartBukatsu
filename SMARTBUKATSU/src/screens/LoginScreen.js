@@ -6,194 +6,157 @@ import {
   TouchableOpacity,
   StyleSheet,
   Alert,
+  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useAuth } from "../AuthContext";
+import {
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+} from "firebase/auth";
 import { auth } from "../firebase";
+
+// ★ 追加：Firestoreへの登録処理をインポート
 import { executeRegistration } from "../services/firestoreService";
 
-const LoginScreen = ({ navigation }) => {
-  const [isLoginMode, setIsLoginMode] = useState(true);
-  const [registerStep, setRegisterStep] = useState(1);
+const LoginScreen = () => {
+  const [isLogin, setIsLogin] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
 
+  // 共通の入力項目
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+
+  // 新規登録用の入力項目
   const [userName, setUserName] = useState("");
-  const [role, setRole] = useState("admin");
-  const [teamName, setTeamName] = useState("");
+  const [role, setRole] = useState("member"); // "admin" or "member"
+  const [teamName, setTeamName] = useState(""); // 管理者用
+  const [inviteCode, setInviteCode] = useState(""); // 部員用
 
-  // 変数名を teamIdInput から inviteCode に変更
-  const [inviteCode, setInviteCode] = useState("");
-
-  const [isLoading, setIsLoading] = useState(false);
-  const { signIn, signUp } = useAuth();
-
-  const handleLogin = async () => {
-    if (!email || !password) return Alert.alert("エラー", "入力してください。");
-    setIsLoading(true);
-    try {
-      await signIn(email.trim(), password);
-      navigation.replace("WorkspaceHome");
-    } catch (error) {
-      Alert.alert("エラー", "ログインに失敗しました。");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleNextStep = () => {
-    if (!email || !password || !userName.trim()) {
-      return Alert.alert("エラー", "すべての項目を入力してください。");
-    }
-    if (password.length < 6) {
-      return Alert.alert("エラー", "パスワードは6文字以上で入力してください。");
-    }
-    setRegisterStep(2);
-  };
-
-  const handleRegister = async () => {
-    if (role === "admin" && !teamName.trim())
-      return Alert.alert("エラー", "チーム名を入力してください。");
-    if (role === "member" && !inviteCode.trim())
-      return Alert.alert("エラー", "招待コードを入力してください。");
-
-    setIsLoading(true);
-    try {
-      await signUp(email.trim(), password);
-      const uid = auth.currentUser?.uid;
-
-      const result = await executeRegistration(
-        uid,
-        role,
-        userName.trim(),
-        teamName.trim(),
-        inviteCode.trim(),
+  const handleAuth = async () => {
+    // 1. バリデーション（入力チェック）
+    if (!email || !password) {
+      return Alert.alert(
+        "エラー",
+        "メールアドレスとパスワードを入力してください。",
       );
+    }
 
-      if (result.type === "create") {
-        Alert.alert(
-          "🎉 チーム作成成功！",
-          `部員を招待するための【 招待コード 】が発行されました：\n\n【 ${result.inviteCode} 】\n\nこのコードを部員に教えてください！`,
-          [{ text: "OK", onPress: () => navigation.replace("WorkspaceHome") }],
-        );
+    if (!isLogin) {
+      if (!userName.trim()) {
+        return Alert.alert("エラー", "お名前（表示名）を入力してください。");
+      }
+      if (role === "admin" && !teamName.trim()) {
+        return Alert.alert("エラー", "作成するチーム名を入力してください。");
+      }
+      if (role === "member" && !inviteCode.trim()) {
+        return Alert.alert("エラー", "招待コードを入力してください。");
+      }
+    }
+
+    setIsLoading(true);
+    try {
+      if (isLogin) {
+        // === ログイン処理 ===
+        await signInWithEmailAndPassword(auth, email, password);
       } else {
-        Alert.alert(
-          "✅ 参加完了",
-          "招待コードが承認され、チームに参加しました！",
-          [{ text: "OK", onPress: () => navigation.replace("WorkspaceHome") }],
+        // === 新規登録処理（1ページ完結） ===
+        // ① Firebase Auth にユーザーを作成
+        const userCredential = await createUserWithEmailAndPassword(
+          auth,
+          email,
+          password,
         );
+        const uid = userCredential.user.uid;
+
+        // ② Firestore にユーザー情報とチーム情報（または所属情報）を書き込む
+        await executeRegistration(
+          uid,
+          role,
+          userName.trim(),
+          teamName.trim(),
+          inviteCode.trim(),
+        );
+
+        Alert.alert("登録完了", "アカウントの作成と設定が完了しました！");
       }
     } catch (error) {
-      Alert.alert("登録エラー", error.message || "処理に失敗しました。");
+      console.log("認証エラー:", error);
+      let errorMsg = "エラーが発生しました。";
+      if (
+        error.message.includes("invalid-credential") ||
+        error.message.includes("invalid-email")
+      ) {
+        errorMsg = "メールアドレスまたはパスワードが間違っています。";
+      } else if (error.message.includes("email-already-in-use")) {
+        errorMsg = "このメールアドレスは既に登録されています。";
+      } else if (error.message.includes("weak-password")) {
+        errorMsg = "パスワードは6文字以上で入力してください。";
+      } else if (error.message.includes("無効な招待コード")) {
+        errorMsg = "招待コードが間違っているか、無効になっています。";
+      }
+      Alert.alert("エラー", errorMsg);
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const resetForm = () => {
+    setEmail("");
+    setPassword("");
+    setUserName("");
+    setTeamName("");
+    setInviteCode("");
   };
 
   return (
     <SafeAreaView style={styles.container}>
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : "height"}
-        style={styles.inner}
+        style={styles.keyboardView}
       >
         <ScrollView
-          contentContainerStyle={{ flexGrow: 1, justifyContent: "center" }}
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
         >
-          <View style={styles.header}>
-            <Text style={styles.appTitle}>📱 スマート部活</Text>
-            <Text style={styles.subTitle}>
-              {isLoginMode ? "ログイン" : `新規登録 (${registerStep}/2)`}
-            </Text>
-          </View>
+          <View style={styles.card}>
+            <Text style={styles.appTitle}>スマート部活 📱</Text>
 
-          <View style={styles.stepContainer}>
-            {isLoginMode ? (
-              <>
-                <TextInput
-                  style={styles.input}
-                  placeholder="メールアドレス"
-                  value={email}
-                  onChangeText={setEmail}
-                  autoCapitalize="none"
-                />
-                <TextInput
-                  style={styles.input}
-                  placeholder="パスワード"
-                  value={password}
-                  onChangeText={setPassword}
-                  secureTextEntry
-                />
-                <TouchableOpacity
-                  style={styles.primaryBtn}
-                  onPress={handleLogin}
-                  disabled={isLoading}
+            {/* タブ切り替え */}
+            <View style={styles.tabContainer}>
+              <TouchableOpacity
+                style={[styles.tabButton, isLogin && styles.tabButtonActive]}
+                onPress={() => {
+                  setIsLogin(true);
+                  resetForm();
+                }}
+              >
+                <Text style={[styles.tabText, isLogin && styles.tabTextActive]}>
+                  ログイン
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.tabButton, !isLogin && styles.tabButtonActive]}
+                onPress={() => {
+                  setIsLogin(false);
+                  resetForm();
+                }}
+              >
+                <Text
+                  style={[styles.tabText, !isLogin && styles.tabTextActive]}
                 >
-                  <Text style={styles.primaryBtnText}>
-                    {isLoading ? "送信中..." : "ログイン"}
-                  </Text>
-                </TouchableOpacity>
-              </>
-            ) : registerStep === 1 ? (
-              <>
-                <Text style={styles.label}>お名前</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="例: 山田 太郎"
-                  value={userName}
-                  onChangeText={setUserName}
-                />
-                <TextInput
-                  style={styles.input}
-                  placeholder="メールアドレス"
-                  value={email}
-                  onChangeText={setEmail}
-                  autoCapitalize="none"
-                />
-                <TextInput
-                  style={styles.input}
-                  placeholder="パスワード(6文字以上)"
-                  value={password}
-                  onChangeText={setPassword}
-                  secureTextEntry
-                />
-                <TouchableOpacity
-                  style={styles.primaryBtn}
-                  onPress={handleNextStep}
-                >
-                  <Text style={styles.primaryBtnText}>次へ進む</Text>
-                </TouchableOpacity>
-              </>
-            ) : (
-              <>
-                <TouchableOpacity
-                  onPress={() => setRegisterStep(1)}
-                  style={{ marginBottom: 15 }}
-                >
-                  <Text style={{ color: "#888", fontWeight: "bold" }}>
-                    ◁ 戻る
-                  </Text>
-                </TouchableOpacity>
-                <View style={styles.roleContainer}>
-                  <TouchableOpacity
-                    style={[
-                      styles.roleBtn,
-                      role === "admin" && styles.roleBtnActive,
-                    ]}
-                    onPress={() => setRole("admin")}
-                  >
-                    <Text
-                      style={
-                        role === "admin"
-                          ? styles.roleBtnTextActive
-                          : styles.roleBtnText
-                      }
-                    >
-                      👑 管理者
-                    </Text>
-                  </TouchableOpacity>
+                  新規登録
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* ====== 新規登録のみ表示するエリア ====== */}
+            {!isLogin && (
+              <View style={styles.signupSection}>
+                <Text style={styles.label}>役割を選択</Text>
+                <View style={styles.roleToggleContainer}>
                   <TouchableOpacity
                     style={[
                       styles.roleBtn,
@@ -202,55 +165,103 @@ const LoginScreen = ({ navigation }) => {
                     onPress={() => setRole("member")}
                   >
                     <Text
-                      style={
-                        role === "member"
-                          ? styles.roleBtnTextActive
-                          : styles.roleBtnText
-                      }
+                      style={[
+                        styles.roleBtnText,
+                        role === "member" && { color: "#fff" },
+                      ]}
                     >
-                      👤 部員
+                      👤 部員として参加
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.roleBtn,
+                      role === "admin" && styles.roleBtnActive,
+                    ]}
+                    onPress={() => setRole("admin")}
+                  >
+                    <Text
+                      style={[
+                        styles.roleBtnText,
+                        role === "admin" && { color: "#fff" },
+                      ]}
+                    >
+                      👑 管理者として作成
                     </Text>
                   </TouchableOpacity>
                 </View>
+
+                <Text style={styles.label}>お名前 (表示名)</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="例: 山田 太郎"
+                  value={userName}
+                  onChangeText={setUserName}
+                />
+
                 {role === "admin" ? (
-                  <TextInput
-                    style={styles.input}
-                    placeholder="部活名（例：サッカー部）"
-                    value={teamName}
-                    onChangeText={setTeamName}
-                  />
+                  <>
+                    <Text style={styles.label}>新しく作成するチーム名</Text>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="例: ○○高校 男子バレー部"
+                      value={teamName}
+                      onChangeText={setTeamName}
+                    />
+                  </>
                 ) : (
-                  <TextInput
-                    style={styles.input}
-                    placeholder="共有された6桁の招待コード"
-                    value={inviteCode}
-                    onChangeText={setInviteCode}
-                    autoCapitalize="characters"
-                  />
+                  <>
+                    <Text style={styles.label}>チームの招待コード</Text>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="監督から共有された6桁のコード"
+                      value={inviteCode}
+                      onChangeText={setInviteCode}
+                      autoCapitalize="characters"
+                    />
+                  </>
                 )}
-                <TouchableOpacity
-                  style={styles.primaryBtn}
-                  onPress={handleRegister}
-                  disabled={isLoading}
-                >
-                  <Text style={styles.primaryBtnText}>
-                    {isLoading ? "処理中..." : "登録を完了する"}
-                  </Text>
-                </TouchableOpacity>
-              </>
+              </View>
             )}
 
-            <TouchableOpacity
-              style={styles.switchModeBtn}
-              onPress={() => {
-                setIsLoginMode(!isLoginMode);
-                setRegisterStep(1);
-              }}
-            >
-              <Text style={styles.switchModeText}>
-                {isLoginMode ? "新規登録はこちら" : "ログインに戻る"}
-              </Text>
-            </TouchableOpacity>
+            {/* ====== 共通エリア (ログイン / 新規登録) ====== */}
+            <Text style={styles.label}>メールアドレス</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="email@example.com"
+              value={email}
+              onChangeText={setEmail}
+              keyboardType="email-address"
+              autoCapitalize="none"
+            />
+
+            <Text style={styles.label}>
+              パスワード {!isLogin && "(6文字以上)"}
+            </Text>
+            <TextInput
+              style={styles.input}
+              placeholder="パスワード"
+              value={password}
+              onChangeText={setPassword}
+              secureTextEntry
+            />
+
+            {isLoading ? (
+              <ActivityIndicator
+                size="large"
+                color="#27ae60"
+                style={{ marginTop: 20 }}
+              />
+            ) : (
+              <TouchableOpacity
+                style={styles.submitButton}
+                onPress={handleAuth}
+              >
+                <Text style={styles.submitButtonText}>
+                  {isLogin ? "ログイン" : "登録して始める"}
+                </Text>
+              </TouchableOpacity>
+            )}
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -258,53 +269,106 @@ const LoginScreen = ({ navigation }) => {
   );
 };
 
-// スタイルは前回と同じです
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#f0f2f5" },
-  inner: { flex: 1, padding: 20 },
-  header: { alignItems: "center", marginBottom: 30 },
-  appTitle: { fontSize: 28, fontWeight: "bold", color: "#0077cc" },
-  subTitle: { fontSize: 14, color: "#666", marginTop: 5 },
-  stepContainer: {
-    backgroundColor: "#fff",
+  container: { flex: 1, backgroundColor: "#27ae60" },
+  keyboardView: { flex: 1 },
+  scrollContent: {
+    flexGrow: 1,
+    justifyContent: "center",
     padding: 20,
-    borderRadius: 12,
-    elevation: 3,
   },
-  input: {
-    backgroundColor: "#f9f9f9",
+  card: {
+    backgroundColor: "#fff",
+    borderRadius: 20,
+    padding: 25,
+    shadowColor: "#000",
+    shadowOpacity: 0.1,
+    shadowRadius: 10,
+    elevation: 5,
+  },
+  appTitle: {
+    fontSize: 24,
+    fontWeight: "bold",
+    color: "#333",
+    textAlign: "center",
+    marginBottom: 20,
+  },
+  tabContainer: {
+    flexDirection: "row",
+    marginBottom: 25,
+    backgroundColor: "#f0f2f5",
+    borderRadius: 10,
+    padding: 4,
+  },
+  tabButton: {
+    flex: 1,
+    paddingVertical: 10,
+    alignItems: "center",
+    borderRadius: 8,
+  },
+  tabButtonActive: {
+    backgroundColor: "#fff",
+    shadowColor: "#000",
+    shadowOpacity: 0.05,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  tabText: { fontSize: 14, fontWeight: "bold", color: "#888" },
+  tabTextActive: { color: "#27ae60" },
+
+  signupSection: {
+    marginBottom: 10,
+  },
+  roleToggleContainer: {
+    flexDirection: "row",
+    marginBottom: 15,
+    gap: 10,
+  },
+  roleBtn: {
+    flex: 1,
+    paddingVertical: 12,
     borderWidth: 1,
     borderColor: "#ddd",
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 15,
+    borderRadius: 10,
+    alignItems: "center",
+    backgroundColor: "#f9f9f9",
   },
-  label: { fontSize: 12, fontWeight: "bold", color: "#555", marginBottom: 6 },
-  primaryBtn: {
-    backgroundColor: "#0077cc",
-    padding: 15,
-    borderRadius: 8,
+  roleBtnActive: {
+    backgroundColor: "#27ae60",
+    borderColor: "#27ae60",
+  },
+  roleBtnText: {
+    fontSize: 13,
+    fontWeight: "bold",
+    color: "#666",
+  },
+
+  label: {
+    fontSize: 13,
+    fontWeight: "bold",
+    color: "#555",
+    marginBottom: 8,
+  },
+  input: {
+    backgroundColor: "#f5f5f5",
+    borderWidth: 1,
+    borderColor: "#ddd",
+    borderRadius: 10,
+    padding: 12,
+    fontSize: 15,
+    marginBottom: 15,
+    color: "#333",
+  },
+  submitButton: {
+    backgroundColor: "#27ae60",
+    paddingVertical: 15,
+    borderRadius: 10,
     alignItems: "center",
     marginTop: 10,
   },
-  primaryBtnText: { color: "#fff", fontWeight: "bold", fontSize: 16 },
-  roleContainer: { flexDirection: "row", marginBottom: 20 },
-  roleBtn: {
-    flex: 1,
-    padding: 12,
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: "#ddd",
-    marginHorizontal: 5,
-    borderRadius: 8,
-  },
-  roleBtnActive: { backgroundColor: "#e6f2ff", borderColor: "#0077cc" },
-  roleBtnText: { color: "#666", fontWeight: "bold" },
-  roleBtnTextActive: { color: "#0077cc", fontWeight: "bold" },
-  switchModeBtn: { marginTop: 20, alignItems: "center" },
-  switchModeText: {
-    color: "#0077cc",
-    textDecorationLine: "underline",
+  submitButtonText: {
+    color: "#fff",
+    fontSize: 16,
     fontWeight: "bold",
   },
 });
