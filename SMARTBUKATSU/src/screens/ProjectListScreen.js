@@ -19,6 +19,7 @@ import {
   ScrollView,
   StatusBar,
   useWindowDimensions,
+  Keyboard,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Video, ResizeMode } from "expo-av";
@@ -26,7 +27,11 @@ import YoutubePlayer from "react-native-youtube-iframe";
 import * as ScreenOrientation from "expo-screen-orientation";
 
 import { useAuth } from "../AuthContext";
-import { createProject } from "../services/firestoreService";
+import {
+  createProject,
+  deleteProject,
+  updateProject,
+} from "../services/firestoreService";
 
 export default function ProjectListScreen({
   navigation,
@@ -41,30 +46,64 @@ export default function ProjectListScreen({
   const userRole =
     global.TEST_ROLE ||
     (isAdmin ? "owner" : currentUserProfile.role || "member");
+
   const canCreateProject = ["owner", "admin", "staff", "captain"].includes(
     userRole,
   );
+  const canDeleteProject = ["owner", "admin", "staff"].includes(userRole);
 
   const { user, activeTeamId } = useAuth();
+  const [isOffline, setIsOffline] = useState(false);
 
   const [activeTab, setActiveTab] = useState("list");
+  const [summaryTab, setSummaryTab] = useState("playlist");
 
   const { width, height } = useWindowDimensions();
   const isLandscape = width > height;
 
+  const [isSideUiVisible, setIsSideUiVisible] = useState(false);
+  const [clipToastMessage, setClipToastMessage] = useState(null);
+
+  // ★ 修正: 肩書きマッピングをここで定義してエラーを解消！
+  const roleNameMap = {
+    owner: `${currentUser}(監督)`,
+    admin: `${currentUser}(管理者)`,
+    staff: `${currentUser}(コーチ)`,
+    captain: `${currentUser}(キャプテン)`,
+    member: currentUser,
+  };
+  const displayUserName = roleNameMap[userRole] || currentUser;
+
+  const activeProjects = useMemo(() => {
+    return projects.filter((p) => p.status !== "deleted");
+  }, [projects]);
+
   const highlightData = useMemo(() => {
     const data = {};
     projects.forEach((p) => {
-      if (p.videoUrl && p.tags && p.tags.length > 0) {
+      if (p.status !== "deleted" && p.videoUrl && p.tags && p.tags.length > 0) {
         p.tags.forEach((tag) => {
           if (!data[tag.label]) data[tag.label] = [];
+
+          const clipMemos = (p.sharedMemos || []).filter(
+            (m) => m.tagId === tag.id,
+          );
+          const hasUnread = clipMemos.some(
+            (m) =>
+              m.user !== displayUserName &&
+              !(m.readBy || []).includes(currentUser),
+          );
+
           data[tag.label].push({
             id: tag.id,
+            projectId: p.id,
             project: p.title,
             url: p.videoUrl,
             start: tag.videoTime,
             end: tag.videoTime + 5,
             user: tag.user,
+            memos: clipMemos,
+            hasUnread: hasUnread,
           });
         });
       }
@@ -73,7 +112,7 @@ export default function ProjectListScreen({
       data[key].sort((a, b) => a.start - b.start);
     });
     return data;
-  }, [projects]);
+  }, [projects, currentUser, displayUserName]);
 
   const availableTags = useMemo(
     () => Object.keys(highlightData).sort(),
@@ -89,6 +128,8 @@ export default function ProjectListScreen({
   const videoRef = useRef(null);
   const youtubeRef = useRef(null);
 
+  const [newSharedMemo, setNewSharedMemo] = useState("");
+
   useEffect(() => {
     ScreenOrientation.unlockAsync().catch(() => {});
     return () => {
@@ -103,6 +144,7 @@ export default function ProjectListScreen({
       await ScreenOrientation.lockAsync(
         ScreenOrientation.OrientationLock.LANDSCAPE_RIGHT,
       );
+      setIsSideUiVisible(false);
     } catch (e) {}
   };
 
@@ -129,6 +171,64 @@ export default function ProjectListScreen({
 
   const currentClips = highlightData[selectedHighlightTag] || [];
   const currentClip = currentClips[currentClipIndex] || null;
+
+  useEffect(() => {
+    if (currentClip && isLandscape && !isSideUiVisible) {
+      setClipToastMessage(
+        `▶ ${currentClip.project} (${formatTime(currentClip.start)}〜)`,
+      );
+      const timer = setTimeout(() => setClipToastMessage(null), 3500);
+      return () => clearTimeout(timer);
+    } else {
+      setClipToastMessage(null);
+    }
+  }, [currentClip, isLandscape, isSideUiVisible]);
+
+  useEffect(() => {
+    if (activeTab === "summary" && summaryTab === "memo" && currentClip) {
+      const unreadMemos = currentClip.memos.filter(
+        (m) =>
+          m.user !== displayUserName && !(m.readBy || []).includes(currentUser),
+      );
+      if (unreadMemos.length > 0) {
+        const targetProject = projects.find(
+          (p) => p.id === currentClip.projectId,
+        );
+        if (targetProject) {
+          const updatedMemos = (targetProject.sharedMemos || []).map((m) => {
+            if (
+              m.tagId === currentClip.id &&
+              m.user !== displayUserName &&
+              !(m.readBy || []).includes(currentUser)
+            ) {
+              return { ...m, readBy: [...(m.readBy || []), currentUser] };
+            }
+            return m;
+          });
+          setProjects(
+            projects.map((p) =>
+              p.id === targetProject.id
+                ? { ...p, sharedMemos: updatedMemos }
+                : p,
+            ),
+          );
+          if (activeTeamId) {
+            updateProject(activeTeamId, targetProject.id, {
+              sharedMemos: updatedMemos,
+            }).catch(() => {});
+          }
+        }
+      }
+    }
+  }, [
+    activeTab,
+    summaryTab,
+    currentClip,
+    projects,
+    activeTeamId,
+    currentUser,
+    displayUserName,
+  ]);
 
   const extractYoutubeId = (url) => {
     if (!url) return null;
@@ -241,6 +341,7 @@ export default function ProjectListScreen({
       status: "active",
       tags: [],
       memos: [],
+      sharedMemos: [],
       createdBy: realUid,
     };
 
@@ -257,7 +358,68 @@ export default function ProjectListScreen({
         await createProject(activeTeamId, newProject);
       }
     } catch (error) {
-      console.log("Firestoreプロジェクト保存エラー (ルール追加待ち):", error);
+      console.log("Firestore保存エラー:", error);
+    }
+  };
+
+  const handleDeleteProject = (id, projectTitle) => {
+    Alert.alert(
+      "削除の確認",
+      `「${projectTitle}」を削除しますか？\n（タグやメモなどのデータもすべて見えなくなります）`,
+      [
+        { text: "キャンセル", style: "cancel" },
+        {
+          text: "削除する",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              if (activeTeamId) {
+                await deleteProject(activeTeamId, id);
+              }
+            } catch (e) {
+              Alert.alert("エラー", "削除に失敗しました。");
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  const handleSendSharedMemo = async () => {
+    if (newSharedMemo.trim() === "") return;
+    if (!currentClip) return;
+
+    const newMemo = {
+      id: "smemo_" + Date.now().toString(),
+      tagId: currentClip.id,
+      text: newSharedMemo.trim(),
+      user: displayUserName,
+      uid: user?.uid || currentUser,
+      createdAt: Date.now(),
+      readBy: [currentUser],
+      status: isOffline ? "pending" : "sent",
+    };
+
+    const targetProject = projects.find((p) => p.id === currentClip.projectId);
+    if (targetProject) {
+      const updatedMemos = [...(targetProject.sharedMemos || []), newMemo];
+      const updatedProject = { ...targetProject, sharedMemos: updatedMemos };
+
+      setProjects(
+        projects.map((p) => (p.id === targetProject.id ? updatedProject : p)),
+      );
+      setNewSharedMemo("");
+      Keyboard.dismiss();
+
+      try {
+        if (activeTeamId) {
+          await updateProject(activeTeamId, targetProject.id, {
+            sharedMemos: updatedMemos,
+          });
+        }
+      } catch (e) {
+        console.log("Firestore共有メモ保存エラー", e);
+      }
     }
   };
 
@@ -267,6 +429,7 @@ export default function ProjectListScreen({
       item.participants === "coach"
     )
       return null;
+
     return (
       <TouchableOpacity
         style={styles.card}
@@ -287,7 +450,18 @@ export default function ProjectListScreen({
           >
             <Text style={styles.badgeText}>{item.type}</Text>
           </View>
-          <Text style={styles.cardTitle}>{item.title}</Text>
+          <Text style={styles.cardTitle} numberOfLines={1}>
+            {item.title}
+          </Text>
+
+          {canDeleteProject && (
+            <TouchableOpacity
+              style={styles.deleteIconBtn}
+              onPress={() => handleDeleteProject(item.id, item.title)}
+            >
+              <Text style={styles.deleteIconText}>🗑️</Text>
+            </TouchableOpacity>
+          )}
         </View>
         <Text style={styles.cardSub}>作成日: {item.date}</Text>
         {item.videoUrl ? (
@@ -381,6 +555,23 @@ export default function ProjectListScreen({
         <Text style={styles.overlayTag}>🏷️ {selectedHighlightTag}</Text>
       </View>
 
+      {isLandscape && (
+        <TouchableOpacity
+          style={styles.toggleSideUiBtn}
+          onPress={() => setIsSideUiVisible(!isSideUiVisible)}
+        >
+          <Text style={styles.toggleSideUiBtnText}>
+            {isSideUiVisible ? "▶ リストを隠す" : "◀ プレイリスト等"}
+          </Text>
+        </TouchableOpacity>
+      )}
+
+      {clipToastMessage && (
+        <View style={styles.clipToast}>
+          <Text style={styles.clipToastText}>{clipToastMessage}</Text>
+        </View>
+      )}
+
       <View style={[styles.videoControls, { zIndex: 100 }]}>
         <TouchableOpacity
           style={styles.playBtn}
@@ -403,22 +594,15 @@ export default function ProjectListScreen({
 
   const renderPlaylist = () => (
     <View style={{ flex: 1 }}>
-      <View
-        style={[styles.playlistHeader, isLandscape && styles.fsPlaylistHeader]}
+      <ScrollView
+        style={[styles.playlistScroll, isLandscape && { paddingHorizontal: 0 }]}
+        showsVerticalScrollIndicator={false}
       >
-        <Text style={[styles.playlistTitle, isLandscape && { color: "#fff" }]}>
-          連続再生 ({currentClips.length}件)
-        </Text>
         {!isLandscape && (
           <Text style={styles.playlistSub}>
             ※再生が終わると自動で次に進みます
           </Text>
         )}
-      </View>
-      <ScrollView
-        style={[styles.playlistScroll, isLandscape && { paddingHorizontal: 0 }]}
-        showsVerticalScrollIndicator={false}
-      >
         {currentClips.map((clip, index) => (
           <TouchableOpacity
             key={clip.id}
@@ -437,26 +621,141 @@ export default function ProjectListScreen({
               {index + 1}
             </Text>
             <View style={{ flex: 1 }}>
-              <Text
-                style={[
-                  styles.clipCardTitle,
-                  currentClipIndex === index && { color: "#0077cc" },
-                ]}
-              >
-                {clip.project}
-              </Text>
+              <View style={{ flexDirection: "row", alignItems: "center" }}>
+                <Text
+                  style={[
+                    styles.clipCardTitle,
+                    currentClipIndex === index && { color: "#0077cc" },
+                  ]}
+                  numberOfLines={1}
+                >
+                  {clip.project}
+                </Text>
+                {clip.hasUnread && <View style={styles.unreadDot} />}
+              </View>
               <Text style={styles.clipCardSub}>
                 ⏱ {formatTime(clip.start)} 〜 {formatTime(clip.end)} / by{" "}
                 {clip.user}
               </Text>
             </View>
             {currentClipIndex === index && isPlaying ? (
-              <Text style={styles.playingIcon}>▶ 再生中</Text>
+              <Text style={styles.playingIcon}>▶</Text>
             ) : null}
           </TouchableOpacity>
         ))}
         <View style={{ height: 30 }} />
       </ScrollView>
+    </View>
+  );
+
+  const renderSharedMemos = () => (
+    <View style={{ flex: 1 }}>
+      <ScrollView
+        style={[styles.memoScroll, isLandscape && { paddingHorizontal: 0 }]}
+      >
+        {currentClip?.memos.length === 0 ? (
+          <Text style={[styles.emptyText, isLandscape && { color: "#94a3b8" }]}>
+            このクリップに対するコメントはまだありません。
+          </Text>
+        ) : (
+          currentClip?.memos.map((memo) => {
+            const isMyMemo = memo.user === displayUserName;
+            return (
+              <View
+                key={memo.id}
+                style={[
+                  styles.chatBubbleContainer,
+                  isMyMemo ? styles.chatBubbleRight : styles.chatBubbleLeft,
+                ]}
+              >
+                {!isMyMemo && (
+                  <Text
+                    style={[styles.chatUser, isLandscape && { color: "#ccc" }]}
+                  >
+                    {memo.user}
+                  </Text>
+                )}
+                <View
+                  style={[
+                    styles.chatBubble,
+                    isMyMemo ? styles.chatBubbleMe : styles.chatBubbleOther,
+                  ]}
+                >
+                  <Text
+                    style={isMyMemo ? styles.chatTextMe : styles.chatTextOther}
+                  >
+                    {memo.text}
+                  </Text>
+                </View>
+                <Text style={styles.chatTime}>
+                  {new Date(memo.createdAt).toLocaleTimeString("ja-JP", {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </Text>
+              </View>
+            );
+          })
+        )}
+      </ScrollView>
+      <View style={styles.memoInputContainer}>
+        <TextInput
+          style={styles.memoInput}
+          value={newSharedMemo}
+          onChangeText={setNewSharedMemo}
+          placeholder="議論やアドバイスを入力..."
+          multiline
+        />
+        <TouchableOpacity
+          style={styles.memoSendBtn}
+          onPress={handleSendSharedMemo}
+        >
+          <Text style={styles.memoSendBtnText}>送信</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+
+  const renderSummaryRightPane = () => (
+    <View style={{ flex: 1, paddingTop: 5 }}>
+      <View
+        style={[styles.summaryTabRow, isLandscape && { marginHorizontal: 0 }]}
+      >
+        <TouchableOpacity
+          style={[
+            styles.summaryTabBtn,
+            summaryTab === "playlist" && styles.summaryTabBtnActive,
+          ]}
+          onPress={() => setSummaryTab("playlist")}
+        >
+          <Text
+            style={[
+              styles.summaryTabBtnText,
+              summaryTab === "playlist" && styles.summaryTabBtnTextActive,
+            ]}
+          >
+            プレイリスト
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[
+            styles.summaryTabBtn,
+            summaryTab === "memo" && styles.summaryTabBtnActive,
+          ]}
+          onPress={() => setSummaryTab("memo")}
+        >
+          <Text
+            style={[
+              styles.summaryTabBtnText,
+              summaryTab === "memo" && styles.summaryTabBtnTextActive,
+            ]}
+          >
+            議論メモ {currentClip && currentClip.hasUnread ? "🔴" : ""}
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {summaryTab === "playlist" ? renderPlaylist() : renderSharedMemos()}
     </View>
   );
 
@@ -517,7 +816,12 @@ export default function ProjectListScreen({
               isLandscape && { flexDirection: "row", marginHorizontal: 0 },
             ]}
           >
-            <View style={isLandscape ? styles.fsVideoCol : {}}>
+            <View
+              style={[
+                isLandscape ? styles.fsVideoCol : {},
+                isLandscape && !isSideUiVisible && { flex: 1 },
+              ]}
+            >
               {!isLandscape && renderTagSelector()}
 
               {currentClips.length === 0 ? (
@@ -540,17 +844,18 @@ export default function ProjectListScreen({
             </View>
 
             <View
-              style={
+              style={[
                 isLandscape
                   ? styles.fsUiCol
                   : {
                       flex: 1,
                       display: currentClips.length === 0 ? "none" : "flex",
-                    }
-              }
+                    },
+                isLandscape && !isSideUiVisible && { display: "none" },
+              ]}
             >
               {isLandscape && renderTagSelector()}
-              {currentClips.length > 0 && renderPlaylist()}
+              {currentClips.length > 0 && renderSummaryRightPane()}
             </View>
           </View>
         ) : (
@@ -568,7 +873,7 @@ export default function ProjectListScreen({
             </View>
 
             <FlatList
-              data={projects}
+              data={activeProjects}
               keyExtractor={(item) => item.id}
               renderItem={renderProjectItem}
               ListEmptyComponent={
@@ -587,7 +892,6 @@ export default function ProjectListScreen({
           >
             <Text style={styles.modalTitle}>新しいプロジェクトを追加</Text>
 
-            {/* ★ 修正：スクロール領域の下部にしっかり余白(paddingBottom: 50)を追加 */}
             <ScrollView
               showsVerticalScrollIndicator={false}
               contentContainerStyle={{ paddingBottom: 50 }}
@@ -764,6 +1068,8 @@ const styles = StyleSheet.create({
   badgeOther: { backgroundColor: "#e0e0e0" },
   badgeText: { fontSize: 10, fontWeight: "bold", color: "#333" },
   cardTitle: { fontSize: 16, fontWeight: "bold", color: "#333", flex: 1 },
+  deleteIconBtn: { padding: 5, marginLeft: 10 },
+  deleteIconText: { fontSize: 16 },
   cardSub: { fontSize: 12, color: "#888", marginBottom: 5 },
   urlText: { fontSize: 12, color: "#2ecc71", fontWeight: "bold" },
   noUrlText: { fontSize: 12, color: "#e74c3c" },
@@ -888,29 +1194,59 @@ const styles = StyleSheet.create({
     paddingBottom: 10,
     paddingHorizontal: 0,
   },
-  fsPlaylistHeader: {
-    backgroundColor: "transparent",
-    padding: 0,
-    paddingBottom: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: "#334155",
-    marginBottom: 10,
+
+  toggleSideUiBtn: {
+    position: "absolute",
+    right: 0,
+    top: 20,
+    backgroundColor: "rgba(0,119,204,0.85)",
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderTopLeftRadius: 8,
+    borderBottomLeftRadius: 8,
+    zIndex: 150,
+  },
+  toggleSideUiBtnText: {
+    color: "#fff",
+    fontWeight: "bold",
+    fontSize: 12,
+  },
+  clipToast: {
+    position: "absolute",
+    top: 20,
+    alignSelf: "center",
+    backgroundColor: "rgba(0,0,0,0.7)",
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 20,
+    zIndex: 200,
+  },
+  clipToastText: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "bold",
   },
 
-  playlistHeader: {
-    padding: 15,
-    backgroundColor: "#f9f9f9",
-    borderBottomWidth: 1,
-    borderBottomColor: "#eee",
+  summaryTabRow: {
+    flexDirection: "row",
+    marginHorizontal: 15,
+    marginBottom: 10,
+    backgroundColor: "#e6f2ff",
+    borderRadius: 8,
+    padding: 3,
   },
-  playlistTitle: {
-    fontSize: 16,
-    fontWeight: "bold",
-    color: "#333",
-    marginBottom: 2,
+  summaryTabBtn: {
+    flex: 1,
+    paddingVertical: 8,
+    alignItems: "center",
+    borderRadius: 6,
   },
-  playlistSub: { fontSize: 12, color: "#888" },
-  playlistScroll: { flex: 1, paddingHorizontal: 15, paddingTop: 10 },
+  summaryTabBtnActive: { backgroundColor: "#0077cc" },
+  summaryTabBtnText: { fontSize: 13, color: "#555", fontWeight: "bold" },
+  summaryTabBtnTextActive: { color: "#fff" },
+
+  playlistSub: { fontSize: 12, color: "#888", marginBottom: 10 },
+  playlistScroll: { flex: 1, paddingHorizontal: 15 },
   clipCard: {
     flexDirection: "row",
     alignItems: "center",
@@ -936,6 +1272,7 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     color: "#333",
     marginBottom: 4,
+    flex: 1,
   },
   clipCardSub: { fontSize: 12, color: "#666" },
   playingIcon: {
@@ -944,18 +1281,78 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     marginLeft: 10,
   },
+  unreadDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "#e74c3c",
+    marginLeft: 5,
+  },
+
+  memoScroll: { flex: 1, paddingHorizontal: 15 },
+  chatBubbleContainer: { marginBottom: 15 },
+  chatBubbleLeft: { alignItems: "flex-start" },
+  chatBubbleRight: { alignItems: "flex-end" },
+  chatUser: { fontSize: 11, color: "#555", marginBottom: 2, marginLeft: 5 },
+  chatBubble: {
+    paddingHorizontal: 15,
+    paddingVertical: 10,
+    borderRadius: 15,
+    maxWidth: "80%",
+  },
+  chatBubbleMe: { backgroundColor: "#0077cc", borderBottomRightRadius: 0 },
+  chatBubbleOther: {
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: "#eee",
+    borderBottomLeftRadius: 0,
+  },
+  chatTextMe: { color: "#fff", fontSize: 14, lineHeight: 20 },
+  chatTextOther: { color: "#333", fontSize: 14, lineHeight: 20 },
+  chatTime: { fontSize: 10, color: "#aaa", marginTop: 2, marginHorizontal: 5 },
+
+  memoInputContainer: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    padding: 10,
+    backgroundColor: "#fff",
+    borderTopWidth: 1,
+    borderTopColor: "#eee",
+  },
+  memoInput: {
+    flex: 1,
+    backgroundColor: "#f9f9f9",
+    borderRadius: 20,
+    paddingHorizontal: 15,
+    paddingTop: 10,
+    paddingBottom: 10,
+    minHeight: 40,
+    maxHeight: 100,
+    fontSize: 14,
+    borderWidth: 1,
+    borderColor: "#ddd",
+  },
+  memoSendBtn: {
+    marginLeft: 10,
+    backgroundColor: "#0077cc",
+    paddingHorizontal: 15,
+    height: 40,
+    justifyContent: "center",
+    borderRadius: 20,
+  },
+  memoSendBtnText: { color: "#fff", fontWeight: "bold", fontSize: 13 },
 
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.5)",
-    justifyContent: "flex-end", // ★下部に揃える設定は維持
+    justifyContent: "flex-end",
   },
   modalContent: {
     backgroundColor: "#fff",
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     padding: 20,
-    paddingBottom: Platform.OS === "ios" ? 40 : 20, // ★iOSのホームバー対策でパディングを追加
+    paddingBottom: Platform.OS === "ios" ? 40 : 20,
     maxHeight: "90%",
   },
   modalTitle: {

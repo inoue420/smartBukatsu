@@ -20,6 +20,7 @@ import YoutubePlayer from "react-native-youtube-iframe";
 import * as ScreenOrientation from "expo-screen-orientation";
 
 import { useAuth } from "../AuthContext";
+import { auth } from "../firebase";
 import { updateProject } from "../services/firestoreService";
 
 const ProjectDetailScreen = ({
@@ -41,8 +42,18 @@ const ProjectDetailScreen = ({
   const [localTags, setLocalTags] = useState(project.tags || []);
   const [localMemos, setLocalMemos] = useState(project.memos || []);
 
+  // ★ 修正：タグボタンの初期状態もプロジェクトデータから取得（デフォルトを設定）
+  const defaultQuickTags = ["ナイスプレー", "得点", "罰則"];
+  const [quickTags, setQuickTags] = useState(
+    project.quickTags || defaultQuickTags,
+  );
+
   const { width, height } = useWindowDimensions();
   const isLandscape = width > height;
+
+  const [isSideUiVisible, setIsSideUiVisible] = useState(false);
+  const [toastMessage, setToastMessage] = useState(null);
+  const toastTimeoutRef = useRef(null);
 
   const canDeleteAnyTag = ["owner", "admin", "staff"].includes(userRole);
 
@@ -66,16 +77,21 @@ const ProjectDetailScreen = ({
 
   const [activeTab, setActiveTab] = useState("tag");
 
-  const [quickTags, setQuickTags] = useState(["ナイスプレー", "得点", "罰則"]);
   const [isAddQuickTagModalVisible, setIsAddQuickTagModalVisible] =
     useState(false);
   const [newQuickTagName, setNewQuickTagName] = useState("");
 
-  const [isCustomTagModalVisible, setIsCustomTagModalVisible] = useState(false);
-  const [customTagText, setCustomTagText] = useState("");
-  const [customTagTime, setCustomTagTime] = useState(0);
-
   const [newMemoText, setNewMemoText] = useState("");
+
+  const showToast = (message) => {
+    setToastMessage(message);
+    if (toastTimeoutRef.current) {
+      clearTimeout(toastTimeoutRef.current);
+    }
+    toastTimeoutRef.current = setTimeout(() => {
+      setToastMessage(null);
+    }, 2000);
+  };
 
   const extractYoutubeId = (url) => {
     if (!url) return null;
@@ -84,6 +100,16 @@ const ProjectDetailScreen = ({
     const match = url.match(regExp);
     return match && match[2].length === 11 ? match[2] : null;
   };
+
+  // ★ 追加：他の人がタグやメモ、タグボタンを追加した時にリアルタイムで画面を更新する
+  useEffect(() => {
+    const updatedProject = projects?.find((p) => p.id === routeProject?.id);
+    if (updatedProject) {
+      setLocalTags(updatedProject.tags || []);
+      setLocalMemos(updatedProject.memos || []);
+      setQuickTags(updatedProject.quickTags || defaultQuickTags);
+    }
+  }, [projects, routeProject?.id]);
 
   useEffect(() => {
     if (projectVideoUrl) {
@@ -116,6 +142,7 @@ const ProjectDetailScreen = ({
       await ScreenOrientation.lockAsync(
         ScreenOrientation.OrientationLock.LANDSCAPE_RIGHT,
       );
+      setIsSideUiVisible(false);
     } catch (e) {}
   };
 
@@ -233,12 +260,12 @@ const ProjectDetailScreen = ({
       );
     }
 
+    showToast(`✅ タグ「${label}」を追加しました`);
+
     try {
       const safeTeamId = activeTeamId || "test_team";
       await updateProject(safeTeamId, project.id, { tags: newTags });
-    } catch (error) {
-      console.log("Firestore保存はスキップ:", error);
-    }
+    } catch (error) {}
   };
 
   const handleDeleteTag = async (id) => {
@@ -257,43 +284,6 @@ const ProjectDetailScreen = ({
     } catch (error) {}
   };
 
-  const handleOpenCustomTag = () => {
-    setCustomTagTime(videoTime);
-    setCustomTagText("");
-    setIsCustomTagModalVisible(true);
-  };
-
-  const handleSaveCustomTag = async () => {
-    if (customTagText.trim() === "") return;
-    const newTag = {
-      id: "tag_" + Date.now(),
-      videoTime: customTagTime,
-      label: customTagText.trim(),
-      user: displayUserName,
-    };
-    const newTags = [...localTags, newTag].sort(
-      (a, b) => a.videoTime - b.videoTime,
-    );
-
-    setLocalTags(newTags);
-
-    if (setProjects) {
-      setProjects((prev) =>
-        prev.map((p) => (p.id === project.id ? { ...p, tags: newTags } : p)),
-      );
-    }
-
-    setIsCustomTagModalVisible(false);
-    Keyboard.dismiss();
-
-    try {
-      const safeTeamId = activeTeamId || "test_team";
-      await updateProject(safeTeamId, project.id, { tags: newTags });
-    } catch (error) {
-      console.log(error);
-    }
-  };
-
   const handleAddMemo = async () => {
     if (newMemoText.trim() === "") return;
     const newMemo = {
@@ -301,6 +291,7 @@ const ProjectDetailScreen = ({
       videoTime,
       text: newMemoText,
       user: displayUserName,
+      uid: auth.currentUser?.uid,
     };
     const newMemos = [...localMemos, newMemo].sort(
       (a, b) => a.videoTime - b.videoTime,
@@ -341,12 +332,74 @@ const ProjectDetailScreen = ({
     } catch (error) {}
   };
 
-  const handleCreateQuickTag = () => {
+  // ★ 修正：タグボタン追加時、Firestoreに保存して他の人にも共有する
+  const handleCreateQuickTag = async () => {
     const trimmed = newQuickTagName.trim();
     if (trimmed === "") return;
-    if (!quickTags.includes(trimmed)) setQuickTags([...quickTags, trimmed]);
-    setNewQuickTagName("");
-    setIsAddQuickTagModalVisible(false);
+    if (!quickTags.includes(trimmed)) {
+      const newQuickTags = [...quickTags, trimmed];
+      setQuickTags(newQuickTags);
+
+      // プロジェクト一覧側にも反映
+      if (setProjects) {
+        setProjects((prev) =>
+          prev.map((p) =>
+            p.id === project.id ? { ...p, quickTags: newQuickTags } : p,
+          ),
+        );
+      }
+
+      setNewQuickTagName("");
+      setIsAddQuickTagModalVisible(false);
+      Keyboard.dismiss();
+
+      // データベースに保存してチーム全員に共有
+      try {
+        const safeTeamId = activeTeamId || "test_team";
+        await updateProject(safeTeamId, project.id, {
+          quickTags: newQuickTags,
+        });
+      } catch (error) {
+        console.log("Firestoreタグボタン保存エラー:", error);
+      }
+    } else {
+      setNewQuickTagName("");
+      setIsAddQuickTagModalVisible(false);
+    }
+  };
+
+  // ★ 追加：タグボタンを長押しで削除する機能
+  const handleDeleteQuickTag = (tagToDelete) => {
+    Alert.alert(
+      "タグボタンの削除",
+      `「${tagToDelete}」ボタンを削除しますか？\n（※過去に付けたタグ履歴は消えません）`,
+      [
+        { text: "キャンセル", style: "cancel" },
+        {
+          text: "削除する",
+          style: "destructive",
+          onPress: async () => {
+            const newQuickTags = quickTags.filter((t) => t !== tagToDelete);
+            setQuickTags(newQuickTags);
+
+            if (setProjects) {
+              setProjects((prev) =>
+                prev.map((p) =>
+                  p.id === project.id ? { ...p, quickTags: newQuickTags } : p,
+                ),
+              );
+            }
+
+            try {
+              const safeTeamId = activeTeamId || "test_team";
+              await updateProject(safeTeamId, project.id, {
+                quickTags: newQuickTags,
+              });
+            } catch (error) {}
+          },
+        },
+      ],
+    );
   };
 
   const renderVideoPlayer = () => (
@@ -377,7 +430,7 @@ const ProjectDetailScreen = ({
           style={styles.videoComponent}
           resizeMode={ResizeMode.CONTAIN}
           onPlaybackStatusUpdate={handlePlaybackStatusUpdate}
-          useNativeControls={true} // ★スマホ標準の再生バーを使用するよう変更！
+          useNativeControls={true}
           shouldPlay={isPlaying}
           onError={() => {
             Alert.alert(
@@ -397,12 +450,22 @@ const ProjectDetailScreen = ({
         </View>
       )}
 
+      {isLandscape && (
+        <TouchableOpacity
+          style={styles.toggleSideUiBtn}
+          onPress={() => setIsSideUiVisible(!isSideUiVisible)}
+        >
+          <Text style={styles.toggleSideUiBtnText}>
+            {isSideUiVisible ? "▶ 隠す" : "◀ タグ/メモ"}
+          </Text>
+        </TouchableOpacity>
+      )}
+
       {(youtubeVideoId || videoUri) && (
         <View style={[styles.videoControls, { zIndex: 100 }]}>
           <TouchableOpacity style={styles.skipBtn} onPress={skipBackward}>
             <Text style={styles.skipBtnText}>⏪ 5s</Text>
           </TouchableOpacity>
-          {/* ★ 問題のあったオリジナルの再生ボタンを完全に削除しました */}
           <TouchableOpacity style={styles.skipBtn} onPress={skipForward}>
             <Text style={styles.skipBtnText}>5s ⏩</Text>
           </TouchableOpacity>
@@ -425,34 +488,116 @@ const ProjectDetailScreen = ({
     </View>
   );
 
-  const renderLandscapeTagUI = () => (
-    <View style={styles.fsTagContainer}>
-      <Text style={styles.fsTagTitle}>💡 タップしてタグ付け</Text>
-      <ScrollView showsVerticalScrollIndicator={false}>
-        <View style={styles.fsTagsWrapper}>
-          {quickTags.map((tag) => (
+  const myMemos = localMemos.filter(
+    (m) => m.uid === auth.currentUser?.uid || m.user === displayUserName,
+  );
+
+  const renderLandscapeUI = () => (
+    <View style={styles.fsContainer}>
+      <View style={styles.fsTabRow}>
+        <TouchableOpacity
+          style={[
+            styles.fsTabBtn,
+            activeTab === "tag" && styles.fsTabBtnActive,
+          ]}
+          onPress={() => setActiveTab("tag")}
+        >
+          <Text
+            style={[
+              styles.fsTabBtnText,
+              activeTab === "tag" && styles.fsTabBtnTextActive,
+            ]}
+          >
+            動画/タグ
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[
+            styles.fsTabBtn,
+            activeTab === "memo" && styles.fsTabBtnActive,
+          ]}
+          onPress={() => setActiveTab("memo")}
+        >
+          <Text
+            style={[
+              styles.fsTabBtnText,
+              activeTab === "memo" && styles.fsTabBtnTextActive,
+            ]}
+          >
+            個人メモ
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {activeTab === "tag" ? (
+        <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}>
+          <Text style={styles.fsTagTitle}>💡 タップで追加 (長押しで削除)</Text>
+          <View style={styles.fsTagsWrapper}>
+            {quickTags.map((tag) => (
+              <TouchableOpacity
+                key={tag}
+                style={styles.fsTagBtn}
+                onPress={() => handleAddTag(tag)}
+                onLongPress={() => handleDeleteQuickTag(tag)}
+              >
+                <Text style={styles.fsTagBtnText}>{tag}</Text>
+              </TouchableOpacity>
+            ))}
             <TouchableOpacity
-              key={tag}
-              style={styles.fsTagBtn}
-              onPress={() => handleAddTag(tag)}
+              style={styles.fsAddTagBtn}
+              onPress={() => {
+                setNewQuickTagName("");
+                setIsAddQuickTagModalVisible(true);
+              }}
             >
-              <Text style={styles.fsTagBtnText}>{tag}</Text>
+              <Text style={styles.fsAddTagBtnText}>＋ ボタン追加</Text>
             </TouchableOpacity>
-          ))}
-          <TouchableOpacity
-            style={styles.fsCustomTagBtn}
-            onPress={handleOpenCustomTag}
+          </View>
+        </ScrollView>
+      ) : (
+        <View style={{ flex: 1 }}>
+          <Text style={styles.fsTagTitle}>
+            ⏱️ {formatTime(videoTime)} の個人メモを追加
+          </Text>
+          <View style={styles.fsMemoInputRow}>
+            <TextInput
+              style={styles.fsMemoInput}
+              value={newMemoText}
+              onChangeText={setNewMemoText}
+              placeholder="自分専用のメモ..."
+            />
+            <TouchableOpacity
+              style={styles.fsMemoSendBtn}
+              onPress={handleAddMemo}
+            >
+              <Text style={styles.fsMemoSendBtnText}>保存</Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView
+            showsVerticalScrollIndicator={false}
+            style={{ flex: 1, marginTop: 10 }}
           >
-            <Text style={styles.fsCustomTagBtnText}>✏️ 自由入力</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.fsAddTagBtn}
-            onPress={() => setIsAddQuickTagModalVisible(true)}
-          >
-            <Text style={styles.fsAddTagBtnText}>＋ ボタン追加</Text>
-          </TouchableOpacity>
+            {myMemos.map((memo) => (
+              <View key={memo.id} style={styles.fsMemoCard}>
+                <TouchableOpacity onPress={() => jumpToTime(memo.videoTime)}>
+                  <Text style={styles.fsMemoTime}>
+                    ▶ {formatTime(memo.videoTime)}
+                  </Text>
+                </TouchableOpacity>
+                <Text style={styles.fsMemoText} numberOfLines={2}>
+                  {memo.text}
+                </Text>
+                <TouchableOpacity
+                  style={{ padding: 5 }}
+                  onPress={() => handleDeleteMemo(memo.id)}
+                >
+                  <Text style={styles.fsDeleteActionText}>✕</Text>
+                </TouchableOpacity>
+              </View>
+            ))}
+          </ScrollView>
         </View>
-      </ScrollView>
+      )}
     </View>
   );
 
@@ -461,7 +606,7 @@ const ProjectDetailScreen = ({
       <View style={styles.tabContainer}>
         {[
           { id: "tag", label: "動画/タグ" },
-          { id: "memo", label: "メモ" },
+          { id: "memo", label: "個人メモ" },
         ].map((tab) => (
           <TouchableOpacity
             key={tab.id}
@@ -485,7 +630,7 @@ const ProjectDetailScreen = ({
           <>
             <View style={styles.quickTagArea}>
               <Text style={styles.quickTagTitle}>
-                💡 再生中にタップしてタグを追加
+                💡 再生中にタップしてタグを追加 (長押しでボタン削除)
               </Text>
               <View style={styles.quickTagsWrapper}>
                 {quickTags.map((tag) => (
@@ -493,19 +638,17 @@ const ProjectDetailScreen = ({
                     key={tag}
                     style={styles.quickTagBtn}
                     onPress={() => handleAddTag(tag)}
+                    onLongPress={() => handleDeleteQuickTag(tag)}
                   >
                     <Text style={styles.quickTagBtnText}>{tag}</Text>
                   </TouchableOpacity>
                 ))}
                 <TouchableOpacity
-                  style={styles.customTagBtn}
-                  onPress={handleOpenCustomTag}
-                >
-                  <Text style={styles.customTagBtnText}>✏️ 自由入力</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
                   style={styles.addQuickTagBtn}
-                  onPress={() => setIsAddQuickTagModalVisible(true)}
+                  onPress={() => {
+                    setNewQuickTagName("");
+                    setIsAddQuickTagModalVisible(true);
+                  }}
                 >
                   <Text style={styles.addQuickTagBtnText}>＋ ボタン追加</Text>
                 </TouchableOpacity>
@@ -547,10 +690,12 @@ const ProjectDetailScreen = ({
         {activeTab === "memo" && (
           <>
             <ScrollView style={styles.listScroll}>
-              {localMemos.length === 0 ? (
-                <Text style={styles.emptyText}>メモがありません。</Text>
+              {myMemos.length === 0 ? (
+                <Text style={styles.emptyText}>
+                  あなた専用のメモはありません。
+                </Text>
               ) : (
-                localMemos.map((memo) => (
+                myMemos.map((memo) => (
                   <View key={memo.id} style={styles.listItemCard}>
                     <TouchableOpacity
                       style={styles.timeJumpBtn}
@@ -564,28 +709,26 @@ const ProjectDetailScreen = ({
                       <Text style={styles.listContentText}>{memo.text}</Text>
                       <Text style={styles.listUserText}>by {memo.user}</Text>
                     </View>
-                    {(canDeleteAnyTag || memo.user === displayUserName) && (
-                      <TouchableOpacity
-                        style={styles.deleteAction}
-                        onPress={() => handleDeleteMemo(memo.id)}
-                      >
-                        <Text style={styles.deleteActionText}>✕</Text>
-                      </TouchableOpacity>
-                    )}
+                    <TouchableOpacity
+                      style={styles.deleteAction}
+                      onPress={() => handleDeleteMemo(memo.id)}
+                    >
+                      <Text style={styles.deleteActionText}>✕</Text>
+                    </TouchableOpacity>
                   </View>
                 ))
               )}
             </ScrollView>
             <View style={styles.inputContainer}>
               <Text style={styles.timestampContextText}>
-                ⏱️ {formatTime(videoTime)} のメモを追加
+                ⏱️ {formatTime(videoTime)} の個人メモを追加
               </Text>
               <View style={styles.inputRow}>
                 <TextInput
                   style={styles.inputField}
                   value={newMemoText}
                   onChangeText={setNewMemoText}
-                  placeholder="メモを入力..."
+                  placeholder="自分専用のメモを入力..."
                   multiline
                 />
                 <TouchableOpacity
@@ -628,69 +771,47 @@ const ProjectDetailScreen = ({
             isLandscape ? styles.fsRoot : { flex: 1, flexDirection: "column" }
           }
         >
-          <View style={isLandscape ? styles.fsVideoCol : { zIndex: 10 }}>
+          <View
+            style={[
+              isLandscape ? styles.fsVideoCol : { zIndex: 10 },
+              isLandscape && !isSideUiVisible && { flex: 1 },
+            ]}
+          >
             {renderVideoPlayer()}
           </View>
-          <View style={isLandscape ? styles.fsUiCol : { flex: 1 }}>
+
+          <View
+            style={[
+              isLandscape ? styles.fsUiCol : { flex: 1 },
+              isLandscape && !isSideUiVisible && { display: "none" },
+            ]}
+          >
             <View style={{ flex: 1, display: isLandscape ? "none" : "flex" }}>
               {renderTabsAndContent()}
             </View>
             <View style={{ flex: 1, display: isLandscape ? "flex" : "none" }}>
-              {renderLandscapeTagUI()}
+              {renderLandscapeUI()}
             </View>
           </View>
         </View>
       </KeyboardAvoidingView>
 
-      <Modal
-        visible={isCustomTagModalVisible}
-        transparent={true}
-        animationType="fade"
-      >
-        <View style={styles.modalOverlay}>
-          <KeyboardAvoidingView
-            behavior={Platform.OS === "ios" ? "padding" : "height"}
-            style={styles.modalContent}
-          >
-            <Text style={styles.modalTitle}>自由入力でタグ付け</Text>
-            <Text style={styles.timestampContextTextCenter}>
-              ⏱️ {formatTime(customTagTime)} の位置にタグを追加
-            </Text>
-            <TextInput
-              style={styles.modalInputField}
-              placeholder="気づいたこと、課題など..."
-              value={customTagText}
-              onChangeText={setCustomTagText}
-              autoFocus
-            />
-            <View
-              style={{
-                flexDirection: "row",
-                justifyContent: "flex-end",
-                marginTop: 20,
-              }}
-            >
-              <TouchableOpacity
-                style={styles.cancelBtn}
-                onPress={() => setIsCustomTagModalVisible(false)}
-              >
-                <Text style={styles.cancelBtnText}>キャンセル</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.addBtn}
-                onPress={handleSaveCustomTag}
-              >
-                <Text style={styles.addBtnText}>タグを保存</Text>
-              </TouchableOpacity>
-            </View>
-          </KeyboardAvoidingView>
+      {toastMessage && (
+        <View style={styles.toastContainer}>
+          <Text style={styles.toastText}>{toastMessage}</Text>
         </View>
-      </Modal>
+      )}
 
       <Modal
         visible={isAddQuickTagModalVisible}
         transparent={true}
         animationType="fade"
+        supportedOrientations={[
+          "portrait",
+          "landscape",
+          "landscape-left",
+          "landscape-right",
+        ]}
       >
         <View style={styles.modalOverlay}>
           <KeyboardAvoidingView
@@ -770,6 +891,45 @@ const styles = StyleSheet.create({
     right: 0,
   },
 
+  toggleSideUiBtn: {
+    position: "absolute",
+    right: 0,
+    top: 20,
+    backgroundColor: "rgba(0,119,204,0.85)",
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderTopLeftRadius: 8,
+    borderBottomLeftRadius: 8,
+    zIndex: 150,
+  },
+  toggleSideUiBtnText: {
+    color: "#fff",
+    fontWeight: "bold",
+    fontSize: 12,
+  },
+
+  toastContainer: {
+    position: "absolute",
+    top: "20%",
+    alignSelf: "center",
+    backgroundColor: "rgba(0, 119, 204, 0.9)",
+    paddingHorizontal: 25,
+    paddingVertical: 15,
+    borderRadius: 25,
+    zIndex: 9999,
+    elevation: 10,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 3,
+  },
+  toastText: {
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: "bold",
+    textAlign: "center",
+  },
+
   fsRoot: { flex: 1, flexDirection: "row", backgroundColor: "#000" },
   fsVideoCol: {
     flex: 0.65,
@@ -786,9 +946,64 @@ const styles = StyleSheet.create({
   fsVideoPlayerArea: { flex: 1, width: "100%", height: "100%" },
   fsYoutubeContainer: { flex: 1, width: "100%", justifyContent: "center" },
 
+  fsContainer: { flex: 1 },
+  fsTabRow: {
+    flexDirection: "row",
+    marginBottom: 10,
+    backgroundColor: "#334155",
+    borderRadius: 8,
+    padding: 4,
+  },
+  fsTabBtn: {
+    flex: 1,
+    paddingVertical: 8,
+    alignItems: "center",
+    borderRadius: 6,
+  },
+  fsTabBtnActive: { backgroundColor: "#0077cc" },
+  fsTabBtnText: { color: "#94a3b8", fontSize: 12, fontWeight: "bold" },
+  fsTabBtnTextActive: { color: "#fff" },
+
+  fsMemoInputRow: { flexDirection: "row", alignItems: "center" },
+  fsMemoInput: {
+    flex: 1,
+    backgroundColor: "#fff",
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    height: 40,
+    fontSize: 14,
+  },
+  fsMemoSendBtn: {
+    marginLeft: 10,
+    backgroundColor: "#0077cc",
+    paddingHorizontal: 15,
+    height: 40,
+    justifyContent: "center",
+    borderRadius: 8,
+  },
+  fsMemoSendBtnText: { color: "#fff", fontWeight: "bold", fontSize: 13 },
+
+  fsMemoCard: {
+    flexDirection: "row",
+    backgroundColor: "rgba(255,255,255,0.1)",
+    padding: 10,
+    borderRadius: 8,
+    marginBottom: 8,
+    alignItems: "center",
+  },
+  fsMemoTimeBtn: { marginRight: 10 },
+  fsMemoTime: {
+    color: "#3498db",
+    fontWeight: "bold",
+    fontSize: 13,
+    marginRight: 10,
+  },
+  fsMemoText: { flex: 1, color: "#fff", fontSize: 13 },
+  fsDeleteActionText: { color: "#94a3b8", fontSize: 16, fontWeight: "bold" },
+
   fsTagContainer: { flex: 1 },
   fsTagTitle: {
-    color: "#ccc",
+    color: "#cbd5e1",
     fontSize: 13,
     fontWeight: "bold",
     marginBottom: 10,
@@ -816,24 +1031,6 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     textAlign: "center",
   },
-
-  fsCustomTagBtn: {
-    backgroundColor: "#fff",
-    paddingVertical: 15,
-    paddingHorizontal: 5,
-    borderRadius: 8,
-    width: "48%",
-    alignItems: "center",
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: "#e67e22",
-  },
-  fsCustomTagBtnText: {
-    color: "#e67e22",
-    fontSize: 13,
-    fontWeight: "bold",
-    textAlign: "center",
-  },
   fsAddTagBtn: {
     backgroundColor: "transparent",
     borderWidth: 1,
@@ -842,7 +1039,7 @@ const styles = StyleSheet.create({
     paddingVertical: 15,
     paddingHorizontal: 5,
     borderRadius: 8,
-    width: "48%",
+    width: "100%",
     alignItems: "center",
     marginBottom: 10,
   },
@@ -1032,18 +1229,6 @@ const styles = StyleSheet.create({
   },
   quickTagBtnText: { fontSize: 13, color: "#333", fontWeight: "bold" },
 
-  customTagBtn: {
-    backgroundColor: "#fff",
-    paddingHorizontal: 15,
-    paddingVertical: 10,
-    borderRadius: 20,
-    marginRight: 10,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: "#e67e22",
-  },
-  customTagBtnText: { fontSize: 13, color: "#e67e22", fontWeight: "bold" },
-
   addQuickTagBtn: {
     backgroundColor: "#e6f2ff",
     paddingHorizontal: 15,
@@ -1088,13 +1273,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
 
-  modalCloseBtn: {
-    backgroundColor: "#0077cc",
-    padding: 12,
-    borderRadius: 8,
-    alignItems: "center",
-  },
-  modalCloseBtnText: { color: "#fff", fontWeight: "bold", fontSize: 16 },
   cancelBtn: { paddingVertical: 10, paddingHorizontal: 15, marginRight: 10 },
   cancelBtnText: { color: "#888", fontWeight: "bold", fontSize: 14 },
   addBtn: {

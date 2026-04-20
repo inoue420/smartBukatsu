@@ -17,11 +17,12 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../AuthContext";
 import { auth } from "../firebase";
 
-// ★ Firebase Auth のパスワード変更用関数
+// ★ Firebase Auth のパスワード変更・ログアウト用関数
 import {
   EmailAuthProvider,
   reauthenticateWithCredential,
   updatePassword,
+  signOut, // ← ★ 追加
 } from "firebase/auth";
 
 import {
@@ -321,6 +322,28 @@ const SettingsScreen = ({
     }
   };
 
+  // ★ ログアウト処理
+  const handleLogout = () => {
+    Alert.alert(
+      "ログアウト",
+      "アカウントからログアウトしてもよろしいですか？",
+      [
+        { text: "キャンセル", style: "cancel" },
+        {
+          text: "ログアウト",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await signOut(auth);
+            } catch (error) {
+              Alert.alert("エラー", "ログアウトに失敗しました。");
+            }
+          },
+        },
+      ],
+    );
+  };
+
   const handleDeleteMember = (name, uid) => {
     if (!uid) {
       Alert.alert("エラー", "ユーザー情報を取得できませんでした。");
@@ -587,7 +610,6 @@ const SettingsScreen = ({
                 </TouchableOpacity>
               </SectionCard>
 
-              {/* ★ パスワード変更セクションを部員設定の一番下に移動 */}
               <PasswordSection />
             </>
           ) : (
@@ -926,10 +948,15 @@ const SettingsScreen = ({
                 </View>
               </SectionCard>
 
-              {/* ★ パスワード変更セクションを管理者設定の一番下に移動 */}
               <PasswordSection />
             </>
           )}
+
+          {/* ★ ログアウトボタンをここに追加 */}
+          <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
+            <Text style={styles.logoutBtnText}>ログアウト</Text>
+          </TouchableOpacity>
+
           <View style={{ height: 100 }} />
         </ScrollView>
       </KeyboardAvoidingView>
@@ -1101,19 +1128,21 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#f0f2f5" },
   header: {
     height: 60,
-    backgroundColor: "#f39c12",
+    backgroundColor: "#fff",
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: "#eee",
   },
   backBtn: { width: 60 },
-  backBtnText: { color: "#fff", fontSize: 16, fontWeight: "bold" },
+  backBtnText: { color: "#333", fontSize: 16, fontWeight: "bold" },
   headerTitle: {
-    color: "#fff",
-    fontSize: 18,
-    fontWeight: "bold",
     flex: 1,
     textAlign: "center",
+    fontSize: 16,
+    fontWeight: "bold",
+    color: "#333",
   },
   content: { padding: 15 },
   sectionDescription: {
@@ -1306,19 +1335,18 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.5)",
     justifyContent: "center",
-    alignItems: "center",
+    padding: 20,
   },
   modalContent: {
-    width: "90%",
     backgroundColor: "#fff",
+    borderRadius: 15,
     padding: 20,
-    borderRadius: 12,
+    maxHeight: "90%",
   },
   modalTitle: {
-    fontSize: 16,
+    fontSize: 18,
     fontWeight: "bold",
     marginBottom: 20,
-    color: "#333",
     textAlign: "center",
   },
   roleSelectBtn: {
@@ -1373,6 +1401,20 @@ const styles = StyleSheet.create({
     borderRadius: 20,
   },
   copySubBtnText: { color: "#0077cc", fontSize: 13, fontWeight: "bold" },
+
+  // ★ ログアウトボタン用スタイルを追加
+  logoutBtn: {
+    backgroundColor: "#e74c3c",
+    paddingVertical: 15,
+    borderRadius: 8,
+    alignItems: "center",
+    marginTop: 20,
+  },
+  logoutBtnText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "bold",
+  },
 });
 
 export default SettingsScreen;

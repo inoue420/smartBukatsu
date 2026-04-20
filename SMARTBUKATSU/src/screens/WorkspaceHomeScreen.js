@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect, useMemo } from "react";
 import {
   View,
   Text,
@@ -12,11 +12,27 @@ import {
   Platform,
   Keyboard,
   Alert,
+  ActivityIndicator,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { useAuth } from "../AuthContext";
 import { createNotice } from "../services/firestoreService";
+
+// ==========================================
+// ★ カラーパレットの統一（テーマカラー）
+// ==========================================
+const COLORS = {
+  primary: "#0077cc",
+  secondary: "#f39c12",
+  danger: "#e74c3c",
+  success: "#2ecc71",
+  background: "#f4f7f6",
+  card: "#ffffff",
+  textMain: "#333333",
+  textSub: "#666666",
+  border: "#e2e8f0",
+};
 
 const REACTION_EMOJIS = ["👍", "❤️", "😂", "🔥", "👀", "🙏"];
 const REPORT_REASONS = ["暴言・誹謗中傷", "スパム・宣伝", "その他"];
@@ -37,7 +53,6 @@ const WorkspaceHomeScreen = ({
   userProfiles = {},
 }) => {
   const { activeTeamId } = useAuth();
-
   const currentUserProfile = userProfiles[currentUser] || {};
 
   const userRole =
@@ -87,7 +102,6 @@ const WorkspaceHomeScreen = ({
     : 0;
 
   const [searchQuery, setSearchQuery] = useState("");
-
   const [channels, setChannels] = useState([
     {
       id: "ch_1",
@@ -113,12 +127,14 @@ const WorkspaceHomeScreen = ({
   ]);
   const [activeChannelId, setActiveChannelId] = useState("ch_1");
 
+  // ローディング（処理中）状態の管理
+  const [isLoading, setIsLoading] = useState(false);
+
   const visibleChannels = channels.filter((ch) => {
     if (isStaffOrAbove) return true;
     if (ch.shareScope === "coach") return false;
-    if (ch.shareScope === "group") {
+    if (ch.shareScope === "group")
       return ch.allowedMembers.includes(currentUser);
-    }
     return true;
   });
 
@@ -142,12 +158,95 @@ const WorkspaceHomeScreen = ({
   const [replyingTo, setReplyingTo] = useState(null);
   const [isReplyFocused, setIsReplyFocused] = useState(false);
 
+  // 通知センター・ダッシュボード用のステート
+  const [isNotifModalVisible, setIsNotifModalVisible] = useState(false);
   const [isReportModalVisible, setIsReportModalVisible] = useState(false);
   const [reportingTarget, setReportingTarget] = useState(null);
   const [isDashboardVisible, setIsDashboardVisible] = useState(false);
 
   const mainInputRef = useRef(null);
   const replyInputRef = useRef(null);
+
+  // ==========================================
+  // 通知センター用のデータ生成
+  // ==========================================
+  const notifications = useMemo(() => {
+    const notifs = [];
+    posts.forEach((post) => {
+      if (post.status === "deleted") return;
+
+      // メンション (投稿内)
+      if (
+        post.content.includes(`@${currentUser}`) &&
+        post.user !== displayUserName
+      ) {
+        notifs.push({
+          id: `notif_mention_${post.id}`,
+          type: "mention",
+          title: `🗣️ ${post.user}さんがあなたをメンションしました`,
+          content: post.content,
+          time: post.time,
+          postId: post.id,
+        });
+      }
+
+      // リプライ (返信)
+      post.replies?.forEach((reply) => {
+        if (reply.status === "deleted") return;
+
+        if (post.user === displayUserName && reply.user !== displayUserName) {
+          // 自分の投稿への返信
+          notifs.push({
+            id: `notif_reply_${reply.id}`,
+            type: "reply",
+            title: `💬 ${reply.user}さんがあなたの投稿に返信しました`,
+            content: reply.content,
+            time: reply.time,
+            postId: post.id,
+          });
+        } else if (
+          reply.content.includes(`@${currentUser}`) &&
+          reply.user !== displayUserName
+        ) {
+          // 返信内でのメンション
+          notifs.push({
+            id: `notif_reply_mention_${reply.id}`,
+            type: "mention",
+            title: `🗣️ ${reply.user}さんが返信であなたをメンションしました`,
+            content: reply.content,
+            time: reply.time,
+            postId: post.id,
+          });
+        }
+      });
+    });
+    // 最新のものが上に来るように反転
+    return notifs.reverse();
+  }, [posts, currentUser, displayUserName]);
+
+  // ==========================================
+  // オフライン自動同期機能
+  // ==========================================
+  useEffect(() => {
+    if (!isOffline) {
+      const pendingPosts = posts.filter((p) => p.status === "pending");
+      if (pendingPosts.length > 0) {
+        setIsLoading(true);
+        setTimeout(() => {
+          setPosts(
+            posts.map((p) =>
+              p.status === "pending" ? { ...p, status: "sent" } : p,
+            ),
+          );
+          setIsLoading(false);
+          Alert.alert(
+            "📶 通信復旧",
+            `ネットワークに再接続しました。\n待機していた ${pendingPosts.length} 件の投稿を自動送信しました！`,
+          );
+        }, 1200);
+      }
+    }
+  }, [isOffline]);
 
   const reportedItems = [];
   posts.forEach((post) => {
@@ -171,21 +270,51 @@ const WorkspaceHomeScreen = ({
   const handleAddChannel = () => {
     const trimmedName = newChannelName.trim();
     if (trimmedName === "") return;
-    const newCh = {
-      id: "ch_" + Date.now().toString(),
-      name: trimmedName,
-      isReadOnly: newChannelIsReadOnly,
-      shareScope: newChannelScope,
-      allowedMembers: newChannelScope === "group" ? selectedMembers : ["all"],
-    };
-    setChannels([...channels, newCh]);
-    setActiveChannelId(newCh.id);
-    setIsAddChannelModalVisible(false);
 
-    setNewChannelName("");
-    setNewChannelIsReadOnly(false);
-    setNewChannelScope("team");
-    setSelectedMembers(["all"]);
+    setIsLoading(true);
+    setTimeout(() => {
+      const newCh = {
+        id: "ch_" + Date.now().toString(),
+        name: trimmedName,
+        isReadOnly: newChannelIsReadOnly,
+        shareScope: newChannelScope,
+        allowedMembers: newChannelScope === "group" ? selectedMembers : ["all"],
+      };
+      setChannels([...channels, newCh]);
+      setActiveChannelId(newCh.id);
+      setIsAddChannelModalVisible(false);
+      setNewChannelName("");
+      setNewChannelIsReadOnly(false);
+      setNewChannelScope("team");
+      setSelectedMembers(["all"]);
+      setIsLoading(false);
+    }, 500);
+  };
+
+  const handleDeleteChannel = (channel) => {
+    if (channel.id === "ch_1" || channel.id === "ch_diary") {
+      Alert.alert(
+        "エラー",
+        "「全体連絡」と「共有日記」はシステムに必要なため削除できません。",
+      );
+      return;
+    }
+    Alert.alert(
+      "チャンネルの削除",
+      `タブ「${channel.name}」を削除しますか？\n（※このタブに投稿された内容は表示されなくなります）`,
+      [
+        { text: "キャンセル", style: "cancel" },
+        {
+          text: "削除する",
+          style: "destructive",
+          onPress: () => {
+            const newChannels = channels.filter((c) => c.id !== channel.id);
+            setChannels(newChannels);
+            if (activeChannelId === channel.id) setActiveChannelId("ch_1");
+          },
+        },
+      ],
+    );
   };
 
   const toggleMemberSelection = (m) => {
@@ -202,51 +331,64 @@ const WorkspaceHomeScreen = ({
 
   const handleCreatePost = () => {
     if (newPostText.trim() === "") return;
-    const newPost = {
-      id: Date.now().toString(),
-      channel: activeChannelObj.name,
-      user: displayUserName,
-      content: newPostText,
-      time: "たった今",
-      replyTo: replyingTo,
-      reactions: {},
-      attachments: [],
-      replies: [],
-      reported: [],
-      readBy: [currentUser], // ★ 自分が書いたものは既読扱い
-      isPinned: false,
-      status: isOffline ? "pending" : "sent",
-    };
-    setPosts([newPost, ...posts]);
-    setNewPostText("");
-    setReplyingTo(null);
-    Keyboard.dismiss();
+    setIsLoading(true);
+
+    setTimeout(
+      () => {
+        const newPost = {
+          id: Date.now().toString(),
+          channel: activeChannelObj.name,
+          user: displayUserName,
+          content: newPostText,
+          time: "たった今",
+          replyTo: replyingTo,
+          reactions: {},
+          attachments: [],
+          replies: [],
+          reported: [],
+          readBy: [currentUser],
+          isPinned: false,
+          status: isOffline ? "pending" : "sent",
+        };
+        setPosts([newPost, ...posts]);
+        setNewPostText("");
+        setReplyingTo(null);
+        Keyboard.dismiss();
+        setIsLoading(false);
+      },
+      isOffline ? 300 : 600,
+    );
   };
 
   const handleSendReply = (postId) => {
     if (replyText.trim() === "") return;
-    const newPosts = posts.map((post) => {
-      if (post.id === postId)
-        return {
-          ...post,
-          replies: [
-            ...(post.replies || []),
-            {
-              id: Date.now().toString(),
-              user: displayUserName,
-              content: replyText,
-              time: "たった今",
-              reported: [],
-              status: isOffline ? "pending" : "sent",
-            },
-          ],
-        };
-      return post;
-    });
-    setPosts(newPosts);
-    setReplyText("");
-    Keyboard.dismiss();
-    setIsReplyFocused(false);
+    setIsLoading(true);
+
+    setTimeout(() => {
+      const newPosts = posts.map((post) => {
+        if (post.id === postId)
+          return {
+            ...post,
+            replies: [
+              ...(post.replies || []),
+              {
+                id: Date.now().toString(),
+                user: displayUserName,
+                content: replyText,
+                time: "たった今",
+                reported: [],
+                status: isOffline ? "pending" : "sent",
+              },
+            ],
+          };
+        return post;
+      });
+      setPosts(newPosts);
+      setReplyText("");
+      Keyboard.dismiss();
+      setIsReplyFocused(false);
+      setIsLoading(false);
+    }, 400);
   };
 
   const openReportModal = (type, postId, replyId = null) => {
@@ -377,32 +519,28 @@ const WorkspaceHomeScreen = ({
   };
 
   const handleDeletePost = (postId) => {
-    Alert.alert(
-      "削除の確認",
-      "本当に削除しますか？\n（データはゴミ箱・監査ログに保持されます）",
-      [
-        { text: "キャンセル" },
-        {
-          text: "削除",
-          style: "destructive",
-          onPress: () => {
-            setPosts(
-              posts.map((p) =>
-                p.id === postId
-                  ? {
-                      ...p,
-                      status: "deleted",
-                      deletedBy: displayUserName,
-                      deletedAt: new Date().toISOString(),
-                    }
-                  : p,
-              ),
-            );
-            setActiveLongPressPostId(null);
-          },
+    Alert.alert("削除の確認", "本当に削除しますか？", [
+      { text: "キャンセル" },
+      {
+        text: "削除",
+        style: "destructive",
+        onPress: () => {
+          setPosts(
+            posts.map((p) =>
+              p.id === postId
+                ? {
+                    ...p,
+                    status: "deleted",
+                    deletedBy: displayUserName,
+                    deletedAt: new Date().toISOString(),
+                  }
+                : p,
+            ),
+          );
+          setActiveLongPressPostId(null);
         },
-      ],
-    );
+      },
+    ]);
   };
 
   const handleShareToNotice = (post) => {
@@ -414,6 +552,7 @@ const WorkspaceHomeScreen = ({
         {
           text: "共有する",
           onPress: async () => {
+            setIsLoading(true);
             const noticeId = "notice_" + Date.now().toString();
             const newNotice = {
               id: noticeId,
@@ -428,20 +567,18 @@ const WorkspaceHomeScreen = ({
               status: "active",
             };
 
-            if (typeof setNotices === "function") {
+            if (typeof setNotices === "function")
               setNotices([newNotice, ...notices]);
-            } else if (notices && Array.isArray(notices)) {
+            else if (notices && Array.isArray(notices))
               notices.unshift(newNotice);
-            }
 
             try {
-              if (activeTeamId) {
-                await createNotice(activeTeamId, newNotice);
-              }
+              if (activeTeamId) await createNotice(activeTeamId, newNotice);
             } catch (error) {
               console.log("Firestore共有エラー:", error);
             }
 
+            setIsLoading(false);
             Alert.alert(
               "共有完了",
               "掲示板に共有しました！\n「掲示板」タブをご確認ください。",
@@ -500,7 +637,6 @@ const WorkspaceHomeScreen = ({
       return 0;
     });
 
-  // ★ 投稿カードのレンダリング
   const renderPostCard = (post, isPinnedArea = false) => {
     if (isReportedByMe(post) && !isStaffOrAbove)
       return (
@@ -511,12 +647,10 @@ const WorkspaceHomeScreen = ({
         </View>
       );
     const isPending = post.status === "pending";
-
     const validReplies = post.replies
       ? post.replies.filter((r) => r.status !== "deleted")
       : [];
 
-    // ★ 展開状態と未読判定
     const isExpanded = expandedPostId === post.id;
     const isUnread =
       post.user !== displayUserName &&
@@ -533,13 +667,11 @@ const WorkspaceHomeScreen = ({
             styles.adminReportedCard,
           isPending && styles.pendingCard,
           isPinnedArea && { marginBottom: 10 },
-          // 未読カードを強調する場合はここに追加
         ]}
         activeOpacity={0.8}
         onPress={() => {
           if (!isPending) {
             toggleThread(post.id);
-            // ★ タップして詳細を開いたら既読にする
             if (isUnread) {
               setPosts(
                 posts.map((p) =>
@@ -556,7 +688,14 @@ const WorkspaceHomeScreen = ({
       >
         {isPending && (
           <View style={styles.pendingHeader}>
-            <Text style={styles.pendingHeaderText}>🕒 送信待機中</Text>
+            <ActivityIndicator
+              size="small"
+              color={COLORS.secondary}
+              style={{ marginRight: 5 }}
+            />
+            <Text style={styles.pendingHeaderText}>
+              電波復旧待ち（自動送信されます）
+            </Text>
           </View>
         )}
         {post.reported?.length > 0 && isStaffOrAbove && !isPending && (
@@ -573,19 +712,20 @@ const WorkspaceHomeScreen = ({
           >
             <Text style={styles.userIconText}>{post.user.charAt(0)}</Text>
           </View>
-          <Text style={[styles.postUser, isUnread && { fontWeight: "900" }]}>
+          <Text
+            style={[
+              styles.postUser,
+              isUnread && { fontWeight: "900", color: "#000" },
+            ]}
+          >
             {post.user}
           </Text>
-
-          {/* ★ 未読の場合は赤点アイコンを表示 */}
           {isUnread && <View style={styles.unreadDot} />}
-
           <Text style={styles.postTime}>
-            {isPending ? "待機中..." : post.time}
+            {isPending ? "送信待機中..." : post.time}
           </Text>
         </View>
 
-        {/* 引用部分は展開時のみ表示 */}
         {post.replyTo && isExpanded && (
           <View style={styles.quoteContainer}>
             <Text style={styles.quoteUser}>{post.replyTo.user}</Text>
@@ -595,7 +735,6 @@ const WorkspaceHomeScreen = ({
           </View>
         )}
 
-        {/* ★ 本文をコンパクト化（ピン留めエリアは全文表示） */}
         <Text
           style={styles.postContent}
           numberOfLines={isExpanded || isPinnedArea ? undefined : 4}
@@ -603,7 +742,6 @@ const WorkspaceHomeScreen = ({
           {renderContentWithMentions(post.content)}
         </Text>
 
-        {/* ★ 未展開時のコンパクトなフッター */}
         {!isPending && !isExpanded && !isPinnedArea && (
           <View style={styles.compactFooter}>
             <Text style={styles.compactFooterText}>
@@ -623,7 +761,6 @@ const WorkspaceHomeScreen = ({
           </View>
         )}
 
-        {/* 展開時のアクションバー */}
         {!isPending && isExpanded && !isPinnedArea && (
           <View style={styles.actionBar}>
             <View style={styles.actionLeft}>
@@ -677,7 +814,6 @@ const WorkspaceHomeScreen = ({
           </View>
         )}
 
-        {/* ロングプレスメニュー（そのまま） */}
         {activeLongPressPostId === post.id && !isPending && (
           <View style={styles.longPressMenu}>
             {isStaffOrAbove && (
@@ -690,20 +826,18 @@ const WorkspaceHomeScreen = ({
                     {post.isPinned ? "📌 固定を解除" : "📌 固定する"}
                   </Text>
                 </TouchableOpacity>
-
                 <TouchableOpacity
                   style={styles.longPressMenuItem}
                   onPress={() => handleShareToNotice(post)}
                 >
                   <Text style={styles.longPressMenuText}>📋 掲示板に共有</Text>
                 </TouchableOpacity>
-
                 <TouchableOpacity
                   style={styles.longPressMenuItem}
                   onPress={() => handleDeletePost(post.id)}
                 >
                   <Text
-                    style={[styles.longPressMenuText, { color: "#d9534f" }]}
+                    style={[styles.longPressMenuText, { color: COLORS.danger }]}
                   >
                     🗑 削除する
                   </Text>
@@ -732,7 +866,9 @@ const WorkspaceHomeScreen = ({
               style={styles.longPressMenuItem}
               onPress={() => openReportModal("post", post.id)}
             >
-              <Text style={[styles.longPressMenuText, { color: "#d9534f" }]}>
+              <Text
+                style={[styles.longPressMenuText, { color: COLORS.danger }]}
+              >
                 🚨 報告する
               </Text>
             </TouchableOpacity>
@@ -740,14 +876,15 @@ const WorkspaceHomeScreen = ({
               style={styles.longPressMenuItem}
               onPress={() => setActiveLongPressPostId(null)}
             >
-              <Text style={[styles.longPressMenuText, { color: "#888" }]}>
+              <Text
+                style={[styles.longPressMenuText, { color: COLORS.textSub }]}
+              >
                 ✕ キャンセル
               </Text>
             </TouchableOpacity>
           </View>
         )}
 
-        {/* スレッドエリア */}
         {expandedPostId === post.id && !isPending && !isPinnedArea && (
           <View style={styles.threadContainer}>
             <View style={styles.replyInputContainer}>
@@ -764,7 +901,7 @@ const WorkspaceHomeScreen = ({
               <TouchableOpacity
                 style={[
                   styles.sendButton,
-                  isOffline && { backgroundColor: "#f39c12" },
+                  isOffline && { backgroundColor: COLORS.secondary },
                 ]}
                 onPress={() => handleSendReply(post.id)}
               >
@@ -852,7 +989,7 @@ const WorkspaceHomeScreen = ({
                             <Text
                               style={[
                                 styles.longPressMenuText,
-                                { color: "#d9534f" },
+                                { color: COLORS.danger },
                               ]}
                             >
                               🗑 削除
@@ -868,7 +1005,7 @@ const WorkspaceHomeScreen = ({
                           <Text
                             style={[
                               styles.longPressMenuText,
-                              { color: "#d9534f" },
+                              { color: COLORS.danger },
                             ]}
                           >
                             🚨 報告する
@@ -881,7 +1018,7 @@ const WorkspaceHomeScreen = ({
                           <Text
                             style={[
                               styles.longPressMenuText,
-                              { color: "#888" },
+                              { color: COLORS.textSub },
                             ]}
                           >
                             ✕ キャンセル
@@ -904,6 +1041,7 @@ const WorkspaceHomeScreen = ({
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
+        {/* ★ 修正：ヘッダーエリアからログアウトボタンを削除し、チーム名のスペースを拡大 */}
         <View
           style={[
             styles.header,
@@ -911,10 +1049,10 @@ const WorkspaceHomeScreen = ({
             { paddingVertical: 10, height: "auto", minHeight: 60 },
           ]}
         >
-          <View style={{ flex: 1, justifyContent: "center" }}>
+          <View style={{ flex: 1, justifyContent: "center", marginRight: 10 }}>
             <Text style={styles.headerTitle} numberOfLines={1}>
               {isOffline
-                ? "オフライン表示中"
+                ? "⚠️ オフラインモード"
                 : `🏢 ${teamName || "チーム未設定"}`}
             </Text>
             <Text
@@ -924,17 +1062,32 @@ const WorkspaceHomeScreen = ({
                 marginTop: 2,
                 fontWeight: "bold",
               }}
+              numberOfLines={1}
             >
               こんにちは、{displayUserName} さん
             </Text>
           </View>
           <View style={styles.headerRight}>
+            <TouchableOpacity
+              style={styles.headerIconBtn}
+              onPress={() => setIsNotifModalVisible(true)}
+            >
+              <Text style={styles.headerIcon}>🔔</Text>
+              {notifications.length > 0 && (
+                <View style={styles.badge}>
+                  <Text style={styles.badgeText}>
+                    {notifications.length > 99 ? "99+" : notifications.length}
+                  </Text>
+                </View>
+              )}
+            </TouchableOpacity>
+
             {isStaffOrAbove && (
               <TouchableOpacity
                 style={styles.headerIconBtn}
                 onPress={() => setIsDashboardVisible(true)}
               >
-                <Text style={styles.headerIcon}>🔔</Text>
+                <Text style={styles.headerIcon}>🚨</Text>
                 {reportCount > 0 && (
                   <View style={styles.badge}>
                     <Text style={styles.badgeText}>{reportCount}</Text>
@@ -949,20 +1102,10 @@ const WorkspaceHomeScreen = ({
             >
               <Text style={styles.headerIcon}>⚙️</Text>
             </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.logoutBtn}
-              onPress={() => {
-                const { signOut } = require("firebase/auth");
-                const { auth } = require("../firebase");
-                signOut(auth).catch((e) => console.log(e));
-              }}
-            >
-              <Text style={styles.logoutBtnText}>ログアウト</Text>
-            </TouchableOpacity>
           </View>
         </View>
 
+        {/* サブメニューエリア */}
         <View style={styles.menuRow}>
           <ScrollView
             horizontal
@@ -1025,10 +1168,16 @@ const WorkspaceHomeScreen = ({
           </ScrollView>
         </View>
 
+        {/* オフラインバナー */}
         {isOffline && (
           <View style={styles.offlineBanner}>
+            <ActivityIndicator
+              size="small"
+              color="#fff"
+              style={{ marginRight: 8 }}
+            />
             <Text style={styles.offlineBannerText}>
-              現在オフラインです。投稿は通信復旧時に送信されます。
+              現在オフラインです。投稿は通信復旧時に自動で送信されます。
             </Text>
           </View>
         )}
@@ -1059,6 +1208,9 @@ const WorkspaceHomeScreen = ({
                 onPress={() => {
                   setActiveChannelId(channel.id);
                   setReplyingTo(null);
+                }}
+                onLongPress={() => {
+                  if (canCreateChannel) handleDeleteChannel(channel);
                 }}
               >
                 <Text
@@ -1164,7 +1316,7 @@ const WorkspaceHomeScreen = ({
                   <TouchableOpacity
                     style={[
                       styles.createPostButton,
-                      isOffline && { backgroundColor: "#f39c12" },
+                      isOffline && { backgroundColor: COLORS.secondary },
                       newPostText.trim() === "" &&
                         styles.createPostButtonDisabled,
                     ]}
@@ -1182,6 +1334,66 @@ const WorkspaceHomeScreen = ({
         )}
       </KeyboardAvoidingView>
 
+      {/* 全体ローディングオーバーレイ */}
+      {isLoading && (
+        <View style={styles.globalLoadingOverlay}>
+          <ActivityIndicator size="large" color={COLORS.primary} />
+          <Text style={styles.globalLoadingText}>通信中...</Text>
+        </View>
+      )}
+
+      {/* 通知センターモーダル */}
+      <Modal
+        visible={isNotifModalVisible}
+        transparent={true}
+        animationType="slide"
+      >
+        <SafeAreaView style={styles.dashboardContainer}>
+          <View style={styles.dashboardHeader}>
+            <Text style={[styles.dashboardTitle, { color: COLORS.textMain }]}>
+              🔔 通知センター
+            </Text>
+            <TouchableOpacity onPress={() => setIsNotifModalVisible(false)}>
+              <Text style={{ fontSize: 24, color: COLORS.textMain }}>✕</Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView style={styles.dashboardContent}>
+            {notifications.length === 0 ? (
+              <Text style={styles.emptyText}>
+                現在、新しい通知はありません。
+              </Text>
+            ) : (
+              notifications.map((n) => (
+                <TouchableOpacity
+                  key={n.id}
+                  style={styles.notifCard}
+                  onPress={() => {
+                    setIsNotifModalVisible(false);
+                    const targetPost = posts.find((p) => p.id === n.postId);
+                    if (targetPost) {
+                      const targetChannel = channels.find(
+                        (c) => c.name === targetPost.channel,
+                      );
+                      if (targetChannel) setActiveChannelId(targetChannel.id);
+                    }
+                    setExpandedPostId(n.postId);
+                  }}
+                >
+                  <View style={styles.notifHeader}>
+                    <Text style={styles.notifTitle}>{n.title}</Text>
+                    <Text style={styles.notifTime}>{n.time}</Text>
+                  </View>
+                  <Text style={styles.notifContent} numberOfLines={2}>
+                    {n.content}
+                  </Text>
+                </TouchableOpacity>
+              ))
+            )}
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
+
+      {/* 新規チャンネル追加モーダル */}
       <Modal
         visible={isAddChannelModalVisible}
         transparent={true}
@@ -1210,7 +1422,7 @@ const WorkspaceHomeScreen = ({
                 value={newChannelIsReadOnly}
                 onValueChange={setNewChannelIsReadOnly}
                 trackColor={{ false: "#d9d9d9", true: "#81b0ff" }}
-                thumbColor={newChannelIsReadOnly ? "#0077cc" : "#f4f3f4"}
+                thumbColor={newChannelIsReadOnly ? COLORS.primary : "#f4f3f4"}
               />
             </View>
 
@@ -1354,6 +1566,7 @@ const WorkspaceHomeScreen = ({
         </View>
       </Modal>
 
+      {/* 管理者用：通報管理ダッシュボード */}
       <Modal
         visible={isDashboardVisible}
         transparent={true}
@@ -1361,64 +1574,73 @@ const WorkspaceHomeScreen = ({
       >
         <SafeAreaView style={styles.dashboardContainer}>
           <View style={styles.dashboardHeader}>
-            <Text style={styles.dashboardTitle}>🚨 通報管理ダッシュボード</Text>
+            <Text style={styles.dashboardTitle}>🚨 通報管理</Text>
             <TouchableOpacity onPress={() => setIsDashboardVisible(false)}>
               <Text style={{ fontSize: 24 }}>✕</Text>
             </TouchableOpacity>
           </View>
           <ScrollView style={styles.dashboardContent}>
-            {reportedItems.map((ri, index) => (
-              <View key={index} style={styles.dashboardCard}>
-                <Text style={{ fontWeight: "bold", marginBottom: 5 }}>
-                  [{ri.type === "post" ? "投稿" : "返信"}] {ri.item.user}
-                  の書き込み
-                </Text>
-                <Text
-                  style={{
-                    color: "#555",
-                    backgroundColor: "#f0f0f0",
-                    padding: 10,
-                    borderRadius: 5,
-                    marginBottom: 10,
-                  }}
-                >
-                  {ri.item.content}
-                </Text>
-                <View
-                  style={{ flexDirection: "row", justifyContent: "flex-end" }}
-                >
-                  <TouchableOpacity
-                    style={[
-                      styles.dashBtn,
-                      { backgroundColor: "#5cb85c", marginRight: 10 },
-                    ]}
-                    onPress={() =>
-                      handleResolveReport(
-                        ri.type,
-                        ri.postId,
-                        ri.replyId,
-                        "ignore",
-                      )
-                    }
+            {reportedItems.length === 0 ? (
+              <Text style={styles.emptyText}>
+                現在、通報された投稿はありません。
+              </Text>
+            ) : (
+              reportedItems.map((ri, index) => (
+                <View key={index} style={styles.dashboardCard}>
+                  <Text style={{ fontWeight: "bold", marginBottom: 5 }}>
+                    [{ri.type === "post" ? "投稿" : "返信"}] {ri.item.user}
+                    の書き込み
+                  </Text>
+                  <Text
+                    style={{
+                      color: COLORS.textSub,
+                      backgroundColor: "#f0f0f0",
+                      padding: 10,
+                      borderRadius: 5,
+                      marginBottom: 10,
+                    }}
                   >
-                    <Text style={{ color: "#fff" }}>✅ 問題なし</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.dashBtn, { backgroundColor: "#d9534f" }]}
-                    onPress={() =>
-                      handleResolveReport(
-                        ri.type,
-                        ri.postId,
-                        ri.replyId,
-                        "delete",
-                      )
-                    }
+                    {ri.item.content}
+                  </Text>
+                  <View
+                    style={{ flexDirection: "row", justifyContent: "flex-end" }}
                   >
-                    <Text style={{ color: "#fff" }}>🗑 削除</Text>
-                  </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[
+                        styles.dashBtn,
+                        { backgroundColor: COLORS.success, marginRight: 10 },
+                      ]}
+                      onPress={() =>
+                        handleResolveReport(
+                          ri.type,
+                          ri.postId,
+                          ri.replyId,
+                          "ignore",
+                        )
+                      }
+                    >
+                      <Text style={{ color: "#fff" }}>✅ 問題なし</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[
+                        styles.dashBtn,
+                        { backgroundColor: COLORS.danger },
+                      ]}
+                      onPress={() =>
+                        handleResolveReport(
+                          ri.type,
+                          ri.postId,
+                          ri.replyId,
+                          "delete",
+                        )
+                      }
+                    >
+                      <Text style={{ color: "#fff" }}>🗑 削除</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
-              </View>
-            ))}
+              ))
+            )}
           </ScrollView>
         </SafeAreaView>
       </Modal>
@@ -1427,11 +1649,29 @@ const WorkspaceHomeScreen = ({
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#f0f2f5" },
+  container: { flex: 1, backgroundColor: COLORS.background },
+
+  globalLoadingOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "rgba(255,255,255,0.7)",
+    justifyContent: "center",
+    alignItems: "center",
+    zIndex: 9999,
+  },
+  globalLoadingText: {
+    marginTop: 10,
+    color: COLORS.primary,
+    fontWeight: "bold",
+    fontSize: 16,
+  },
 
   header: {
     height: 60,
-    backgroundColor: "#0077cc",
+    backgroundColor: COLORS.primary,
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 15,
@@ -1451,7 +1691,7 @@ const styles = StyleSheet.create({
     position: "absolute",
     top: -5,
     right: -5,
-    backgroundColor: "#d9534f",
+    backgroundColor: COLORS.danger,
     borderRadius: 10,
     minWidth: 18,
     height: 18,
@@ -1460,18 +1700,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
   },
   badgeText: { color: "#fff", fontSize: 10, fontWeight: "bold" },
-  logoutBtn: {
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 15,
-    backgroundColor: "#e74c3c",
-  },
-  logoutBtnText: { color: "#fff", fontSize: 12, fontWeight: "bold" },
 
   menuRow: {
-    backgroundColor: "#fff",
+    backgroundColor: COLORS.card,
     borderBottomWidth: 1,
-    borderBottomColor: "#eee",
+    borderBottomColor: COLORS.border,
     paddingVertical: 15,
   },
   menuScroll: { paddingHorizontal: 15 },
@@ -1489,7 +1722,7 @@ const styles = StyleSheet.create({
   menuIconText: { fontSize: 24 },
   menuLabel: {
     fontSize: 11,
-    color: "#555",
+    color: COLORS.textSub,
     fontWeight: "bold",
     textAlign: "center",
   },
@@ -1497,7 +1730,7 @@ const styles = StyleSheet.create({
     position: "absolute",
     top: -2,
     right: -5,
-    backgroundColor: "#e74c3c",
+    backgroundColor: COLORS.danger,
     borderRadius: 10,
     minWidth: 18,
     height: 18,
@@ -1509,16 +1742,19 @@ const styles = StyleSheet.create({
   menuBadgeText: { color: "#fff", fontSize: 10, fontWeight: "bold" },
 
   offlineBanner: {
-    backgroundColor: "#f39c12",
-    padding: 8,
+    backgroundColor: COLORS.secondary,
+    padding: 10,
+    flexDirection: "row",
     alignItems: "center",
+    justifyContent: "center",
   },
   offlineBannerText: { color: "#fff", fontSize: 12, fontWeight: "bold" },
+
   searchContainer: {
     padding: 15,
-    backgroundColor: "#fff",
+    backgroundColor: COLORS.card,
     borderBottomWidth: 1,
-    borderBottomColor: "#eee",
+    borderBottomColor: COLORS.border,
   },
   searchInput: {
     height: 40,
@@ -1528,10 +1764,10 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   channelSection: {
-    backgroundColor: "#fff",
+    backgroundColor: COLORS.card,
     paddingVertical: 10,
     borderBottomWidth: 1,
-    borderBottomColor: "#eee",
+    borderBottomColor: COLORS.border,
   },
   channelScroll: { paddingHorizontal: 15 },
   channelTab: {
@@ -1543,9 +1779,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "transparent",
   },
-  channelTabText: { color: "#666", fontWeight: "bold", fontSize: 14 },
-  activeTab: { backgroundColor: "#e6f2ff", borderColor: "#0077cc" },
-  activeTabText: { color: "#0077cc" },
+  channelTabText: { color: COLORS.textSub, fontWeight: "bold", fontSize: 14 },
+  activeTab: { backgroundColor: "#e6f2ff", borderColor: COLORS.primary },
+  activeTabText: { color: COLORS.primary },
   addChannelButton: {
     backgroundColor: "#e2f0d9",
     paddingVertical: 8,
@@ -1553,10 +1789,15 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     marginRight: 30,
     borderWidth: 1,
-    borderColor: "#5cb85c",
+    borderColor: COLORS.success,
     borderStyle: "dashed",
   },
-  addChannelButtonText: { color: "#5cb85c", fontWeight: "bold", fontSize: 14 },
+  addChannelButtonText: {
+    color: COLORS.success,
+    fontWeight: "bold",
+    fontSize: 14,
+  },
+
   pinnedContainer: {
     backgroundColor: "#fffdf5",
     borderBottomWidth: 2,
@@ -1575,7 +1816,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   postCard: {
-    backgroundColor: "#fff",
+    backgroundColor: COLORS.card,
     padding: 15,
     borderRadius: 12,
     marginBottom: 15,
@@ -1584,11 +1825,11 @@ const styles = StyleSheet.create({
     position: "relative",
   },
   pendingCard: {
-    opacity: 0.6,
+    opacity: 0.8,
     backgroundColor: "#fdfdfd",
     borderStyle: "dashed",
     borderWidth: 1,
-    borderColor: "#ccc",
+    borderColor: COLORS.secondary,
   },
   pendingHeader: {
     flexDirection: "row",
@@ -1598,16 +1839,20 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "#f0f0f0",
   },
-  pendingHeaderText: { color: "#e67e22", fontSize: 12, fontWeight: "bold" },
+  pendingHeaderText: {
+    color: COLORS.secondary,
+    fontSize: 12,
+    fontWeight: "bold",
+  },
   pinnedCard: {
     borderWidth: 1,
     borderColor: "#f3c623",
-    backgroundColor: "#fff",
+    backgroundColor: COLORS.card,
     elevation: 1,
   },
   adminReportedCard: {
     borderWidth: 1,
-    borderColor: "#d9534f",
+    borderColor: COLORS.danger,
     backgroundColor: "#fff5f5",
   },
   adminReportedHeader: {
@@ -1619,7 +1864,7 @@ const styles = StyleSheet.create({
     borderBottomColor: "#ffcccc",
   },
   adminReportedHeaderText: {
-    color: "#d9534f",
+    color: COLORS.danger,
     fontSize: 12,
     fontWeight: "bold",
   },
@@ -1633,12 +1878,11 @@ const styles = StyleSheet.create({
   },
   reportedMaskText: { color: "#888", fontSize: 12, fontStyle: "italic" },
 
-  // ★ 未読ドットのスタイル
   unreadDot: {
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: "#e74c3c",
+    backgroundColor: COLORS.danger,
     marginRight: 8,
     marginLeft: 5,
   },
@@ -1648,13 +1892,18 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: "#0077cc",
+    backgroundColor: COLORS.primary,
     justifyContent: "center",
     alignItems: "center",
     marginRight: 10,
   },
   userIconText: { color: "#fff", fontWeight: "bold", fontSize: 16 },
-  postUser: { fontSize: 15, fontWeight: "bold", color: "#333", flex: 1 },
+  postUser: {
+    fontSize: 15,
+    fontWeight: "bold",
+    color: COLORS.textMain,
+    flex: 1,
+  },
   postTime: { fontSize: 12, color: "#888" },
   quoteContainer: {
     backgroundColor: "#f9f9f9",
@@ -1673,13 +1922,12 @@ const styles = StyleSheet.create({
   quoteContent: { fontSize: 13, color: "#777" },
   postContent: {
     fontSize: 15,
-    color: "#333",
+    color: COLORS.textMain,
     lineHeight: 22,
-    marginBottom: 5, // コンパクト化に伴い下余白を少し削減
+    marginBottom: 5,
   },
-  mentionText: { color: "#0077cc", fontWeight: "bold" },
+  mentionText: { color: COLORS.primary, fontWeight: "bold" },
 
-  // ★ コンパクトなフッター用のスタイル
   compactFooter: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -1755,7 +2003,7 @@ const styles = StyleSheet.create({
     bottom: 35,
     right: 0,
     flexDirection: "row",
-    backgroundColor: "#fff",
+    backgroundColor: COLORS.card,
     borderRadius: 20,
     padding: 8,
     elevation: 5,
@@ -1770,7 +2018,7 @@ const styles = StyleSheet.create({
     position: "absolute",
     top: 40,
     right: 15,
-    backgroundColor: "#fff",
+    backgroundColor: COLORS.card,
     borderRadius: 8,
     padding: 5,
     elevation: 6,
@@ -1786,7 +2034,11 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "#f0f0f0",
   },
-  longPressMenuText: { fontSize: 14, fontWeight: "bold", color: "#0077cc" },
+  longPressMenuText: {
+    fontSize: 14,
+    fontWeight: "bold",
+    color: COLORS.primary,
+  },
   threadContainer: {
     marginTop: 15,
     paddingTop: 15,
@@ -1799,7 +2051,12 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     marginBottom: 10,
   },
-  replyUser: { fontSize: 14, fontWeight: "bold", color: "#333", flex: 1 },
+  replyUser: {
+    fontSize: 14,
+    fontWeight: "bold",
+    color: COLORS.textMain,
+    flex: 1,
+  },
   replyContent: { fontSize: 14, color: "#444", marginTop: 4 },
   replyInputContainer: {
     flexDirection: "row",
@@ -1819,7 +2076,7 @@ const styles = StyleSheet.create({
   },
   sendButton: {
     marginLeft: 10,
-    backgroundColor: "#0077cc",
+    backgroundColor: COLORS.primary,
     borderRadius: 18,
     paddingVertical: 10,
     paddingHorizontal: 15,
@@ -1827,7 +2084,7 @@ const styles = StyleSheet.create({
   },
   sendButtonText: { color: "#fff", fontWeight: "bold", fontSize: 14 },
   createPostContainer: {
-    backgroundColor: "#fff",
+    backgroundColor: COLORS.card,
     padding: 15,
     borderTopWidth: 1,
     borderTopColor: "#ddd",
@@ -1845,14 +2102,14 @@ const styles = StyleSheet.create({
     padding: 10,
     borderRadius: 8,
     borderLeftWidth: 4,
-    borderLeftColor: "#0077cc",
+    borderLeftColor: COLORS.primary,
     marginBottom: 10,
     alignItems: "center",
   },
   replyingToUser: {
     fontSize: 12,
     fontWeight: "bold",
-    color: "#0077cc",
+    color: COLORS.primary,
     marginBottom: 2,
   },
   replyingToContent: { fontSize: 13, color: "#555" },
@@ -1883,7 +2140,7 @@ const styles = StyleSheet.create({
   },
   createPostButton: {
     marginLeft: 10,
-    backgroundColor: "#0077cc",
+    backgroundColor: COLORS.primary,
     borderRadius: 20,
     paddingVertical: 10,
     paddingHorizontal: 15,
@@ -1902,9 +2159,9 @@ const styles = StyleSheet.create({
     borderColor: "#ddd",
     marginRight: 10,
   },
-  typeBtnActive: { backgroundColor: "#e6f2ff", borderColor: "#0077cc" },
+  typeBtnActive: { backgroundColor: "#e6f2ff", borderColor: COLORS.primary },
   typeBtnText: { fontSize: 13, color: "#555", fontWeight: "bold" },
-  typeBtnTextActive: { color: "#0077cc" },
+  typeBtnTextActive: { color: COLORS.primary },
 
   switchContainer: {
     flexDirection: "row",
@@ -1915,7 +2172,7 @@ const styles = StyleSheet.create({
     padding: 15,
     borderRadius: 8,
   },
-  switchLabel: { fontSize: 15, fontWeight: "bold", color: "#333" },
+  switchLabel: { fontSize: 15, fontWeight: "bold", color: COLORS.textMain },
   switchSubLabel: { fontSize: 12, color: "#888", marginTop: 4 },
   inputLabel: {
     fontSize: 14,
@@ -1936,7 +2193,8 @@ const styles = StyleSheet.create({
     borderBottomColor: "#eee",
   },
   memberOptionSelected: { backgroundColor: "#e6f2ff" },
-  memberOptionTextSelected: { color: "#0077cc", fontWeight: "bold" },
+  memberOptionTextSelected: { color: COLORS.primary, fontWeight: "bold" },
+
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.5)",
@@ -1945,7 +2203,7 @@ const styles = StyleSheet.create({
   },
   modalContent: {
     width: "85%",
-    backgroundColor: "#fff",
+    backgroundColor: COLORS.card,
     padding: 20,
     borderRadius: 12,
     elevation: 5,
@@ -1954,7 +2212,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "bold",
     marginBottom: 15,
-    color: "#333",
+    color: COLORS.textMain,
   },
   modalInput: {
     backgroundColor: "#f0f0f0",
@@ -1973,7 +2231,7 @@ const styles = StyleSheet.create({
   },
   modalCancelText: { color: "#888", fontWeight: "bold", fontSize: 15 },
   modalSubmitBtn: {
-    backgroundColor: "#0077cc",
+    backgroundColor: COLORS.primary,
     paddingVertical: 10,
     paddingHorizontal: 20,
     borderRadius: 8,
@@ -1982,10 +2240,12 @@ const styles = StyleSheet.create({
   reasonBtn: { padding: 15, borderBottomWidth: 1, borderBottomColor: "#eee" },
   reasonBtnText: {
     fontSize: 16,
-    color: "#0077cc",
+    color: COLORS.primary,
     textAlign: "center",
     fontWeight: "bold",
   },
+
+  // ★ 通知センター・ダッシュボード用のスタイル
   dashboardContainer: { flex: 1, backgroundColor: "#f9f9f9" },
   dashboardHeader: {
     flexDirection: "row",
@@ -1993,14 +2253,14 @@ const styles = StyleSheet.create({
     paddingTop: Platform.OS === "ios" ? 60 : 30,
     paddingBottom: 20,
     paddingHorizontal: 20,
-    backgroundColor: "#fff",
+    backgroundColor: COLORS.card,
     borderBottomWidth: 1,
     borderBottomColor: "#ddd",
   },
-  dashboardTitle: { fontSize: 20, fontWeight: "bold", color: "#d9534f" },
+  dashboardTitle: { fontSize: 20, fontWeight: "bold", color: COLORS.danger },
   dashboardContent: { padding: 15 },
   dashboardCard: {
-    backgroundColor: "#fff",
+    backgroundColor: COLORS.card,
     padding: 15,
     borderRadius: 10,
     marginBottom: 15,
@@ -2008,6 +2268,36 @@ const styles = StyleSheet.create({
     borderColor: "#ffcccc",
   },
   dashBtn: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: 5 },
+
+  notifCard: {
+    backgroundColor: COLORS.card,
+    padding: 15,
+    borderRadius: 10,
+    marginBottom: 10,
+    borderLeftWidth: 4,
+    borderLeftColor: COLORS.primary,
+    elevation: 1,
+  },
+  notifHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginBottom: 5,
+  },
+  notifTitle: {
+    fontSize: 14,
+    fontWeight: "bold",
+    color: COLORS.textMain,
+    flex: 1,
+  },
+  notifTime: {
+    fontSize: 12,
+    color: COLORS.textSub,
+    marginLeft: 10,
+  },
+  notifContent: {
+    fontSize: 13,
+    color: COLORS.textSub,
+  },
 });
 
 export default WorkspaceHomeScreen;
