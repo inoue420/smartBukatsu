@@ -64,7 +64,6 @@ export default function ProjectListScreen({
   const [isSideUiVisible, setIsSideUiVisible] = useState(false);
   const [clipToastMessage, setClipToastMessage] = useState(null);
 
-  // ★ 修正: 肩書きマッピングをここで定義してエラーを解消！
   const roleNameMap = {
     owner: `${currentUser}(監督)`,
     admin: `${currentUser}(管理者)`,
@@ -77,6 +76,10 @@ export default function ProjectListScreen({
   const activeProjects = useMemo(() => {
     return projects.filter((p) => p.status !== "deleted");
   }, [projects]);
+
+  // ★ ユーザーごとの切り抜き秒数設定を取得（未設定なら5秒・3秒）
+  const clipPreSeconds = currentUserProfile.clipPreSeconds ?? 5;
+  const clipPostSeconds = currentUserProfile.clipPostSeconds ?? 3;
 
   const highlightData = useMemo(() => {
     const data = {};
@@ -99,8 +102,9 @@ export default function ProjectListScreen({
             projectId: p.id,
             project: p.title,
             url: p.videoUrl,
-            start: tag.videoTime,
-            end: tag.videoTime + 5,
+            // ★ ここで個人の切り抜き秒数を適用
+            start: Math.max(0, tag.videoTime - clipPreSeconds),
+            end: tag.videoTime + clipPostSeconds,
             user: tag.user,
             memos: clipMemos,
             hasUnread: hasUnread,
@@ -112,7 +116,7 @@ export default function ProjectListScreen({
       data[key].sort((a, b) => a.start - b.start);
     });
     return data;
-  }, [projects, currentUser, displayUserName]);
+  }, [projects, currentUser, displayUserName, clipPreSeconds, clipPostSeconds]);
 
   const availableTags = useMemo(
     () => Object.keys(highlightData).sort(),
@@ -545,7 +549,7 @@ export default function ProjectListScreen({
           style={styles.videoComponent}
           resizeMode={ResizeMode.CONTAIN}
           onPlaybackStatusUpdate={handlePlaybackStatusUpdate}
-          useNativeControls={false}
+          useNativeControls={true}
           shouldPlay={isPlaying}
         />
       )}
@@ -573,12 +577,6 @@ export default function ProjectListScreen({
       )}
 
       <View style={[styles.videoControls, { zIndex: 100 }]}>
-        <TouchableOpacity
-          style={styles.playBtn}
-          onPress={() => setIsPlaying(!isPlaying)}
-        >
-          <Text style={styles.playBtnText}>{isPlaying ? "⏸" : "▶"}</Text>
-        </TouchableOpacity>
         <Text style={styles.videoTimeDisplay}>{formatTime(videoTime)}</Text>
         <TouchableOpacity
           style={styles.fullscreenBtn}
@@ -1144,22 +1142,19 @@ const styles = StyleSheet.create({
     right: 10,
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "space-between", // ★ 両端揃え
     backgroundColor: "rgba(0,0,0,0.6)",
     padding: 10,
     borderRadius: 8,
   },
-  playBtn: { marginRight: 10, padding: 5 },
-  playBtnText: { color: "#fff", fontSize: 24 },
   videoTimeDisplay: {
     color: "#fff",
     fontSize: 13,
     fontWeight: "bold",
     fontFamily: "monospace",
-    marginLeft: "auto",
   },
   fullscreenBtn: {
-    marginLeft: 15,
-    paddingHorizontal: 5,
+    paddingHorizontal: 10,
     justifyContent: "center",
   },
   fullscreenBtnText: {
@@ -1389,7 +1384,11 @@ const styles = StyleSheet.create({
     marginRight: 10,
     backgroundColor: "#f9f9f9",
   },
-  typeBtnActive: { backgroundColor: "#e6f2ff", borderColor: "#0077cc" },
+  typeBtnActive: {
+    backgroundColor: "#e6f2ff",
+    borderBottomWidth: 3,
+    borderBottomColor: "#0077cc",
+  },
   typeBtnText: { fontSize: 13, color: "#555", fontWeight: "bold" },
   typeBtnTextActive: { color: "#0077cc" },
   modalButtons: {

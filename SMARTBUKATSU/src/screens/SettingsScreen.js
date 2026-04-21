@@ -17,12 +17,11 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../AuthContext";
 import { auth } from "../firebase";
 
-// ★ Firebase Auth のパスワード変更・ログアウト用関数
 import {
   EmailAuthProvider,
   reauthenticateWithCredential,
   updatePassword,
-  signOut, // ← ★ 追加
+  signOut,
 } from "firebase/auth";
 
 import {
@@ -159,6 +158,7 @@ const SettingsScreen = ({
   const [newGradeName, setNewGradeName] = useState("");
   const [newPositionName, setNewPositionName] = useState("");
 
+  // ★ project セクションを展開状態に追加
   const [expanded, setExpanded] = useState({
     teamInfo: false,
     alert: false,
@@ -166,6 +166,7 @@ const SettingsScreen = ({
     grade: false,
     position: false,
     myProfile: false,
+    project: false,
     myPassword: false,
   });
 
@@ -179,6 +180,13 @@ const SettingsScreen = ({
   );
   const [myPosition, setMyPosition] = useState(
     userProfiles[currentUser]?.position || "",
+  );
+
+  const [clipPreSeconds, setClipPreSeconds] = useState(
+    userProfiles[currentUser]?.clipPreSeconds ?? 5,
+  );
+  const [clipPostSeconds, setClipPostSeconds] = useState(
+    userProfiles[currentUser]?.clipPostSeconds ?? 3,
   );
 
   const [currentPassword, setCurrentPassword] = useState("");
@@ -248,6 +256,7 @@ const SettingsScreen = ({
     ]);
   };
 
+  // ★ プロフィール保存（切り抜き秒数は除外）
   const handleSaveMemberProfile = async () => {
     const trimmedName = myNewName.trim();
     if (trimmedName === "") {
@@ -260,15 +269,33 @@ const SettingsScreen = ({
       if (uid) {
         await updateUserName(uid, trimmedName);
         if (activeTeamId) {
-          await updateTeamMember(activeTeamId, uid, { name: trimmedName });
+          await updateTeamMember(activeTeamId, uid, {
+            name: trimmedName,
+          });
         }
       }
       Alert.alert(
         "保存完了",
-        "プロフィールを更新しました。\n変更はアプリ全体に即座に反映されます。",
+        "プロフィール設定を更新しました。\n変更はアプリ全体に即座に反映されます。",
       );
     } catch (error) {
       Alert.alert("エラー", "プロフィールの更新に失敗しました。");
+    }
+  };
+
+  // ★ 新規追加：プロジェクト設定（切り抜き秒数）専用の保存関数
+  const handleSaveProjectSettings = async () => {
+    try {
+      const uid = auth.currentUser?.uid;
+      if (uid && activeTeamId) {
+        await updateTeamMember(activeTeamId, uid, {
+          clipPreSeconds,
+          clipPostSeconds,
+        });
+      }
+      Alert.alert("保存完了", "プロジェクトの設定を更新しました。");
+    } catch (error) {
+      Alert.alert("エラー", "設定の更新に失敗しました。");
     }
   };
 
@@ -322,7 +349,6 @@ const SettingsScreen = ({
     }
   };
 
-  // ★ ログアウト処理
   const handleLogout = () => {
     Alert.alert(
       "ログアウト",
@@ -610,6 +636,41 @@ const SettingsScreen = ({
                 </TouchableOpacity>
               </SectionCard>
 
+              {/* ★ 一般部員向け：プロジェクト設定タブ */}
+              <SectionCard
+                isExp={expanded.project}
+                onToggle={() => toggleSection("project")}
+                title="📁 プロジェクト設定"
+              >
+                <Text style={[styles.label, { color: "#0077cc" }]}>
+                  🎥 ハイライトの切り抜き秒数
+                </Text>
+                <Text style={styles.hintText}>
+                  動画分析時、タグ付けした瞬間を基準に前後何秒を切り抜くか設定します。
+                </Text>
+                <ThresholdSelector
+                  label="何秒前から？"
+                  value={clipPreSeconds}
+                  min={0}
+                  max={30}
+                  onChange={setClipPreSeconds}
+                />
+                <ThresholdSelector
+                  label="何秒後まで？"
+                  value={clipPostSeconds}
+                  min={0}
+                  max={30}
+                  onChange={setClipPostSeconds}
+                />
+
+                <TouchableOpacity
+                  style={styles.saveBtn}
+                  onPress={handleSaveProjectSettings}
+                >
+                  <Text style={styles.saveBtnText}>設定を保存</Text>
+                </TouchableOpacity>
+              </SectionCard>
+
               <PasswordSection />
             </>
           ) : (
@@ -635,11 +696,47 @@ const SettingsScreen = ({
                 <Text style={styles.hintText}>
                   ※変更するとアプリ全体の表示名が切り替わります。
                 </Text>
+
                 <TouchableOpacity
                   style={styles.saveBtn}
                   onPress={handleSaveMemberProfile}
                 >
                   <Text style={styles.saveBtnText}>プロフィールを保存</Text>
+                </TouchableOpacity>
+              </SectionCard>
+
+              {/* ★ 管理者向け：プロジェクト設定タブ */}
+              <SectionCard
+                isExp={expanded.project}
+                onToggle={() => toggleSection("project")}
+                title="📁 プロジェクト設定"
+              >
+                <Text style={[styles.label, { color: "#0077cc" }]}>
+                  🎥 ハイライトの切り抜き秒数
+                </Text>
+                <Text style={styles.hintText}>
+                  動画分析時、タグ付けした瞬間を基準に前後何秒を切り抜くか設定します。
+                </Text>
+                <ThresholdSelector
+                  label="何秒前から？"
+                  value={clipPreSeconds}
+                  min={0}
+                  max={30}
+                  onChange={setClipPreSeconds}
+                />
+                <ThresholdSelector
+                  label="何秒後まで？"
+                  value={clipPostSeconds}
+                  min={0}
+                  max={30}
+                  onChange={setClipPostSeconds}
+                />
+
+                <TouchableOpacity
+                  style={styles.saveBtn}
+                  onPress={handleSaveProjectSettings}
+                >
+                  <Text style={styles.saveBtnText}>設定を保存</Text>
                 </TouchableOpacity>
               </SectionCard>
 
@@ -952,7 +1049,6 @@ const SettingsScreen = ({
             </>
           )}
 
-          {/* ★ ログアウトボタンをここに追加 */}
           <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
             <Text style={styles.logoutBtnText}>ログアウト</Text>
           </TouchableOpacity>
@@ -1128,21 +1224,19 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#f0f2f5" },
   header: {
     height: 60,
-    backgroundColor: "#fff",
+    backgroundColor: "#f39c12",
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 15,
-    borderBottomWidth: 1,
-    borderBottomColor: "#eee",
   },
   backBtn: { width: 60 },
-  backBtnText: { color: "#333", fontSize: 16, fontWeight: "bold" },
+  backBtnText: { color: "#fff", fontSize: 16, fontWeight: "bold" },
   headerTitle: {
+    color: "#fff",
+    fontSize: 18,
+    fontWeight: "bold",
     flex: 1,
     textAlign: "center",
-    fontSize: 16,
-    fontWeight: "bold",
-    color: "#333",
   },
   content: { padding: 15 },
   sectionDescription: {
@@ -1335,18 +1429,19 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.5)",
     justifyContent: "center",
-    padding: 20,
+    alignItems: "center",
   },
   modalContent: {
+    width: "90%",
     backgroundColor: "#fff",
-    borderRadius: 15,
     padding: 20,
-    maxHeight: "90%",
+    borderRadius: 12,
   },
   modalTitle: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: "bold",
     marginBottom: 20,
+    color: "#333",
     textAlign: "center",
   },
   roleSelectBtn: {
@@ -1401,8 +1496,6 @@ const styles = StyleSheet.create({
     borderRadius: 20,
   },
   copySubBtnText: { color: "#0077cc", fontSize: 13, fontWeight: "bold" },
-
-  // ★ ログアウトボタン用スタイルを追加
   logoutBtn: {
     backgroundColor: "#e74c3c",
     paddingVertical: 15,
