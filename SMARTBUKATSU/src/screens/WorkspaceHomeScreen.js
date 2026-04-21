@@ -71,7 +71,6 @@ const WorkspaceHomeScreen = ({
   const isStaffOrAbove = ["owner", "staff", "admin"].includes(userRole);
   const canCreateChannel = ["owner", "staff", "admin"].includes(userRole);
 
-  // ★ 修正：削除済みのお知らせは未読カウントから除外する
   const unreadNoticeCount = notices.filter(
     (n) => n.status !== "deleted" && !(n.readBy || []).includes(currentUser),
   ).length;
@@ -95,7 +94,6 @@ const WorkspaceHomeScreen = ({
     return level;
   };
 
-  // ★ 修正：削除済みを除外して危険アラートをカウントする
   const unreadMedicalDangerCount = dailyReports
     ? dailyReports.filter((r) => {
         if (r.status === "deleted") return false;
@@ -130,7 +128,6 @@ const WorkspaceHomeScreen = ({
   ]);
   const [activeChannelId, setActiveChannelId] = useState("ch_1");
 
-  // ローディング（処理中）状態の管理
   const [isLoading, setIsLoading] = useState(false);
 
   const visibleChannels = channels.filter((ch) => {
@@ -161,7 +158,6 @@ const WorkspaceHomeScreen = ({
   const [replyingTo, setReplyingTo] = useState(null);
   const [isReplyFocused, setIsReplyFocused] = useState(false);
 
-  // 通知センター・ダッシュボード用のステート
   const [isNotifModalVisible, setIsNotifModalVisible] = useState(false);
   const [isReportModalVisible, setIsReportModalVisible] = useState(false);
   const [reportingTarget, setReportingTarget] = useState(null);
@@ -170,15 +166,11 @@ const WorkspaceHomeScreen = ({
   const mainInputRef = useRef(null);
   const replyInputRef = useRef(null);
 
-  // ==========================================
-  // 通知センター用のデータ生成
-  // ==========================================
   const notifications = useMemo(() => {
     const notifs = [];
     posts.forEach((post) => {
       if (post.status === "deleted") return;
 
-      // メンション (投稿内)
       if (
         post.content.includes(`@${currentUser}`) &&
         post.user !== displayUserName
@@ -193,12 +185,10 @@ const WorkspaceHomeScreen = ({
         });
       }
 
-      // リプライ (返信)
       post.replies?.forEach((reply) => {
         if (reply.status === "deleted") return;
 
         if (post.user === displayUserName && reply.user !== displayUserName) {
-          // 自分の投稿への返信
           notifs.push({
             id: `notif_reply_${reply.id}`,
             type: "reply",
@@ -211,7 +201,6 @@ const WorkspaceHomeScreen = ({
           reply.content.includes(`@${currentUser}`) &&
           reply.user !== displayUserName
         ) {
-          // 返信内でのメンション
           notifs.push({
             id: `notif_reply_mention_${reply.id}`,
             type: "mention",
@@ -223,21 +212,17 @@ const WorkspaceHomeScreen = ({
         }
       });
     });
-    // 最新のものが上に来るように反転
     return notifs.reverse();
   }, [posts, currentUser, displayUserName]);
 
-  // ==========================================
-  // オフライン自動同期機能
-  // ==========================================
   useEffect(() => {
     if (!isOffline) {
       const pendingPosts = posts.filter((p) => p.status === "pending");
       if (pendingPosts.length > 0) {
         setIsLoading(true);
         setTimeout(() => {
-          setPosts(
-            posts.map((p) =>
+          setPosts((prevPosts) =>
+            prevPosts.map((p) =>
               p.status === "pending" ? { ...p, status: "sent" } : p,
             ),
           );
@@ -332,8 +317,21 @@ const WorkspaceHomeScreen = ({
     }
   };
 
+  // ★ 修正：確実にクリアされるように明示的にclearを呼び出し、最新のprevPostsを使用する
   const handleCreatePost = () => {
     if (newPostText.trim() === "") return;
+
+    const contentToPost = newPostText.trim();
+    const currentReplyTo = replyingTo;
+
+    // 即座にステートをクリア
+    setNewPostText("");
+    // ★ 参照（ref）を使ってテキストボックスを強制的に空にする
+    if (mainInputRef.current) {
+      mainInputRef.current.clear();
+    }
+    setReplyingTo(null);
+    Keyboard.dismiss();
     setIsLoading(true);
 
     setTimeout(
@@ -342,9 +340,9 @@ const WorkspaceHomeScreen = ({
           id: Date.now().toString(),
           channel: activeChannelObj.name,
           user: displayUserName,
-          content: newPostText,
+          content: contentToPost,
           time: "たった今",
-          replyTo: replyingTo,
+          replyTo: currentReplyTo,
           reactions: {},
           attachments: [],
           replies: [],
@@ -353,43 +351,52 @@ const WorkspaceHomeScreen = ({
           isPinned: false,
           status: isOffline ? "pending" : "sent",
         };
-        setPosts([newPost, ...posts]);
-        setNewPostText("");
-        setReplyingTo(null);
-        Keyboard.dismiss();
+        // 最新の投稿リストに安全に追加
+        setPosts((prevPosts) => [newPost, ...prevPosts]);
         setIsLoading(false);
       },
       isOffline ? 300 : 600,
     );
   };
 
+  // ★ 修正：リプライ側も確実にクリアする
   const handleSendReply = (postId) => {
     if (replyText.trim() === "") return;
+
+    const currentReplyText = replyText.trim();
+
+    setReplyText("");
+    // ★ 参照（ref）を使ってテキストボックスを強制的に空にする
+    if (replyInputRef.current) {
+      replyInputRef.current.clear();
+    }
+    Keyboard.dismiss();
+    setIsReplyFocused(false);
     setIsLoading(true);
 
     setTimeout(() => {
-      const newPosts = posts.map((post) => {
-        if (post.id === postId)
-          return {
-            ...post,
-            replies: [
-              ...(post.replies || []),
-              {
-                id: Date.now().toString(),
-                user: displayUserName,
-                content: replyText,
-                time: "たった今",
-                reported: [],
-                status: isOffline ? "pending" : "sent",
-              },
-            ],
-          };
-        return post;
-      });
-      setPosts(newPosts);
-      setReplyText("");
-      Keyboard.dismiss();
-      setIsReplyFocused(false);
+      // 最新の投稿リストを更新
+      setPosts((prevPosts) =>
+        prevPosts.map((post) => {
+          if (post.id === postId) {
+            return {
+              ...post,
+              replies: [
+                ...(post.replies || []),
+                {
+                  id: Date.now().toString(),
+                  user: displayUserName,
+                  content: currentReplyText,
+                  time: "たった今",
+                  reported: [],
+                  status: isOffline ? "pending" : "sent",
+                },
+              ],
+            };
+          }
+          return post;
+        }),
+      );
       setIsLoading(false);
     }, 400);
   };
@@ -407,33 +414,40 @@ const WorkspaceHomeScreen = ({
       setIsReportModalVisible(false);
       return;
     }
-    const newPosts = posts.map((post) => {
-      if (reportingTarget.type === "post" && post.id === reportingTarget.postId)
-        return {
-          ...post,
-          reported: [...(post.reported || []), { by: displayUserName, reason }],
-        };
-      if (
-        reportingTarget.type === "reply" &&
-        post.id === reportingTarget.postId
-      )
-        return {
-          ...post,
-          replies: post.replies.map((r) =>
-            r.id === reportingTarget.replyId
-              ? {
-                  ...r,
-                  reported: [
-                    ...(r.reported || []),
-                    { by: displayUserName, reason },
-                  ],
-                }
-              : r,
-          ),
-        };
-      return post;
-    });
-    setPosts(newPosts);
+    setPosts((prevPosts) =>
+      prevPosts.map((post) => {
+        if (
+          reportingTarget.type === "post" &&
+          post.id === reportingTarget.postId
+        )
+          return {
+            ...post,
+            reported: [
+              ...(post.reported || []),
+              { by: displayUserName, reason },
+            ],
+          };
+        if (
+          reportingTarget.type === "reply" &&
+          post.id === reportingTarget.postId
+        )
+          return {
+            ...post,
+            replies: post.replies.map((r) =>
+              r.id === reportingTarget.replyId
+                ? {
+                    ...r,
+                    reported: [
+                      ...(r.reported || []),
+                      { by: displayUserName, reason },
+                    ],
+                  }
+                : r,
+            ),
+          };
+        return post;
+      }),
+    );
     setIsReportModalVisible(false);
     setReportingTarget(null);
     Alert.alert("報告完了", "管理者に報告しました。");
@@ -442,8 +456,8 @@ const WorkspaceHomeScreen = ({
   const handleResolveReport = (type, postId, replyId, action) => {
     if (action === "delete") {
       if (type === "post") {
-        setPosts(
-          posts.map((p) =>
+        setPosts((prevPosts) =>
+          prevPosts.map((p) =>
             p.id === postId
               ? {
                   ...p,
@@ -455,8 +469,8 @@ const WorkspaceHomeScreen = ({
           ),
         );
       } else {
-        setPosts(
-          posts.map((p) =>
+        setPosts((prevPosts) =>
+          prevPosts.map((p) =>
             p.id === postId
               ? {
                   ...p,
@@ -477,12 +491,12 @@ const WorkspaceHomeScreen = ({
       }
     } else if (action === "ignore") {
       if (type === "post")
-        setPosts(
-          posts.map((p) => (p.id === postId ? { ...p, reported: [] } : p)),
+        setPosts((prevPosts) =>
+          prevPosts.map((p) => (p.id === postId ? { ...p, reported: [] } : p)),
         );
       else
-        setPosts(
-          posts.map((p) =>
+        setPosts((prevPosts) =>
+          prevPosts.map((p) =>
             p.id === postId
               ? {
                   ...p,
@@ -498,23 +512,24 @@ const WorkspaceHomeScreen = ({
 
   const handleReaction = (postId, emoji) => {
     if (isOffline) return;
-    const newPosts = posts.map((post) => {
-      if (post.id === postId) {
-        const currentCount = post.reactions[emoji] || 0;
-        return {
-          ...post,
-          reactions: { ...post.reactions, [emoji]: currentCount + 1 },
-        };
-      }
-      return post;
-    });
-    setPosts(newPosts);
+    setPosts((prevPosts) =>
+      prevPosts.map((post) => {
+        if (post.id === postId) {
+          const currentCount = post.reactions[emoji] || 0;
+          return {
+            ...post,
+            reactions: { ...post.reactions, [emoji]: currentCount + 1 },
+          };
+        }
+        return post;
+      }),
+    );
     setActiveReactionPostId(null);
   };
 
   const togglePin = (postId) => {
-    setPosts(
-      posts.map((post) =>
+    setPosts((prevPosts) =>
+      prevPosts.map((post) =>
         post.id === postId ? { ...post, isPinned: !post.isPinned } : post,
       ),
     );
@@ -528,8 +543,8 @@ const WorkspaceHomeScreen = ({
         text: "削除",
         style: "destructive",
         onPress: () => {
-          setPosts(
-            posts.map((p) =>
+          setPosts((prevPosts) =>
+            prevPosts.map((p) =>
               p.id === postId
                 ? {
                     ...p,
@@ -571,7 +586,7 @@ const WorkspaceHomeScreen = ({
             };
 
             if (typeof setNotices === "function")
-              setNotices([newNotice, ...notices]);
+              setNotices((prev) => [newNotice, ...prev]);
             else if (notices && Array.isArray(notices))
               notices.unshift(newNotice);
 
@@ -676,8 +691,8 @@ const WorkspaceHomeScreen = ({
           if (!isPending) {
             toggleThread(post.id);
             if (isUnread) {
-              setPosts(
-                posts.map((p) =>
+              setPosts((prevPosts) =>
+                prevPosts.map((p) =>
                   p.id === post.id
                     ? { ...p, readBy: [...(p.readBy || []), currentUser] }
                     : p,
@@ -740,7 +755,7 @@ const WorkspaceHomeScreen = ({
 
         <Text
           style={styles.postContent}
-          numberOfLines={isExpanded || isPinnedArea ? undefined : 4}
+          numberOfLines={isExpanded || isPinnedArea ? undefined : 1}
         >
           {renderContentWithMentions(post.content)}
         </Text>
@@ -966,8 +981,8 @@ const WorkspaceHomeScreen = ({
                           <TouchableOpacity
                             style={styles.longPressMenuItem}
                             onPress={() => {
-                              setPosts(
-                                posts.map((p) =>
+                              setPosts((prevPosts) =>
+                                prevPosts.map((p) =>
                                   p.id === post.id
                                     ? {
                                         ...p,
@@ -1107,7 +1122,6 @@ const WorkspaceHomeScreen = ({
           </View>
         </View>
 
-        {/* サブメニューエリア */}
         <View style={styles.menuRow}>
           <ScrollView
             horizontal
@@ -1168,7 +1182,6 @@ const WorkspaceHomeScreen = ({
               <Text style={styles.menuLabel}>プロジェクト</Text>
             </TouchableOpacity>
 
-            {/* ★ 選手名簿（Roster）ボタンを追加（管理者・コーチのみ） */}
             {isStaffOrAbove && (
               <TouchableOpacity
                 style={styles.menuItem}
@@ -1183,7 +1196,6 @@ const WorkspaceHomeScreen = ({
           </ScrollView>
         </View>
 
-        {/* オフラインバナー */}
         {isOffline && (
           <View style={styles.offlineBanner}>
             <ActivityIndicator
@@ -1311,14 +1323,7 @@ const WorkspaceHomeScreen = ({
                     </TouchableOpacity>
                   </View>
                 )}
-                <View style={styles.toolbar}>
-                  <TouchableOpacity
-                    style={styles.toolbarBtn}
-                    onPress={() => insertText("@")}
-                  >
-                    <Text style={styles.toolbarBtnText}>@ メンション</Text>
-                  </TouchableOpacity>
-                </View>
+
                 <View style={styles.inputRow}>
                   <TextInput
                     ref={mainInputRef}
@@ -2130,15 +2135,6 @@ const styles = StyleSheet.create({
   replyingToContent: { fontSize: 13, color: "#555" },
   cancelReplyBtn: { padding: 5, marginLeft: 10 },
   cancelReplyBtnText: { fontSize: 16, color: "#888", fontWeight: "bold" },
-  toolbar: { flexDirection: "row", marginBottom: 10 },
-  toolbarBtn: {
-    backgroundColor: "#f0f0f0",
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 15,
-    marginRight: 10,
-  },
-  toolbarBtnText: { color: "#555", fontSize: 13, fontWeight: "bold" },
   inputRow: { flexDirection: "row", alignItems: "center" },
   createPostInput: {
     flex: 1,

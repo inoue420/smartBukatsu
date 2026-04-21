@@ -41,12 +41,17 @@ const ProjectDetailScreen = ({
 
   const [localTags, setLocalTags] = useState(project.tags || []);
 
-  const defaultQuickTags = ["ナイスプレー", "得点", "罰則"];
+  // ★ 修正：初期タグを変更
+  const defaultQuickTags = ["得点", "罰則", "2min", "ナイス"];
   const [quickTags, setQuickTags] = useState(
     project.quickTags || defaultQuickTags,
   );
 
   const [selectedQuickTags, setSelectedQuickTags] = useState([]);
+
+  // ★ 追加：切り抜きの秒数設定
+  const [preSec, setPreSec] = useState(5);
+  const [postSec, setPostSec] = useState(3);
 
   const { width, height } = useWindowDimensions();
   const isLandscape = width > height;
@@ -247,12 +252,15 @@ const ProjectDetailScreen = ({
     if (selectedQuickTags.length === 0) return;
     const label = selectedQuickTags.join(" + ");
 
+    // ★ 修正：タグに切り抜き秒数を保存
     const newTag = {
       id: "tag_" + Date.now(),
       videoTime,
       label,
       user: displayUserName,
       status: "private",
+      preSeconds: preSec,
+      postSeconds: postSec,
     };
 
     const newTags = [...localTags, newTag].sort(
@@ -275,7 +283,6 @@ const ProjectDetailScreen = ({
     } catch (error) {}
   };
 
-  // ★ 追加：一括共有処理
   const handleBulkShareTags = async () => {
     const privateTagsCount = localTags.filter(
       (t) => t.status === "private" && t.user === displayUserName,
@@ -483,7 +490,6 @@ const ProjectDetailScreen = ({
   );
 
   const renderTaggingContent = () => {
-    // 共有されているか、自分が作ったタグのみ表示
     const visibleTags = localTags.filter(
       (t) => t.status === "shared" || t.user === displayUserName,
     );
@@ -545,7 +551,28 @@ const ProjectDetailScreen = ({
             </TouchableOpacity>
           </View>
 
-          {/* 記録ボタン */}
+          {/* ★ 修正：切り抜き秒数の設定UI */}
+          <View style={styles.clipSettingsRow}>
+            <Text style={styles.clipSettingsLabel}>✂️ 切り抜き:</Text>
+            <Text style={styles.clipSettingsText}>前</Text>
+            <TextInput
+              style={styles.clipSettingsInput}
+              keyboardType="number-pad"
+              value={String(preSec)}
+              onChangeText={(v) => setPreSec(Number(v) || 0)}
+              selectTextOnFocus
+            />
+            <Text style={styles.clipSettingsText}>秒 〜 後</Text>
+            <TextInput
+              style={styles.clipSettingsInput}
+              keyboardType="number-pad"
+              value={String(postSec)}
+              onChangeText={(v) => setPostSec(Number(v) || 0)}
+              selectTextOnFocus
+            />
+            <Text style={styles.clipSettingsText}>秒</Text>
+          </View>
+
           <TouchableOpacity
             style={[
               styles.recordTagBtn,
@@ -562,7 +589,6 @@ const ProjectDetailScreen = ({
           </TouchableOpacity>
         </View>
 
-        {/* ★ 追加：一括共有ボタン（未公開のタグがある場合のみ表示） */}
         {privateTagsCount > 0 && (
           <TouchableOpacity
             style={styles.bulkShareBtn}
@@ -601,8 +627,6 @@ const ProjectDetailScreen = ({
                     )}
                   </View>
                 </View>
-
-                {/* 個別の共有ボタンを撤去済み */}
 
                 {(canDeleteAnyTag || tag.user === displayUserName) && (
                   <TouchableOpacity
@@ -795,10 +819,6 @@ const styles = StyleSheet.create({
     borderRadius: 25,
     zIndex: 9999,
     elevation: 10,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 3,
   },
   toastText: {
     color: "#fff",
@@ -809,13 +829,13 @@ const styles = StyleSheet.create({
 
   fsRoot: { flex: 1, flexDirection: "row", backgroundColor: "#000" },
   fsVideoCol: {
-    flex: 0.65,
+    flex: 0.6,
     backgroundColor: "#000",
     justifyContent: "center",
     position: "relative",
   },
   fsUiCol: {
-    flex: 0.35,
+    flex: 0.4,
     backgroundColor: "#1e293b",
     paddingHorizontal: 10,
     paddingTop: 10,
@@ -920,7 +940,6 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
   },
 
-  // ★ 一括共有ボタンのスタイル
   bulkShareBtn: {
     backgroundColor: "#2ecc71",
     paddingVertical: 12,
@@ -1017,6 +1036,39 @@ const styles = StyleSheet.create({
   quickTagBtnTextSelected: {
     color: "#fff",
   },
+
+  // ★ 修正：切り抜き秒数設定用スタイル
+  clipSettingsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    marginVertical: 10,
+    paddingHorizontal: 5,
+  },
+  clipSettingsLabel: {
+    fontSize: 13,
+    fontWeight: "bold",
+    color: "#555",
+    marginRight: 8,
+  },
+  clipSettingsText: {
+    fontSize: 13,
+    color: "#555",
+    marginHorizontal: 5,
+  },
+  clipSettingsInput: {
+    backgroundColor: "#f9f9f9",
+    borderWidth: 1,
+    borderColor: "#ddd",
+    borderRadius: 6,
+    width: 40,
+    textAlign: "center",
+    paddingVertical: 6,
+    fontSize: 14,
+    color: "#0077cc",
+    fontWeight: "bold",
+  },
+
   recordTagBtn: {
     backgroundColor: "#e74c3c",
     paddingVertical: 12,

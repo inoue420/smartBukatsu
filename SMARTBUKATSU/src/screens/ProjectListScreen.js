@@ -33,6 +33,19 @@ import {
   updateProject,
 } from "../services/firestoreService";
 
+// ★ 追加：不足していたCOLORS定義
+const COLORS = {
+  primary: "#0077cc",
+  secondary: "#f39c12",
+  danger: "#e74c3c",
+  success: "#2ecc71",
+  background: "#f0f2f5",
+  card: "#ffffff",
+  textMain: "#333333",
+  textSub: "#666666",
+  border: "#eeeeee",
+};
+
 const ProjectListScreen = ({
   navigation,
   isAdmin,
@@ -77,6 +90,7 @@ const ProjectListScreen = ({
     return projects.filter((p) => p.status !== "deleted");
   }, [projects]);
 
+  // デフォルトのクリップ秒数（設定がない場合のフォールバック）
   const clipPreSeconds = currentUserProfile.clipPreSeconds ?? 5;
   const clipPostSeconds = currentUserProfile.clipPostSeconds ?? 3;
 
@@ -84,21 +98,18 @@ const ProjectListScreen = ({
   // ハイライト（プレイリスト）用ステート
   // ==========================================
   const [selectedHighlightTags, setSelectedHighlightTags] = useState([]);
-  const [searchMode, setSearchMode] = useState("OR"); // "OR" | "AND"
+  const [searchMode, setSearchMode] = useState("OR");
 
-  // 複合タグを分割し、全クリップと個別タグリストを生成する
   const { allClips, availableTags } = useMemo(() => {
     const clips = [];
     const tagSet = new Set();
 
     projects.forEach((p) => {
-      if (
-        p.status === "deleted" ||
-        !p.videoUrl ||
-        !p.tags ||
-        p.tags.length === 0
-      )
-        return;
+      if (p.status === "deleted") return;
+
+      p.quickTags?.forEach((qt) => tagSet.add(qt));
+
+      if (!p.videoUrl || !p.tags || p.tags.length === 0) return;
 
       p.tags.forEach((tag) => {
         if (tag.status === "private" && tag.user !== displayUserName) return;
@@ -119,21 +130,26 @@ const ProjectListScreen = ({
             !(m.readBy || []).includes(currentUser),
         );
 
+        const pre =
+          tag.preSeconds !== undefined ? tag.preSeconds : clipPreSeconds;
+        const post =
+          tag.postSeconds !== undefined ? tag.postSeconds : clipPostSeconds;
+
         clips.push({
           id: tag.id,
           projectId: p.id,
           project: p.title,
           url: p.videoUrl,
-          start: Math.max(0, tag.videoTime - clipPreSeconds),
-          end: tag.videoTime + clipPostSeconds,
+          start: Math.max(0, tag.videoTime - pre),
+          end: tag.videoTime + post,
           user: tag.user,
           memos: clipMemos,
           hasUnread: hasUnread,
           type: p.type,
           date: p.date,
           status: tag.status || "shared",
-          labels: individualTags, // 分割したタグの配列
-          originalLabel: tag.label, // 画面表示用
+          labels: individualTags,
+          originalLabel: tag.label,
         });
       });
     });
@@ -144,15 +160,13 @@ const ProjectListScreen = ({
 
   const currentClips = useMemo(() => {
     if (selectedHighlightTags.length === 0) {
-      return allClips; // タグ未選択時はすべて表示
+      return allClips;
     }
 
     return allClips.filter((clip) => {
       if (searchMode === "OR") {
-        // OR: どれか1つでも含まれていればOK
         return selectedHighlightTags.some((tag) => clip.labels.includes(tag));
       } else {
-        // AND: 選択したタグが「すべて」含まれていること
         return selectedHighlightTags.every((tag) => clip.labels.includes(tag));
       }
     });
@@ -201,7 +215,6 @@ const ProjectListScreen = ({
     } catch (e) {}
   };
 
-  // 使われなくなったタグを選択状態から外す
   useEffect(() => {
     setSelectedHighlightTags((prev) =>
       prev.filter((t) => availableTags.includes(t)),
@@ -705,7 +718,7 @@ const ProjectListScreen = ({
       ) : (
         <Video
           ref={videoRef}
-          source={{ uri: currentClip.url }}
+          source={{ uri: currentClip?.url }}
           style={styles.videoComponent}
           resizeMode={ResizeMode.CONTAIN}
           onPlaybackStatusUpdate={handlePlaybackStatusUpdate}
@@ -1425,7 +1438,6 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
   },
 
-  // ★ 変更：横画面用レイアウト割合を調整 (60%:40%)
   fsVideoCol: {
     flex: 0.6,
     backgroundColor: "#000",

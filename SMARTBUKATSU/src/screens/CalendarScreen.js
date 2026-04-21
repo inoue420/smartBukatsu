@@ -11,6 +11,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
+  Switch,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Calendar, LocaleConfig } from "react-native-calendars";
@@ -80,7 +81,6 @@ const COLORS = {
   border: "#eeeeee",
 };
 
-// 時間選択肢の生成
 const HOUR_OPTIONS = Array.from({ length: 24 }, (_, i) =>
   String(i).padStart(2, "0"),
 );
@@ -114,7 +114,6 @@ const getDatesInRange = (startDate, endDate) => {
   const dates = [];
   let currentDate = new Date(startDate);
   const end = new Date(endDate);
-
   let count = 0;
   while (currentDate <= end && count < 365) {
     dates.push(currentDate.toISOString().split("T")[0]);
@@ -124,7 +123,6 @@ const getDatesInRange = (startDate, endDate) => {
   return dates;
 };
 
-// ★ 修正：Modalの重ねがけバグを回避するため、絶対配置(absolute)のViewに変更した時間ピッカー
 const TimePickerOverlay = ({
   onClose,
   onSelect,
@@ -242,6 +240,7 @@ const CalendarScreen = ({
   const [showEndDatePicker, setShowEndDatePicker] = useState(false);
   const [clubStartTime, setClubStartTime] = useState("09:00");
   const [clubEndTime, setClubEndTime] = useState("12:00");
+  const [isClubAllDay, setIsClubAllDay] = useState(false);
   const [clubTimeSchedules, setClubTimeSchedules] = useState({});
 
   // === 個人の予定ステート ===
@@ -254,11 +253,11 @@ const CalendarScreen = ({
     useState(false);
   const [personalStartTime, setPersonalStartTime] = useState("18:00");
   const [personalEndTime, setPersonalEndTime] = useState("19:00");
+  const [isPersonalAllDay, setIsPersonalAllDay] = useState(false);
   const [personalTimeSchedules, setPersonalTimeSchedules] = useState({});
 
   const [viewingReport, setViewingReport] = useState(null);
 
-  // === 統合タイムピッカーステート ===
   const [isTimePickerVisible, setIsTimePickerVisible] = useState(false);
   const [timePickerTarget, setTimePickerTarget] = useState("");
 
@@ -282,8 +281,7 @@ const CalendarScreen = ({
             : p.type === "試合"
               ? COLORS.danger
               : COLORS.primary;
-        const range = getDatesInRange(start, end);
-        range.forEach((d) => addMark(d, p.id, color));
+        getDatesInRange(start, end).forEach((d) => addMark(d, p.id, color));
       }
     });
 
@@ -292,8 +290,7 @@ const CalendarScreen = ({
         const start = normalizeDate(pe.date);
         const end = pe.endDate ? normalizeDate(pe.endDate) : start;
         const color = pe.status === "pending" ? "#aaa" : COLORS.success;
-        const range = getDatesInRange(start, end);
-        range.forEach((d) => addMark(d, pe.id, color));
+        getDatesInRange(start, end).forEach((d) => addMark(d, pe.id, color));
       }
     });
 
@@ -351,15 +348,17 @@ const CalendarScreen = ({
     }
   }, [isOffline]);
 
-  // 表示用の時間取得ヘルパー
   const getDisplayTime = (item, targetDate) => {
     if (
       item.isMultiDay &&
       item.timeSchedules &&
       item.timeSchedules[targetDate]
     ) {
-      return `⏰ ${item.timeSchedules[targetDate].start} 〜 ${item.timeSchedules[targetDate].end}`;
+      const sched = item.timeSchedules[targetDate];
+      if (sched.isAllDay) return "⏰ 終日";
+      return `⏰ ${sched.start} 〜 ${sched.end}`;
     }
+    if (item.isAllDay) return "⏰ 終日";
     return `⏰ ${item.startTime || "00:00"} 〜 ${item.endTime || "00:00"}`;
   };
 
@@ -379,6 +378,7 @@ const CalendarScreen = ({
           schedules[d] = clubTimeSchedules[d] || {
             start: "09:00",
             end: "12:00",
+            isAllDay: false,
           };
         });
       }
@@ -391,8 +391,9 @@ const CalendarScreen = ({
         date: selectedDate,
         endDate: isMultiDay ? endDate : selectedDate,
         isMultiDay,
-        startTime: isMultiDay ? "" : clubStartTime,
-        endTime: isMultiDay ? "" : clubEndTime,
+        isAllDay: isMultiDay ? false : isClubAllDay,
+        startTime: isMultiDay || isClubAllDay ? "" : clubStartTime,
+        endTime: isMultiDay || isClubAllDay ? "" : clubEndTime,
         timeSchedules: isMultiDay ? schedules : null,
         participants: "team",
         status: isOffline ? "pending" : "active",
@@ -426,6 +427,7 @@ const CalendarScreen = ({
     setShowEndDatePicker(false);
     setClubStartTime("09:00");
     setClubEndTime("12:00");
+    setIsClubAllDay(false);
     setClubTimeSchedules({});
   };
 
@@ -438,6 +440,7 @@ const CalendarScreen = ({
     setEndDate(event.endDate || event.date);
     setClubStartTime(event.startTime || "09:00");
     setClubEndTime(event.endTime || "12:00");
+    setIsClubAllDay(event.isAllDay || false);
     setClubTimeSchedules(event.timeSchedules || {});
     setIsClubModalVisible(true);
   };
@@ -476,6 +479,7 @@ const CalendarScreen = ({
           schedules[d] = personalTimeSchedules[d] || {
             start: "18:00",
             end: "19:00",
+            isAllDay: false,
           };
         });
       }
@@ -484,8 +488,10 @@ const CalendarScreen = ({
         date: selectedDate,
         endDate: isPersonalMultiDay ? personalEndDate : selectedDate,
         isMultiDay: isPersonalMultiDay,
-        startTime: isPersonalMultiDay ? "" : personalStartTime,
-        endTime: isPersonalMultiDay ? "" : personalEndTime,
+        isAllDay: isPersonalMultiDay ? false : isPersonalAllDay,
+        startTime:
+          isPersonalMultiDay || isPersonalAllDay ? "" : personalStartTime,
+        endTime: isPersonalMultiDay || isPersonalAllDay ? "" : personalEndTime,
         timeSchedules: isPersonalMultiDay ? schedules : null,
         title: personalEventTitle.trim(),
         description: personalEventDescription.trim(),
@@ -522,6 +528,7 @@ const CalendarScreen = ({
     setShowPersonalEndDatePicker(false);
     setPersonalStartTime("18:00");
     setPersonalEndTime("19:00");
+    setIsPersonalAllDay(false);
     setPersonalTimeSchedules({});
   };
 
@@ -533,6 +540,7 @@ const CalendarScreen = ({
     setPersonalEndDate(event.endDate || event.date);
     setPersonalStartTime(event.startTime || "18:00");
     setPersonalEndTime(event.endTime || "19:00");
+    setIsPersonalAllDay(event.isAllDay || false);
     setPersonalTimeSchedules(event.timeSchedules || {});
     setIsPersonalModalVisible(true);
   };
@@ -555,7 +563,6 @@ const CalendarScreen = ({
     ]);
   };
 
-  // === 時間ピッカーの設定処理 ===
   let currentPickerHour = "09";
   let currentPickerMin = "00";
   let pickerTitle = "時間を選択";
@@ -596,37 +603,35 @@ const CalendarScreen = ({
 
   const handleTimeSelect = (h, m) => {
     const timeStr = `${h}:${m}`;
-    if (timePickerTarget === "club_single_start") {
-      setClubStartTime(timeStr);
-    } else if (timePickerTarget === "club_single_end") {
-      setClubEndTime(timeStr);
-    } else if (timePickerTarget.startsWith("club_multi_start_")) {
+    if (timePickerTarget === "club_single_start") setClubStartTime(timeStr);
+    else if (timePickerTarget === "club_single_end") setClubEndTime(timeStr);
+    else if (timePickerTarget.startsWith("club_multi_start_")) {
       const d = timePickerTarget.replace("club_multi_start_", "");
       setClubTimeSchedules((prev) => ({
         ...prev,
-        [d]: { start: timeStr, end: prev[d]?.end || "12:00" },
+        [d]: { ...prev[d], start: timeStr },
       }));
     } else if (timePickerTarget.startsWith("club_multi_end_")) {
       const d = timePickerTarget.replace("club_multi_end_", "");
       setClubTimeSchedules((prev) => ({
         ...prev,
-        [d]: { start: prev[d]?.start || "09:00", end: timeStr },
+        [d]: { ...prev[d], end: timeStr },
       }));
-    } else if (timePickerTarget === "personal_single_start") {
+    } else if (timePickerTarget === "personal_single_start")
       setPersonalStartTime(timeStr);
-    } else if (timePickerTarget === "personal_single_end") {
+    else if (timePickerTarget === "personal_single_end")
       setPersonalEndTime(timeStr);
-    } else if (timePickerTarget.startsWith("personal_multi_start_")) {
+    else if (timePickerTarget.startsWith("personal_multi_start_")) {
       const d = timePickerTarget.replace("personal_multi_start_", "");
       setPersonalTimeSchedules((prev) => ({
         ...prev,
-        [d]: { start: timeStr, end: prev[d]?.end || "19:00" },
+        [d]: { ...prev[d], start: timeStr },
       }));
     } else if (timePickerTarget.startsWith("personal_multi_end_")) {
       const d = timePickerTarget.replace("personal_multi_end_", "");
       setPersonalTimeSchedules((prev) => ({
         ...prev,
-        [d]: { start: prev[d]?.start || "18:00", end: timeStr },
+        [d]: { ...prev[d], end: timeStr },
       }));
     }
   };
@@ -674,9 +679,6 @@ const CalendarScreen = ({
           </Text>
         </View>
 
-        {/* ======================= */}
-        {/* 部活セクション */}
-        {/* ======================= */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>🏟️ 部活の予定（共有）</Text>
@@ -753,9 +755,6 @@ const CalendarScreen = ({
           )}
         </View>
 
-        {/* ======================= */}
-        {/* 個人セクション */}
-        {/* ======================= */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>👤 個人の予定（非公開）</Text>
@@ -825,9 +824,6 @@ const CalendarScreen = ({
           )}
         </View>
 
-        {/* ======================= */}
-        {/* 振り返りセクション */}
-        {/* ======================= */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>📝 あなたの提出済み振り返り</Text>
           {dailyMyReports.length === 0 ? (
@@ -874,16 +870,17 @@ const CalendarScreen = ({
         </View>
       )}
 
-      {/* ======================= */}
-      {/* モーダル：日報閲覧 */}
-      {/* ======================= */}
+      {/* 振り返り詳細モーダル */}
       <Modal visible={viewingReport !== null} transparent animationType="slide">
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>提出済みの振り返り</Text>
             </View>
-            <ScrollView showsVerticalScrollIndicator={false}>
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={{ paddingBottom: 50 }}
+            >
               {viewingReport && (
                 <>
                   <Text style={styles.label}>📅 提出日</Text>
@@ -954,9 +951,7 @@ const CalendarScreen = ({
         </View>
       </Modal>
 
-      {/* ======================= */}
-      {/* モーダル：部活 */}
-      {/* ======================= */}
+      {/* 部活予定モーダル */}
       <Modal visible={isClubModalVisible} transparent animationType="slide">
         <View style={styles.modalOverlay}>
           <KeyboardAvoidingView
@@ -968,7 +963,10 @@ const CalendarScreen = ({
                 {editingClubEventId ? "予定の編集" : "新しい予定を追加"}
               </Text>
             </View>
-            <ScrollView showsVerticalScrollIndicator={false}>
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={{ paddingBottom: 50 }}
+            >
               <Text style={styles.label}>予定のタイトル</Text>
               <TextInput
                 style={styles.input}
@@ -1013,16 +1011,26 @@ const CalendarScreen = ({
                 </TouchableOpacity>
               </View>
 
-              {/* 複数日の場合：日ごとの時間設定UIを表示 */}
               {isMultiDay ? (
                 <View style={styles.multiDayContainer}>
-                  <Text style={styles.label}>終了日を選択</Text>
+                  <Text
+                    style={[
+                      styles.label,
+                      {
+                        color: COLORS.primary,
+                        textAlign: "center",
+                        marginBottom: 10,
+                      },
+                    ]}
+                  >
+                    ▼ 終了日をタップして選択 ▼
+                  </Text>
                   <TouchableOpacity
                     style={styles.endDateSelector}
                     onPress={() => setShowEndDatePicker(!showEndDatePicker)}
                   >
                     <Text style={styles.endDateText}>
-                      {endDate || selectedDate}
+                      🗓️ {endDate || selectedDate}
                     </Text>
                   </TouchableOpacity>
                   {showEndDatePicker && (
@@ -1046,39 +1054,72 @@ const CalendarScreen = ({
                         ⏰ 日ごとの時間設定
                       </Text>
                       {getDatesInRange(selectedDate, endDate).map((date) => {
-                        const start = clubTimeSchedules[date]?.start || "09:00";
-                        const end = clubTimeSchedules[date]?.end || "12:00";
+                        const sched = clubTimeSchedules[date] || {
+                          start: "09:00",
+                          end: "12:00",
+                          isAllDay: false,
+                        };
                         return (
                           <View key={date} style={styles.multiTimeRow}>
-                            <Text style={styles.multiTimeDate}>
-                              {date.substring(5).replace("-", "/")}
-                            </Text>
-                            <View style={styles.multiTimeInputContainer}>
-                              <TouchableOpacity
-                                style={styles.multiTimeBtn}
-                                onPress={() => {
-                                  setTimePickerTarget(
-                                    `club_multi_start_${date}`,
-                                  );
-                                  setIsTimePickerVisible(true);
-                                }}
-                              >
-                                <Text style={styles.multiTimeBtnText}>
-                                  {start}
+                            <View style={styles.multiTimeLeft}>
+                              <Text style={styles.multiTimeDate}>
+                                {date.substring(5).replace("-", "/")}
+                              </Text>
+                              <View style={styles.allDaySwitchRow}>
+                                <Switch
+                                  value={sched.isAllDay}
+                                  onValueChange={(val) =>
+                                    setClubTimeSchedules((prev) => ({
+                                      ...prev,
+                                      [date]: { ...sched, isAllDay: val },
+                                    }))
+                                  }
+                                  scaleX={0.7}
+                                  scaleY={0.7}
+                                />
+                                <Text style={styles.allDayLabelSmall}>
+                                  終日
                                 </Text>
-                              </TouchableOpacity>
-                              <Text style={styles.timeBetweenSmall}>〜</Text>
-                              <TouchableOpacity
-                                style={styles.multiTimeBtn}
-                                onPress={() => {
-                                  setTimePickerTarget(`club_multi_end_${date}`);
-                                  setIsTimePickerVisible(true);
-                                }}
-                              >
-                                <Text style={styles.multiTimeBtnText}>
-                                  {end}
+                              </View>
+                            </View>
+                            <View style={styles.multiTimeRight}>
+                              {!sched.isAllDay ? (
+                                <View style={styles.multiTimeInputContainer}>
+                                  <TouchableOpacity
+                                    style={styles.multiTimeBtn}
+                                    onPress={() => {
+                                      setTimePickerTarget(
+                                        `club_multi_start_${date}`,
+                                      );
+                                      setIsTimePickerVisible(true);
+                                    }}
+                                  >
+                                    <Text style={styles.multiTimeBtnText}>
+                                      {sched.start}
+                                    </Text>
+                                  </TouchableOpacity>
+                                  <Text style={styles.timeBetweenSmall}>
+                                    〜
+                                  </Text>
+                                  <TouchableOpacity
+                                    style={styles.multiTimeBtn}
+                                    onPress={() => {
+                                      setTimePickerTarget(
+                                        `club_multi_end_${date}`,
+                                      );
+                                      setIsTimePickerVisible(true);
+                                    }}
+                                  >
+                                    <Text style={styles.multiTimeBtnText}>
+                                      {sched.end}
+                                    </Text>
+                                  </TouchableOpacity>
+                                </View>
+                              ) : (
+                                <Text style={styles.allDayActiveText}>
+                                  終日設定中
                                 </Text>
-                              </TouchableOpacity>
+                              )}
                             </View>
                           </View>
                         );
@@ -1088,32 +1129,61 @@ const CalendarScreen = ({
                 </View>
               ) : (
                 <View>
-                  <Text style={styles.label}>⏰ 時間</Text>
-                  <View style={styles.timeInputRow}>
-                    <TouchableOpacity
-                      style={styles.timeSelectBtn}
-                      onPress={() => {
-                        setTimePickerTarget("club_single_start");
-                        setIsTimePickerVisible(true);
-                      }}
+                  <View
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      marginTop: 10,
+                    }}
+                  >
+                    <Text style={styles.label}>⏰ 時間</Text>
+                    <View
+                      style={{ flexDirection: "row", alignItems: "center" }}
                     >
-                      <Text style={styles.timeSelectBtnText}>
-                        {clubStartTime}
+                      <Text
+                        style={{
+                          marginRight: 5,
+                          fontSize: 14,
+                          fontWeight: "bold",
+                          color: COLORS.textSub,
+                        }}
+                      >
+                        終日
                       </Text>
-                    </TouchableOpacity>
-                    <Text style={styles.timeBetween}>〜</Text>
-                    <TouchableOpacity
-                      style={styles.timeSelectBtn}
-                      onPress={() => {
-                        setTimePickerTarget("club_single_end");
-                        setIsTimePickerVisible(true);
-                      }}
-                    >
-                      <Text style={styles.timeSelectBtnText}>
-                        {clubEndTime}
-                      </Text>
-                    </TouchableOpacity>
+                      <Switch
+                        value={isClubAllDay}
+                        onValueChange={setIsClubAllDay}
+                      />
+                    </View>
                   </View>
+                  {!isClubAllDay && (
+                    <View style={styles.timeInputRow}>
+                      <TouchableOpacity
+                        style={styles.timeSelectBtn}
+                        onPress={() => {
+                          setTimePickerTarget("club_single_start");
+                          setIsTimePickerVisible(true);
+                        }}
+                      >
+                        <Text style={styles.timeSelectBtnText}>
+                          {clubStartTime}
+                        </Text>
+                      </TouchableOpacity>
+                      <Text style={styles.timeBetween}>〜</Text>
+                      <TouchableOpacity
+                        style={styles.timeSelectBtn}
+                        onPress={() => {
+                          setTimePickerTarget("club_single_end");
+                          setIsTimePickerVisible(true);
+                        }}
+                      >
+                        <Text style={styles.timeSelectBtnText}>
+                          {clubEndTime}
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
                 </View>
               )}
 
@@ -1128,10 +1198,11 @@ const CalendarScreen = ({
                     ]}
                     onPress={() => setClubEventType(t)}
                   >
+                    {/* ★ 修正：選択されたボタンは文字色を白くする */}
                     <Text
                       style={[
                         styles.typeBtnText,
-                        clubEventType === t && { color: "#fff" },
+                        clubEventType === t && styles.typeBtnTextActive,
                       ]}
                     >
                       {t}
@@ -1166,7 +1237,6 @@ const CalendarScreen = ({
             </ScrollView>
           </KeyboardAvoidingView>
 
-          {/* ★ Modalの重ねがけを回避するため、Modalの内側に配置した時間ピッカー */}
           {isTimePickerVisible && timePickerTarget.includes("club") && (
             <TimePickerOverlay
               onClose={() => setIsTimePickerVisible(false)}
@@ -1179,9 +1249,7 @@ const CalendarScreen = ({
         </View>
       </Modal>
 
-      {/* ======================= */}
-      {/* モーダル：個人 */}
-      {/* ======================= */}
+      {/* 個人予定モーダル */}
       <Modal visible={isPersonalModalVisible} transparent animationType="slide">
         <View style={styles.modalOverlay}>
           <KeyboardAvoidingView
@@ -1195,7 +1263,10 @@ const CalendarScreen = ({
                   : "個人の予定を追加"}
               </Text>
             </View>
-            <ScrollView showsVerticalScrollIndicator={false}>
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={{ paddingBottom: 50 }}
+            >
               <Text style={styles.label}>予定のタイトル</Text>
               <TextInput
                 style={styles.input}
@@ -1246,18 +1317,33 @@ const CalendarScreen = ({
                 </TouchableOpacity>
               </View>
 
-              {/* 個人予定も複数日の場合：日ごとの時間設定UIを表示 */}
               {isPersonalMultiDay ? (
                 <View style={styles.multiDayContainer}>
-                  <Text style={styles.label}>終了日を選択</Text>
+                  <Text
+                    style={[
+                      styles.label,
+                      {
+                        color: COLORS.success,
+                        textAlign: "center",
+                        marginBottom: 10,
+                      },
+                    ]}
+                  >
+                    ▼ 終了日をタップして選択 ▼
+                  </Text>
                   <TouchableOpacity
-                    style={styles.endDateSelector}
+                    style={[
+                      styles.endDateSelector,
+                      { borderColor: COLORS.success },
+                    ]}
                     onPress={() =>
                       setShowPersonalEndDatePicker(!showPersonalEndDatePicker)
                     }
                   >
-                    <Text style={styles.endDateText}>
-                      {personalEndDate || selectedDate}
+                    <Text
+                      style={[styles.endDateText, { color: COLORS.success }]}
+                    >
+                      🗓️ {personalEndDate || selectedDate}
                     </Text>
                   </TouchableOpacity>
                   {showPersonalEndDatePicker && (
@@ -1282,43 +1368,77 @@ const CalendarScreen = ({
                       </Text>
                       {getDatesInRange(selectedDate, personalEndDate).map(
                         (date) => {
-                          const start =
-                            personalTimeSchedules[date]?.start || "18:00";
-                          const end =
-                            personalTimeSchedules[date]?.end || "19:00";
+                          const sched = personalTimeSchedules[date] || {
+                            start: "18:00",
+                            end: "19:00",
+                            isAllDay: false,
+                          };
                           return (
                             <View key={date} style={styles.multiTimeRow}>
-                              <Text style={styles.multiTimeDate}>
-                                {date.substring(5).replace("-", "/")}
-                              </Text>
-                              <View style={styles.multiTimeInputContainer}>
-                                <TouchableOpacity
-                                  style={styles.multiTimeBtn}
-                                  onPress={() => {
-                                    setTimePickerTarget(
-                                      `personal_multi_start_${date}`,
-                                    );
-                                    setIsTimePickerVisible(true);
-                                  }}
-                                >
-                                  <Text style={styles.multiTimeBtnText}>
-                                    {start}
+                              <View style={styles.multiTimeLeft}>
+                                <Text style={styles.multiTimeDate}>
+                                  {date.substring(5).replace("-", "/")}
+                                </Text>
+                                <View style={styles.allDaySwitchRow}>
+                                  <Switch
+                                    value={sched.isAllDay}
+                                    onValueChange={(val) =>
+                                      setPersonalTimeSchedules((prev) => ({
+                                        ...prev,
+                                        [date]: { ...sched, isAllDay: val },
+                                      }))
+                                    }
+                                    scaleX={0.7}
+                                    scaleY={0.7}
+                                  />
+                                  <Text style={styles.allDayLabelSmall}>
+                                    終日
                                   </Text>
-                                </TouchableOpacity>
-                                <Text style={styles.timeBetweenSmall}>〜</Text>
-                                <TouchableOpacity
-                                  style={styles.multiTimeBtn}
-                                  onPress={() => {
-                                    setTimePickerTarget(
-                                      `personal_multi_end_${date}`,
-                                    );
-                                    setIsTimePickerVisible(true);
-                                  }}
-                                >
-                                  <Text style={styles.multiTimeBtnText}>
-                                    {end}
+                                </View>
+                              </View>
+                              <View style={styles.multiTimeRight}>
+                                {!sched.isAllDay ? (
+                                  <View style={styles.multiTimeInputContainer}>
+                                    <TouchableOpacity
+                                      style={styles.multiTimeBtn}
+                                      onPress={() => {
+                                        setTimePickerTarget(
+                                          `personal_multi_start_${date}`,
+                                        );
+                                        setIsTimePickerVisible(true);
+                                      }}
+                                    >
+                                      <Text style={styles.multiTimeBtnText}>
+                                        {sched.start}
+                                      </Text>
+                                    </TouchableOpacity>
+                                    <Text style={styles.timeBetweenSmall}>
+                                      〜
+                                    </Text>
+                                    <TouchableOpacity
+                                      style={styles.multiTimeBtn}
+                                      onPress={() => {
+                                        setTimePickerTarget(
+                                          `personal_multi_end_${date}`,
+                                        );
+                                        setIsTimePickerVisible(true);
+                                      }}
+                                    >
+                                      <Text style={styles.multiTimeBtnText}>
+                                        {sched.end}
+                                      </Text>
+                                    </TouchableOpacity>
+                                  </View>
+                                ) : (
+                                  <Text
+                                    style={[
+                                      styles.allDayActiveText,
+                                      { color: COLORS.success },
+                                    ]}
+                                  >
+                                    終日設定中
                                   </Text>
-                                </TouchableOpacity>
+                                )}
                               </View>
                             </View>
                           );
@@ -1329,32 +1449,61 @@ const CalendarScreen = ({
                 </View>
               ) : (
                 <View>
-                  <Text style={styles.label}>⏰ 時間</Text>
-                  <View style={styles.timeInputRow}>
-                    <TouchableOpacity
-                      style={styles.timeSelectBtn}
-                      onPress={() => {
-                        setTimePickerTarget("personal_single_start");
-                        setIsTimePickerVisible(true);
-                      }}
+                  <View
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      marginTop: 10,
+                    }}
+                  >
+                    <Text style={styles.label}>⏰ 時間</Text>
+                    <View
+                      style={{ flexDirection: "row", alignItems: "center" }}
                     >
-                      <Text style={styles.timeSelectBtnText}>
-                        {personalStartTime}
+                      <Text
+                        style={{
+                          marginRight: 5,
+                          fontSize: 14,
+                          fontWeight: "bold",
+                          color: COLORS.textSub,
+                        }}
+                      >
+                        終日
                       </Text>
-                    </TouchableOpacity>
-                    <Text style={styles.timeBetween}>〜</Text>
-                    <TouchableOpacity
-                      style={styles.timeSelectBtn}
-                      onPress={() => {
-                        setTimePickerTarget("personal_single_end");
-                        setIsTimePickerVisible(true);
-                      }}
-                    >
-                      <Text style={styles.timeSelectBtnText}>
-                        {personalEndTime}
-                      </Text>
-                    </TouchableOpacity>
+                      <Switch
+                        value={isPersonalAllDay}
+                        onValueChange={setIsPersonalAllDay}
+                      />
+                    </View>
                   </View>
+                  {!isPersonalAllDay && (
+                    <View style={styles.timeInputRow}>
+                      <TouchableOpacity
+                        style={styles.timeSelectBtn}
+                        onPress={() => {
+                          setTimePickerTarget("personal_single_start");
+                          setIsTimePickerVisible(true);
+                        }}
+                      >
+                        <Text style={styles.timeSelectBtnText}>
+                          {personalStartTime}
+                        </Text>
+                      </TouchableOpacity>
+                      <Text style={styles.timeBetween}>〜</Text>
+                      <TouchableOpacity
+                        style={styles.timeSelectBtn}
+                        onPress={() => {
+                          setTimePickerTarget("personal_single_end");
+                          setIsTimePickerVisible(true);
+                        }}
+                      >
+                        <Text style={styles.timeSelectBtnText}>
+                          {personalEndTime}
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
                 </View>
               )}
 
@@ -1387,7 +1536,6 @@ const CalendarScreen = ({
             </ScrollView>
           </KeyboardAvoidingView>
 
-          {/* ★ Modalの内側に配置した時間ピッカー */}
           {isTimePickerVisible && timePickerTarget.includes("personal") && (
             <TimePickerOverlay
               onClose={() => setIsTimePickerVisible(false)}
@@ -1563,6 +1711,8 @@ const styles = StyleSheet.create({
   },
   textArea: { minHeight: 80, textAlignVertical: "top" },
   typeContainer: { flexDirection: "row", marginBottom: 10 },
+
+  // ★ 修正：種類/日程選択ボタンのスタイル
   typeBtn: {
     flex: 1,
     paddingVertical: 12,
@@ -1573,9 +1723,13 @@ const styles = StyleSheet.create({
     marginRight: 10,
     backgroundColor: "#f9f9f9",
   },
-  typeBtnActive: { backgroundColor: "#e6f2ff", borderColor: "#3498db" },
+  typeBtnActive: {
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
+  },
   typeBtnText: { fontSize: 13, color: "#555", fontWeight: "bold" },
-  typeBtnTextActive: { color: "#3498db" },
+  typeBtnTextActive: { color: "#ffffff" },
+
   modalButtons: {
     flexDirection: "row",
     justifyContent: "flex-end",
@@ -1590,46 +1744,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   submitBtnText: { color: "#fff", fontWeight: "bold", fontSize: 15 },
-  endDateContainer: {
-    backgroundColor: "#f9f9f9",
-    padding: 10,
-    borderRadius: 8,
-    marginBottom: 15,
-  },
-  endDateSelector: {
-    backgroundColor: "#fff",
-    padding: 10,
-    borderRadius: 5,
-    borderWidth: 1,
-    borderColor: "#ddd",
-    alignItems: "center",
-  },
-  endDateText: { fontSize: 14, fontWeight: "bold", color: COLORS.primary },
 
-  // 日報閲覧用のテキストスタイル
-  viewingText: {
-    fontSize: 15,
-    color: COLORS.textMain,
-    marginBottom: 15,
-    lineHeight: 22,
-  },
-  commentBox: {
-    backgroundColor: "#f9f9f9",
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 8,
-    borderLeftWidth: 3,
-    borderLeftColor: COLORS.primary,
-  },
-  commentUser: {
-    fontSize: 12,
-    fontWeight: "bold",
-    color: COLORS.primary,
-    marginBottom: 4,
-  },
-  commentText: { fontSize: 14, color: COLORS.textMain },
-
-  // ★ 複数日用カレンダー・時間設定スタイル
   multiDayContainer: {
     backgroundColor: "#f9f9f9",
     padding: 15,
@@ -1641,7 +1756,6 @@ const styles = StyleSheet.create({
   multiTimeRow: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
     backgroundColor: "#fff",
     padding: 10,
     borderRadius: 8,
@@ -1649,32 +1763,47 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#ddd",
   },
-  multiTimeDate: {
-    fontSize: 14,
-    fontWeight: "bold",
-    color: COLORS.textMain,
-    width: 60,
-  },
-  multiTimeInputContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    flex: 1,
-    justifyContent: "flex-end",
-  },
+  multiTimeLeft: { width: 85 },
+  multiTimeDate: { fontSize: 14, fontWeight: "bold", color: COLORS.textMain },
+  allDaySwitchRow: { flexDirection: "row", alignItems: "center", marginTop: 3 },
+  allDayLabelSmall: { fontSize: 11, color: "#666", fontWeight: "bold" },
+
+  multiTimeRight: { flex: 1, alignItems: "flex-end" },
+  multiTimeInputContainer: { flexDirection: "row", alignItems: "center" },
   multiTimeBtn: {
     backgroundColor: "#f0f2f5",
     paddingVertical: 8,
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
     borderRadius: 6,
     borderWidth: 1,
     borderColor: "#ccc",
-    minWidth: 70,
+    minWidth: 65,
     alignItems: "center",
   },
-  multiTimeBtnText: { fontSize: 14, fontWeight: "bold", color: COLORS.primary },
-  timeBetweenSmall: { marginHorizontal: 10, color: "#888", fontWeight: "bold" },
+  multiTimeBtnText: { fontSize: 13, fontWeight: "bold", color: COLORS.primary },
+  timeBetweenSmall: {
+    marginHorizontal: 5,
+    color: "#888",
+    fontWeight: "bold",
+    fontSize: 12,
+  },
+  allDayActiveText: { fontSize: 13, color: COLORS.primary, fontWeight: "bold" },
 
-  // ★ 時間入力（単日用）スタイル
+  endDateSelector: {
+    backgroundColor: "#fff",
+    paddingVertical: 15,
+    borderRadius: 8,
+    borderWidth: 2,
+    borderColor: COLORS.primary,
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  endDateText: {
+    fontSize: 18,
+    fontWeight: "bold",
+    color: COLORS.primary,
+  },
+
   timePickerOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.6)",
@@ -1736,6 +1865,28 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   timePickerCloseText: { color: "#fff", fontWeight: "bold", fontSize: 16 },
+
+  viewingText: {
+    fontSize: 15,
+    color: COLORS.textMain,
+    marginBottom: 15,
+    lineHeight: 22,
+  },
+  commentBox: {
+    backgroundColor: "#f9f9f9",
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 8,
+    borderLeftWidth: 3,
+    borderLeftColor: COLORS.primary,
+  },
+  commentUser: {
+    fontSize: 12,
+    fontWeight: "bold",
+    color: COLORS.primary,
+    marginBottom: 4,
+  },
+  commentText: { fontSize: 14, color: COLORS.textMain },
 });
 
 export default CalendarScreen;
