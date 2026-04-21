@@ -25,6 +25,7 @@ import DiaryScreen from "./src/screens/DiaryScreen";
 import ProjectListScreen from "./src/screens/ProjectListScreen";
 import ProjectDetailScreen from "./src/screens/ProjectDetailScreen";
 import CalendarScreen from "./src/screens/CalendarScreen";
+import RosterScreen from "./src/screens/RosterScreen";
 
 LogBox.ignoreLogs(["[expo-av]"]);
 const Stack = createNativeStackNavigator();
@@ -47,7 +48,6 @@ function AppContent() {
   const [clubMembers, setClubMembers] = useState([]);
   const [userProfiles, setUserProfiles] = useState({});
 
-  // ★ 修正：初期状態を新しい仕様に合わせる
   const [grades, setGrades] = useState(["1年生", "2年生", "3年生"]);
   const [positions, setPositions] = useState([
     "キャプテン",
@@ -88,7 +88,6 @@ function AppContent() {
         setPersonalEvents,
       );
 
-      // ★ 修正：チーム名だけでなく、学年とポジションも同期させる
       const unsubTeam = subscribeTeamData(activeTeamId, (data) => {
         if (data) {
           if (data.name) setTeamName(data.name);
@@ -276,6 +275,21 @@ function AppContent() {
                   userProfiles={userProfiles}
                   projects={projects}
                   setProjects={setProjects}
+                />
+              )}
+            </Stack.Screen>
+
+            <Stack.Screen name="Roster">
+              {(props) => (
+                <RosterScreen
+                  {...props}
+                  isAdmin={authIsAdmin}
+                  currentUser={safeUserName}
+                  clubMembers={clubMembers}
+                  userProfiles={userProfiles}
+                  dailyReports={dailyReports}
+                  grades={grades}
+                  positions={positions}
                 />
               )}
             </Stack.Screen>

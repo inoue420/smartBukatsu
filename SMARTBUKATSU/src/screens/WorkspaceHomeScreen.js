@@ -1041,7 +1041,6 @@ const WorkspaceHomeScreen = ({
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
-        {/* ★ 修正：ヘッダーエリアからログアウトボタンを削除し、チーム名のスペースを拡大 */}
         <View
           style={[
             styles.header,
@@ -1165,6 +1164,19 @@ const WorkspaceHomeScreen = ({
               </View>
               <Text style={styles.menuLabel}>プロジェクト</Text>
             </TouchableOpacity>
+
+            {/* ★ 選手名簿（Roster）ボタンを追加（管理者・コーチのみ） */}
+            {isStaffOrAbove && (
+              <TouchableOpacity
+                style={styles.menuItem}
+                onPress={() => navigation.navigate("Roster")}
+              >
+                <View style={styles.menuIconContainer}>
+                  <Text style={styles.menuIconText}>📖</Text>
+                </View>
+                <Text style={styles.menuLabel}>選手名簿</Text>
+              </TouchableOpacity>
+            )}
           </ScrollView>
         </View>
 
