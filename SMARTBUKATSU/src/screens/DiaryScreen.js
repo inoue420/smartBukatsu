@@ -23,25 +23,7 @@ import {
   deleteDailyReport,
 } from "../services/firestoreService";
 
-// ★ カラーパレットの定義
-const COLORS = {
-  primary: "#0077cc",
-  secondary: "#f39c12",
-  danger: "#e74c3c",
-  success: "#27ae60",
-  background: "#f0f2f5",
-  card: "#ffffff",
-  textMain: "#333333",
-  textSub: "#666666",
-  border: "#eeeeee",
-};
-
-const OptionGroup = ({
-  options,
-  selected,
-  onSelect,
-  color = COLORS.primary,
-}) => (
+const OptionGroup = ({ options, selected, onSelect, color = "#0077cc" }) => (
   <View style={styles.optionGroup}>
     {options.map((opt) => (
       <TouchableOpacity
@@ -87,6 +69,11 @@ const ScaleSelector = ({ selected, onSelect, color }) => (
   </ScrollView>
 );
 
+const getTodayString = () => {
+  const today = new Date();
+  return `${today.getFullYear()}/${String(today.getMonth() + 1).padStart(2, "0")}/${String(today.getDate()).padStart(2, "0")}`;
+};
+
 const DiaryScreen = ({
   navigation,
   isAdmin,
@@ -99,6 +86,7 @@ const DiaryScreen = ({
   userProfiles = {},
   dailyReports = [],
   setDailyReports,
+  clubMembers = [], // ★ App.jsから受け取る部員リスト
   alertThresholds = {
     fatigueWarning: 7,
     fatigueDanger: 9,
@@ -118,7 +106,7 @@ const DiaryScreen = ({
     owner: "管理者(監督)",
     staff: "コーチ(スタッフ)",
     captain: `${currentUser}(キャプテン)`,
-    member: currentUser,
+    member: `${currentUser}(あなた)`,
   };
   const displayUserName = roleNameMap[userRole] || currentUser;
 
@@ -126,32 +114,48 @@ const DiaryScreen = ({
   const [selectedReport, setSelectedReport] = useState(null);
   const [commentText, setCommentText] = useState("");
   const [editingReportId, setEditingReportId] = useState(null);
+
   const [isLoading, setIsLoading] = useState(false);
 
-  // === 入力ステート（メディカル ＋ 日記） ===
+  // === 入力ステート ===
+  const [reportDate, setReportDate] = useState(getTodayString());
+  const [isDatePickerVisible, setIsDatePickerVisible] = useState(false);
+
   const [condition, setCondition] = useState("良い");
   const [fatigue, setFatigue] = useState(5);
-  const [sleep, setSleep] = useState("7h");
   const [isParticipating, setIsParticipating] = useState("通常");
   const [hasPain, setHasPain] = useState(false);
   const [painPart, setPainPart] = useState("");
   const [painLevel, setPainLevel] = useState(5);
   const [sinceWhen, setSinceWhen] = useState("");
   const [treatment, setTreatment] = useState("");
-  const [practiceContent, setPracticeContent] = useState("");
+
+  const [reflection, setReflection] = useState("");
   const [achievement, setAchievement] = useState(3);
-  const [goodPoint, setGoodPoint] = useState("");
-  const [badPoint, setBadPoint] = useState("");
-  const [nextTask, setNextTask] = useState("");
+
   const [images, setImages] = useState([]);
   const [memo, setMemo] = useState("");
   const [highlightLink, setHighlightLink] = useState("");
-  const [showMemoInput, setShowMemoInput] = useState(false);
-  const [showLinkInput, setShowLinkInput] = useState(false);
+  // ========================================
 
   const [activeTab, setActiveTab] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [expandedDates, setExpandedDates] = useState({});
+
+  // ★ 提出義務のある「選手」のみのリストを抽出（管理者やコーチはグレー表示させないため）
+  const targetPlayers = useMemo(() => {
+    const players = [];
+    const baseList =
+      clubMembers.length > 0 ? clubMembers : Object.keys(userProfiles);
+
+    baseList.forEach((name) => {
+      const role = userProfiles[name]?.role || "member";
+      if (role === "member" || role === "captain") {
+        players.push(name);
+      }
+    });
+    return Array.from(new Set(players)).sort();
+  }, [clubMembers, userProfiles]);
 
   const REPLY_TEMPLATES = [
     { label: "👍 励ます", text: "お疲れ様！その調子で引き続き頑張ろう。" },
@@ -168,31 +172,6 @@ const DiaryScreen = ({
       text: "無理せず、明日は別メニューで様子を見ましょう。",
     },
   ];
-
-  useEffect(() => {
-    if (!isOffline) {
-      const pendingReports = dailyReports.filter(
-        (r) => r.status === "pending" && r.author === currentUser,
-      );
-      if (pendingReports.length > 0) {
-        setIsLoading(true);
-        setTimeout(() => {
-          setDailyReports((prev) =>
-            prev.map((r) =>
-              r.status === "pending" && r.author === currentUser
-                ? { ...r, status: "sent" }
-                : r,
-            ),
-          );
-          setIsLoading(false);
-          Alert.alert(
-            "📶 通信復旧",
-            "待機していた振り返りを自動で送信しました！",
-          );
-        }, 1500);
-      }
-    }
-  }, [isOffline]);
 
   const getAlertLevel = (record) => {
     let level = "normal";
@@ -233,35 +212,41 @@ const DiaryScreen = ({
     return false;
   });
 
-  // ★ 修正：件数をタブで絞り込む「前」に計算しておく
-  const unreviewedCount = isStaffOrAbove
-    ? processedReports.filter((d) => !d.isReviewed).length
-    : 0;
-
-  const needsFollowUpCount = isStaffOrAbove
-    ? processedReports.filter((d) => d.isFollowUp === true).length
-    : 0;
-
-  // タブによる絞り込み
   if (isStaffOrAbove) {
-    if (activeTab === "unread")
+    if (activeTab === "unread") {
       processedReports = processedReports.filter((d) => !d.isReviewed);
-    else if (activeTab === "needs_followup")
-      processedReports = processedReports.filter((d) => d.isFollowUp === true);
-    else if (activeTab === "danger")
+    } else if (activeTab === "needs_reply") {
+      processedReports = processedReports.filter(
+        (d) =>
+          d.comments.filter((c) =>
+            ["監督", "コーチ", "アシスタント", "管理者"].some((role) =>
+              c.user.includes(role),
+            ),
+          ).length === 0,
+      );
+    } else if (activeTab === "replied") {
+      processedReports = processedReports.filter(
+        (d) =>
+          d.comments.filter((c) =>
+            ["監督", "コーチ", "アシスタント", "管理者"].some((role) =>
+              c.user.includes(role),
+            ),
+          ).length > 0,
+      );
+    } else if (activeTab === "danger") {
       processedReports = processedReports.filter(
         (d) => getAlertLevel(d) === "danger",
       );
-    else if (activeTab === "starred")
+    } else if (activeTab === "starred") {
       processedReports = processedReports.filter((d) => d.isStarred);
+    }
 
     if (searchQuery.trim() !== "") {
       const lowerQ = searchQuery.toLowerCase();
       processedReports = processedReports.filter(
         (d) =>
           d.author.toLowerCase().includes(lowerQ) ||
-          (d.practiceContent &&
-            d.practiceContent.toLowerCase().includes(lowerQ)),
+          (d.reflection && d.reflection.toLowerCase().includes(lowerQ)),
       );
     }
   }
@@ -271,9 +256,18 @@ const DiaryScreen = ({
     acc[report.date].push(report);
     return acc;
   }, {});
+
   const sortedDates = Object.keys(groupedReports).sort(
     (a, b) => new Date(b) - new Date(a),
   );
+
+  let displayDates = [...sortedDates];
+  if (isStaffOrAbove && activeTab === "all" && searchQuery === "") {
+    const todayStr = getTodayString();
+    if (!displayDates.includes(todayStr)) {
+      displayDates = [todayStr, ...displayDates];
+    }
+  }
 
   const isExpanded = (date, index) => {
     if (expandedDates[date] !== undefined) return expandedDates[date];
@@ -287,182 +281,401 @@ const DiaryScreen = ({
     });
   };
 
-  const handleCreateOrEditReport = async () => {
-    if (hasPain && !painPart.trim()) {
-      Alert.alert("入力エラー", "痛む部位を入力してください。");
-      return;
-    }
-    setIsLoading(true);
-    setTimeout(async () => {
+  const updateReportStatusAsync = async (reportId, updates) => {
+    try {
       const safeTeamId = activeTeamId || "test_team";
-      const painDetailsData = hasPain
-        ? { part: painPart, level: painLevel, sinceWhen, treatment }
-        : null;
-      try {
-        if (editingReportId) {
-          const updateData = {
-            condition,
-            fatigue,
-            sleep,
-            isParticipating,
-            hasPain,
-            painDetails: painDetailsData,
-            practiceContent,
-            achievement,
-            goodPoint,
-            badPoint,
-            nextTask,
-            images,
-            memo,
-            highlightLink,
-            status: isOffline ? "pending" : "sent",
-          };
-          setDailyReports(
-            dailyReports.map((r) =>
-              r.id === editingReportId ? { ...r, ...updateData } : r,
-            ),
-          );
-          if (!isOffline)
-            await updateDailyReport(safeTeamId, editingReportId, updateData);
-          Alert.alert("修正完了", "振り返りを修正しました。");
-        } else {
-          const today = new Date();
-          const dateString = `${today.getFullYear()}/${String(today.getMonth() + 1).padStart(2, "0")}/${String(today.getDate()).padStart(2, "0")}`;
-          const newReport = {
-            id: "rep_" + Date.now().toString(),
-            date: dateString,
-            author: currentUser,
-            condition,
-            fatigue,
-            sleep,
-            isParticipating,
-            hasPain,
-            painDetails: painDetailsData,
-            practiceContent,
-            achievement,
-            goodPoint,
-            badPoint,
-            nextTask,
-            images,
-            memo,
-            highlightLink,
-            status: isOffline ? "pending" : "sent",
-            isReviewed: false,
-            isStarred: false,
-            isFollowUp: false,
-            sharedWith: "staff",
-            createdAt: Date.now(),
-            comments: [],
-          };
-          setDailyReports([newReport, ...dailyReports]);
-          if (!isOffline) await createDailyReport(safeTeamId, newReport);
-          Alert.alert("記録完了", "本日の振り返りを記録しました。");
-        }
-      } catch (error) {
-        console.log(error);
-      } finally {
-        setIsCreateModalVisible(false);
-        resetForm();
-        Keyboard.dismiss();
-        setIsLoading(false);
+      if (!isOffline) {
+        await updateDailyReport(safeTeamId, reportId, updates);
       }
-    }, 400);
+    } catch (error) {
+      console.log("Firestore更新エラー:", error);
+    }
+  };
+
+  const handleToggleStar = (reportId) => {
+    const report = dailyReports.find((d) => d.id === reportId);
+    const newVal = !report?.isStarred;
+    setDailyReports((prev) =>
+      prev.map((d) => (d.id === reportId ? { ...d, isStarred: newVal } : d)),
+    );
+    if (selectedReport && selectedReport.id === reportId)
+      setSelectedReport({ ...selectedReport, isStarred: newVal });
+    updateReportStatusAsync(reportId, { isStarred: newVal });
+  };
+
+  const handleToggleFollowUp = (reportId) => {
+    const report = dailyReports.find((d) => d.id === reportId);
+    const newVal = !report?.isFollowUp;
+    setDailyReports((prev) =>
+      prev.map((d) => (d.id === reportId ? { ...d, isFollowUp: newVal } : d)),
+    );
+    if (selectedReport && selectedReport.id === reportId)
+      setSelectedReport({ ...selectedReport, isFollowUp: newVal });
+    updateReportStatusAsync(reportId, { isFollowUp: newVal });
+  };
+
+  const handleChangeShareScope = (reportId) => {
+    const report = dailyReports.find((d) => d.id === reportId);
+    const isCurrentlyAll = report?.sharedWith === "all";
+
+    if (isCurrentlyAll) {
+      Alert.alert("共有範囲の変更", "スタッフのみの公開に戻しますか？", [
+        { text: "キャンセル", style: "cancel" },
+        {
+          text: "戻す",
+          onPress: () => {
+            setDailyReports((prev) =>
+              prev.map((d) =>
+                d.id === reportId ? { ...d, sharedWith: "staff" } : d,
+              ),
+            );
+            if (selectedReport && selectedReport.id === reportId)
+              setSelectedReport({ ...selectedReport, sharedWith: "staff" });
+            updateReportStatusAsync(reportId, { sharedWith: "staff" });
+          },
+        },
+      ]);
+    } else {
+      Alert.alert(
+        "共有範囲の変更",
+        "チーム全体に公開し、Home画面の「# 共有日記」に通知しますか？\n（※メディカル情報は非公開になります）",
+        [
+          { text: "キャンセル", style: "cancel" },
+          {
+            text: "公開する",
+            onPress: () => {
+              setDailyReports((prev) =>
+                prev.map((d) =>
+                  d.id === reportId ? { ...d, sharedWith: "all" } : d,
+                ),
+              );
+              if (selectedReport && selectedReport.id === reportId)
+                setSelectedReport({ ...selectedReport, sharedWith: "all" });
+
+              updateReportStatusAsync(reportId, { sharedWith: "all" });
+
+              const sharedPost = {
+                id: "post_shared_" + Date.now().toString(),
+                channel: "共有日記",
+                user: displayUserName,
+                content: `📢 ${report.author} の振り返りを共有します！\n\n【振り返り】\n${report.reflection || "未入力"}\n\n※詳細は振り返り画面から確認できます。`,
+                time: "たった今",
+                replyTo: null,
+                reactions: {},
+                attachments: [],
+                replies: [],
+                reported: [],
+                readCount: 0,
+                isPinned: false,
+                status: isOffline ? "pending" : "sent",
+              };
+              setPosts([sharedPost, ...posts]);
+            },
+          },
+        ],
+      );
+    }
+  };
+
+  const handleDiscardDraft = () => {
+    Alert.alert("確認", "下書きを破棄してリセットしますか？", [
+      { text: "キャンセル", style: "cancel" },
+      {
+        text: "破棄する",
+        style: "destructive",
+        onPress: () => {
+          resetForm();
+          setIsCreateModalVisible(false);
+        },
+      },
+    ]);
   };
 
   const resetForm = () => {
     setEditingReportId(null);
+    setReportDate(getTodayString());
     setCondition("良い");
     setFatigue(5);
-    setSleep("7h");
     setIsParticipating("通常");
     setHasPain(false);
     setPainPart("");
     setPainLevel(5);
     setSinceWhen("");
     setTreatment("");
-    setPracticeContent("");
+    setReflection("");
     setAchievement(3);
-    setGoodPoint("");
-    setBadPoint("");
-    setNextTask("");
     setImages([]);
     setMemo("");
     setHighlightLink("");
-    setShowMemoInput(false);
-    setShowLinkInput(false);
   };
 
-  const renderStars = (rating, onSelect = null) => (
-    <View style={styles.starsRow}>
-      {[1, 2, 3, 4, 5].map((num) => (
-        <TouchableOpacity
-          key={num}
-          disabled={!onSelect}
-          onPress={() => onSelect && onSelect(num)}
-        >
-          <Text
-            style={[
-              styles.star,
-              { color: num <= rating ? "#f1c40f" : "#e0e0e0" },
-            ]}
-          >
-            ★
-          </Text>
-        </TouchableOpacity>
-      ))}
-    </View>
-  );
+  const handleCreateOrEditReport = async () => {
+    if (!reportDate.trim()) {
+      Alert.alert("入力エラー", "対象日を選択してください。");
+      return;
+    }
+    if (hasPain && !painPart.trim()) {
+      Alert.alert("入力エラー", "痛む部位を入力してください。");
+      return;
+    }
 
-  // ★ 日付ごとの平均疲労度グラフを表示するコンポーネント
-  const TeamFatigueGraph = ({ reports }) => {
-    const avg = useMemo(() => {
-      if (reports.length === 0) return 0;
-      const total = reports.reduce(
-        (sum, r) => sum + (Number(r.fatigue) || 0),
-        0,
-      );
-      return (total / reports.length).toFixed(1);
-    }, [reports]);
+    setIsLoading(true);
+    const safeTeamId = activeTeamId || "test_team";
 
+    try {
+      const painDetailsData = hasPain
+        ? { part: painPart, level: painLevel, sinceWhen, treatment }
+        : null;
+
+      if (editingReportId) {
+        const updateData = {
+          date: reportDate,
+          condition,
+          fatigue,
+          isParticipating,
+          hasPain,
+          painDetails: painDetailsData,
+          reflection,
+          achievement,
+          images,
+          memo,
+          highlightLink,
+          status: isOffline ? "pending" : "sent",
+        };
+
+        const updated = dailyReports.map((r) => {
+          if (r.id === editingReportId) return { ...r, ...updateData };
+          return r;
+        });
+        setDailyReports(updated);
+
+        if (!isOffline) {
+          await updateDailyReport(safeTeamId, editingReportId, updateData);
+        }
+        Alert.alert("修正完了", "振り返りを修正しました。");
+      } else {
+        const newReport = {
+          id: "rep_" + Date.now().toString(),
+          date: reportDate,
+          author: currentUser,
+          condition,
+          fatigue,
+          isParticipating,
+          hasPain,
+          painDetails: painDetailsData,
+          reflection,
+          achievement,
+          images,
+          memo,
+          highlightLink,
+          status: isOffline ? "pending" : "sent",
+          isReviewed: false,
+          isStarred: false,
+          isFollowUp: false,
+          sharedWith: "staff",
+          createdAt: Date.now(),
+          comments: [],
+        };
+
+        setDailyReports([newReport, ...dailyReports]);
+
+        if (!isOffline) {
+          await createDailyReport(safeTeamId, newReport);
+        }
+        Alert.alert("提出完了", "振り返りを提出しました。");
+      }
+    } catch (error) {
+      console.log("Firestore保存エラー:", error);
+      Alert.alert("エラー", "データの保存に失敗しました。");
+    } finally {
+      setIsLoading(false);
+      setIsCreateModalVisible(false);
+      resetForm();
+      Keyboard.dismiss();
+    }
+  };
+
+  const handleOpenEdit = () => {
+    if (!selectedReport) return;
+    setEditingReportId(selectedReport.id);
+
+    setReportDate(selectedReport.date || getTodayString());
+    setCondition(selectedReport.condition || "良い");
+    setFatigue(
+      selectedReport.fatigue !== undefined ? selectedReport.fatigue : 5,
+    );
+    setIsParticipating(selectedReport.isParticipating || "通常");
+    setHasPain(selectedReport.hasPain || false);
+    if (selectedReport.painDetails) {
+      setPainPart(selectedReport.painDetails.part || "");
+      setPainLevel(selectedReport.painDetails.level || 5);
+      setSinceWhen(selectedReport.painDetails.sinceWhen || "");
+      setTreatment(selectedReport.painDetails.treatment || "");
+    }
+
+    setReflection(selectedReport.reflection || "");
+    setAchievement(selectedReport.achievement || 3);
+
+    setImages(selectedReport.images || []);
+    setMemo(selectedReport.memo || "");
+    setHighlightLink(selectedReport.highlightLink || "");
+
+    setIsCreateModalVisible(true);
+    setSelectedReport(null);
+  };
+
+  const handleDeleteReport = (report) => {
+    const isMe = report.author === currentUser;
+    Alert.alert(
+      isMe ? "日報の削除" : "日報の強制削除",
+      isMe
+        ? "この日報を削除しますか？\n（この操作は取り消せません）"
+        : `${report.author} の日報を完全に削除しますか？`,
+      [
+        { text: "キャンセル", style: "cancel" },
+        {
+          text: "削除する",
+          style: "destructive",
+          onPress: async () => {
+            const reportId = report.id;
+            setDailyReports((prev) =>
+              prev.map((r) =>
+                r.id === reportId ? { ...r, status: "deleted" } : r,
+              ),
+            );
+            if (selectedReport && selectedReport.id === reportId) {
+              setSelectedReport(null);
+            }
+            try {
+              const safeTeamId = activeTeamId || "test_team";
+              await deleteDailyReport(safeTeamId, reportId);
+            } catch (error) {
+              console.log("Firestore削除エラー:", error);
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  const handleSendComment = async () => {
+    if (commentText.trim() === "") return;
+    setIsLoading(true);
+
+    try {
+      const newComment = {
+        id: "c_" + Date.now().toString(),
+        user: displayUserName,
+        text: commentText,
+        time: "たった今",
+        status: isOffline ? "pending" : "sent",
+      };
+
+      const isStaffComment = isStaffOrAbove;
+      const newComments = [...selectedReport.comments, newComment];
+
+      const updated = dailyReports.map((r) => {
+        if (r.id === selectedReport.id) {
+          return {
+            ...r,
+            comments: newComments,
+            isReviewed: isStaffComment ? true : r.isReviewed,
+          };
+        }
+        return r;
+      });
+      setDailyReports(updated);
+
+      setSelectedReport((prev) => ({
+        ...prev,
+        isReviewed: isStaffComment ? true : prev.isReviewed,
+        comments: newComments,
+      }));
+
+      setCommentText("");
+      Keyboard.dismiss();
+
+      const safeTeamId = activeTeamId || "test_team";
+      if (!isOffline) {
+        await updateDailyReport(safeTeamId, selectedReport.id, {
+          comments: newComments,
+          isReviewed: isStaffComment ? true : selectedReport.isReviewed,
+        });
+      }
+    } catch (e) {
+      console.log("コメント送信エラー:", e);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleMarkAsReviewed = () => {
+    const updated = dailyReports.map((r) => {
+      if (r.id === selectedReport.id) return { ...r, isReviewed: true };
+      return r;
+    });
+    setDailyReports(updated);
+    setSelectedReport((prev) => ({ ...prev, isReviewed: true }));
+    updateReportStatusAsync(selectedReport.id, { isReviewed: true });
+  };
+
+  const renderStars = (rating, onSelect = null) => {
     return (
-      <View style={styles.graphContainer}>
-        <View
-          style={{
-            flexDirection: "row",
-            justifyContent: "space-between",
-            marginBottom: 5,
-          }}
-        >
-          <Text style={styles.graphLabel}>
-            チーム平均疲労度:{" "}
-            <Text style={{ fontWeight: "bold", fontSize: 16 }}>{avg}</Text> / 10
-          </Text>
-          <Text style={styles.graphLabel}>提出: {reports.length}人</Text>
-        </View>
-        <View style={styles.graphBarBackground}>
-          <View
-            style={[
-              styles.graphBarFill,
-              {
-                width: `${(avg / 10) * 100}%`,
-                backgroundColor:
-                  avg >= alertThresholds.fatigueDanger
-                    ? COLORS.danger
-                    : avg >= alertThresholds.fatigueWarning
-                      ? COLORS.secondary
-                      : COLORS.success,
-              },
-            ]}
-          />
-        </View>
-        <View style={styles.graphScale}>
-          <Text style={styles.graphScaleText}>0 (快調)</Text>
-          <Text style={styles.graphScaleText}>5</Text>
-          <Text style={styles.graphScaleText}>10 (限界)</Text>
-        </View>
+      <View style={styles.starsRow}>
+        {[1, 2, 3, 4, 5].map((num) => (
+          <TouchableOpacity
+            key={num}
+            disabled={!onSelect}
+            onPress={() => onSelect && onSelect(num)}
+          >
+            <Text
+              style={[
+                styles.star,
+                { color: num <= rating ? "#f1c40f" : "#e0e0e0" },
+              ]}
+            >
+              ★
+            </Text>
+          </TouchableOpacity>
+        ))}
       </View>
     );
   };
+
+  const recentDates = useMemo(() => {
+    const dates = [];
+    const today = new Date();
+    for (let i = 0; i < 30; i++) {
+      const d = new Date(today);
+      d.setDate(today.getDate() - i);
+      const dateStr = `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
+      let label = dateStr;
+      if (i === 0) label += " (今日)";
+      else if (i === 1) label += " (昨日)";
+      dates.push({ value: dateStr, label });
+    }
+    if (reportDate && !dates.some((d) => d.value === reportDate)) {
+      dates.unshift({
+        value: reportDate,
+        label: `${reportDate} (記録時の日付)`,
+      });
+    }
+    return dates;
+  }, [reportDate]);
+
+  const unreviewedCount = isStaffOrAbove
+    ? processedReports.filter((d) => !d.isReviewed).length
+    : 0;
+  const needsReplyCount = isStaffOrAbove
+    ? processedReports.filter(
+        (d) =>
+          d.comments.filter((c) =>
+            ["監督", "コーチ", "アシスタント", "管理者"].some((role) =>
+              c.user.includes(role),
+            ),
+          ).length === 0,
+      ).length
+    : 0;
 
   return (
     <SafeAreaView style={styles.container}>
@@ -474,23 +687,10 @@ const DiaryScreen = ({
           <Text style={styles.backButtonText}>◁ ホーム</Text>
         </TouchableOpacity>
         <Text style={styles.headerTitle}>
-          {isOffline ? "⚠️ オフライン" : "📝 振り返り（日報）"}
+          {isOffline ? "オフライン" : "📝 振り返り（日報）"}
         </Text>
         <View style={styles.headerRight} />
       </View>
-
-      {isOffline && (
-        <View style={styles.offlineBanner}>
-          <ActivityIndicator
-            size="small"
-            color="#fff"
-            style={{ marginRight: 8 }}
-          />
-          <Text style={styles.offlineBannerText}>
-            現在オフラインです。通信復旧時に自動同期されます。
-          </Text>
-        </View>
-      )}
 
       {isStaffOrAbove && (
         <View style={styles.adminDashboard}>
@@ -509,32 +709,83 @@ const DiaryScreen = ({
             style={styles.tabScroll}
             contentContainerStyle={{ paddingHorizontal: 15 }}
           >
-            {["all", "unread", "danger", "needs_followup", "starred"].map(
-              (tab) => (
-                <TouchableOpacity
-                  key={tab}
-                  onPress={() => setActiveTab(tab)}
-                  style={[styles.tabBtn, activeTab === tab && styles.tabActive]}
-                >
-                  <Text
-                    style={[
-                      styles.tabText,
-                      activeTab === tab && styles.tabTextActive,
-                    ]}
-                  >
-                    {tab === "all"
-                      ? "すべて"
-                      : tab === "unread"
-                        ? `未読 (${unreviewedCount})`
-                        : tab === "danger"
-                          ? "🚨 危険"
-                          : tab === "needs_followup"
-                            ? `🚩 要フォロー (${needsFollowUpCount})`
-                            : "⭐ スター"}
-                  </Text>
-                </TouchableOpacity>
-              ),
-            )}
+            <TouchableOpacity
+              onPress={() => setActiveTab("all")}
+              style={[styles.tabBtn, activeTab === "all" && styles.tabActive]}
+            >
+              <Text
+                style={[
+                  styles.tabText,
+                  activeTab === "all" && styles.tabTextActive,
+                ]}
+              >
+                すべて
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => setActiveTab("unread")}
+              style={[
+                styles.tabBtn,
+                activeTab === "unread" && styles.tabActive,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.tabText,
+                  activeTab === "unread" && styles.tabTextActive,
+                ]}
+              >
+                未読 ({unreviewedCount})
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => setActiveTab("danger")}
+              style={[
+                styles.tabBtn,
+                activeTab === "danger" && { borderBottomColor: "#c0392b" },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.tabText,
+                  activeTab === "danger" && { color: "#c0392b" },
+                ]}
+              >
+                🚨 危険
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => setActiveTab("needs_reply")}
+              style={[
+                styles.tabBtn,
+                activeTab === "needs_reply" && styles.tabActive,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.tabText,
+                  activeTab === "needs_reply" && styles.tabTextActive,
+                ]}
+              >
+                要返信 ({needsReplyCount})
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => setActiveTab("starred")}
+              style={[
+                styles.tabBtn,
+                activeTab === "starred" && styles.tabActive,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.tabText,
+                  activeTab === "starred" && styles.tabTextActive,
+                ]}
+              >
+                ⭐ スター
+              </Text>
+            </TouchableOpacity>
           </ScrollView>
         </View>
       )}
@@ -543,13 +794,27 @@ const DiaryScreen = ({
         style={styles.content}
         contentContainerStyle={{ paddingBottom: 100 }}
       >
-        {sortedDates.length === 0 ? (
+        {displayDates.length === 0 ? (
           <Text style={styles.emptyText}>データがありません。</Text>
         ) : (
-          sortedDates.map((date, index) => {
-            const reportsInDate = groupedReports[date];
+          displayDates.map((date, index) => {
+            const reportsInDate = groupedReports[date] || [];
             const expanded = isExpanded(date, index);
             const hasUnreviewed = reportsInDate.some((d) => !d.isReviewed);
+
+            // リストに表示するメンバーの決定（管理者向け）
+            let membersToRender = [];
+            if (isStaffOrAbove && activeTab === "all" && searchQuery === "") {
+              const actualSubmitters = reportsInDate.map((r) => r.author);
+              // targetPlayers と actualSubmitters の両方を統合して表示
+              membersToRender = Array.from(
+                new Set([...targetPlayers, ...actualSubmitters]),
+              );
+            } else {
+              membersToRender = Array.from(
+                new Set(reportsInDate.map((r) => r.author)),
+              );
+            }
 
             return (
               <View key={date} style={styles.dateGroupContainer}>
@@ -559,8 +824,9 @@ const DiaryScreen = ({
                   activeOpacity={0.7}
                 >
                   <Text style={styles.dateHeaderText}>
-                    {expanded ? "▼" : "▶"} {date} ── [ {reportsInDate.length}件
-                    ]
+                    {expanded ? "▼" : "▶"} {date}
+                    {isStaffOrAbove &&
+                      ` ── [ 提出 ${reportsInDate.length} / ${targetPlayers.length} 名 ]`}
                   </Text>
                   {hasUnreviewed && isStaffOrAbove && (
                     <View style={styles.unreadAlertBadge}>
@@ -569,100 +835,205 @@ const DiaryScreen = ({
                   )}
                 </TouchableOpacity>
 
-                {expanded && (
-                  <View style={styles.expandedSection}>
-                    {/* ★ 管理者の場合、その日付のトップに平均グラフを表示 */}
-                    {isStaffOrAbove && (
-                      <TeamFatigueGraph reports={reportsInDate} />
-                    )}
+                {expanded &&
+                  (isStaffOrAbove ? (
+                    // ★ 管理者向け：1行のコンパクトなリスト表示
+                    <View style={styles.memberList}>
+                      {membersToRender.map((memberName) => {
+                        const report = reportsInDate.find(
+                          (r) => r.author === memberName,
+                        );
+                        const isMissing = !report;
+                        const isReviewed = report?.isReviewed;
+                        const alertLevel = report
+                          ? getAlertLevel(report)
+                          : "normal";
 
-                    {reportsInDate.map((report) => {
-                      const alertLevel = getAlertLevel(report);
-                      const isPending = report.status === "pending";
-                      return (
-                        <TouchableOpacity
-                          key={report.id}
-                          style={[
-                            styles.card,
-                            isPending && styles.pendingCard,
-                            isStaffOrAbove &&
-                              alertLevel === "danger" &&
-                              styles.dangerCard,
-                            isStaffOrAbove &&
-                              alertLevel === "warning" &&
-                              styles.warningCard,
-                          ]}
-                          activeOpacity={0.9}
-                          onPress={() => setSelectedReport(report)}
-                        >
-                          <View style={styles.cardHeader}>
-                            <Text style={styles.cardAuthorLarge}>
-                              {isStaffOrAbove || report.author !== currentUser
-                                ? `👤 ${report.author}`
-                                : `👤 自分`}
-                            </Text>
-                            <View
-                              style={{
-                                flexDirection: "row",
-                                alignItems: "center",
-                              }}
-                            >
-                              {isPending && (
-                                <Text style={styles.pendingText}>🕒待機中</Text>
-                              )}
-                              {report.sharedWith === "all" && (
-                                <Text style={styles.badgeShared}>📢 共有</Text>
-                              )}
-                              {report.isFollowUp && (
-                                <Text style={{ fontSize: 14, marginRight: 5 }}>
-                                  📌
+                        let tabStyle = styles.tabMissing;
+                        let textStyle = styles.tabTextMissing;
+
+                        if (!isMissing) {
+                          if (isReviewed) {
+                            tabStyle = styles.tabReviewed;
+                            textStyle = styles.tabTextReviewed;
+                          } else {
+                            tabStyle = styles.tabSubmitted;
+                            textStyle = styles.tabTextSubmitted;
+                          }
+
+                          if (alertLevel === "danger") {
+                            tabStyle = [
+                              tabStyle,
+                              {
+                                borderColor: "#c0392b",
+                                backgroundColor: "#fff5f5",
+                              },
+                            ];
+                            textStyle = [textStyle, { color: "#c0392b" }];
+                          } else if (alertLevel === "warning") {
+                            tabStyle = [
+                              tabStyle,
+                              {
+                                borderColor: "#f39c12",
+                                backgroundColor: "#fffdf5",
+                              },
+                            ];
+                            textStyle = [textStyle, { color: "#f39c12" }];
+                          }
+                        }
+
+                        return (
+                          <TouchableOpacity
+                            key={memberName}
+                            style={[styles.compactRow, tabStyle]}
+                            activeOpacity={0.7}
+                            onPress={() => {
+                              if (report) {
+                                setSelectedReport(report);
+                              } else {
+                                Alert.alert(
+                                  "未提出",
+                                  `${memberName} はこの日の振り返りをまだ提出していません。`,
+                                );
+                              }
+                            }}
+                            onLongPress={() => {
+                              if (report) handleDeleteReport(report);
+                            }}
+                            delayLongPress={500}
+                          >
+                            <View style={styles.compactRowLeft}>
+                              <Text
+                                style={[styles.compactRowText, textStyle]}
+                                numberOfLines={1}
+                              >
+                                👤 {memberName}
+                              </Text>
+                              {!isMissing && report.comments?.length > 0 && (
+                                <Text style={styles.compactCommentCount}>
+                                  💬 {report.comments.length}
                                 </Text>
                               )}
-                              {report.isStarred && (
-                                <Text style={{ fontSize: 14, marginRight: 5 }}>
-                                  ⭐
+                            </View>
+
+                            {isMissing ? (
+                              <Text style={styles.missingBadgeText}>
+                                未提出
+                              </Text>
+                            ) : (
+                              <View style={styles.compactRowIcons}>
+                                {report.hasPain && (
+                                  <Text style={styles.miniIcon}>🤕</Text>
+                                )}
+                                {report.sharedWith === "all" && (
+                                  <Text style={styles.miniIcon}>📢</Text>
+                                )}
+                                {report.isStarred && (
+                                  <Text style={styles.miniIcon}>⭐</Text>
+                                )}
+                                {isReviewed ? (
+                                  <Text style={styles.miniIcon}>✅</Text>
+                                ) : (
+                                  <View style={styles.badgeUnreviewedMini}>
+                                    <Text
+                                      style={styles.badgeUnreviewedMiniText}
+                                    >
+                                      未確認
+                                    </Text>
+                                  </View>
+                                )}
+                              </View>
+                            )}
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  ) : (
+                    // ★ 部員向け：今まで通りの大きなカード表示
+                    <View>
+                      {reportsInDate.map((report) => {
+                        const alertLevel = getAlertLevel(report);
+                        return (
+                          <TouchableOpacity
+                            key={report.id}
+                            style={[
+                              styles.card,
+                              report.status === "pending" && styles.pendingCard,
+                            ]}
+                            activeOpacity={0.9}
+                            onPress={() => setSelectedReport(report)}
+                          >
+                            <View style={styles.cardHeader}>
+                              <Text style={styles.cardAuthorLarge}>
+                                👤 自分
+                              </Text>
+                              <View
+                                style={{
+                                  flexDirection: "row",
+                                  alignItems: "center",
+                                }}
+                              >
+                                {report.sharedWith === "all" && (
+                                  <Text style={styles.badgeShared}>
+                                    📢 共有
+                                  </Text>
+                                )}
+                                {report.isStarred && (
+                                  <Text
+                                    style={{ fontSize: 14, marginRight: 5 }}
+                                  >
+                                    ⭐
+                                  </Text>
+                                )}
+                                {report.isReviewed ? (
+                                  <Text style={styles.badgeReviewed}>✅</Text>
+                                ) : (
+                                  <Text style={styles.badgeUnreviewed}>
+                                    未確認
+                                  </Text>
+                                )}
+                              </View>
+                            </View>
+
+                            {report.condition && (
+                              <View style={styles.miniMedicalRow}>
+                                <Text style={styles.miniMedicalText}>
+                                  体調: {report.condition}
                                 </Text>
-                              )}
-                              <Text
-                                style={
-                                  report.isReviewed
-                                    ? styles.badgeReviewed
-                                    : styles.badgeUnreviewed
-                                }
-                              >
-                                {report.isReviewed ? "✅" : "未確認"}
-                              </Text>
-                            </View>
-                          </View>
-                          {report.condition && (
-                            <View style={styles.miniMedicalRow}>
-                              <Text style={styles.miniMedicalText}>
-                                体調: {report.condition}
-                              </Text>
-                              <Text style={styles.miniMedicalText}>
-                                疲労: {report.fatigue}/10
+                                <Text style={styles.miniMedicalText}>
+                                  疲労: {report.fatigue}/10
+                                </Text>
+                                <Text
+                                  style={[
+                                    styles.miniMedicalText,
+                                    report.hasPain && { color: "#c0392b" },
+                                  ]}
+                                >
+                                  ケガ: {report.hasPain ? "あり" : "なし"}
+                                </Text>
+                              </View>
+                            )}
+
+                            <View style={styles.cardSection}>
+                              <Text style={styles.sectionLabel}>
+                                📝 振り返り
                               </Text>
                               <Text
-                                style={[
-                                  styles.miniMedicalText,
-                                  report.hasPain && { color: COLORS.danger },
-                                ]}
+                                style={styles.sectionText}
+                                numberOfLines={1}
                               >
-                                ケガ: {report.hasPain ? "あり" : "なし"}
+                                {report.reflection || "（未入力）"}
                               </Text>
                             </View>
-                          )}
-                          <View style={styles.cardSection}>
-                            <Text style={styles.sectionLabel}>🏃 練習内容</Text>
-                            <Text style={styles.sectionText} numberOfLines={1}>
-                              {report.practiceContent || "（未入力）"}
+
+                            <Text style={styles.commentCountText}>
+                              💬 やり取り：{report.comments?.length || 0}件
                             </Text>
-                          </View>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
-                )}
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  ))}
               </View>
             );
           })
@@ -671,10 +1042,7 @@ const DiaryScreen = ({
 
       {["member", "captain"].includes(userRole) && (
         <TouchableOpacity
-          style={[
-            styles.fab,
-            isOffline && { backgroundColor: COLORS.secondary },
-          ]}
+          style={[styles.fab, isOffline && { backgroundColor: "#f39c12" }]}
           onPress={() => {
             resetForm();
             setIsCreateModalVisible(true);
@@ -684,13 +1052,6 @@ const DiaryScreen = ({
         </TouchableOpacity>
       )}
 
-      {isLoading && (
-        <View style={styles.globalLoadingOverlay}>
-          <ActivityIndicator size="large" color={COLORS.primary} />
-          <Text style={styles.globalLoadingText}>処理中...</Text>
-        </View>
-      )}
-
       {/* 詳細表示モーダル */}
       <Modal
         visible={selectedReport !== null}
@@ -698,127 +1059,628 @@ const DiaryScreen = ({
         animationType="slide"
       >
         <SafeAreaView style={styles.modalSafeArea}>
-          <View style={styles.detailContainer}>
-            <View style={styles.detailHeader}>
-              <TouchableOpacity onPress={() => setSelectedReport(null)}>
-                <Text style={styles.closeBtn}>◁ 戻る</Text>
-              </TouchableOpacity>
-              <Text style={styles.createHeaderTitle}>
-                {selectedReport?.author} の日報
-              </Text>
-              <View style={{ width: 60 }} />
-            </View>
-            <ScrollView style={styles.detailScroll}>
-              <View style={styles.detailCard}>
-                <Text style={styles.cardDate}>{selectedReport?.date}</Text>
-                <View style={styles.cardSection}>
-                  <Text style={styles.sectionLabel}>🏃 練習内容</Text>
-                  <Text style={styles.sectionText}>
-                    {selectedReport?.practiceContent || "（未入力）"}
-                  </Text>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            style={{ flex: 1 }}
+          >
+            <View style={styles.detailContainer}>
+              <View style={styles.detailHeader}>
+                <TouchableOpacity onPress={() => setSelectedReport(null)}>
+                  <Text style={styles.closeBtn}>◁ 戻る</Text>
+                </TouchableOpacity>
+                <Text style={styles.createHeaderTitle}>
+                  {selectedReport?.author} の日報
+                </Text>
+                {isStaffOrAbove ? (
+                  <TouchableOpacity
+                    onPress={() => handleToggleStar(selectedReport.id)}
+                  >
+                    <Text style={{ fontSize: 20 }}>
+                      {selectedReport?.isStarred ? "⭐" : "☆"}
+                    </Text>
+                  </TouchableOpacity>
+                ) : (
+                  <View style={{ width: 60 }} />
+                )}
+              </View>
+
+              {isStaffOrAbove && selectedReport && (
+                <View style={styles.actionToolbarWrapper}>
+                  <TouchableOpacity
+                    onPress={() => handleToggleStar(selectedReport.id)}
+                    style={[
+                      styles.actionBtn,
+                      selectedReport.isStarred && styles.actionBtnActive,
+                    ]}
+                  >
+                    <Text style={styles.actionBtnText}>
+                      {selectedReport.isStarred ? "⭐ スター済" : "☆ スター"}
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => handleToggleFollowUp(selectedReport.id)}
+                    style={[
+                      styles.actionBtn,
+                      selectedReport.isFollowUp && styles.actionBtnActive,
+                    ]}
+                  >
+                    <Text style={styles.actionBtnText}>
+                      {selectedReport.isFollowUp
+                        ? "📌 フォロー中"
+                        : "🚩 要フォロー"}
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => handleChangeShareScope(selectedReport.id)}
+                    style={[
+                      styles.actionBtn,
+                      selectedReport.sharedWith === "all" &&
+                        styles.actionBtnActive,
+                    ]}
+                  >
+                    <Text style={styles.actionBtnText}>
+                      👁️ 共有:{" "}
+                      {selectedReport.sharedWith === "all"
+                        ? "全体"
+                        : "スタッフのみ"}
+                    </Text>
+                  </TouchableOpacity>
                 </View>
-                <View style={styles.cardSection}>
-                  <Text style={styles.sectionLabel}>📈 今日の達成度</Text>
-                  {renderStars(selectedReport?.achievement || 0)}
-                </View>
-                <View style={styles.cardSection}>
-                  <Text style={styles.sectionLabel}>✨ 良かった点</Text>
-                  <Text style={styles.sectionText}>
-                    {selectedReport?.goodPoint || "なし"}
-                  </Text>
-                </View>
-                <View style={styles.cardSection}>
-                  <Text style={styles.sectionLabel}>🤔 改善点</Text>
-                  <Text style={styles.sectionText}>
-                    {selectedReport?.badPoint || "なし"}
-                  </Text>
+              )}
+
+              {selectedReport &&
+                (() => {
+                  const isMyReport =
+                    currentUser === selectedReport.author &&
+                    ["member", "captain"].includes(userRole);
+                  const timeElapsed =
+                    Date.now() - (selectedReport.createdAt || Date.now());
+                  const isEditable =
+                    timeElapsed < 30 * 60 * 1000 && !selectedReport.isReviewed;
+
+                  return (
+                    <ScrollView
+                      style={styles.detailScroll}
+                      contentContainerStyle={{ paddingBottom: 30 }}
+                    >
+                      {selectedReport.sharedWith === "all" &&
+                        !isMyReport &&
+                        !isStaffOrAbove && (
+                          <View style={styles.sharedBanner}>
+                            <Text style={styles.sharedBannerText}>
+                              📢 この振り返りはチーム全体に共有されています
+                            </Text>
+                          </View>
+                        )}
+
+                      <View style={styles.detailCard}>
+                        <View style={styles.cardHeader}>
+                          <Text style={styles.cardDate}>
+                            {selectedReport.date}
+                          </Text>
+                          <View
+                            style={{
+                              flexDirection: "row",
+                              alignItems: "center",
+                            }}
+                          >
+                            {isStaffOrAbove && !selectedReport.isReviewed && (
+                              <TouchableOpacity
+                                style={styles.markReviewedBtn}
+                                onPress={handleMarkAsReviewed}
+                              >
+                                <Text style={styles.markReviewedBtnText}>
+                                  ✅ 確認済にする
+                                </Text>
+                              </TouchableOpacity>
+                            )}
+                            {isMyReport && isEditable && (
+                              <View style={styles.editActionRow}>
+                                <TouchableOpacity
+                                  style={styles.editBtn}
+                                  onPress={handleOpenEdit}
+                                >
+                                  <Text style={styles.editBtnText}>
+                                    ✏️ 修正
+                                  </Text>
+                                </TouchableOpacity>
+                              </View>
+                            )}
+                          </View>
+                        </View>
+
+                        {/* 日記詳細エリア */}
+                        <View style={styles.cardSection}>
+                          <Text style={styles.sectionLabel}>📝 振り返り</Text>
+                          <Text style={styles.sectionText}>
+                            {selectedReport.reflection || "（未入力）"}
+                          </Text>
+                        </View>
+                        <View style={styles.cardSection}>
+                          <Text style={styles.sectionLabel}>
+                            📈 今日の達成度
+                          </Text>
+                          {renderStars(selectedReport.achievement)}
+                        </View>
+
+                        {(selectedReport.memo ||
+                          selectedReport.images?.length > 0 ||
+                          selectedReport.highlightLink) && (
+                          <View style={styles.cardSection}>
+                            <Text
+                              style={[
+                                styles.sectionLabel,
+                                { color: "#f39c12" },
+                              ]}
+                            >
+                              📎 添付・メモ
+                            </Text>
+                            {selectedReport.memo ? (
+                              <Text style={styles.sectionText}>
+                                {selectedReport.memo}
+                              </Text>
+                            ) : null}
+                          </View>
+                        )}
+
+                        {/* メディカル詳細エリア */}
+                        {selectedReport.condition && (
+                          <View style={styles.medicalDetailBox}>
+                            <Text style={styles.medicalDetailTitle}>
+                              🏥 コンディション
+                            </Text>
+                            <View style={styles.detailGrid}>
+                              <View style={styles.gridItem}>
+                                <Text style={styles.gridTitle}>体調</Text>
+                                <Text style={styles.gridValue}>
+                                  {selectedReport.condition}
+                                </Text>
+                              </View>
+                              <View style={styles.gridItem}>
+                                <Text style={styles.gridTitle}>疲労度</Text>
+                                <Text style={styles.gridValue}>
+                                  {selectedReport.fatigue} / 10
+                                </Text>
+                              </View>
+                              <View style={styles.gridItem}>
+                                <Text style={styles.gridTitle}>
+                                  今後の練習可否
+                                </Text>
+                                <Text
+                                  style={[
+                                    styles.gridValue,
+                                    selectedReport.isParticipating !==
+                                      "通常" && { color: "#e74c3c" },
+                                  ]}
+                                >
+                                  {selectedReport.isParticipating}
+                                </Text>
+                              </View>
+                            </View>
+                            {selectedReport.hasPain &&
+                              selectedReport.painDetails && (
+                                <View style={styles.painDetailBox}>
+                                  <Text style={styles.painDetailTitle}>
+                                    🤕 ケガ・痛みの詳細
+                                  </Text>
+                                  <Text style={styles.painDetailText}>
+                                    部位：{selectedReport.painDetails.part}{" "}
+                                    (痛さ: {selectedReport.painDetails.level}
+                                    /10)
+                                  </Text>
+                                  <Text style={styles.painDetailText}>
+                                    いつから：
+                                    {selectedReport.painDetails.sinceWhen ||
+                                      "未入力"}
+                                  </Text>
+                                  <Text style={styles.painDetailText}>
+                                    処置：
+                                    {selectedReport.painDetails.treatment ||
+                                      "未入力"}
+                                  </Text>
+                                </View>
+                              )}
+                          </View>
+                        )}
+                      </View>
+
+                      <Text style={styles.threadTitle}>
+                        💬 コーチとのやり取り
+                      </Text>
+                      <View style={styles.threadArea}>
+                        {selectedReport.comments.map((c) => {
+                          const isMe = c.user === displayUserName;
+                          return (
+                            <View
+                              key={c.id}
+                              style={[
+                                styles.commentBubbleWrapper,
+                                isMe
+                                  ? styles.commentBubbleRight
+                                  : styles.commentBubbleLeft,
+                              ]}
+                            >
+                              {!isMe && (
+                                <View style={styles.commentAvatar}>
+                                  <Text style={styles.commentAvatarText}>
+                                    {c.user.charAt(0)}
+                                  </Text>
+                                </View>
+                              )}
+                              <View style={styles.commentContentBox}>
+                                {!isMe && (
+                                  <Text style={styles.commentUserName}>
+                                    {c.user}
+                                  </Text>
+                                )}
+                                <View
+                                  style={[
+                                    styles.commentBubble,
+                                    isMe
+                                      ? styles.commentBubbleMe
+                                      : styles.commentBubbleOther,
+                                  ]}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.commentText,
+                                      isMe && { color: "#fff" },
+                                    ]}
+                                  >
+                                    {c.text}
+                                  </Text>
+                                </View>
+                              </View>
+                            </View>
+                          );
+                        })}
+                      </View>
+                    </ScrollView>
+                  );
+                })()}
+
+              <View
+                style={{
+                  backgroundColor: "#fff",
+                  borderTopWidth: 1,
+                  borderTopColor: "#eee",
+                }}
+              >
+                {isStaffOrAbove && (
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    style={styles.templateScroll}
+                    contentContainerStyle={{ padding: 10 }}
+                  >
+                    {REPLY_TEMPLATES.map((tmp, idx) => (
+                      <TouchableOpacity
+                        key={idx}
+                        style={styles.templateBtn}
+                        onPress={() =>
+                          setCommentText((prev) => prev + tmp.text)
+                        }
+                      >
+                        <Text style={styles.templateBtnText}>{tmp.label}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                )}
+                <View style={[styles.commentInputArea, { borderTopWidth: 0 }]}>
+                  <TextInput
+                    style={styles.commentInput}
+                    placeholder="メッセージを入力..."
+                    value={commentText}
+                    onChangeText={setCommentText}
+                    multiline
+                  />
+                  <TouchableOpacity
+                    style={styles.sendButton}
+                    onPress={handleSendComment}
+                  >
+                    <Text style={styles.sendButtonText}>送信</Text>
+                  </TouchableOpacity>
                 </View>
               </View>
-            </ScrollView>
-          </View>
+            </View>
+          </KeyboardAvoidingView>
         </SafeAreaView>
       </Modal>
 
-      {/* 作成モーダル */}
+      {/* 新規作成・編集モーダル（統合フォーム） */}
       <Modal
         visible={isCreateModalVisible}
         transparent={true}
         animationType="slide"
       >
         <SafeAreaView style={styles.modalSafeArea}>
-          <View style={styles.createContainer}>
-            <View style={styles.detailHeader}>
-              <TouchableOpacity onPress={() => setIsCreateModalVisible(false)}>
-                <Text style={styles.closeBtn}>✕ 閉じる</Text>
-              </TouchableOpacity>
-              <Text style={styles.createHeaderTitle}>振り返りの入力</Text>
-              <View style={{ width: 60 }} />
-            </View>
-            <ScrollView style={styles.createScroll}>
-              <View style={styles.formSection}>
-                <Text style={styles.inputLabel}>🏃 練習内容</Text>
-                <TextInput
-                  style={styles.inputSingle}
-                  value={practiceContent}
-                  onChangeText={setPracticeContent}
-                />
-                <Text style={styles.inputLabel}>📈 達成度</Text>
-                {renderStars(achievement, setAchievement)}
-                <Text style={styles.inputLabel}>🔋 疲労度 (0-10)</Text>
-                <ScaleSelector
-                  selected={fatigue}
-                  onSelect={setFatigue}
-                  color={COLORS.secondary}
-                />
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            style={{ flex: 1 }}
+          >
+            <View style={styles.createContainer}>
+              <View style={styles.detailHeader}>
                 <TouchableOpacity
-                  style={styles.submitButton}
+                  onPress={() => {
+                    setIsCreateModalVisible(false);
+                    setEditingReportId(null);
+                  }}
+                >
+                  <Text style={styles.closeBtn}>✕ 閉じる</Text>
+                </TouchableOpacity>
+                <Text style={styles.createHeaderTitle}>
+                  {editingReportId ? "振り返りの修正" : "本日の振り返り"}
+                </Text>
+                {!editingReportId ? (
+                  <TouchableOpacity onPress={handleDiscardDraft}>
+                    <Text style={[styles.closeBtn, { color: "#e74c3c" }]}>
+                      破棄
+                    </Text>
+                  </TouchableOpacity>
+                ) : (
+                  <View style={{ width: 60 }} />
+                )}
+              </View>
+
+              <ScrollView
+                style={styles.createScroll}
+                keyboardShouldPersistTaps="handled"
+              >
+                <Text style={[styles.inputLabel, { marginTop: 0 }]}>
+                  📅 対象日
+                </Text>
+                <TouchableOpacity
+                  style={[
+                    styles.inputSingle,
+                    {
+                      backgroundColor: "#fff",
+                      borderColor: "#27ae60",
+                      borderWidth: 2,
+                      justifyContent: "center",
+                    },
+                  ]}
+                  onPress={() => setIsDatePickerVisible(true)}
+                >
+                  <Text
+                    style={{
+                      fontSize: 16,
+                      color: "#333",
+                      fontWeight: "bold",
+                      textAlign: "center",
+                    }}
+                  >
+                    {reportDate} ▾
+                  </Text>
+                </TouchableOpacity>
+
+                {!editingReportId && (
+                  <Text style={styles.draftNotice}>
+                    ※入力内容は自動で下書き保存されます。
+                  </Text>
+                )}
+
+                {/* === 日記（振り返り）入力部分 === */}
+                <View style={styles.formSection}>
+                  <Text style={styles.formSectionTitle}>📝 練習の振り返り</Text>
+
+                  <Text style={styles.inputLabel}>📝 振り返り</Text>
+                  <TextInput
+                    style={styles.inputMulti}
+                    placeholder="今日の練習で気づいたこと、次に活かしたいことなど..."
+                    value={reflection}
+                    onChangeText={setReflection}
+                    multiline
+                  />
+
+                  <Text style={styles.inputLabel}>
+                    📈 今日の達成度・自己評価
+                  </Text>
+                  <View style={styles.ratingContainer}>
+                    {renderStars(achievement, setAchievement)}
+                    <Text style={styles.ratingText}>{achievement} / 5</Text>
+                  </View>
+
+                  <Text style={styles.inputLabel}>
+                    📎 補足メモ・添付 (任意)
+                  </Text>
+                  <TextInput
+                    style={styles.inputMulti}
+                    placeholder="体調について気になること、自由なメモなど..."
+                    value={memo}
+                    onChangeText={setMemo}
+                    multiline
+                  />
+                </View>
+
+                {/* === コンディション（メディカル）入力部分 === */}
+                <View style={[styles.formSection, { marginTop: 20 }]}>
+                  <Text style={styles.formSectionTitle}>🏥 コンディション</Text>
+                  <Text style={styles.inputLabel}>😀 全体的な体調</Text>
+                  <OptionGroup
+                    options={["良い", "普通", "不良"]}
+                    selected={condition}
+                    onSelect={setCondition}
+                    color="#2ecc71"
+                  />
+
+                  <Text style={styles.inputLabel}>
+                    🔋 疲労度 (0:なし 〜 10:限界)
+                  </Text>
+                  <ScaleSelector
+                    selected={fatigue}
+                    onSelect={setFatigue}
+                    color="#f39c12"
+                  />
+
+                  <Text style={styles.inputLabel}>🏃 今後の練習可否</Text>
+                  <OptionGroup
+                    options={["通常", "制限", "不可"]}
+                    selected={isParticipating}
+                    onSelect={setIsParticipating}
+                    color="#e74c3c"
+                  />
+
+                  <View style={styles.painToggleRow}>
+                    <Text style={styles.inputLabel}>
+                      🤕 痛いところ・ケガはありますか？
+                    </Text>
+                    <View style={styles.toggleBtnGroup}>
+                      <TouchableOpacity
+                        style={[
+                          styles.toggleBtnItem,
+                          !hasPain && styles.toggleBtnItemActive,
+                        ]}
+                        onPress={() => setHasPain(false)}
+                      >
+                        <Text
+                          style={[
+                            styles.toggleText,
+                            !hasPain && { color: "#fff" },
+                          ]}
+                        >
+                          なし
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[
+                          styles.toggleBtnItem,
+                          hasPain && { backgroundColor: "#e74c3c" },
+                        ]}
+                        onPress={() => setHasPain(true)}
+                      >
+                        <Text
+                          style={[
+                            styles.toggleText,
+                            hasPain && { color: "#fff" },
+                          ]}
+                        >
+                          あり
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+
+                  {hasPain && (
+                    <View style={styles.painDetailSection}>
+                      <Text style={styles.painLabelTitle}>
+                        🔻 痛みの詳細を教えてください
+                      </Text>
+                      <Text style={styles.subLabel}>痛む部位</Text>
+                      <TextInput
+                        style={styles.inputSingle}
+                        placeholder="例: 右肩、左足首 など"
+                        value={painPart}
+                        onChangeText={setPainPart}
+                      />
+                      <Text style={styles.subLabel}>痛みの強さ (0〜10)</Text>
+                      <ScaleSelector
+                        selected={painLevel}
+                        onSelect={setPainLevel}
+                        color="#e74c3c"
+                      />
+                      <Text style={styles.subLabel}>いつから？ (任意)</Text>
+                      <TextInput
+                        style={styles.inputSingle}
+                        placeholder="例: 3日前の練習から"
+                        value={sinceWhen}
+                        onChangeText={setSinceWhen}
+                      />
+                      <Text style={styles.subLabel}>
+                        現在の処置・受診状況 (任意)
+                      </Text>
+                      <TextInput
+                        style={styles.inputSingle}
+                        placeholder="例: アイシングのみ、昨日の夕方病院に行った"
+                        value={treatment}
+                        onChangeText={setTreatment}
+                      />
+                    </View>
+                  )}
+                </View>
+
+                <TouchableOpacity
+                  style={[
+                    styles.submitButton,
+                    isOffline && { backgroundColor: "#f39c12" },
+                  ]}
                   onPress={handleCreateOrEditReport}
                 >
-                  <Text style={styles.submitButtonText}>提出する</Text>
+                  <Text style={styles.submitButtonText}>
+                    {editingReportId
+                      ? "修正内容を保存"
+                      : isOffline
+                        ? "待機リストに保存"
+                        : "この内容で1日の日報を提出する"}
+                  </Text>
                 </TouchableOpacity>
-              </View>
-            </ScrollView>
-          </View>
+                <View style={{ height: 60 }} />
+              </ScrollView>
+            </View>
+
+            {isDatePickerVisible && (
+              <TouchableOpacity
+                style={styles.datePickerOverlay}
+                activeOpacity={1}
+                onPress={() => setIsDatePickerVisible(false)}
+              >
+                <View style={styles.datePickerContent}>
+                  <Text style={styles.datePickerTitle}>対象日を選択</Text>
+                  <ScrollView style={styles.datePickerScroll}>
+                    {recentDates.map((d) => (
+                      <TouchableOpacity
+                        key={d.value}
+                        style={styles.dateOption}
+                        onPress={() => {
+                          setReportDate(d.value);
+                          setIsDatePickerVisible(false);
+                        }}
+                      >
+                        <Text
+                          style={[
+                            styles.dateOptionText,
+                            reportDate === d.value &&
+                              styles.dateOptionTextActive,
+                          ]}
+                        >
+                          {d.label}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                  <TouchableOpacity
+                    style={styles.datePickerCloseBtn}
+                    onPress={() => setIsDatePickerVisible(false)}
+                  >
+                    <Text style={styles.datePickerCloseText}>閉じる</Text>
+                  </TouchableOpacity>
+                </View>
+              </TouchableOpacity>
+            )}
+          </KeyboardAvoidingView>
         </SafeAreaView>
       </Modal>
+
+      {isLoading && (
+        <View style={styles.globalLoadingOverlay}>
+          <ActivityIndicator size="large" color="#27ae60" />
+          <Text style={styles.globalLoadingText}>処理中...</Text>
+        </View>
+      )}
     </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: COLORS.background },
-  globalLoadingOverlay: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: "rgba(255,255,255,0.7)",
-    justifyContent: "center",
-    alignItems: "center",
-    zIndex: 9999,
-  },
-  globalLoadingText: {
-    marginTop: 10,
-    color: COLORS.primary,
-    fontWeight: "bold",
-    fontSize: 16,
-  },
-  offlineBanner: {
-    backgroundColor: COLORS.secondary,
-    padding: 10,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  offlineBannerText: { color: "#fff", fontSize: 12, fontWeight: "bold" },
+  container: { flex: 1, backgroundColor: "#f0f2f5" },
   header: {
     height: 60,
-    backgroundColor: COLORS.success,
+    backgroundColor: "#27ae60",
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 15,
   },
+  headerOffline: { backgroundColor: "#7f8c8d" },
+  backButton: { position: "absolute", left: 15, zIndex: 10 },
   backButtonText: { color: "#fff", fontSize: 14, fontWeight: "bold" },
   headerTitle: {
     color: "#fff",
@@ -827,6 +1689,8 @@ const styles = StyleSheet.create({
     flex: 1,
     textAlign: "center",
   },
+  headerRight: { position: "absolute", right: 15, flexDirection: "row" },
+
   adminDashboard: {
     backgroundColor: "#fff",
     borderBottomWidth: 1,
@@ -848,10 +1712,13 @@ const styles = StyleSheet.create({
     borderBottomColor: "transparent",
     marginRight: 5,
   },
-  tabActive: { borderBottomColor: COLORS.success },
+  tabActive: { borderBottomColor: "#27ae60" },
   tabText: { fontSize: 14, color: "#666", fontWeight: "bold" },
-  tabTextActive: { color: COLORS.success },
+  tabTextActive: { color: "#27ae60" },
+
   content: { padding: 15 },
+  emptyText: { textAlign: "center", color: "#888", marginTop: 50 },
+
   dateGroupContainer: { marginBottom: 15 },
   dateHeader: {
     flexDirection: "row",
@@ -864,44 +1731,86 @@ const styles = StyleSheet.create({
   },
   dateHeaderText: { fontSize: 14, fontWeight: "bold", color: "#555" },
   unreadAlertBadge: {
-    backgroundColor: COLORS.danger,
+    backgroundColor: "#e74c3c",
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 10,
     marginLeft: 10,
   },
   unreadAlertBadgeText: { color: "#fff", fontSize: 10, fontWeight: "bold" },
-  expandedSection: { paddingHorizontal: 5 },
 
-  // ★ グラフ用スタイル
-  graphContainer: {
-    padding: 15,
-    borderRadius: 12,
-    marginBottom: 15,
-    backgroundColor: "#fff",
-    elevation: 2,
+  // ★ 管理者用：コンパクトな1行カードのスタイル
+  memberList: {
+    paddingHorizontal: 2,
   },
-  graphTitle: {
-    fontSize: 14,
-    fontWeight: "bold",
-    color: COLORS.textMain,
-    marginBottom: 10,
-  },
-  graphLabel: { fontSize: 12, color: COLORS.textSub },
-  graphBarBackground: {
-    height: 12,
-    backgroundColor: "#eee",
-    borderRadius: 6,
-    overflow: "hidden",
-  },
-  graphBarFill: { height: "100%", borderRadius: 6 },
-  graphScale: {
+  compactRow: {
     flexDirection: "row",
     justifyContent: "space-between",
-    marginTop: 5,
+    alignItems: "center",
+    paddingVertical: 12,
+    paddingHorizontal: 15,
+    borderRadius: 8,
+    marginBottom: 8,
+    borderWidth: 1,
   },
-  graphScaleText: { fontSize: 10, color: "#aaa" },
+  compactRowLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  compactRowText: {
+    fontSize: 15,
+    fontWeight: "bold",
+  },
+  compactCommentCount: {
+    fontSize: 12,
+    color: "#888",
+    marginLeft: 8,
+    fontWeight: "bold",
+  },
+  compactRowIcons: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  miniIcon: {
+    fontSize: 14,
+    marginHorizontal: 3,
+  },
+  missingBadgeText: {
+    fontSize: 12,
+    color: "#aaa",
+  },
 
+  // 状態ごとのタブカラー
+  tabMissing: {
+    backgroundColor: "#f9f9f9",
+    borderColor: "#e0e0e0",
+    elevation: 0,
+  },
+  tabTextMissing: { color: "#aaa" },
+  tabSubmitted: {
+    backgroundColor: "#e6f2ff",
+    borderColor: "#0077cc",
+  },
+  tabTextSubmitted: { color: "#0077cc" },
+  tabReviewed: {
+    backgroundColor: "#e8f5e9",
+    borderColor: "#27ae60",
+  },
+  tabTextReviewed: { color: "#27ae60" },
+  badgeUnreviewedMini: {
+    backgroundColor: "#fdf3f2",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+    marginLeft: 5,
+  },
+  badgeUnreviewedMiniText: {
+    color: "#c0392b",
+    fontSize: 10,
+    fontWeight: "bold",
+  },
+
+  // ★ 部員用：詳細カードスタイル
   card: {
     backgroundColor: "#fff",
     borderRadius: 12,
@@ -909,27 +1818,17 @@ const styles = StyleSheet.create({
     marginBottom: 15,
     elevation: 2,
     borderLeftWidth: 4,
-    borderLeftColor: COLORS.success,
+    borderLeftColor: "#2ecc71",
   },
-  warningCard: {
-    borderLeftColor: COLORS.secondary,
-    backgroundColor: "#fffdf5",
-  },
-  dangerCard: { borderLeftColor: COLORS.danger, backgroundColor: "#fff5f5" },
+  warningCard: { borderLeftColor: "#f39c12", backgroundColor: "#fffdf5" },
+  dangerCard: { borderLeftColor: "#c0392b", backgroundColor: "#fff5f5" },
   pendingCard: {
     opacity: 0.7,
     borderStyle: "dashed",
     borderWidth: 1,
-    borderColor: COLORS.secondary,
+    borderColor: "#f39c12",
   },
-  pendingText: {
-    position: "absolute",
-    top: 10,
-    right: 10,
-    fontSize: 10,
-    color: COLORS.secondary,
-    fontWeight: "bold",
-  },
+
   cardHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -939,10 +1838,10 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "#eee",
   },
-  cardAuthorLarge: { fontSize: 16, color: COLORS.primary, fontWeight: "bold" },
+  cardAuthorLarge: { fontSize: 16, color: "#0077cc", fontWeight: "bold" },
   badgeReviewed: {
     backgroundColor: "#e8f5e9",
-    color: COLORS.success,
+    color: "#27ae60",
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 12,
@@ -952,7 +1851,7 @@ const styles = StyleSheet.create({
   },
   badgeUnreviewed: {
     backgroundColor: "#fdf3f2",
-    color: COLORS.danger,
+    color: "#c0392b",
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 12,
@@ -971,6 +1870,7 @@ const styles = StyleSheet.create({
     marginRight: 5,
     overflow: "hidden",
   },
+
   miniMedicalRow: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -980,6 +1880,7 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   miniMedicalText: { fontSize: 12, color: "#555", fontWeight: "bold" },
+
   cardSection: {
     backgroundColor: "#f9f9f9",
     padding: 10,
@@ -993,19 +1894,28 @@ const styles = StyleSheet.create({
     marginBottom: 5,
   },
   sectionText: { fontSize: 14, color: "#333", lineHeight: 20 },
+  commentCountText: {
+    fontSize: 12,
+    color: "#888",
+    marginTop: 5,
+    textAlign: "right",
+    fontWeight: "bold",
+  },
+
   fab: {
     position: "absolute",
     bottom: 30,
     right: 20,
     width: 60,
     height: 60,
-    backgroundColor: COLORS.success,
+    backgroundColor: "#27ae60",
     borderRadius: 30,
     justifyContent: "center",
     alignItems: "center",
     elevation: 5,
   },
   fabIcon: { fontSize: 30, color: "#fff", fontWeight: "bold" },
+
   modalSafeArea: { flex: 1, backgroundColor: "rgba(0,0,0,0.5)" },
   detailContainer: {
     flex: 1,
@@ -1024,23 +1934,176 @@ const styles = StyleSheet.create({
     backgroundColor: "#fafafa",
     alignItems: "center",
   },
-  closeBtn: { fontSize: 16, color: COLORS.primary, fontWeight: "bold" },
+  closeBtn: { fontSize: 16, color: "#0077cc", fontWeight: "bold" },
   createHeaderTitle: { fontSize: 16, fontWeight: "bold", color: "#333" },
+
+  actionToolbarWrapper: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    backgroundColor: "#fff",
+    padding: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: "#eee",
+    justifyContent: "center",
+  },
+  actionBtn: {
+    backgroundColor: "#f0f2f5",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    margin: 4,
+    borderWidth: 1,
+    borderColor: "#ddd",
+  },
+  actionBtnActive: { backgroundColor: "#e2f0d9", borderColor: "#27ae60" },
+  actionBtnText: { fontSize: 12, fontWeight: "bold", color: "#333" },
+
   detailScroll: { padding: 15 },
+  sharedBanner: {
+    backgroundColor: "#e8f0fe",
+    padding: 10,
+    borderRadius: 8,
+    marginBottom: 15,
+    alignItems: "center",
+  },
+  sharedBannerText: { color: "#2980b9", fontWeight: "bold", fontSize: 12 },
+
   detailCard: {
     backgroundColor: "#fff",
     borderRadius: 12,
     padding: 15,
     marginBottom: 20,
   },
-  cardDate: {
+  cardDate: { fontSize: 16, fontWeight: "bold", color: "#333" },
+  markReviewedBtn: {
+    backgroundColor: "#27ae60",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    marginRight: 5,
+  },
+  markReviewedBtnText: { color: "#fff", fontSize: 12, fontWeight: "bold" },
+  editActionRow: { flexDirection: "row", alignItems: "center" },
+  editBtn: {
+    backgroundColor: "#f39c12",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 15,
+  },
+  editBtnText: { color: "#fff", fontSize: 12, fontWeight: "bold" },
+
+  medicalDetailBox: {
+    backgroundColor: "#f8f9fa",
+    padding: 15,
+    borderRadius: 8,
+    marginBottom: 15,
+    borderWidth: 1,
+    borderColor: "#e0e0e0",
+  },
+  medicalDetailTitle: {
+    fontSize: 14,
+    fontWeight: "bold",
+    color: "#2c3e50",
+    marginBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: "#ddd",
+    paddingBottom: 5,
+  },
+  detailGrid: { flexDirection: "row", flexWrap: "wrap" },
+  gridItem: { width: "50%", marginBottom: 10 },
+  gridTitle: { fontSize: 11, color: "#888", marginBottom: 2 },
+  gridValue: { fontSize: 15, fontWeight: "bold", color: "#333" },
+  painDetailBox: {
+    backgroundColor: "#fff5f5",
+    padding: 10,
+    borderRadius: 8,
+    marginTop: 5,
+    borderWidth: 1,
+    borderColor: "#ffcccc",
+  },
+  painDetailTitle: {
+    fontSize: 13,
+    fontWeight: "bold",
+    color: "#c0392b",
+    marginBottom: 5,
+  },
+  painDetailText: { fontSize: 12, color: "#444", marginBottom: 2 },
+
+  threadTitle: {
     fontSize: 16,
     fontWeight: "bold",
-    color: "#333",
+    color: "#555",
     marginBottom: 15,
+    marginLeft: 5,
   },
-  starsRow: { flexDirection: "row", marginBottom: 10 },
-  star: { fontSize: 28, marginRight: 2 },
+  threadArea: { paddingBottom: 20 },
+  commentBubbleWrapper: {
+    flexDirection: "row",
+    marginBottom: 15,
+    alignItems: "flex-end",
+  },
+  commentBubbleRight: { justifyContent: "flex-end" },
+  commentBubbleLeft: { justifyContent: "flex-start" },
+  commentAvatar: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: "#ccc",
+    justifyContent: "center",
+    alignItems: "center",
+    marginRight: 8,
+  },
+  commentAvatarText: { color: "#fff", fontWeight: "bold", fontSize: 14 },
+  commentContentBox: { maxWidth: "80%" },
+  commentUserName: {
+    fontSize: 11,
+    color: "#666",
+    marginBottom: 4,
+    marginLeft: 5,
+  },
+  commentBubble: { padding: 12, borderRadius: 15 },
+  commentBubbleOther: { backgroundColor: "#fff", borderBottomLeftRadius: 0 },
+  commentBubbleMe: { backgroundColor: "#0077cc", borderBottomRightRadius: 0 },
+  commentText: { fontSize: 15, color: "#333", lineHeight: 20 },
+
+  templateScroll: { maxHeight: 50 },
+  templateBtn: {
+    backgroundColor: "#e2f0d9",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 15,
+    marginRight: 10,
+    borderWidth: 1,
+    borderColor: "#a9dfbf",
+  },
+  templateBtnText: { color: "#27ae60", fontSize: 12, fontWeight: "bold" },
+  commentInputArea: {
+    flexDirection: "row",
+    padding: 10,
+    backgroundColor: "#fff",
+    alignItems: "flex-end",
+  },
+  commentInput: {
+    flex: 1,
+    backgroundColor: "#f0f2f5",
+    borderRadius: 20,
+    paddingHorizontal: 15,
+    paddingTop: 10,
+    paddingBottom: 10,
+    minHeight: 40,
+    maxHeight: 100,
+    fontSize: 15,
+  },
+  sendButton: {
+    marginLeft: 10,
+    backgroundColor: "#27ae60",
+    borderRadius: 20,
+    paddingVertical: 10,
+    paddingHorizontal: 15,
+    justifyContent: "center",
+  },
+  sendButtonText: { color: "#fff", fontWeight: "bold", fontSize: 14 },
+
   createContainer: {
     flex: 1,
     backgroundColor: "#f9f9f9",
@@ -1054,8 +2117,21 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
     padding: 15,
     borderRadius: 12,
+    shadowColor: "#000",
+    shadowOpacity: 0.05,
+    shadowRadius: 3,
     elevation: 2,
   },
+  formSectionTitle: {
+    fontSize: 16,
+    fontWeight: "bold",
+    color: "#333",
+    marginBottom: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: "#eee",
+    paddingBottom: 8,
+  },
+
   inputLabel: {
     fontSize: 14,
     fontWeight: "bold",
@@ -1071,6 +2147,17 @@ const styles = StyleSheet.create({
     padding: 12,
     fontSize: 16,
   },
+  inputMulti: {
+    backgroundColor: "#f5f5f5",
+    borderWidth: 1,
+    borderColor: "#ddd",
+    borderRadius: 8,
+    padding: 10,
+    fontSize: 16,
+    minHeight: 80,
+    textAlignVertical: "top",
+  },
+
   optionGroup: { flexDirection: "row", flexWrap: "wrap", marginBottom: 5 },
   optionBtn: {
     paddingVertical: 8,
@@ -1096,14 +2183,153 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
   },
   scaleBtnText: { fontSize: 14, fontWeight: "bold", color: "#555" },
+
+  painToggleRow: {
+    marginTop: 15,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: "#eee",
+  },
+  toggleBtnGroup: {
+    flexDirection: "row",
+    backgroundColor: "#f0f0f0",
+    borderRadius: 8,
+    padding: 4,
+    width: 160,
+  },
+  toggleBtnItem: {
+    flex: 1,
+    paddingVertical: 8,
+    alignItems: "center",
+    borderRadius: 6,
+  },
+  toggleBtnItemActive: { backgroundColor: "#0077cc" },
+  toggleText: { fontWeight: "bold", color: "#888", fontSize: 13 },
+  painDetailSection: {
+    backgroundColor: "#fff5f5",
+    padding: 12,
+    borderRadius: 8,
+    marginTop: 10,
+    borderWidth: 1,
+    borderColor: "#ffcccc",
+  },
+  painLabelTitle: {
+    fontSize: 14,
+    fontWeight: "bold",
+    color: "#e74c3c",
+    marginBottom: 10,
+  },
+  subLabel: {
+    fontSize: 12,
+    fontWeight: "bold",
+    color: "#555",
+    marginTop: 10,
+    marginBottom: 5,
+  },
+
+  ratingContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  ratingText: {
+    fontSize: 16,
+    fontWeight: "bold",
+    color: "#555",
+    marginLeft: 15,
+  },
+  starsRow: { flexDirection: "row" },
+  star: { fontSize: 28, marginRight: 2 },
+
   submitButton: {
-    backgroundColor: COLORS.success,
+    backgroundColor: "#27ae60",
     paddingVertical: 15,
     borderRadius: 10,
     alignItems: "center",
     marginTop: 25,
   },
   submitButtonText: { color: "#fff", fontSize: 16, fontWeight: "bold" },
+  draftNotice: {
+    fontSize: 12,
+    color: "#e67e22",
+    textAlign: "center",
+    marginTop: 10,
+    marginBottom: 10,
+  },
+
+  globalLoadingOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "rgba(255,255,255,0.7)",
+    justifyContent: "center",
+    alignItems: "center",
+    zIndex: 9999,
+  },
+  globalLoadingText: {
+    marginTop: 10,
+    color: "#27ae60",
+    fontWeight: "bold",
+    fontSize: 16,
+  },
+
+  datePickerOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "center",
+    alignItems: "center",
+    zIndex: 1000,
+  },
+  datePickerContent: {
+    width: "80%",
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    padding: 20,
+    maxHeight: "70%",
+    elevation: 5,
+  },
+  datePickerTitle: {
+    fontSize: 16,
+    fontWeight: "bold",
+    color: "#333",
+    marginBottom: 15,
+    textAlign: "center",
+  },
+  datePickerScroll: {
+    maxHeight: 300,
+  },
+  dateOption: {
+    paddingVertical: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: "#eee",
+  },
+  dateOptionText: {
+    fontSize: 16,
+    color: "#555",
+    textAlign: "center",
+  },
+  dateOptionTextActive: {
+    color: "#27ae60",
+    fontWeight: "bold",
+  },
+  datePickerCloseBtn: {
+    marginTop: 15,
+    backgroundColor: "#f0f2f5",
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: "center",
+  },
+  datePickerCloseText: {
+    color: "#555",
+    fontWeight: "bold",
+    fontSize: 14,
+  },
 });
 
 export default DiaryScreen;

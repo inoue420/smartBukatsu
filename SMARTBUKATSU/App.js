@@ -13,6 +13,7 @@ import {
   subscribePersonalEvents,
   subscribeTeamData,
   subscribeTeamMembers,
+  subscribeClubEvents, // ★ 追加
 } from "./src/services/firestoreService";
 
 // 画面
@@ -43,18 +44,14 @@ function AppContent() {
   const [notices, setNotices] = useState([]);
   const [dailyReports, setDailyReports] = useState([]);
   const [personalEvents, setPersonalEvents] = useState([]);
+  const [clubEvents, setClubEvents] = useState([]); // ★ 追加：カレンダー用の部活予定
   const [teamName, setTeamName] = useState("ロード中...");
 
   const [clubMembers, setClubMembers] = useState([]);
   const [userProfiles, setUserProfiles] = useState({});
 
   const [grades, setGrades] = useState(["1年生", "2年生", "3年生"]);
-  const [positions, setPositions] = useState([
-    "キャプテン",
-    "マネージャー",
-    "GK",
-    "CP",
-  ]);
+  const [positions, setPositions] = useState(["GK", "CP", "マネージャー"]);
 
   const [alertThresholds, setAlertThresholds] = useState({
     fatigueWarning: 7,
@@ -87,13 +84,13 @@ function AppContent() {
         user.uid,
         setPersonalEvents,
       );
+      const unsubClubEvents = subscribeClubEvents(activeTeamId, setClubEvents); // ★ 追加
 
       const unsubTeam = subscribeTeamData(activeTeamId, (data) => {
         if (data) {
           if (data.name) setTeamName(data.name);
-          if (data.grades && data.grades.length > 0) setGrades(data.grades);
-          if (data.positions && data.positions.length > 0)
-            setPositions(data.positions);
+          if (data.grades !== undefined) setGrades(data.grades);
+          if (data.positions !== undefined) setPositions(data.positions);
         }
       });
 
@@ -111,6 +108,8 @@ function AppContent() {
             role: m.role || "member",
             assignedStaff: m.assignedStaff || null,
             staffScope: m.staffScope || "all",
+            grade: m.grade || "",
+            position: m.position || "",
           };
         });
         setClubMembers(names);
@@ -124,6 +123,7 @@ function AppContent() {
         unsubPersonal();
         unsubTeam();
         unsubMembers();
+        unsubClubEvents(); // ★ 追加
       };
     } else {
       setClubMembers([]);
@@ -232,6 +232,7 @@ function AppContent() {
                   dailyReports={dailyReports}
                   setDailyReports={setDailyReports}
                   alertThresholds={alertThresholds}
+                  clubMembers={clubMembers}
                 />
               )}
             </Stack.Screen>
@@ -242,8 +243,7 @@ function AppContent() {
                   {...props}
                   isAdmin={authIsAdmin}
                   currentUser={safeUserName}
-                  projects={projects}
-                  setProjects={setProjects}
+                  clubEvents={clubEvents} // ★ 修正：projects ではなく clubEvents を渡す
                   dailyReports={dailyReports}
                   userProfiles={userProfiles}
                   personalEvents={personalEvents}

@@ -72,6 +72,44 @@ export async function deleteProject(teamId, projectId) {
 }
 
 // ==========================================
+// 📅 カレンダー（チーム共通の予定）関連 ★新規追加
+// ==========================================
+export function subscribeClubEvents(teamId, callback) {
+  if (!teamId) return () => {};
+  const ref = collection(db, "teams", teamId, "clubEvents");
+  const q = query(ref, orderBy("createdAt", "desc"));
+  return onSnapshot(q, (snapshot) => {
+    const data = snapshot.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
+    callback(data);
+  });
+}
+
+export async function createClubEvent(teamId, eventData) {
+  if (!teamId) return;
+  const ref = collection(db, "teams", teamId, "clubEvents");
+  await addDoc(ref, {
+    ...eventData,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+}
+
+export async function updateClubEvent(teamId, eventId, updateData) {
+  if (!teamId || !eventId) return;
+  const ref = doc(db, "teams", teamId, "clubEvents", eventId);
+  await updateDoc(ref, { ...updateData, updatedAt: serverTimestamp() });
+}
+
+export async function deleteClubEvent(teamId, eventId) {
+  if (!teamId || !eventId) return;
+  const ref = doc(db, "teams", teamId, "clubEvents", eventId);
+  await updateDoc(ref, { status: "deleted", updatedAt: serverTimestamp() });
+}
+
+// ==========================================
 // 🔐 個人の予定（完全非公開）関連
 // ==========================================
 export function subscribePersonalEvents(uid, callback) {
@@ -87,7 +125,9 @@ export function subscribePersonalEvents(uid, callback) {
       }));
       callback(events);
     },
-    (error) => console.log("🔐 個人予定の監視エラー:", error.message),
+    (error) => {
+      console.log("🔐 個人予定の監視エラー:", error.message);
+    },
   );
 }
 
@@ -115,6 +155,65 @@ export async function deletePersonalEvent(uid, eventId) {
 }
 
 // ==========================================
+// 👥 メンバー取得・プロフィール更新
+// ==========================================
+export function subscribeTeamMembers(teamId, callback) {
+  if (!teamId) return () => {};
+  const membersRef = collection(db, "teams", teamId, "members");
+  return onSnapshot(membersRef, async (snapshot) => {
+    const promises = snapshot.docs.map(async (docSnap) => {
+      const uid = docSnap.id;
+      const data = docSnap.data();
+      let name = data.name;
+
+      if (!name) {
+        try {
+          const userSnap = await getDoc(doc(db, "users", uid));
+          name = userSnap.exists() ? userSnap.data().name : "未設定";
+        } catch (error) {
+          name = "名称未設定";
+        }
+      }
+      return { uid, name, ...data };
+    });
+
+    const membersData = await Promise.all(promises);
+    callback(membersData);
+  });
+}
+
+export async function updateMemberProfile(
+  teamId,
+  uid,
+  newName,
+  grade,
+  position,
+) {
+  if (!uid) return;
+  await setDoc(doc(db, "users", uid), { name: newName }, { merge: true });
+
+  if (teamId) {
+    await setDoc(
+      doc(db, "teams", teamId, "members", uid),
+      { name: newName, grade: grade || "", position: position || "" },
+      { merge: true },
+    );
+  }
+}
+
+export async function updateMemberRoleConfig(teamId, uid, updateData) {
+  if (!teamId || !uid) return;
+  await setDoc(doc(db, "teams", teamId, "members", uid), updateData, {
+    merge: true,
+  });
+}
+
+export async function removeTeamMember(teamId, targetUid) {
+  if (!teamId || !targetUid) return;
+  await deleteDoc(doc(db, "teams", teamId, "members", targetUid));
+}
+
+// ==========================================
 // 🏟️ チーム設定・設定画面関連
 // ==========================================
 export async function getTeamInviteCode(teamId) {
@@ -136,50 +235,24 @@ export function subscribeTeamData(teamId, callback) {
   });
 }
 
-// ★ 追加：チーム名を変更する関数
-export async function updateTeamName(teamId, newName) {
-  if (!teamId || !newName) return;
-  const teamRef = doc(db, "teams", teamId);
-  await updateDoc(teamRef, { name: newName, updatedAt: serverTimestamp() });
-}
-
 export async function addTeamArrayItem(teamId, field, value) {
-  await updateDoc(doc(db, "teams", teamId), { [field]: arrayUnion(value) });
+  const teamRef = doc(db, "teams", teamId);
+  const snap = await getDoc(teamRef);
+  if (!snap.exists()) return;
+
+  const data = snap.data();
+  if (data[field] === undefined) {
+    const defaultGrades = ["1年生", "2年生", "3年生"];
+    const defaultPositions = ["GK", "CP", "マネージャー"];
+    const baseArray = field === "grades" ? defaultGrades : defaultPositions;
+    await updateDoc(teamRef, { [field]: [...baseArray, value] });
+  } else {
+    await updateDoc(teamRef, { [field]: arrayUnion(value) });
+  }
 }
 
 export async function removeTeamArrayItem(teamId, field, value) {
   await updateDoc(doc(db, "teams", teamId), { [field]: arrayRemove(value) });
-}
-
-export function subscribeTeamMembers(teamId, callback) {
-  if (!teamId) return () => {};
-  const q = query(
-    collection(db, "teams", teamId, "members"),
-    orderBy("joinedAt", "asc"),
-  );
-  return onSnapshot(
-    q,
-    (snapshot) => {
-      const members = snapshot.docs.map((doc) => ({
-        uid: doc.id,
-        ...doc.data(),
-      }));
-      callback(members);
-    },
-    (error) => console.log("部員取得エラー:", error.message),
-  );
-}
-
-export async function updateTeamMember(teamId, uid, updateData) {
-  if (!teamId || !uid) return;
-  const memberRef = doc(db, "teams", teamId, "members", uid);
-  await updateDoc(memberRef, updateData);
-}
-
-export async function removeTeamMember(teamId, uid) {
-  if (!teamId || !uid) return;
-  const memberRef = doc(db, "teams", teamId, "members", uid);
-  await deleteDoc(memberRef);
 }
 
 // ==========================================
@@ -212,15 +285,16 @@ export async function executeRegistration(
       createdBy: uid,
       inviteCode: generatedInviteCode,
       createdAt: serverTimestamp(),
-      grades: ["1年生", "2年生", "3年生"], // 初期状態
-      positions: ["キャプテン", "マネージャー", "GK", "CP"], // 初期状態
+      grades: ["1年生", "2年生", "3年生"],
+      positions: ["GK", "CP", "マネージャー"],
     });
 
     await setDoc(doc(db, "teams", teamId, "members", uid), {
-      role: "admin",
       name: userName,
+      role: "admin",
       joinedAt: serverTimestamp(),
     });
+
     await setDoc(userRef, { activeTeamId: teamId }, { merge: true });
     await setDoc(doc(db, "invites", generatedInviteCode), {
       teamId: teamId,
@@ -238,21 +312,18 @@ export async function executeRegistration(
       throw new Error("無効な招待コードです。");
 
     const teamId = inviteSnap.data().teamId;
+
     await setDoc(doc(db, "teams", teamId, "members", uid), {
-      role: "member",
       name: userName,
+      role: "member",
       inviteCode: inviteCode,
       joinedAt: serverTimestamp(),
     });
+
     await setDoc(userRef, { activeTeamId: teamId }, { merge: true });
 
     return { teamId, type: "join" };
   }
-}
-
-export async function updateUserName(uid, newName) {
-  if (!uid || !newName) return;
-  await setDoc(doc(db, "users", uid), { name: newName }, { merge: true });
 }
 
 // ==========================================

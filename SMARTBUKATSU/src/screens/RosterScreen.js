@@ -31,8 +31,8 @@ const RosterScreen = ({
   clubMembers = [],
   userProfiles = {},
   dailyReports = [],
-  grades = [], // ★ 追加：設定から受け取る
-  positions = [], // ★ 追加：設定から受け取る
+  grades = [],
+  positions = [],
 }) => {
   // --- 権限の確認 ---
   const currentUserProfile = userProfiles[currentUser] || {};
@@ -230,13 +230,11 @@ const RosterScreen = ({
 
         <View style={styles.filterRowWrapper}>
           <Text style={styles.filterLabel}>学年</Text>
-          {/* ★ 直接 grades を渡す */}
           {renderFilterScroll(grades, filterGrade, setFilterGrade)}
         </View>
 
         <View style={styles.filterRowWrapper}>
           <Text style={styles.filterLabel}>ﾎﾟｼﾞｼｮﾝ</Text>
-          {/* ★ 直接 positions を渡す */}
           {renderFilterScroll(positions, filterPosition, setFilterPosition)}
         </View>
 
@@ -307,7 +305,7 @@ const RosterScreen = ({
         )}
       </View>
 
-      {/* 名簿リスト */}
+      {/* 名簿リスト（コンパクト表示に変更） */}
       <ScrollView
         style={styles.listContainer}
         contentContainerStyle={{ paddingBottom: 50 }}
@@ -321,90 +319,71 @@ const RosterScreen = ({
             const role = member.profile.role || "member";
             const roleData = roleConfig[role] || roleConfig.member;
 
+            // アラートによる行のスタイル分け
+            let rowStyle = styles.compactRow;
+            let textStyle = styles.compactRowText;
+
+            if (isStaffOrAbove) {
+              if (member.alertLevel === "danger") {
+                rowStyle = [
+                  rowStyle,
+                  { borderColor: "#c0392b", backgroundColor: "#fff5f5" },
+                ];
+                textStyle = [textStyle, { color: "#c0392b" }];
+              } else if (member.alertLevel === "warning") {
+                rowStyle = [
+                  rowStyle,
+                  { borderColor: "#f39c12", backgroundColor: "#fffdf5" },
+                ];
+                textStyle = [textStyle, { color: "#f39c12" }];
+              }
+            }
+
             return (
               <TouchableOpacity
                 key={member.name}
-                style={[
-                  styles.memberCard,
-                  isStaffOrAbove &&
-                    member.alertLevel === "danger" &&
-                    styles.cardDanger,
-                  isStaffOrAbove &&
-                    member.alertLevel === "warning" &&
-                    styles.cardWarning,
-                ]}
+                style={rowStyle}
                 onPress={() => setSelectedUser(member)}
                 activeOpacity={0.7}
               >
-                <View style={styles.avatarBox}>
-                  <Text style={styles.avatarText}>{member.name.charAt(0)}</Text>
-                </View>
-
-                <View style={styles.memberInfo}>
-                  <View style={styles.nameRow}>
-                    <Text style={styles.memberName}>{member.name}</Text>
-                    <View
+                <View style={styles.compactRowLeft}>
+                  <Text style={textStyle} numberOfLines={1}>
+                    👤 {member.name}
+                  </Text>
+                  {/* 役割バッジを小さく表示 */}
+                  <View
+                    style={[
+                      styles.miniRoleBadge,
+                      {
+                        backgroundColor: roleData.bg,
+                        borderColor: roleData.color,
+                      },
+                    ]}
+                  >
+                    <Text
                       style={[
-                        styles.roleBadge,
-                        {
-                          backgroundColor: roleData.bg,
-                          borderColor: roleData.color,
-                        },
+                        styles.miniRoleBadgeText,
+                        { color: roleData.color },
                       ]}
                     >
-                      <Text
-                        style={[
-                          styles.roleBadgeText,
-                          { color: roleData.color },
-                        ]}
-                      >
-                        {roleData.label}
-                      </Text>
-                    </View>
-                  </View>
-
-                  <Text style={styles.memberSubInfo}>
-                    {member.profile.grade
-                      ? `🎓 ${member.profile.grade}`
-                      : "🎓 未設定"}{" "}
-                    |{" "}
-                    {member.profile.position
-                      ? `⚾ ${member.profile.position}`
-                      : "⚾ 未設定"}
-                  </Text>
-
-                  {/* 管理者向け：最新のコンディションサマリー */}
-                  {isStaffOrAbove && member.latestReport && (
-                    <View style={styles.medicalSummary}>
-                      <Text style={styles.medicalDate}>
-                        最新報告: {member.latestReport.date}
-                      </Text>
-                      <View style={styles.medicalMetrics}>
-                        <Text style={styles.metricText}>
-                          疲労: {member.latestReport.fatigue}/10
-                        </Text>
-                        <Text style={styles.metricText}>
-                          体調: {member.latestReport.condition}
-                        </Text>
-                        <Text
-                          style={[
-                            styles.metricText,
-                            member.latestReport.hasPain && {
-                              color: COLORS.danger,
-                              fontWeight: "bold",
-                            },
-                          ]}
-                        >
-                          ケガ: {member.latestReport.hasPain ? "あり" : "なし"}
-                        </Text>
-                      </View>
-                    </View>
-                  )}
-                  {isStaffOrAbove && !member.latestReport && (
-                    <Text style={styles.noReportText}>
-                      ※日報の提出履歴がありません
+                      {roleData.label}
                     </Text>
+                  </View>
+                </View>
+
+                <View style={styles.compactRowIcons}>
+                  {isStaffOrAbove && member.alertLevel === "danger" && (
+                    <Text style={styles.miniIcon}>🚨</Text>
                   )}
+                  {isStaffOrAbove && member.alertLevel === "warning" && (
+                    <Text style={styles.miniIcon}>⚠️</Text>
+                  )}
+                  {isStaffOrAbove && member.latestReport?.hasPain && (
+                    <Text style={styles.miniIcon}>🤕</Text>
+                  )}
+                  <Text style={{ fontSize: 14, color: "#ccc", marginLeft: 8 }}>
+                    ▶
+                  </Text>
                 </View>
               </TouchableOpacity>
             );
@@ -412,7 +391,7 @@ const RosterScreen = ({
         )}
       </ScrollView>
 
-      {/* 詳細プロフィールモーダル */}
+      {/* 詳細プロフィールモーダル（タップで展開される情報） */}
       <Modal
         visible={selectedUser !== null}
         transparent={true}
@@ -553,6 +532,18 @@ const RosterScreen = ({
                       )}
                     </View>
                   )}
+                  {isStaffOrAbove && !selectedUser.latestReport && (
+                    <Text
+                      style={{
+                        textAlign: "center",
+                        color: "#aaa",
+                        marginTop: 10,
+                        fontStyle: "italic",
+                      }}
+                    >
+                      ※日報の提出履歴がありません
+                    </Text>
+                  )}
                 </ScrollView>
               </>
             )}
@@ -633,21 +624,49 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
 
-  memberCard: {
+  // ★ 追加：コンパクトな1行リストのスタイル
+  compactRow: {
     flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 15,
+    paddingHorizontal: 15,
+    borderRadius: 8,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: "#eee",
     backgroundColor: "#fff",
-    padding: 15,
-    borderRadius: 12,
-    marginBottom: 12,
     elevation: 1,
-    borderLeftWidth: 4,
-    borderLeftColor: "transparent",
   },
-  cardWarning: {
-    borderLeftColor: COLORS.secondary,
-    backgroundColor: "#fffdf5",
+  compactRowLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    flex: 1,
   },
-  cardDanger: { borderLeftColor: COLORS.danger, backgroundColor: "#fff5f5" },
+  compactRowText: {
+    fontSize: 16,
+    fontWeight: "bold",
+    color: "#333",
+    marginRight: 10,
+  },
+  miniRoleBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  miniRoleBadgeText: {
+    fontSize: 10,
+    fontWeight: "bold",
+  },
+  compactRowIcons: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  miniIcon: {
+    fontSize: 14,
+    marginHorizontal: 3,
+  },
 
   avatarBox: {
     width: 50,
@@ -656,18 +675,9 @@ const styles = StyleSheet.create({
     backgroundColor: "#d1e8ff",
     justifyContent: "center",
     alignItems: "center",
-    marginRight: 15,
   },
   avatarText: { fontSize: 20, fontWeight: "bold", color: COLORS.primary },
 
-  memberInfo: { flex: 1 },
-  nameRow: { flexDirection: "row", alignItems: "center", marginBottom: 4 },
-  memberName: {
-    fontSize: 16,
-    fontWeight: "bold",
-    color: COLORS.textMain,
-    marginRight: 10,
-  },
   roleBadge: {
     paddingHorizontal: 8,
     paddingVertical: 3,
@@ -675,30 +685,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   roleBadgeText: { fontSize: 10, fontWeight: "bold" },
-  memberSubInfo: { fontSize: 13, color: COLORS.textSub, marginBottom: 8 },
-
-  medicalSummary: {
-    backgroundColor: "rgba(255,255,255,0.6)",
-    padding: 8,
-    borderRadius: 8,
-    marginTop: 5,
-    borderWidth: 1,
-    borderColor: "#eee",
-  },
-  medicalDate: {
-    fontSize: 11,
-    color: "#888",
-    marginBottom: 4,
-    fontWeight: "bold",
-  },
-  medicalMetrics: { flexDirection: "row", justifyContent: "space-between" },
-  metricText: { fontSize: 12, color: "#555" },
-  noReportText: {
-    fontSize: 11,
-    color: "#aaa",
-    fontStyle: "italic",
-    marginTop: 5,
-  },
 
   modalOverlay: {
     flex: 1,

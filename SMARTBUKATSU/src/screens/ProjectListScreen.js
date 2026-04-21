@@ -33,14 +33,14 @@ import {
   updateProject,
 } from "../services/firestoreService";
 
-export default function ProjectListScreen({
+const ProjectListScreen = ({
   navigation,
   isAdmin,
   currentUser,
   projects,
   setProjects,
   userProfiles,
-}) {
+}) => {
   const currentUserProfile = userProfiles[currentUser] || {};
 
   const userRole =
@@ -50,7 +50,8 @@ export default function ProjectListScreen({
   const canCreateProject = ["owner", "admin", "staff", "captain"].includes(
     userRole,
   );
-  const canDeleteProject = ["owner", "admin", "staff"].includes(userRole);
+  // ★ 削除だけでなく「編集」も同じ権限で管理
+  const canManageProject = ["owner", "admin", "staff"].includes(userRole);
 
   const { user, activeTeamId } = useAuth();
   const [isOffline, setIsOffline] = useState(false);
@@ -81,12 +82,11 @@ export default function ProjectListScreen({
   const clipPostSeconds = currentUserProfile.clipPostSeconds ?? 3;
 
   // ==========================================
-  // ★ プロジェクト横断検索・フィルター機能用のステート
+  // プロジェクト横断検索・フィルター機能
   // ==========================================
   const [highlightSearchQuery, setHighlightSearchQuery] = useState("");
   const [highlightFilterUser, setHighlightFilterUser] = useState("all");
   const [highlightFilterType, setHighlightFilterType] = useState("all");
-  // ★ 追加：期間フィルターのステート
   const [highlightFilterPeriod, setHighlightFilterPeriod] = useState("all");
   const [isFilterModalVisible, setIsFilterModalVisible] = useState(false);
 
@@ -103,7 +103,6 @@ export default function ProjectListScreen({
     const data = {};
     const now = new Date();
 
-    // ★ 追加：期間フィルター用の閾値（基準日）を計算
     let thresholdDate = null;
     if (highlightFilterPeriod === "1week") {
       thresholdDate = new Date(
@@ -140,25 +139,25 @@ export default function ProjectListScreen({
       )
         return;
 
-      // [1] プロジェクトの「種類」フィルター
       if (highlightFilterType !== "all" && p.type !== highlightFilterType)
         return;
 
-      // [2] プロジェクトの「期間」フィルター
       if (thresholdDate && p.date) {
         const parts = p.date.split("/");
         if (parts.length === 3) {
           const projectDate = new Date(parts[0], parts[1] - 1, parts[2]);
-          if (projectDate < thresholdDate) return; // 基準日より古いものは弾く
+          if (projectDate < thresholdDate) return;
         }
       }
 
       p.tags.forEach((tag) => {
+        // ★ 修正：未共有（private）のタグは、本人以外の画面には一切出さない
+        if (tag.status === "private" && tag.user !== displayUserName) return;
+
         const clipMemos = (p.sharedMemos || []).filter(
           (m) => m.tagId === tag.id,
         );
 
-        // [3] 「ユーザー」フィルター
         if (highlightFilterUser !== "all") {
           const isTagUser = tag.user === highlightFilterUser;
           const isMemoUser = clipMemos.some(
@@ -167,7 +166,6 @@ export default function ProjectListScreen({
           if (!isTagUser && !isMemoUser) return;
         }
 
-        // [4] 「フリーワード」フィルター
         if (highlightSearchQuery.trim() !== "") {
           const q = highlightSearchQuery.toLowerCase();
           const matchProject = p.title.toLowerCase().includes(q);
@@ -199,6 +197,7 @@ export default function ProjectListScreen({
           hasUnread: hasUnread,
           type: p.type,
           date: p.date,
+          status: tag.status || "shared",
         });
       });
     });
@@ -234,6 +233,11 @@ export default function ProjectListScreen({
   const youtubeRef = useRef(null);
 
   const [newSharedMemo, setNewSharedMemo] = useState("");
+
+  // ★ 追加：プロジェクト編集用のステート
+  const [isEditModalVisible, setIsEditModalVisible] = useState(false);
+  const [editingProject, setEditingProject] = useState(null);
+  const [editTitle, setEditTitle] = useState("");
 
   useEffect(() => {
     ScreenOrientation.unlockAsync().catch(() => {});
@@ -467,19 +471,50 @@ export default function ProjectListScreen({
     }
   };
 
-  const handleDeleteProject = (id, projectTitle) => {
+  // ★ 追加：プロジェクト編集の処理
+  const handleOpenEditProject = (item) => {
+    setEditingProject(item);
+    setEditTitle(item.title);
+    setIsEditModalVisible(true);
+  };
+
+  const handleSaveEditProject = async () => {
+    if (!editTitle.trim()) {
+      return Alert.alert("エラー", "プロジェクト名を入力してください。");
+    }
+
+    setProjects(
+      projects.map((p) =>
+        p.id === editingProject.id ? { ...p, title: editTitle.trim() } : p,
+      ),
+    );
+    setIsEditModalVisible(false);
+
+    try {
+      if (activeTeamId) {
+        await updateProject(activeTeamId, editingProject.id, {
+          title: editTitle.trim(),
+        });
+      }
+    } catch (e) {}
+  };
+
+  const handleDeleteProjectFromEdit = () => {
     Alert.alert(
       "削除の確認",
-      `「${projectTitle}」を削除しますか？\n（タグやメモなどのデータもすべて見えなくなります）`,
+      `「${editingProject.title}」を削除しますか？\n（タグやメモなどのデータもすべて見えなくなります）`,
       [
         { text: "キャンセル", style: "cancel" },
         {
           text: "削除する",
           style: "destructive",
           onPress: async () => {
+            const pid = editingProject.id;
+            setProjects(projects.filter((p) => p.id !== pid));
+            setIsEditModalVisible(false);
             try {
               if (activeTeamId) {
-                await deleteProject(activeTeamId, id);
+                await deleteProject(activeTeamId, pid);
               }
             } catch (e) {
               Alert.alert("エラー", "削除に失敗しました。");
@@ -559,12 +594,13 @@ export default function ProjectListScreen({
             {item.title}
           </Text>
 
-          {canDeleteProject && (
+          {/* ★ 変更：ゴミ箱ではなく編集ボタン(歯車)にする */}
+          {canManageProject && (
             <TouchableOpacity
-              style={styles.deleteIconBtn}
-              onPress={() => handleDeleteProject(item.id, item.title)}
+              style={styles.editIconBtn}
+              onPress={() => handleOpenEditProject(item)}
             >
-              <Text style={styles.deleteIconText}>🗑️</Text>
+              <Text style={styles.editIconText}>⚙️</Text>
             </TouchableOpacity>
           )}
         </View>
@@ -578,7 +614,6 @@ export default function ProjectListScreen({
     );
   };
 
-  // ★ 検索・フィルターバーのUI
   const renderFilterBar = () => (
     <View style={styles.filterBarContainer}>
       <View style={styles.filterInputWrapper}>
@@ -767,6 +802,10 @@ export default function ProjectListScreen({
                 >
                   {clip.project}
                 </Text>
+                {/* ★ 追加：自分専用(private)のタグの場合はアイコンを表示 */}
+                {clip.status === "private" && (
+                  <Text style={styles.privateIcon}>🔒</Text>
+                )}
                 {clip.hasUnread && <View style={styles.unreadDot} />}
               </View>
               <Text style={styles.clipCardSub}>
@@ -791,7 +830,7 @@ export default function ProjectListScreen({
       >
         {currentClip?.memos.length === 0 ? (
           <Text style={[styles.emptyText, isLandscape && { color: "#94a3b8" }]}>
-            このクリップに対するコメントはまだありません。
+            このクリップに対する議論はまだありません。
           </Text>
         ) : (
           currentClip?.memos.map((memo) => {
@@ -1021,7 +1060,7 @@ export default function ProjectListScreen({
         )}
       </View>
 
-      {/* ★ 詳細フィルターモーダル */}
+      {/* 詳細フィルターモーダル */}
       <Modal
         visible={isFilterModalVisible}
         transparent={true}
@@ -1033,7 +1072,6 @@ export default function ProjectListScreen({
               <Text style={styles.modalTitle}>詳細フィルター</Text>
             </View>
             <ScrollView style={{ padding: 15 }}>
-              {/* 追加：対象期間フィルター */}
               <Text style={styles.label}>対象期間</Text>
               <View style={styles.filterChipContainer}>
                 {[
@@ -1262,9 +1300,57 @@ export default function ProjectListScreen({
           </KeyboardAvoidingView>
         </View>
       </Modal>
+
+      {/* ★ 追加：プロジェクト編集用のモーダル */}
+      <Modal
+        visible={isEditModalVisible}
+        transparent={true}
+        animationType="fade"
+      >
+        <View style={styles.modalOverlay}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            style={styles.editProjectModalContent}
+          >
+            <Text style={styles.modalTitle}>プロジェクトの編集</Text>
+
+            <Text style={styles.label}>プロジェクト名</Text>
+            <TextInput
+              style={styles.editProjectInput}
+              value={editTitle}
+              onChangeText={setEditTitle}
+              placeholder="プロジェクト名"
+            />
+
+            <TouchableOpacity
+              style={styles.editProjectDeleteBtn}
+              onPress={handleDeleteProjectFromEdit}
+            >
+              <Text style={styles.editProjectDeleteBtnText}>
+                🗑️ このプロジェクトを消去する
+              </Text>
+            </TouchableOpacity>
+
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={styles.cancelBtn}
+                onPress={() => setIsEditModalVisible(false)}
+              >
+                <Text style={styles.cancelBtnText}>キャンセル</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.submitBtn}
+                onPress={handleSaveEditProject}
+              >
+                <Text style={styles.submitBtnText}>変更を保存</Text>
+              </TouchableOpacity>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
-}
+};
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#f0f2f5" },
@@ -1337,13 +1423,15 @@ const styles = StyleSheet.create({
   badgeOther: { backgroundColor: "#e0e0e0" },
   badgeText: { fontSize: 10, fontWeight: "bold", color: "#333" },
   cardTitle: { fontSize: 16, fontWeight: "bold", color: "#333", flex: 1 },
-  deleteIconBtn: { padding: 5, marginLeft: 10 },
-  deleteIconText: { fontSize: 16 },
+
+  // ★ 変更：編集アイコン用
+  editIconBtn: { padding: 5, marginLeft: 10 },
+  editIconText: { fontSize: 16 },
+
   cardSub: { fontSize: 12, color: "#888", marginBottom: 5 },
   urlText: { fontSize: 12, color: "#2ecc71", fontWeight: "bold" },
   noUrlText: { fontSize: 12, color: "#e74c3c" },
 
-  // ★ フィルター用のスタイル
   filterBarContainer: {
     flexDirection: "row",
     paddingHorizontal: 15,
@@ -1612,6 +1700,7 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     marginLeft: 10,
   },
+  privateIcon: { fontSize: 12, marginRight: 5 },
   unreadDot: {
     width: 8,
     height: 8,
@@ -1676,7 +1765,8 @@ const styles = StyleSheet.create({
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.5)",
-    justifyContent: "flex-end",
+    justifyContent: "center",
+    alignItems: "center",
   },
   detailHeader: {
     flexDirection: "row",
@@ -1684,19 +1774,19 @@ const styles = StyleSheet.create({
     marginBottom: 15,
     alignItems: "center",
   },
-  closeBtn: { fontSize: 14, color: "#0077cc", fontWeight: "bold" },
   modalContent: {
+    width: "85%",
     backgroundColor: "#fff",
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
     padding: 20,
-    paddingBottom: Platform.OS === "ios" ? 40 : 20,
-    maxHeight: "90%",
+    borderRadius: 12,
+    maxHeight: "80%",
   },
   modalTitle: {
     fontSize: 18,
     fontWeight: "bold",
+    marginBottom: 15,
     color: "#333",
+    textAlign: "center",
   },
   label: {
     fontSize: 14,
@@ -1747,4 +1837,32 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   submitBtnText: { color: "#fff", fontWeight: "bold", fontSize: 15 },
+
+  // ★ プロジェクト編集用スタイル
+  editProjectModalContent: {
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    padding: 20,
+    width: "85%",
+  },
+  editProjectInput: {
+    borderWidth: 1,
+    borderColor: "#ddd",
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 16,
+    marginBottom: 20,
+  },
+  editProjectDeleteBtn: {
+    backgroundColor: "#fff5f5",
+    borderWidth: 1,
+    borderColor: "#ffcccc",
+    padding: 12,
+    borderRadius: 8,
+    alignItems: "center",
+    marginBottom: 15,
+  },
+  editProjectDeleteBtnText: { color: "#c0392b", fontWeight: "bold" },
 });
+
+export default ProjectListScreen;

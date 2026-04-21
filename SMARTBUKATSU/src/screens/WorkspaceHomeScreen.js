@@ -48,7 +48,7 @@ const WorkspaceHomeScreen = ({
   setPosts,
   isOffline,
   clubMembers,
-  medicalRecords,
+  dailyReports = [],
   alertThresholds,
   userProfiles = {},
 }) => {
@@ -71,8 +71,9 @@ const WorkspaceHomeScreen = ({
   const isStaffOrAbove = ["owner", "staff", "admin"].includes(userRole);
   const canCreateChannel = ["owner", "staff", "admin"].includes(userRole);
 
+  // ★ 修正：削除済みのお知らせは未読カウントから除外する
   const unreadNoticeCount = notices.filter(
-    (n) => !n.readBy.includes(currentUser),
+    (n) => n.status !== "deleted" && !(n.readBy || []).includes(currentUser),
   ).length;
 
   const getAlertLevel = (record, allRecords) => {
@@ -94,10 +95,12 @@ const WorkspaceHomeScreen = ({
     return level;
   };
 
-  const unreadMedicalDangerCount = medicalRecords
-    ? medicalRecords.filter((r) => {
+  // ★ 修正：削除済みを除外して危険アラートをカウントする
+  const unreadMedicalDangerCount = dailyReports
+    ? dailyReports.filter((r) => {
+        if (r.status === "deleted") return false;
         if (r.isReviewed) return false;
-        return getAlertLevel(r, medicalRecords) === "danger";
+        return getAlertLevel(r, dailyReports) === "danger";
       }).length
     : 0;
 

@@ -16,23 +16,14 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../AuthContext";
 import { auth } from "../firebase";
-
-import {
-  EmailAuthProvider,
-  reauthenticateWithCredential,
-  updatePassword,
-  signOut,
-} from "firebase/auth";
-
 import {
   getTeamInviteCode,
   subscribeTeamData,
-  updateTeamName,
   addTeamArrayItem,
   removeTeamArrayItem,
-  updateUserName,
-  updateTeamMember,
-  removeTeamMember,
+  updateMemberProfile,
+  updateMemberRoleConfig,
+  removeTeamMember, // ★ 追加：退部処理
 } from "../services/firestoreService";
 
 const ThresholdSelector = ({ label, value, min, max, onChange }) => (
@@ -95,38 +86,27 @@ const SettingsScreen = ({
   navigation,
   isAdmin,
   currentUser,
-  clubMembers,
+  setCurrentUser,
+  adminPassword,
+  setAdminPassword,
+  memberPassword,
+  setMemberPassword,
+  clubMembers, // App.jsからの同期リスト
+  grades,
+  positions,
   alertThresholds,
   setAlertThresholds,
   userProfiles,
   setUserProfiles,
 }) => {
-  const { activeTeamId } = useAuth();
+  const { activeTeamId, logout } = useAuth();
   const [inviteCode, setInviteCode] = useState("読み込み中...");
-
-  const [grades, setGrades] = useState(["1年生", "2年生", "3年生"]);
-  const [positions, setPositions] = useState([
-    "キャプテン",
-    "マネージャー",
-    "GK",
-    "CP",
-  ]);
-
-  const [currentTeamName, setCurrentTeamName] = useState("");
 
   const currentUserProfile = userProfiles[currentUser] || {};
   const userRole =
     global.TEST_ROLE ||
     (isAdmin ? "owner" : currentUserProfile.role || "member");
   const isStaffOrAbove = ["owner", "staff", "admin"].includes(userRole);
-
-  const roleConfig = {
-    owner: { label: "監督(オーナー)", color: "#e74c3c", bg: "#fceeea" },
-    admin: { label: "管理者", color: "#e74c3c", bg: "#fceeea" },
-    staff: { label: "スタッフ", color: "#9b59b6", bg: "#f5eef8" },
-    captain: { label: "キャプテン", color: "#e67e22", bg: "#fdf2e9" },
-    member: { label: "一般部員", color: "#3498db", bg: "#ebf5fb" },
-  };
 
   useEffect(() => {
     if (!activeTeamId) return;
@@ -140,33 +120,27 @@ const SettingsScreen = ({
     };
     fetchInvite();
 
-    const unsubscribe = subscribeTeamData(activeTeamId, (data) => {
-      if (data) {
-        if (data.grades && data.grades.length > 0) setGrades(data.grades);
-        if (data.positions && data.positions.length > 0)
-          setPositions(data.positions);
-        if (data.name) setCurrentTeamName(data.name);
-      }
-    });
-
     return () => {
       isMounted = false;
-      unsubscribe();
     };
   }, [activeTeamId, isStaffOrAbove]);
+
+  const [newAdminPass, setNewAdminPass] = useState(adminPassword);
+  const [newMemberPass, setNewMemberPass] = useState(memberPassword);
+  const [showAdminPass, setShowAdminPass] = useState(false);
+  const [showMemberPass, setShowMemberPass] = useState(false);
 
   const [newGradeName, setNewGradeName] = useState("");
   const [newPositionName, setNewPositionName] = useState("");
 
-  // ★ project セクションを展開状態に追加
   const [expanded, setExpanded] = useState({
     teamInfo: false,
     alert: false,
+    password: false,
     member: false,
     grade: false,
     position: false,
     myProfile: false,
-    project: false,
     myPassword: false,
   });
 
@@ -182,17 +156,17 @@ const SettingsScreen = ({
     userProfiles[currentUser]?.position || "",
   );
 
-  const [clipPreSeconds, setClipPreSeconds] = useState(
-    userProfiles[currentUser]?.clipPreSeconds ?? 5,
-  );
-  const [clipPostSeconds, setClipPostSeconds] = useState(
-    userProfiles[currentUser]?.clipPostSeconds ?? 3,
-  );
+  useEffect(() => {
+    if (userProfiles[currentUser]) {
+      setMyGrade(userProfiles[currentUser].grade || "");
+      setMyPosition(userProfiles[currentUser].position || "");
+    }
+  }, [userProfiles, currentUser]);
 
-  const [currentPassword, setCurrentPassword] = useState("");
-  const [showCurrentPassword, setShowCurrentPassword] = useState(false);
-  const [newPassword, setNewPassword] = useState("");
-  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [myPassword, setMyPassword] = useState(
+    userProfiles[currentUser]?.password || "",
+  );
+  const [showMyPassword, setShowMyPassword] = useState(false);
 
   const [isRoleModalVisible, setIsRoleModalVisible] = useState(false);
   const [selectedMemberForRole, setSelectedMemberForRole] = useState(null);
@@ -205,6 +179,14 @@ const SettingsScreen = ({
     useState(false);
   const [selectedStaffForScope, setSelectedStaffForScope] = useState(null);
 
+  const roleConfig = {
+    owner: { label: "監督(オーナー)", color: "#e74c3c", bg: "#fceeea" },
+    admin: { label: "管理者", color: "#e74c3c", bg: "#fceeea" },
+    staff: { label: "スタッフ", color: "#9b59b6", bg: "#f5eef8" },
+    captain: { label: "キャプテン", color: "#e67e22", bg: "#fdf2e9" },
+    member: { label: "一般部員", color: "#3498db", bg: "#ebf5fb" },
+  };
+
   const staffList = clubMembers.filter((m) => {
     const r = userProfiles[m]?.role;
     return r === "owner" || r === "staff" || r === "admin";
@@ -214,18 +196,40 @@ const SettingsScreen = ({
     setExpanded((prev) => ({ ...prev, [sectionKey]: !prev[sectionKey] }));
   };
 
-  const handleSaveTeamName = async () => {
-    const trimmed = currentTeamName.trim();
-    if (!trimmed) {
-      Alert.alert("エラー", "チーム名を入力してください。");
+  const handleSavePasswords = () => {
+    if (newAdminPass.trim() === "" || newMemberPass.trim() === "") {
+      Alert.alert("エラー", "パスワードは空にできません。");
       return;
     }
-    try {
-      await updateTeamName(activeTeamId, trimmed);
-      Alert.alert("保存完了", "チーム名を更新しました。");
-    } catch (e) {
-      Alert.alert("エラー", "チーム名の更新に失敗しました。");
-    }
+    setAdminPassword(newAdminPass);
+    setMemberPassword(newMemberPass);
+    Alert.alert("保存完了", "チームの共通パスワードを更新しました。");
+  };
+
+  // ★ 修正：手動追加を廃止し、部員を削除（強制退部）する機能に変更
+  const handleDeleteMember = (memberName) => {
+    Alert.alert(
+      "部員の削除",
+      `${memberName} をチームから除外しますか？\n（この部員はログインできなくなります）`,
+      [
+        { text: "キャンセル", style: "cancel" },
+        {
+          text: "削除する",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              const targetUid = userProfiles[memberName]?.uid;
+              if (activeTeamId && targetUid) {
+                await removeTeamMember(activeTeamId, targetUid);
+                Alert.alert("削除完了", "部員を削除しました。");
+              }
+            } catch (error) {
+              Alert.alert("エラー", "削除に失敗しました。");
+            }
+          },
+        },
+      ],
+    );
   };
 
   const handleAddTeamArrayItem = async (field, value, setter) => {
@@ -256,7 +260,6 @@ const SettingsScreen = ({
     ]);
   };
 
-  // ★ プロフィール保存（切り抜き秒数は除外）
   const handleSaveMemberProfile = async () => {
     const trimmedName = myNewName.trim();
     if (trimmedName === "") {
@@ -267,136 +270,50 @@ const SettingsScreen = ({
     try {
       const uid = auth.currentUser?.uid;
       if (uid) {
-        await updateUserName(uid, trimmedName);
-        if (activeTeamId) {
-          await updateTeamMember(activeTeamId, uid, {
-            name: trimmedName,
-          });
-        }
+        await updateMemberProfile(
+          activeTeamId,
+          uid,
+          trimmedName,
+          myGrade,
+          myPosition,
+        );
       }
       Alert.alert(
         "保存完了",
-        "プロフィール設定を更新しました。\n変更はアプリ全体に即座に反映されます。",
+        "プロフィールを更新しました。\n（※すぐに他の画面にも反映されます）",
       );
     } catch (error) {
+      console.log("プロフィール更新エラー:", error);
       Alert.alert("エラー", "プロフィールの更新に失敗しました。");
     }
   };
 
-  // ★ 新規追加：プロジェクト設定（切り抜き秒数）専用の保存関数
-  const handleSaveProjectSettings = async () => {
-    try {
-      const uid = auth.currentUser?.uid;
-      if (uid && activeTeamId) {
-        await updateTeamMember(activeTeamId, uid, {
-          clipPreSeconds,
-          clipPostSeconds,
-        });
-      }
-      Alert.alert("保存完了", "プロジェクトの設定を更新しました。");
-    } catch (error) {
-      Alert.alert("エラー", "設定の更新に失敗しました。");
-    }
-  };
-
-  const handleChangeAuthPassword = async () => {
-    if (!currentPassword || !newPassword) {
-      Alert.alert(
-        "エラー",
-        "現在のパスワードと新しいパスワードを入力してください。",
-      );
+  const handleSaveMemberPassword = () => {
+    if (myPassword.trim() === "") {
+      Alert.alert("エラー", "パスワードは空にできません。");
       return;
     }
-    if (newPassword.length < 6) {
-      Alert.alert("エラー", "新しいパスワードは6文字以上で入力してください。");
-      return;
-    }
-
-    const user = auth.currentUser;
-    if (!user || !user.email) {
-      Alert.alert("エラー", "ユーザー情報の取得に失敗しました。");
-      return;
-    }
-
-    try {
-      const credential = EmailAuthProvider.credential(
-        user.email,
-        currentPassword,
-      );
-      await reauthenticateWithCredential(user, credential);
-
-      await updatePassword(user, newPassword);
-
-      Alert.alert(
-        "成功",
-        "パスワードを変更しました。\n次回から新しいパスワードでログインしてください。",
-      );
-      setCurrentPassword("");
-      setNewPassword("");
-    } catch (error) {
-      console.log(error);
-      let msg = "パスワードの変更に失敗しました。";
-      if (
-        error.code === "auth/invalid-credential" ||
-        error.code === "auth/wrong-password"
-      ) {
-        msg = "現在のパスワードが間違っています。";
-      } else if (error.code === "auth/too-many-requests") {
-        msg =
-          "試行回数が多すぎます。しばらく時間を置いてから再度お試しください。";
-      }
-      Alert.alert("エラー", msg);
-    }
-  };
-
-  const handleLogout = () => {
+    setUserProfiles((prev) => ({
+      ...prev,
+      [currentUser]: { ...(prev[currentUser] || {}), password: myPassword },
+    }));
     Alert.alert(
-      "ログアウト",
-      "アカウントからログアウトしてもよろしいですか？",
-      [
-        { text: "キャンセル", style: "cancel" },
-        {
-          text: "ログアウト",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              await signOut(auth);
-            } catch (error) {
-              Alert.alert("エラー", "ログアウトに失敗しました。");
-            }
-          },
-        },
-      ],
+      "保存完了",
+      "自分専用のパスワードを設定しました。次回のログインから使用できます。",
     );
   };
 
-  const handleDeleteMember = (name, uid) => {
-    if (!uid) {
-      Alert.alert("エラー", "ユーザー情報を取得できませんでした。");
+  const handleOpenRoleModal = (memberName) => {
+    if (memberName === "管理者" || memberName === "監督") {
+      Alert.alert("エラー", "デフォルト管理者の権限は変更できません。");
       return;
     }
-    Alert.alert("部員の削除", `${name} さんをチームから完全に削除しますか？`, [
-      { text: "キャンセル", style: "cancel" },
-      {
-        text: "削除する",
-        style: "destructive",
-        onPress: async () => {
-          try {
-            await removeTeamMember(activeTeamId, uid);
-          } catch (e) {
-            Alert.alert("エラー", "削除に失敗しました。");
-          }
-        },
-      },
-    ]);
-  };
-
-  const handleOpenRoleModal = (memberName) => {
     const targetRole = userProfiles[memberName]?.role || "member";
     if (targetRole === "owner") {
       Alert.alert("操作エラー", "監督(オーナー)の権限は変更できません。");
       return;
     }
+
     if (
       userRole === "staff" &&
       targetRole === "staff" &&
@@ -415,21 +332,18 @@ const SettingsScreen = ({
 
   const handleChangeRole = async (newRole) => {
     if (!selectedMemberForRole) return;
-    const uid = userProfiles[selectedMemberForRole]?.uid;
+    const targetUid = userProfiles[selectedMemberForRole]?.uid;
 
-    try {
-      if (uid && activeTeamId) {
-        await updateTeamMember(activeTeamId, uid, { role: newRole });
-      }
-      setIsRoleModalVisible(false);
-      Alert.alert(
-        "設定完了",
-        `${selectedMemberForRole} の権限を「${roleConfig[newRole].label}」に変更しました。`,
-      );
-      setSelectedMemberForRole(null);
-    } catch (e) {
-      Alert.alert("エラー", "権限の変更に失敗しました。");
+    if (activeTeamId && targetUid) {
+      await updateMemberRoleConfig(activeTeamId, targetUid, { role: newRole });
     }
+
+    setIsRoleModalVisible(false);
+    Alert.alert(
+      "設定完了",
+      `${selectedMemberForRole} の権限を「${roleConfig[newRole].label}」に変更しました。`,
+    );
+    setSelectedMemberForRole(null);
   };
 
   const handleOpenAssignStaffModal = (memberName) => {
@@ -439,18 +353,15 @@ const SettingsScreen = ({
 
   const handleAssignStaff = async (staffName) => {
     if (!selectedMemberForAssign) return;
-    const uid = userProfiles[selectedMemberForAssign]?.uid;
-    const assignedStaff = staffName === "未設定" ? null : staffName;
+    const targetUid = userProfiles[selectedMemberForAssign]?.uid;
 
-    try {
-      if (uid && activeTeamId) {
-        await updateTeamMember(activeTeamId, uid, { assignedStaff });
-      }
-      setIsAssignStaffModalVisible(false);
-      setSelectedMemberForAssign(null);
-    } catch (e) {
-      Alert.alert("エラー", "担当の変更に失敗しました。");
+    if (activeTeamId && targetUid) {
+      await updateMemberRoleConfig(activeTeamId, targetUid, {
+        assignedStaff: staffName === "未設定" ? null : staffName,
+      });
     }
+    setIsAssignStaffModalVisible(false);
+    setSelectedMemberForAssign(null);
   };
 
   const handleOpenStaffScopeModal = (staffName) => {
@@ -460,17 +371,15 @@ const SettingsScreen = ({
 
   const handleStaffScope = async (scope) => {
     if (!selectedStaffForScope) return;
-    const uid = userProfiles[selectedStaffForScope]?.uid;
+    const targetUid = userProfiles[selectedStaffForScope]?.uid;
 
-    try {
-      if (uid && activeTeamId) {
-        await updateTeamMember(activeTeamId, uid, { staffScope: scope });
-      }
-      setIsStaffScopeModalVisible(false);
-      setSelectedStaffForScope(null);
-    } catch (e) {
-      Alert.alert("エラー", "閲覧範囲の変更に失敗しました。");
+    if (activeTeamId && targetUid) {
+      await updateMemberRoleConfig(activeTeamId, targetUid, {
+        staffScope: scope,
+      });
     }
+    setIsStaffScopeModalVisible(false);
+    setSelectedStaffForScope(null);
   };
 
   const copyToClipboard = (text, label) => {
@@ -481,63 +390,27 @@ const SettingsScreen = ({
     );
   };
 
-  const PasswordSection = () => (
-    <SectionCard
-      isExp={expanded.myPassword}
-      onToggle={() => toggleSection("myPassword")}
-      title="🔑 アカウントのパスワード変更"
-    >
-      <Text style={styles.subText}>
-        ログインに使用するパスワードを変更します。（※セキュリティ上、現在のパスワードは確認用に入力が必要です）
-      </Text>
-
-      <Text style={styles.label}>現在のパスワード</Text>
-      <View style={styles.passwordRow}>
-        <TextInput
-          style={styles.passwordInput}
-          placeholder="現在のパスワードを入力"
-          secureTextEntry={!showCurrentPassword}
-          value={currentPassword}
-          onChangeText={setCurrentPassword}
-          autoCapitalize="none"
-        />
-        <TouchableOpacity
-          style={styles.toggleBtn}
-          onPress={() => setShowCurrentPassword(!showCurrentPassword)}
-        >
-          <Text style={styles.toggleBtnText}>
-            {showCurrentPassword ? "隠す" : "表示"}
-          </Text>
-        </TouchableOpacity>
-      </View>
-
-      <Text style={styles.label}>新しいパスワード (6文字以上)</Text>
-      <View style={styles.passwordRow}>
-        <TextInput
-          style={styles.passwordInput}
-          placeholder="新しく設定するパスワード"
-          secureTextEntry={!showNewPassword}
-          value={newPassword}
-          onChangeText={setNewPassword}
-          autoCapitalize="none"
-        />
-        <TouchableOpacity
-          style={styles.toggleBtn}
-          onPress={() => setShowNewPassword(!showNewPassword)}
-        >
-          <Text style={styles.toggleBtnText}>
-            {showNewPassword ? "隠す" : "表示"}
-          </Text>
-        </TouchableOpacity>
-      </View>
-      <TouchableOpacity
-        style={[styles.saveBtn, { backgroundColor: "#3498db", marginTop: 5 }]}
-        onPress={handleChangeAuthPassword}
-      >
-        <Text style={styles.saveBtnText}>パスワードを変更する</Text>
-      </TouchableOpacity>
-    </SectionCard>
-  );
+  const handleLogout = () => {
+    Alert.alert("ログアウト", "アカウントからログアウトしますか？", [
+      { text: "キャンセル", style: "cancel" },
+      {
+        text: "ログアウト",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            if (logout) {
+              await logout();
+            } else {
+              await auth.signOut();
+            }
+          } catch (error) {
+            console.log("ログアウトエラー:", error);
+            Alert.alert("エラー", "ログアウトに失敗しました。");
+          }
+        },
+      },
+    ]);
+  };
 
   return (
     <SafeAreaView style={styles.container}>
@@ -562,27 +435,6 @@ const SettingsScreen = ({
               <Text style={styles.sectionDescription}>
                 自分のプロフィールやパスワードを変更できます。
               </Text>
-
-              <SectionCard
-                isExp={expanded.teamInfo}
-                onToggle={() => toggleSection("teamInfo")}
-                title="🏟️ 所属チーム情報"
-              >
-                <Text style={styles.label}>チーム名</Text>
-                <View style={styles.readOnlyBox}>
-                  <Text style={styles.readOnlyText}>
-                    {currentTeamName || "---"}
-                  </Text>
-                </View>
-                <Text style={[styles.label, { marginTop: 15 }]}>
-                  あなたの権限
-                </Text>
-                <View style={styles.readOnlyBox}>
-                  <Text style={styles.readOnlyText}>
-                    {roleConfig[userRole]?.label || "一般部員"}
-                  </Text>
-                </View>
-              </SectionCard>
 
               <SectionCard
                 isExp={expanded.myProfile}
@@ -636,42 +488,42 @@ const SettingsScreen = ({
                 </TouchableOpacity>
               </SectionCard>
 
-              {/* ★ 一般部員向け：プロジェクト設定タブ */}
               <SectionCard
-                isExp={expanded.project}
-                onToggle={() => toggleSection("project")}
-                title="📁 プロジェクト設定"
+                isExp={expanded.myPassword}
+                onToggle={() => toggleSection("myPassword")}
+                title="🔑 自分専用パスワードの設定"
               >
-                <Text style={[styles.label, { color: "#0077cc" }]}>
-                  🎥 ハイライトの切り抜き秒数
+                <Text style={styles.subText}>
+                  チーム共通パスワードの代わりに、自分だけがログインできる秘密のパスワードを設定します。
                 </Text>
-                <Text style={styles.hintText}>
-                  動画分析時、タグ付けした瞬間を基準に前後何秒を切り抜くか設定します。
-                </Text>
-                <ThresholdSelector
-                  label="何秒前から？"
-                  value={clipPreSeconds}
-                  min={0}
-                  max={30}
-                  onChange={setClipPreSeconds}
-                />
-                <ThresholdSelector
-                  label="何秒後まで？"
-                  value={clipPostSeconds}
-                  min={0}
-                  max={30}
-                  onChange={setClipPostSeconds}
-                />
-
+                <Text style={styles.label}>自分専用パスワード</Text>
+                <View style={styles.passwordRow}>
+                  <TextInput
+                    style={styles.passwordInput}
+                    placeholder="未設定"
+                    secureTextEntry={!showMyPassword}
+                    value={myPassword}
+                    onChangeText={setMyPassword}
+                  />
+                  <TouchableOpacity
+                    style={styles.toggleBtn}
+                    onPress={() => setShowMyPassword(!showMyPassword)}
+                  >
+                    <Text style={styles.toggleBtnText}>
+                      {showMyPassword ? "隠す" : "表示"}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
                 <TouchableOpacity
-                  style={styles.saveBtn}
-                  onPress={handleSaveProjectSettings}
+                  style={[
+                    styles.saveBtn,
+                    { backgroundColor: "#3498db", marginTop: 5 },
+                  ]}
+                  onPress={handleSaveMemberPassword}
                 >
-                  <Text style={styles.saveBtnText}>設定を保存</Text>
+                  <Text style={styles.saveBtnText}>パスワードを設定</Text>
                 </TouchableOpacity>
               </SectionCard>
-
-              <PasswordSection />
             </>
           ) : (
             <>
@@ -679,6 +531,7 @@ const SettingsScreen = ({
                 チームの管理・設定を行うことができます。
               </Text>
 
+              {/* Profile setup for admin */}
               <SectionCard
                 isExp={expanded.myProfile}
                 onToggle={() => toggleSection("myProfile")}
@@ -696,7 +549,6 @@ const SettingsScreen = ({
                 <Text style={styles.hintText}>
                   ※変更するとアプリ全体の表示名が切り替わります。
                 </Text>
-
                 <TouchableOpacity
                   style={styles.saveBtn}
                   onPress={handleSaveMemberProfile}
@@ -705,70 +557,12 @@ const SettingsScreen = ({
                 </TouchableOpacity>
               </SectionCard>
 
-              {/* ★ 管理者向け：プロジェクト設定タブ */}
-              <SectionCard
-                isExp={expanded.project}
-                onToggle={() => toggleSection("project")}
-                title="📁 プロジェクト設定"
-              >
-                <Text style={[styles.label, { color: "#0077cc" }]}>
-                  🎥 ハイライトの切り抜き秒数
-                </Text>
-                <Text style={styles.hintText}>
-                  動画分析時、タグ付けした瞬間を基準に前後何秒を切り抜くか設定します。
-                </Text>
-                <ThresholdSelector
-                  label="何秒前から？"
-                  value={clipPreSeconds}
-                  min={0}
-                  max={30}
-                  onChange={setClipPreSeconds}
-                />
-                <ThresholdSelector
-                  label="何秒後まで？"
-                  value={clipPostSeconds}
-                  min={0}
-                  max={30}
-                  onChange={setClipPostSeconds}
-                />
-
-                <TouchableOpacity
-                  style={styles.saveBtn}
-                  onPress={handleSaveProjectSettings}
-                >
-                  <Text style={styles.saveBtnText}>設定を保存</Text>
-                </TouchableOpacity>
-              </SectionCard>
-
               <SectionCard
                 isExp={expanded.teamInfo}
                 onToggle={() => toggleSection("teamInfo")}
                 title="🏟️ 所属チーム・入部用コード"
               >
-                <Text style={styles.label}>チーム名</Text>
-                <TextInput
-                  style={styles.input}
-                  value={currentTeamName}
-                  onChangeText={setCurrentTeamName}
-                  placeholder="例: ○○高校 野球部"
-                />
-                <TouchableOpacity
-                  style={[styles.saveBtn, { marginTop: 5, marginBottom: 20 }]}
-                  onPress={handleSaveTeamName}
-                >
-                  <Text style={styles.saveBtnText}>チーム名を保存</Text>
-                </TouchableOpacity>
-
-                <View
-                  style={[
-                    styles.idInfoBox,
-                    {
-                      borderTopWidth: 1,
-                      borderTopColor: "#eee",
-                      paddingTop: 15,
-                    },
-                  ]}
-                >
+                <View style={styles.idInfoBox}>
                   <Text style={styles.idLabel}>
                     部員に教える【招待コード】:
                   </Text>
@@ -861,15 +655,65 @@ const SettingsScreen = ({
               </SectionCard>
 
               <SectionCard
+                isExp={expanded.password}
+                onToggle={() => toggleSection("password")}
+                title="🔑 チームパスワード設定"
+              >
+                <Text style={styles.label}>管理者・スタッフ用パスワード</Text>
+                <View style={styles.passwordRow}>
+                  <TextInput
+                    style={styles.passwordInput}
+                    value={newAdminPass}
+                    onChangeText={setNewAdminPass}
+                    secureTextEntry={!showAdminPass}
+                  />
+                  <TouchableOpacity
+                    style={styles.toggleBtn}
+                    onPress={() => setShowAdminPass(!showAdminPass)}
+                  >
+                    <Text style={styles.toggleBtnText}>
+                      {showAdminPass ? "隠す" : "表示"}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+                <Text style={styles.label}>部員用共通パスワード（初期）</Text>
+                <View style={styles.passwordRow}>
+                  <TextInput
+                    style={styles.passwordInput}
+                    value={newMemberPass}
+                    onChangeText={setNewMemberPass}
+                    secureTextEntry={!showMemberPass}
+                  />
+                  <TouchableOpacity
+                    style={styles.toggleBtn}
+                    onPress={() => setShowMemberPass(!showMemberPass)}
+                  >
+                    <Text style={styles.toggleBtnText}>
+                      {showMemberPass ? "隠す" : "表示"}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+                <TouchableOpacity
+                  style={styles.saveBtn}
+                  onPress={handleSavePasswords}
+                >
+                  <Text style={styles.saveBtnText}>パスワードを保存</Text>
+                </TouchableOpacity>
+              </SectionCard>
+
+              <SectionCard
                 isExp={expanded.member}
                 onToggle={() => toggleSection("member")}
                 title="👥 部員リスト・権限・担当管理"
               >
+                {/* ★ 修正：手動追加の行を削除し、説明文を追加 */}
                 <Text
-                  style={[styles.hintText, { marginBottom: 15, fontSize: 13 }]}
+                  style={[
+                    styles.hintText,
+                    { marginBottom: 10, textAlign: "center", color: "#e67e22" },
+                  ]}
                 >
-                  ※
-                  新しい部員は、招待コードを使ってアプリに登録すると自動的にここに追加されます。
+                  ※部員は招待コードを使用してログインすると自動的に追加されます。
                 </Text>
 
                 <View style={styles.memberList}>
@@ -884,14 +728,14 @@ const SettingsScreen = ({
                       <View key={name} style={styles.memberItem}>
                         <View style={{ flex: 1 }}>
                           <Text style={styles.memberName}>{name}</Text>
+                          {/* ★ 修正：強制退部処理に変更 */}
                           <TouchableOpacity
-                            onPress={() =>
-                              handleDeleteMember(name, profile.uid)
-                            }
+                            onPress={() => handleDeleteMember(name)}
                           >
                             <Text style={styles.deleteText}>削除</Text>
                           </TouchableOpacity>
                         </View>
+
                         <View style={{ alignItems: "flex-end" }}>
                           <TouchableOpacity
                             style={[
@@ -913,6 +757,7 @@ const SettingsScreen = ({
                               {roleData.label} ▾
                             </Text>
                           </TouchableOpacity>
+
                           {(memberRole === "member" ||
                             memberRole === "captain") && (
                             <TouchableOpacity
@@ -924,6 +769,7 @@ const SettingsScreen = ({
                               </Text>
                             </TouchableOpacity>
                           )}
+
                           {memberRole === "staff" && (
                             <TouchableOpacity
                               style={styles.subSettingBadge}
@@ -1044,20 +890,22 @@ const SettingsScreen = ({
                   )}
                 </View>
               </SectionCard>
-
-              <PasswordSection />
             </>
           )}
 
-          <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
-            <Text style={styles.logoutBtnText}>ログアウト</Text>
-          </TouchableOpacity>
+          <View style={styles.logoutContainer}>
+            <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
+              <Text style={styles.logoutBtnText}>🚪 ログアウト</Text>
+            </TouchableOpacity>
+          </View>
 
           <View style={{ height: 100 }} />
         </ScrollView>
       </KeyboardAvoidingView>
 
-      {/* モーダル群 */}
+      {/* ========================================== */}
+      {/* ▼ モーダル群 */}
+      {/* ========================================== */}
       <Modal
         visible={isRoleModalVisible}
         transparent={true}
@@ -1068,6 +916,7 @@ const SettingsScreen = ({
             <Text style={styles.modalTitle}>
               {selectedMemberForRole} の権限を変更
             </Text>
+
             {userRole === "owner" && (
               <TouchableOpacity
                 style={[
@@ -1083,6 +932,7 @@ const SettingsScreen = ({
                 </Text>
               </TouchableOpacity>
             )}
+
             <TouchableOpacity
               style={[
                 styles.roleSelectBtn,
@@ -1096,6 +946,7 @@ const SettingsScreen = ({
                 プロジェクトの作成や消去、全体への連絡が可能です。他メンバーの通報・メディカルは見られません。
               </Text>
             </TouchableOpacity>
+
             <TouchableOpacity
               style={[
                 styles.roleSelectBtn,
@@ -1110,6 +961,7 @@ const SettingsScreen = ({
                 プロジェクトの閲覧やタグ付け、自身のメディカル入力のみが可能です。
               </Text>
             </TouchableOpacity>
+
             <TouchableOpacity
               style={styles.cancelBtn}
               onPress={() => setIsRoleModalVisible(false)}
@@ -1176,6 +1028,7 @@ const SettingsScreen = ({
             <Text style={styles.settingHint}>
               日記やメディカル情報をどこまで閲覧できるか設定します。
             </Text>
+
             <TouchableOpacity
               style={[
                 styles.roleSelectBtn,
@@ -1192,6 +1045,7 @@ const SettingsScreen = ({
                 すべての部員の記録を閲覧できます。
               </Text>
             </TouchableOpacity>
+
             <TouchableOpacity
               style={[
                 styles.roleSelectBtn,
@@ -1207,6 +1061,7 @@ const SettingsScreen = ({
                 自分が担当に設定されている部員の記録のみ閲覧できます。
               </Text>
             </TouchableOpacity>
+
             <TouchableOpacity
               style={styles.cancelBtn}
               onPress={() => setIsStaffScopeModalVisible(false)}
@@ -1245,6 +1100,7 @@ const styles = StyleSheet.create({
     marginBottom: 15,
     textAlign: "center",
   },
+
   card: {
     backgroundColor: "#fff",
     borderRadius: 12,
@@ -1267,6 +1123,7 @@ const styles = StyleSheet.create({
   cardTitle: { fontSize: 16, fontWeight: "bold", color: "#333" },
   chevron: { fontSize: 16, color: "#888", fontWeight: "bold" },
   cardContent: { padding: 20, paddingTop: 15 },
+
   subText: { fontSize: 12, color: "#666", marginBottom: 15 },
   label: { fontSize: 14, fontWeight: "bold", color: "#555", marginBottom: 5 },
   input: {
@@ -1276,18 +1133,6 @@ const styles = StyleSheet.create({
     padding: 12,
     borderRadius: 8,
     fontSize: 16,
-  },
-  readOnlyBox: {
-    backgroundColor: "#f5f5f5",
-    borderWidth: 1,
-    borderColor: "#eee",
-    padding: 12,
-    borderRadius: 8,
-  },
-  readOnlyText: {
-    fontSize: 16,
-    color: "#555",
-    fontWeight: "bold",
   },
   inputFlex: {
     flex: 1,
@@ -1299,6 +1144,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   hintText: { fontSize: 11, color: "#888", marginTop: 4 },
+
   optionBtn: {
     backgroundColor: "#f0f0f0",
     paddingHorizontal: 15,
@@ -1314,6 +1160,7 @@ const styles = StyleSheet.create({
   },
   optionText: { fontSize: 13, color: "#555" },
   optionTextActive: { color: "#27ae60", fontWeight: "bold" },
+
   thresholdRow: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -1357,6 +1204,7 @@ const styles = StyleSheet.create({
     marginTop: 4,
     marginRight: 10,
   },
+
   passwordRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -1408,6 +1256,7 @@ const styles = StyleSheet.create({
   },
   deleteText: { color: "#e74c3c", fontWeight: "bold", fontSize: 12 },
   emptyText: { padding: 15, textAlign: "center", color: "#888" },
+
   roleBadge: {
     paddingHorizontal: 12,
     paddingVertical: 6,
@@ -1415,6 +1264,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   roleBadgeText: { fontSize: 12, fontWeight: "bold" },
+
   subSettingBadge: {
     paddingHorizontal: 8,
     paddingVertical: 4,
@@ -1424,7 +1274,12 @@ const styles = StyleSheet.create({
     borderColor: "#ccc",
     marginTop: 6,
   },
-  subSettingText: { fontSize: 10, color: "#666", fontWeight: "bold" },
+  subSettingText: {
+    fontSize: 10,
+    color: "#666",
+    fontWeight: "bold",
+  },
+
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.5)",
@@ -1452,14 +1307,22 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     marginBottom: 10,
   },
-  roleSelectBtnActive: { backgroundColor: "#ebf5fb", borderColor: "#3498db" },
+  roleSelectBtnActive: {
+    backgroundColor: "#ebf5fb",
+    borderColor: "#3498db",
+  },
   roleSelectTitle: {
     fontSize: 15,
     fontWeight: "bold",
     color: "#333",
     marginBottom: 6,
   },
-  roleSelectDesc: { fontSize: 12, color: "#666", lineHeight: 18 },
+  roleSelectDesc: {
+    fontSize: 12,
+    color: "#666",
+    lineHeight: 18,
+  },
+
   optionBtnFull: {
     padding: 15,
     borderBottomWidth: 1,
@@ -1477,8 +1340,18 @@ const styles = StyleSheet.create({
     marginBottom: 15,
     textAlign: "center",
   },
-  cancelBtn: { marginTop: 10, paddingVertical: 12, alignItems: "center" },
-  cancelBtnText: { fontSize: 15, fontWeight: "bold", color: "#888" },
+
+  cancelBtn: {
+    marginTop: 10,
+    paddingVertical: 12,
+    alignItems: "center",
+  },
+  cancelBtnText: {
+    fontSize: 15,
+    fontWeight: "bold",
+    color: "#888",
+  },
+
   idInfoBox: { alignItems: "center", paddingVertical: 10 },
   idLabel: { fontSize: 12, color: "#888", fontWeight: "bold", marginBottom: 5 },
   idValueHighlight: {
@@ -1496,12 +1369,19 @@ const styles = StyleSheet.create({
     borderRadius: 20,
   },
   copySubBtnText: { color: "#0077cc", fontSize: 13, fontWeight: "bold" },
+
+  logoutContainer: {
+    marginTop: 20,
+    marginBottom: 40,
+    alignItems: "center",
+  },
   logoutBtn: {
     backgroundColor: "#e74c3c",
     paddingVertical: 15,
+    paddingHorizontal: 40,
     borderRadius: 8,
+    width: "100%",
     alignItems: "center",
-    marginTop: 20,
   },
   logoutBtnText: {
     color: "#fff",

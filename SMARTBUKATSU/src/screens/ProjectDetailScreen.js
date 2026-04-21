@@ -40,13 +40,15 @@ const ProjectDetailScreen = ({
   const { activeTeamId } = useAuth();
 
   const [localTags, setLocalTags] = useState(project.tags || []);
-  const [localMemos, setLocalMemos] = useState(project.memos || []);
 
-  // ★ 修正：タグボタンの初期状態もプロジェクトデータから取得（デフォルトを設定）
+  // ★ タグボタンの初期状態
   const defaultQuickTags = ["ナイスプレー", "得点", "罰則"];
   const [quickTags, setQuickTags] = useState(
     project.quickTags || defaultQuickTags,
   );
+
+  // ★ 複数選択用のステートを追加
+  const [selectedQuickTags, setSelectedQuickTags] = useState([]);
 
   const { width, height } = useWindowDimensions();
   const isLandscape = width > height;
@@ -75,13 +77,9 @@ const ProjectDetailScreen = ({
   const [videoTime, setVideoTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
 
-  const [activeTab, setActiveTab] = useState("tag");
-
   const [isAddQuickTagModalVisible, setIsAddQuickTagModalVisible] =
     useState(false);
   const [newQuickTagName, setNewQuickTagName] = useState("");
-
-  const [newMemoText, setNewMemoText] = useState("");
 
   const showToast = (message) => {
     setToastMessage(message);
@@ -101,12 +99,10 @@ const ProjectDetailScreen = ({
     return match && match[2].length === 11 ? match[2] : null;
   };
 
-  // ★ 追加：他の人がタグやメモ、タグボタンを追加した時にリアルタイムで画面を更新する
   useEffect(() => {
     const updatedProject = projects?.find((p) => p.id === routeProject?.id);
     if (updatedProject) {
       setLocalTags(updatedProject.tags || []);
-      setLocalMemos(updatedProject.memos || []);
       setQuickTags(updatedProject.quickTags || defaultQuickTags);
     }
   }, [projects, routeProject?.id]);
@@ -241,17 +237,53 @@ const ProjectDetailScreen = ({
     setVideoTime(newTime);
   };
 
-  const handleAddTag = async (label) => {
+  // ★ 変更：タグを選択/解除するトグル
+  const toggleQuickTag = (tag) => {
+    if (selectedQuickTags.includes(tag)) {
+      setSelectedQuickTags(selectedQuickTags.filter((t) => t !== tag));
+    } else {
+      setSelectedQuickTags([...selectedQuickTags, tag]);
+    }
+  };
+
+  // ★ 変更：選択した複数のタグをまとめて「未共有」として保存する
+  const executeAddTag = async () => {
+    if (selectedQuickTags.length === 0) return;
+    const label = selectedQuickTags.join(" + ");
+
     const newTag = {
       id: "tag_" + Date.now(),
       videoTime,
       label,
       user: displayUserName,
+      status: "private", // 初期は自分のみに見える
     };
+
     const newTags = [...localTags, newTag].sort(
       (a, b) => a.videoTime - b.videoTime,
     );
+    setLocalTags(newTags);
+    setSelectedQuickTags([]); // 選択をクリア
 
+    if (setProjects) {
+      setProjects((prev) =>
+        prev.map((p) => (p.id === project.id ? { ...p, tags: newTags } : p)),
+      );
+    }
+
+    showToast(`✅ タグを記録しました（未共有）`);
+
+    try {
+      const safeTeamId = activeTeamId || "test_team";
+      await updateProject(safeTeamId, project.id, { tags: newTags });
+    } catch (error) {}
+  };
+
+  // ★ 追加：タグを全体に共有（公開）する処理
+  const handleShareTag = async (tagId) => {
+    const newTags = localTags.map((t) =>
+      t.id === tagId ? { ...t, status: "shared" } : t,
+    );
     setLocalTags(newTags);
 
     if (setProjects) {
@@ -260,11 +292,10 @@ const ProjectDetailScreen = ({
       );
     }
 
-    showToast(`✅ タグ「${label}」を追加しました`);
-
     try {
       const safeTeamId = activeTeamId || "test_team";
       await updateProject(safeTeamId, project.id, { tags: newTags });
+      showToast("📢 チーム全体に公開しました");
     } catch (error) {}
   };
 
@@ -284,55 +315,6 @@ const ProjectDetailScreen = ({
     } catch (error) {}
   };
 
-  const handleAddMemo = async () => {
-    if (newMemoText.trim() === "") return;
-    const newMemo = {
-      id: "memo_" + Date.now(),
-      videoTime,
-      text: newMemoText,
-      user: displayUserName,
-      uid: auth.currentUser?.uid,
-    };
-    const newMemos = [...localMemos, newMemo].sort(
-      (a, b) => a.videoTime - b.videoTime,
-    );
-
-    setLocalMemos(newMemos);
-
-    if (setProjects) {
-      setProjects((prev) =>
-        prev.map((p) => (p.id === project.id ? { ...p, memos: newMemos } : p)),
-      );
-    }
-
-    setNewMemoText("");
-    Keyboard.dismiss();
-
-    try {
-      const safeTeamId = activeTeamId || "test_team";
-      await updateProject(safeTeamId, project.id, { memos: newMemos });
-    } catch (error) {
-      console.log(error);
-    }
-  };
-
-  const handleDeleteMemo = async (id) => {
-    const newMemos = localMemos.filter((m) => m.id !== id);
-    setLocalMemos(newMemos);
-
-    if (setProjects) {
-      setProjects((prev) =>
-        prev.map((p) => (p.id === project.id ? { ...p, memos: newMemos } : p)),
-      );
-    }
-
-    try {
-      const safeTeamId = activeTeamId || "test_team";
-      await updateProject(safeTeamId, project.id, { memos: newMemos });
-    } catch (error) {}
-  };
-
-  // ★ 修正：タグボタン追加時、Firestoreに保存して他の人にも共有する
   const handleCreateQuickTag = async () => {
     const trimmed = newQuickTagName.trim();
     if (trimmed === "") return;
@@ -340,7 +322,6 @@ const ProjectDetailScreen = ({
       const newQuickTags = [...quickTags, trimmed];
       setQuickTags(newQuickTags);
 
-      // プロジェクト一覧側にも反映
       if (setProjects) {
         setProjects((prev) =>
           prev.map((p) =>
@@ -353,7 +334,6 @@ const ProjectDetailScreen = ({
       setIsAddQuickTagModalVisible(false);
       Keyboard.dismiss();
 
-      // データベースに保存してチーム全員に共有
       try {
         const safeTeamId = activeTeamId || "test_team";
         await updateProject(safeTeamId, project.id, {
@@ -368,7 +348,6 @@ const ProjectDetailScreen = ({
     }
   };
 
-  // ★ 追加：タグボタンを長押しで削除する機能
   const handleDeleteQuickTag = (tagToDelete) => {
     Alert.alert(
       "タグボタンの削除",
@@ -456,7 +435,7 @@ const ProjectDetailScreen = ({
           onPress={() => setIsSideUiVisible(!isSideUiVisible)}
         >
           <Text style={styles.toggleSideUiBtnText}>
-            {isSideUiVisible ? "▶ 隠す" : "◀ タグ/メモ"}
+            {isSideUiVisible ? "▶ 隠す" : "◀ タグリスト"}
           </Text>
         </TouchableOpacity>
       )}
@@ -488,283 +467,164 @@ const ProjectDetailScreen = ({
     </View>
   );
 
-  const myMemos = localMemos.filter(
-    (m) => m.uid === auth.currentUser?.uid || m.user === displayUserName,
-  );
+  // ★ 変更：タグのUIのみを描画する処理（横画面・縦画面共通）
+  const renderTaggingContent = () => {
+    // 共有されているか、自分が作ったタグのみ表示
+    const visibleTags = localTags.filter(
+      (t) => t.status === "shared" || t.user === displayUserName,
+    );
 
-  const renderLandscapeUI = () => (
-    <View style={styles.fsContainer}>
-      <View style={styles.fsTabRow}>
-        <TouchableOpacity
-          style={[
-            styles.fsTabBtn,
-            activeTab === "tag" && styles.fsTabBtnActive,
-          ]}
-          onPress={() => setActiveTab("tag")}
-        >
-          <Text
-            style={[
-              styles.fsTabBtnText,
-              activeTab === "tag" && styles.fsTabBtnTextActive,
-            ]}
-          >
-            動画/タグ
+    return (
+      <View style={{ flex: 1 }}>
+        <View style={isLandscape ? styles.fsTagArea : styles.quickTagArea}>
+          <Text style={isLandscape ? styles.fsTagTitle : styles.quickTagTitle}>
+            💡 複数選択してから「記録」をタップ (長押しで削除)
           </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[
-            styles.fsTabBtn,
-            activeTab === "memo" && styles.fsTabBtnActive,
-          ]}
-          onPress={() => setActiveTab("memo")}
-        >
-          <Text
-            style={[
-              styles.fsTabBtnText,
-              activeTab === "memo" && styles.fsTabBtnTextActive,
-            ]}
-          >
-            個人メモ
-          </Text>
-        </TouchableOpacity>
-      </View>
 
-      {activeTab === "tag" ? (
-        <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}>
-          <Text style={styles.fsTagTitle}>💡 タップで追加 (長押しで削除)</Text>
-          <View style={styles.fsTagsWrapper}>
-            {quickTags.map((tag) => (
-              <TouchableOpacity
-                key={tag}
-                style={styles.fsTagBtn}
-                onPress={() => handleAddTag(tag)}
-                onLongPress={() => handleDeleteQuickTag(tag)}
-              >
-                <Text style={styles.fsTagBtnText}>{tag}</Text>
-              </TouchableOpacity>
-            ))}
+          <View
+            style={isLandscape ? styles.fsTagsWrapper : styles.quickTagsWrapper}
+          >
+            {quickTags.map((tag) => {
+              const isSelected = selectedQuickTags.includes(tag);
+              return (
+                <TouchableOpacity
+                  key={tag}
+                  style={[
+                    isLandscape ? styles.fsTagBtn : styles.quickTagBtn,
+                    isSelected && styles.quickTagBtnSelected,
+                  ]}
+                  onPress={() => toggleQuickTag(tag)}
+                  onLongPress={() => handleDeleteQuickTag(tag)}
+                >
+                  <Text
+                    style={[
+                      isLandscape
+                        ? styles.fsTagBtnText
+                        : styles.quickTagBtnText,
+                      isSelected && styles.quickTagBtnTextSelected,
+                    ]}
+                  >
+                    {tag}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
             <TouchableOpacity
-              style={styles.fsAddTagBtn}
+              style={isLandscape ? styles.fsAddTagBtn : styles.addQuickTagBtn}
               onPress={() => {
                 setNewQuickTagName("");
                 setIsAddQuickTagModalVisible(true);
               }}
             >
-              <Text style={styles.fsAddTagBtnText}>＋ ボタン追加</Text>
+              <Text
+                style={
+                  isLandscape
+                    ? styles.fsAddTagBtnText
+                    : styles.addQuickTagBtnText
+                }
+              >
+                ＋ ボタン追加
+              </Text>
             </TouchableOpacity>
           </View>
-        </ScrollView>
-      ) : (
-        <View style={{ flex: 1 }}>
-          <Text style={styles.fsTagTitle}>
-            ⏱️ {formatTime(videoTime)} の個人メモを追加
-          </Text>
-          <View style={styles.fsMemoInputRow}>
-            <TextInput
-              style={styles.fsMemoInput}
-              value={newMemoText}
-              onChangeText={setNewMemoText}
-              placeholder="自分専用のメモ..."
-            />
-            <TouchableOpacity
-              style={styles.fsMemoSendBtn}
-              onPress={handleAddMemo}
-            >
-              <Text style={styles.fsMemoSendBtnText}>保存</Text>
-            </TouchableOpacity>
-          </View>
-          <ScrollView
-            showsVerticalScrollIndicator={false}
-            style={{ flex: 1, marginTop: 10 }}
-          >
-            {myMemos.map((memo) => (
-              <View key={memo.id} style={styles.fsMemoCard}>
-                <TouchableOpacity onPress={() => jumpToTime(memo.videoTime)}>
-                  <Text style={styles.fsMemoTime}>
-                    ▶ {formatTime(memo.videoTime)}
-                  </Text>
-                </TouchableOpacity>
-                <Text style={styles.fsMemoText} numberOfLines={2}>
-                  {memo.text}
-                </Text>
-                <TouchableOpacity
-                  style={{ padding: 5 }}
-                  onPress={() => handleDeleteMemo(memo.id)}
-                >
-                  <Text style={styles.fsDeleteActionText}>✕</Text>
-                </TouchableOpacity>
-              </View>
-            ))}
-          </ScrollView>
-        </View>
-      )}
-    </View>
-  );
 
-  const renderTabsAndContent = () => (
-    <View style={{ flex: 1 }}>
-      <View style={styles.tabContainer}>
-        {[
-          { id: "tag", label: "動画/タグ" },
-          { id: "memo", label: "個人メモ" },
-        ].map((tab) => (
+          {/* 記録ボタン */}
           <TouchableOpacity
-            key={tab.id}
-            style={[styles.tab, activeTab === tab.id && styles.activeTab]}
-            onPress={() => setActiveTab(tab.id)}
+            style={[
+              styles.recordTagBtn,
+              selectedQuickTags.length === 0 && styles.recordTagBtnDisabled,
+            ]}
+            onPress={executeAddTag}
+            disabled={selectedQuickTags.length === 0}
           >
-            <Text
-              style={[
-                styles.tabText,
-                activeTab === tab.id && styles.activeTabText,
-              ]}
-            >
-              {tab.label}
+            <Text style={styles.recordTagBtnText}>
+              {selectedQuickTags.length > 0
+                ? `「${selectedQuickTags.join(" + ")}」で記録する`
+                : "タグを選択してください"}
             </Text>
           </TouchableOpacity>
-        ))}
-      </View>
+        </View>
 
-      <View style={styles.tabContentArea}>
-        {activeTab === "tag" && (
-          <>
-            <View style={styles.quickTagArea}>
-              <Text style={styles.quickTagTitle}>
-                💡 再生中にタップしてタグを追加 (長押しでボタン削除)
-              </Text>
-              <View style={styles.quickTagsWrapper}>
-                {quickTags.map((tag) => (
-                  <TouchableOpacity
-                    key={tag}
-                    style={styles.quickTagBtn}
-                    onPress={() => handleAddTag(tag)}
-                    onLongPress={() => handleDeleteQuickTag(tag)}
-                  >
-                    <Text style={styles.quickTagBtnText}>{tag}</Text>
-                  </TouchableOpacity>
-                ))}
+        <ScrollView
+          style={styles.listScroll}
+          showsVerticalScrollIndicator={false}
+        >
+          {visibleTags.length === 0 ? (
+            <Text style={styles.emptyText}>タグがありません。</Text>
+          ) : (
+            visibleTags.map((tag) => (
+              <View key={tag.id} style={styles.listItemCard}>
                 <TouchableOpacity
-                  style={styles.addQuickTagBtn}
-                  onPress={() => {
-                    setNewQuickTagName("");
-                    setIsAddQuickTagModalVisible(true);
-                  }}
+                  style={styles.timeJumpBtn}
+                  onPress={() => jumpToTime(tag.videoTime)}
                 >
-                  <Text style={styles.addQuickTagBtnText}>＋ ボタン追加</Text>
+                  <Text style={styles.timeJumpText}>
+                    ▶ {formatTime(tag.videoTime)}
+                  </Text>
                 </TouchableOpacity>
-              </View>
-            </View>
-            <ScrollView style={styles.listScroll}>
-              {localTags.length === 0 ? (
-                <Text style={styles.emptyText}>タグがありません。</Text>
-              ) : (
-                localTags.map((tag) => (
-                  <View key={tag.id} style={styles.listItemCard}>
-                    <TouchableOpacity
-                      style={styles.timeJumpBtn}
-                      onPress={() => jumpToTime(tag.videoTime)}
-                    >
-                      <Text style={styles.timeJumpText}>
-                        ▶ {formatTime(tag.videoTime)}
-                      </Text>
-                    </TouchableOpacity>
-                    <View style={styles.listInfo}>
-                      <Text style={styles.listLabelText}>{tag.label}</Text>
-                      <Text style={styles.listUserText}>by {tag.user}</Text>
-                    </View>
-                    {(canDeleteAnyTag || tag.user === displayUserName) && (
-                      <TouchableOpacity
-                        style={styles.deleteAction}
-                        onPress={() => handleDeleteTag(tag.id)}
-                      >
-                        <Text style={styles.deleteActionText}>✕</Text>
-                      </TouchableOpacity>
+
+                <View style={styles.listInfo}>
+                  <Text style={styles.listLabelText}>{tag.label}</Text>
+                  <View style={{ flexDirection: "row", alignItems: "center" }}>
+                    <Text style={styles.listUserText}>by {tag.user}</Text>
+                    {tag.status === "private" && (
+                      <Text style={styles.privateBadge}>🔒 自分のみ</Text>
                     )}
                   </View>
-                ))
-              )}
-            </ScrollView>
-          </>
-        )}
+                </View>
 
-        {activeTab === "memo" && (
-          <>
-            <ScrollView style={styles.listScroll}>
-              {myMemos.length === 0 ? (
-                <Text style={styles.emptyText}>
-                  あなた専用のメモはありません。
-                </Text>
-              ) : (
-                myMemos.map((memo) => (
-                  <View key={memo.id} style={styles.listItemCard}>
-                    <TouchableOpacity
-                      style={styles.timeJumpBtn}
-                      onPress={() => jumpToTime(memo.videoTime)}
-                    >
-                      <Text style={styles.timeJumpText}>
-                        ▶ {formatTime(memo.videoTime)}
-                      </Text>
-                    </TouchableOpacity>
-                    <View style={styles.listInfo}>
-                      <Text style={styles.listContentText}>{memo.text}</Text>
-                      <Text style={styles.listUserText}>by {memo.user}</Text>
-                    </View>
-                    <TouchableOpacity
-                      style={styles.deleteAction}
-                      onPress={() => handleDeleteMemo(memo.id)}
-                    >
-                      <Text style={styles.deleteActionText}>✕</Text>
-                    </TouchableOpacity>
-                  </View>
-                ))
-              )}
-            </ScrollView>
-            <View style={styles.inputContainer}>
-              <Text style={styles.timestampContextText}>
-                ⏱️ {formatTime(videoTime)} の個人メモを追加
-              </Text>
-              <View style={styles.inputRow}>
-                <TextInput
-                  style={styles.inputField}
-                  value={newMemoText}
-                  onChangeText={setNewMemoText}
-                  placeholder="自分専用のメモを入力..."
-                  multiline
-                />
-                <TouchableOpacity
-                  style={styles.sendBtn}
-                  onPress={handleAddMemo}
-                >
-                  <Text style={styles.sendBtnText}>保存</Text>
-                </TouchableOpacity>
+                {tag.status === "private" && tag.user === displayUserName && (
+                  <TouchableOpacity
+                    style={styles.shareAction}
+                    onPress={() => handleShareTag(tag.id)}
+                  >
+                    <Text style={styles.shareActionText}>📢 公開</Text>
+                  </TouchableOpacity>
+                )}
+
+                {(canDeleteAnyTag || tag.user === displayUserName) && (
+                  <TouchableOpacity
+                    style={styles.deleteAction}
+                    onPress={() => handleDeleteTag(tag.id)}
+                  >
+                    <Text style={styles.deleteActionText}>✕</Text>
+                  </TouchableOpacity>
+                )}
               </View>
-            </View>
-          </>
-        )}
+            ))
+          )}
+        </ScrollView>
       </View>
-    </View>
-  );
+    );
+  };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView
+      style={[
+        styles.container,
+        isLandscape && { backgroundColor: "#000", padding: 0 },
+      ]}
+    >
       <StatusBar hidden={isLandscape} />
 
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         style={{ flex: 1 }}
       >
-        <View style={[styles.header, isLandscape && { display: "none" }]}>
-          <TouchableOpacity
-            style={styles.backButton}
-            onPress={() => navigation.goBack()}
-          >
-            <Text style={styles.backButtonText}>◁ 戻る</Text>
-          </TouchableOpacity>
-          <Text style={styles.headerTitle} numberOfLines={1}>
-            {projectTitle}
-          </Text>
-          <View style={{ width: 60 }} />
-        </View>
+        {!isLandscape && (
+          <View style={styles.header}>
+            <TouchableOpacity
+              style={styles.backButton}
+              onPress={() => navigation.goBack()}
+            >
+              <Text style={styles.backButtonText}>◁ 戻る</Text>
+            </TouchableOpacity>
+            <Text style={styles.headerTitle} numberOfLines={1}>
+              {projectTitle}
+            </Text>
+            <View style={{ width: 60 }} />
+          </View>
+        )}
 
         <View
           style={
@@ -786,12 +646,8 @@ const ProjectDetailScreen = ({
               isLandscape && !isSideUiVisible && { display: "none" },
             ]}
           >
-            <View style={{ flex: 1, display: isLandscape ? "none" : "flex" }}>
-              {renderTabsAndContent()}
-            </View>
-            <View style={{ flex: 1, display: isLandscape ? "flex" : "none" }}>
-              {renderLandscapeUI()}
-            </View>
+            {/* ★ 縦・横ともに同じタグ付けUIを表示 */}
+            {renderTaggingContent()}
           </View>
         </View>
       </KeyboardAvoidingView>
@@ -946,62 +802,9 @@ const styles = StyleSheet.create({
   fsVideoPlayerArea: { flex: 1, width: "100%", height: "100%" },
   fsYoutubeContainer: { flex: 1, width: "100%", justifyContent: "center" },
 
-  fsContainer: { flex: 1 },
-  fsTabRow: {
-    flexDirection: "row",
+  fsTagArea: {
     marginBottom: 10,
-    backgroundColor: "#334155",
-    borderRadius: 8,
-    padding: 4,
   },
-  fsTabBtn: {
-    flex: 1,
-    paddingVertical: 8,
-    alignItems: "center",
-    borderRadius: 6,
-  },
-  fsTabBtnActive: { backgroundColor: "#0077cc" },
-  fsTabBtnText: { color: "#94a3b8", fontSize: 12, fontWeight: "bold" },
-  fsTabBtnTextActive: { color: "#fff" },
-
-  fsMemoInputRow: { flexDirection: "row", alignItems: "center" },
-  fsMemoInput: {
-    flex: 1,
-    backgroundColor: "#fff",
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    height: 40,
-    fontSize: 14,
-  },
-  fsMemoSendBtn: {
-    marginLeft: 10,
-    backgroundColor: "#0077cc",
-    paddingHorizontal: 15,
-    height: 40,
-    justifyContent: "center",
-    borderRadius: 8,
-  },
-  fsMemoSendBtnText: { color: "#fff", fontWeight: "bold", fontSize: 13 },
-
-  fsMemoCard: {
-    flexDirection: "row",
-    backgroundColor: "rgba(255,255,255,0.1)",
-    padding: 10,
-    borderRadius: 8,
-    marginBottom: 8,
-    alignItems: "center",
-  },
-  fsMemoTimeBtn: { marginRight: 10 },
-  fsMemoTime: {
-    color: "#3498db",
-    fontWeight: "bold",
-    fontSize: 13,
-    marginRight: 10,
-  },
-  fsMemoText: { flex: 1, color: "#fff", fontSize: 13 },
-  fsDeleteActionText: { color: "#94a3b8", fontSize: 16, fontWeight: "bold" },
-
-  fsTagContainer: { flex: 1 },
   fsTagTitle: {
     color: "#cbd5e1",
     fontSize: 13,
@@ -1014,19 +817,20 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     flexWrap: "wrap",
     justifyContent: "space-between",
-    paddingBottom: 20,
   },
   fsTagBtn: {
-    backgroundColor: "#0077cc",
-    paddingVertical: 15,
+    backgroundColor: "#334155",
+    paddingVertical: 10,
     paddingHorizontal: 5,
     borderRadius: 8,
     width: "48%",
     alignItems: "center",
-    marginBottom: 10,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: "#475569",
   },
   fsTagBtnText: {
-    color: "#fff",
+    color: "#e2e8f0",
     fontSize: 13,
     fontWeight: "bold",
     textAlign: "center",
@@ -1036,7 +840,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#0077cc",
     borderStyle: "dashed",
-    paddingVertical: 15,
+    paddingVertical: 10,
     paddingHorizontal: 5,
     borderRadius: 8,
     width: "100%",
@@ -1074,8 +878,6 @@ const styles = StyleSheet.create({
     padding: 10,
     borderRadius: 8,
   },
-  playBtn: { marginRight: 10, padding: 5 },
-  playBtnText: { color: "#fff", fontSize: 24 },
   skipBtn: { marginHorizontal: 10, padding: 5 },
   skipBtnText: { color: "#fff", fontSize: 14, fontWeight: "bold" },
   videoTimeDisplay: {
@@ -1085,7 +887,6 @@ const styles = StyleSheet.create({
     fontFamily: "monospace",
     marginLeft: "auto",
   },
-
   fullscreenBtn: {
     marginLeft: 15,
     paddingHorizontal: 5,
@@ -1097,70 +898,6 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     letterSpacing: 1,
   },
-
-  tabContainer: {
-    flexDirection: "row",
-    backgroundColor: "#fff",
-    borderBottomWidth: 1,
-    borderBottomColor: "#ddd",
-  },
-  tab: {
-    flex: 1,
-    paddingVertical: 12,
-    alignItems: "center",
-    borderBottomWidth: 3,
-    borderBottomColor: "transparent",
-  },
-  activeTab: { borderBottomColor: "#0077cc" },
-  tabText: { fontSize: 13, color: "#666", fontWeight: "bold" },
-  activeTabText: { color: "#0077cc" },
-
-  tabContentArea: { flex: 1 },
-  inputContainer: {
-    backgroundColor: "#fff",
-    padding: 10,
-    borderTopWidth: 1,
-    borderTopColor: "#ddd",
-  },
-  timestampContextText: {
-    fontSize: 12,
-    color: "#e74c3c",
-    fontWeight: "bold",
-    marginBottom: 10,
-    marginLeft: 5,
-  },
-  timestampContextTextCenter: {
-    fontSize: 13,
-    color: "#e74c3c",
-    fontWeight: "bold",
-    marginBottom: 15,
-    textAlign: "center",
-  },
-
-  inputRow: { flexDirection: "row", alignItems: "flex-end" },
-  inputField: {
-    flex: 1,
-    backgroundColor: "#f9f9f9",
-    borderRadius: 20,
-    paddingHorizontal: 15,
-    paddingTop: 10,
-    paddingBottom: 10,
-    minHeight: 40,
-    maxHeight: 100,
-    fontSize: 15,
-    borderWidth: 1,
-    borderColor: "#eee",
-  },
-  sendBtn: {
-    marginLeft: 10,
-    backgroundColor: "#0077cc",
-    borderRadius: 20,
-    paddingVertical: 10,
-    paddingHorizontal: 15,
-    justifyContent: "center",
-    height: 40,
-  },
-  sendBtnText: { color: "#fff", fontWeight: "bold", fontSize: 14 },
 
   listScroll: { flex: 1, padding: 15 },
   listItemCard: {
@@ -1179,7 +916,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 15,
-    marginRight: 15,
+    marginRight: 10,
   },
   timeJumpText: { color: "#0077cc", fontWeight: "bold", fontSize: 13 },
   listInfo: { flex: 1 },
@@ -1189,13 +926,31 @@ const styles = StyleSheet.create({
     color: "#333",
     marginBottom: 4,
   },
-  listContentText: {
-    fontSize: 14,
-    color: "#333",
-    marginBottom: 4,
-    lineHeight: 20,
-  },
   listUserText: { fontSize: 11, color: "#888" },
+
+  privateBadge: {
+    fontSize: 10,
+    backgroundColor: "#f39c12",
+    color: "#fff",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    marginLeft: 8,
+    fontWeight: "bold",
+  },
+  shareAction: {
+    backgroundColor: "#2ecc71",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+    marginRight: 5,
+  },
+  shareActionText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "bold",
+  },
+
   deleteAction: { padding: 10 },
   deleteActionText: { color: "#aaa", fontSize: 16, fontWeight: "bold" },
 
@@ -1228,6 +983,30 @@ const styles = StyleSheet.create({
     borderColor: "#ddd",
   },
   quickTagBtnText: { fontSize: 13, color: "#333", fontWeight: "bold" },
+
+  quickTagBtnSelected: {
+    backgroundColor: "#0077cc",
+    borderColor: "#0077cc",
+  },
+  quickTagBtnTextSelected: {
+    color: "#fff",
+  },
+  recordTagBtn: {
+    backgroundColor: "#e74c3c",
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: "center",
+    marginTop: 5,
+    marginHorizontal: 5,
+  },
+  recordTagBtnDisabled: {
+    backgroundColor: "#ccc",
+  },
+  recordTagBtnText: {
+    color: "#fff",
+    fontWeight: "bold",
+    fontSize: 14,
+  },
 
   addQuickTagBtn: {
     backgroundColor: "#e6f2ff",
