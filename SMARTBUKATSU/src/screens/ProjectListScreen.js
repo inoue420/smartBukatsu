@@ -50,7 +50,6 @@ const ProjectListScreen = ({
   const canCreateProject = ["owner", "admin", "staff", "captain"].includes(
     userRole,
   );
-  // ★ 削除だけでなく「編集」も同じ権限で管理
   const canManageProject = ["owner", "admin", "staff"].includes(userRole);
 
   const { user, activeTeamId } = useAuth();
@@ -82,53 +81,15 @@ const ProjectListScreen = ({
   const clipPostSeconds = currentUserProfile.clipPostSeconds ?? 3;
 
   // ==========================================
-  // プロジェクト横断検索・フィルター機能
+  // ハイライト（プレイリスト）用ステート
   // ==========================================
-  const [highlightSearchQuery, setHighlightSearchQuery] = useState("");
-  const [highlightFilterUser, setHighlightFilterUser] = useState("all");
-  const [highlightFilterType, setHighlightFilterType] = useState("all");
-  const [highlightFilterPeriod, setHighlightFilterPeriod] = useState("all");
-  const [isFilterModalVisible, setIsFilterModalVisible] = useState(false);
+  const [selectedHighlightTags, setSelectedHighlightTags] = useState([]);
+  const [searchMode, setSearchMode] = useState("OR"); // "OR" | "AND"
 
-  const availableUsers = useMemo(() => {
-    const users = new Set();
-    projects.forEach((p) => {
-      p.tags?.forEach((t) => users.add(t.user));
-      p.sharedMemos?.forEach((m) => users.add(m.user));
-    });
-    return Array.from(users).sort();
-  }, [projects]);
-
-  const highlightData = useMemo(() => {
-    const data = {};
-    const now = new Date();
-
-    let thresholdDate = null;
-    if (highlightFilterPeriod === "1week") {
-      thresholdDate = new Date(
-        now.getFullYear(),
-        now.getMonth(),
-        now.getDate() - 7,
-      );
-    } else if (highlightFilterPeriod === "1month") {
-      thresholdDate = new Date(
-        now.getFullYear(),
-        now.getMonth() - 1,
-        now.getDate(),
-      );
-    } else if (highlightFilterPeriod === "3months") {
-      thresholdDate = new Date(
-        now.getFullYear(),
-        now.getMonth() - 3,
-        now.getDate(),
-      );
-    } else if (highlightFilterPeriod === "6months") {
-      thresholdDate = new Date(
-        now.getFullYear(),
-        now.getMonth() - 6,
-        now.getDate(),
-      );
-    }
+  // 複合タグを分割し、全クリップと個別タグリストを生成する
+  const { allClips, availableTags } = useMemo(() => {
+    const clips = [];
+    const tagSet = new Set();
 
     projects.forEach((p) => {
       if (
@@ -139,53 +100,26 @@ const ProjectListScreen = ({
       )
         return;
 
-      if (highlightFilterType !== "all" && p.type !== highlightFilterType)
-        return;
-
-      if (thresholdDate && p.date) {
-        const parts = p.date.split("/");
-        if (parts.length === 3) {
-          const projectDate = new Date(parts[0], parts[1] - 1, parts[2]);
-          if (projectDate < thresholdDate) return;
-        }
-      }
-
       p.tags.forEach((tag) => {
-        // ★ 修正：未共有（private）のタグは、本人以外の画面には一切出さない
         if (tag.status === "private" && tag.user !== displayUserName) return;
+
+        const individualTags = tag.label
+          .split("+")
+          .map((t) => t.trim())
+          .filter((t) => t);
+
+        individualTags.forEach((t) => tagSet.add(t));
 
         const clipMemos = (p.sharedMemos || []).filter(
           (m) => m.tagId === tag.id,
         );
-
-        if (highlightFilterUser !== "all") {
-          const isTagUser = tag.user === highlightFilterUser;
-          const isMemoUser = clipMemos.some(
-            (m) => m.user === highlightFilterUser,
-          );
-          if (!isTagUser && !isMemoUser) return;
-        }
-
-        if (highlightSearchQuery.trim() !== "") {
-          const q = highlightSearchQuery.toLowerCase();
-          const matchProject = p.title.toLowerCase().includes(q);
-          const matchTagUser = tag.user.toLowerCase().includes(q);
-          const matchMemo = clipMemos.some((m) =>
-            m.text.toLowerCase().includes(q),
-          );
-
-          if (!matchProject && !matchTagUser && !matchMemo) return;
-        }
-
-        if (!data[tag.label]) data[tag.label] = [];
-
         const hasUnread = clipMemos.some(
           (m) =>
             m.user !== displayUserName &&
             !(m.readBy || []).includes(currentUser),
         );
 
-        data[tag.label].push({
+        clips.push({
           id: tag.id,
           projectId: p.id,
           project: p.title,
@@ -198,32 +132,32 @@ const ProjectListScreen = ({
           type: p.type,
           date: p.date,
           status: tag.status || "shared",
+          labels: individualTags, // 分割したタグの配列
+          originalLabel: tag.label, // 画面表示用
         });
       });
     });
 
-    Object.keys(data).forEach((key) => {
-      data[key].sort((a, b) => a.start - b.start);
+    clips.sort((a, b) => a.start - b.start);
+    return { allClips: clips, availableTags: Array.from(tagSet).sort() };
+  }, [projects, displayUserName, currentUser, clipPreSeconds, clipPostSeconds]);
+
+  const currentClips = useMemo(() => {
+    if (selectedHighlightTags.length === 0) {
+      return allClips; // タグ未選択時はすべて表示
+    }
+
+    return allClips.filter((clip) => {
+      if (searchMode === "OR") {
+        // OR: どれか1つでも含まれていればOK
+        return selectedHighlightTags.some((tag) => clip.labels.includes(tag));
+      } else {
+        // AND: 選択したタグが「すべて」含まれていること
+        return selectedHighlightTags.every((tag) => clip.labels.includes(tag));
+      }
     });
-    return data;
-  }, [
-    projects,
-    currentUser,
-    displayUserName,
-    clipPreSeconds,
-    clipPostSeconds,
-    highlightFilterType,
-    highlightFilterUser,
-    highlightSearchQuery,
-    highlightFilterPeriod,
-  ]);
+  }, [allClips, selectedHighlightTags, searchMode]);
 
-  const availableTags = useMemo(
-    () => Object.keys(highlightData).sort(),
-    [highlightData],
-  );
-
-  const [selectedHighlightTag, setSelectedHighlightTag] = useState("");
   const [currentClipIndex, setCurrentClipIndex] = useState(0);
 
   const [videoTime, setVideoTime] = useState(0);
@@ -234,7 +168,6 @@ const ProjectListScreen = ({
 
   const [newSharedMemo, setNewSharedMemo] = useState("");
 
-  // ★ 追加：プロジェクト編集用のステート
   const [isEditModalVisible, setIsEditModalVisible] = useState(false);
   const [editingProject, setEditingProject] = useState(null);
   const [editTitle, setEditTitle] = useState("");
@@ -268,17 +201,13 @@ const ProjectListScreen = ({
     } catch (e) {}
   };
 
+  // 使われなくなったタグを選択状態から外す
   useEffect(() => {
-    if (
-      availableTags.length > 0 &&
-      (!selectedHighlightTag || !availableTags.includes(selectedHighlightTag))
-    ) {
-      setSelectedHighlightTag(availableTags[0]);
-      setCurrentClipIndex(0);
-    }
-  }, [availableTags, selectedHighlightTag]);
+    setSelectedHighlightTags((prev) =>
+      prev.filter((t) => availableTags.includes(t)),
+    );
+  }, [availableTags]);
 
-  const currentClips = highlightData[selectedHighlightTag] || [];
   const currentClip = currentClips[currentClipIndex] || null;
 
   useEffect(() => {
@@ -348,8 +277,14 @@ const ProjectListScreen = ({
   };
   const ytId = currentClip ? extractYoutubeId(currentClip.url) : null;
 
-  const handleSelectTag = (tag) => {
-    setSelectedHighlightTag(tag);
+  const handleToggleTag = (tag) => {
+    setSelectedHighlightTags((prev) => {
+      if (prev.includes(tag)) {
+        return prev.filter((t) => t !== tag);
+      } else {
+        return [...prev, tag];
+      }
+    });
     setCurrentClipIndex(0);
     setIsPlaying(true);
   };
@@ -364,7 +299,9 @@ const ProjectListScreen = ({
       setCurrentClipIndex((prev) => prev + 1);
     } else {
       setIsPlaying(false);
-      if (videoRef.current) videoRef.current.pauseAsync();
+      if (videoRef.current) {
+        videoRef.current.pauseAsync();
+      }
     }
   };
 
@@ -384,31 +321,47 @@ const ProjectListScreen = ({
         }
       }, 300);
     }
-  }, [currentClipIndex, selectedHighlightTag]);
+  }, [currentClipIndex, selectedHighlightTags, searchMode]);
 
   useEffect(() => {
     let interval;
-    if (isPlaying && ytId) {
+    if (isPlaying && ytId && currentClip) {
       interval = setInterval(async () => {
         if (youtubeRef.current) {
           const currentTime = await youtubeRef.current.getCurrentTime();
           setVideoTime(Math.floor(currentTime));
-          if (currentClip && currentTime >= currentClip.end) {
-            playNextClip();
+
+          if (currentTime >= currentClip.end) {
+            if (currentClipIndex < currentClips.length - 1) {
+              setCurrentClipIndex((prev) => prev + 1);
+            } else {
+              setIsPlaying(false);
+            }
           }
         }
-      }, 1000);
+      }, 500);
     }
     return () => clearInterval(interval);
-  }, [isPlaying, ytId, currentClip, currentClipIndex]);
+  }, [isPlaying, ytId, currentClip, currentClipIndex, currentClips.length]);
 
   const handlePlaybackStatusUpdate = (status) => {
-    if (status.isLoaded) {
-      const currentTime = Math.floor(status.positionMillis / 1000);
-      setVideoTime(currentTime);
-      setIsPlaying(status.isPlaying);
-      if (currentClip && currentTime >= currentClip.end) {
-        playNextClip();
+    if (!status.isLoaded) return;
+
+    const currentTime = Math.floor(status.positionMillis / 1000);
+    setVideoTime(currentTime);
+
+    if (currentClip && currentTime >= currentClip.end) {
+      if (currentClipIndex < currentClips.length - 1) {
+        setCurrentClipIndex((prev) => prev + 1);
+      } else {
+        setIsPlaying(false);
+        if (status.isPlaying) {
+          videoRef.current?.pauseAsync();
+        }
+      }
+    } else {
+      if (isPlaying !== status.isPlaying) {
+        setIsPlaying(status.isPlaying);
       }
     }
   };
@@ -471,7 +424,6 @@ const ProjectListScreen = ({
     }
   };
 
-  // ★ 追加：プロジェクト編集の処理
   const handleOpenEditProject = (item) => {
     setEditingProject(item);
     setEditTitle(item.title);
@@ -557,9 +509,7 @@ const ProjectListScreen = ({
             sharedMemos: updatedMemos,
           });
         }
-      } catch (e) {
-        console.log("Firestore共有メモ保存エラー", e);
-      }
+      } catch (e) {}
     }
   };
 
@@ -594,7 +544,6 @@ const ProjectListScreen = ({
             {item.title}
           </Text>
 
-          {/* ★ 変更：ゴミ箱ではなく編集ボタン(歯車)にする */}
           {canManageProject && (
             <TouchableOpacity
               style={styles.editIconBtn}
@@ -614,42 +563,6 @@ const ProjectListScreen = ({
     );
   };
 
-  const renderFilterBar = () => (
-    <View style={styles.filterBarContainer}>
-      <View style={styles.filterInputWrapper}>
-        <Text style={styles.filterIcon}>🔍</Text>
-        <TextInput
-          style={styles.filterInput}
-          placeholder="キーワードで絞り込み..."
-          value={highlightSearchQuery}
-          onChangeText={setHighlightSearchQuery}
-        />
-      </View>
-      <TouchableOpacity
-        style={[
-          styles.filterOptBtn,
-          (highlightFilterUser !== "all" ||
-            highlightFilterType !== "all" ||
-            highlightFilterPeriod !== "all") &&
-            styles.filterOptBtnActive,
-        ]}
-        onPress={() => setIsFilterModalVisible(true)}
-      >
-        <Text
-          style={[
-            styles.filterOptBtnText,
-            (highlightFilterUser !== "all" ||
-              highlightFilterType !== "all" ||
-              highlightFilterPeriod !== "all") &&
-              styles.filterOptBtnTextActive,
-          ]}
-        >
-          フィルター ▾
-        </Text>
-      </TouchableOpacity>
-    </View>
-  );
-
   const renderTagSelector = () => (
     <View
       style={[
@@ -657,6 +570,78 @@ const ProjectListScreen = ({
         isLandscape && styles.fsTagSelectorWrapper,
       ]}
     >
+      <View
+        style={[
+          styles.searchModeContainer,
+          isLandscape && styles.fsSearchModeContainer,
+        ]}
+      >
+        <Text
+          style={[
+            styles.searchModeLabel,
+            isLandscape && styles.fsSearchModeLabel,
+          ]}
+        >
+          検索条件:
+        </Text>
+        <View style={[styles.toggleGroup, isLandscape && styles.fsToggleGroup]}>
+          <TouchableOpacity
+            style={[
+              styles.toggleBtn,
+              isLandscape && styles.fsToggleBtn,
+              searchMode === "OR" &&
+                (isLandscape
+                  ? styles.fsToggleBtnActive
+                  : styles.toggleBtnActive),
+            ]}
+            onPress={() => {
+              setSearchMode("OR");
+              setCurrentClipIndex(0);
+            }}
+          >
+            <Text
+              style={[
+                styles.toggleText,
+                isLandscape && styles.fsToggleText,
+                searchMode === "OR" &&
+                  (isLandscape
+                    ? styles.fsToggleTextActive
+                    : styles.toggleTextActive),
+              ]}
+            >
+              {isLandscape ? "OR" : "OR (いずれか)"}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[
+              styles.toggleBtn,
+              isLandscape && styles.fsToggleBtn,
+              searchMode === "AND" &&
+                (isLandscape
+                  ? styles.fsToggleBtnActive
+                  : styles.toggleBtnActive),
+            ]}
+            onPress={() => {
+              setSearchMode("AND");
+              setCurrentClipIndex(0);
+            }}
+          >
+            <Text
+              style={[
+                styles.toggleText,
+                isLandscape && styles.fsToggleText,
+                searchMode === "AND" &&
+                  (isLandscape
+                    ? styles.fsToggleTextActive
+                    : styles.toggleTextActive),
+              ]}
+            >
+              {isLandscape ? "AND" : "AND (すべて含む)"}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
       <ScrollView
         horizontal={!isLandscape}
         showsHorizontalScrollIndicator={false}
@@ -668,27 +653,29 @@ const ProjectListScreen = ({
               : { flexDirection: "row" }
           }
         >
-          {availableTags.map((tag) => (
-            <TouchableOpacity
-              key={tag}
-              style={[
-                styles.summaryTagBtn,
-                selectedHighlightTag === tag && styles.summaryTagBtnActive,
-                isLandscape && { marginBottom: 10 },
-              ]}
-              onPress={() => handleSelectTag(tag)}
-            >
-              <Text
+          {availableTags.map((tag) => {
+            const isSelected = selectedHighlightTags.includes(tag);
+            return (
+              <TouchableOpacity
+                key={tag}
                 style={[
-                  styles.summaryTagBtnText,
-                  selectedHighlightTag === tag &&
-                    styles.summaryTagBtnTextActive,
+                  styles.summaryTagBtn,
+                  isSelected && styles.summaryTagBtnActive,
+                  isLandscape && { marginBottom: 10 },
                 ]}
+                onPress={() => handleToggleTag(tag)}
               >
-                {tag}
-              </Text>
-            </TouchableOpacity>
-          ))}
+                <Text
+                  style={[
+                    styles.summaryTagBtnText,
+                    isSelected && styles.summaryTagBtnTextActive,
+                  ]}
+                >
+                  {tag}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
         </View>
       </ScrollView>
     </View>
@@ -728,8 +715,12 @@ const ProjectListScreen = ({
       )}
 
       <View style={styles.videoOverlay}>
-        <Text style={styles.overlayProjectName}>{currentClip.project}</Text>
-        <Text style={styles.overlayTag}>🏷️ {selectedHighlightTag}</Text>
+        <Text style={styles.overlayProjectName}>
+          {currentClip?.project || ""}
+        </Text>
+        <Text style={styles.overlayTag}>
+          🏷️ {currentClip?.originalLabel || ""}
+        </Text>
       </View>
 
       {isLandscape && (
@@ -776,7 +767,7 @@ const ProjectListScreen = ({
         )}
         {currentClips.map((clip, index) => (
           <TouchableOpacity
-            key={clip.id}
+            key={`${clip.projectId}_${clip.id}`}
             style={[
               styles.clipCard,
               currentClipIndex === index && styles.clipCardActive,
@@ -802,7 +793,6 @@ const ProjectListScreen = ({
                 >
                   {clip.project}
                 </Text>
-                {/* ★ 追加：自分専用(private)のタグの場合はアイコンを表示 */}
                 {clip.status === "private" && (
                   <Text style={styles.privateIcon}>🔒</Text>
                 )}
@@ -997,7 +987,6 @@ const ProjectListScreen = ({
                 isLandscape && !isSideUiVisible && { flex: 1 },
               ]}
             >
-              {!isLandscape && renderFilterBar()}
               {!isLandscape && renderTagSelector()}
 
               {currentClips.length === 0 ? (
@@ -1059,136 +1048,6 @@ const ProjectListScreen = ({
           </>
         )}
       </View>
-
-      {/* 詳細フィルターモーダル */}
-      <Modal
-        visible={isFilterModalVisible}
-        transparent={true}
-        animationType="fade"
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.detailHeader}>
-              <Text style={styles.modalTitle}>詳細フィルター</Text>
-            </View>
-            <ScrollView style={{ padding: 15 }}>
-              <Text style={styles.label}>対象期間</Text>
-              <View style={styles.filterChipContainer}>
-                {[
-                  { id: "all", label: "すべて" },
-                  { id: "1week", label: "過去1週間" },
-                  { id: "1month", label: "過去1ヶ月" },
-                  { id: "3months", label: "過去3ヶ月" },
-                  { id: "6months", label: "過去半年" },
-                ].map((period) => (
-                  <TouchableOpacity
-                    key={period.id}
-                    style={[
-                      styles.userChip,
-                      highlightFilterPeriod === period.id &&
-                        styles.userChipActive,
-                    ]}
-                    onPress={() => setHighlightFilterPeriod(period.id)}
-                  >
-                    <Text
-                      style={[
-                        styles.userChipText,
-                        highlightFilterPeriod === period.id &&
-                          styles.userChipTextActive,
-                      ]}
-                    >
-                      {period.label}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
-              <Text style={styles.label}>プロジェクトの種類</Text>
-              <View style={styles.filterChipContainer}>
-                {["all", "試合", "練習", "その他"].map((t) => (
-                  <TouchableOpacity
-                    key={t}
-                    style={[
-                      styles.typeBtn,
-                      highlightFilterType === t && styles.typeBtnActive,
-                    ]}
-                    onPress={() => setHighlightFilterType(t)}
-                  >
-                    <Text
-                      style={[
-                        styles.typeBtnText,
-                        highlightFilterType === t && styles.typeBtnTextActive,
-                      ]}
-                    >
-                      {t === "all" ? "すべて" : t}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
-              <Text style={styles.label}>対象ユーザー (タグ・メモ作成者)</Text>
-              <View style={styles.filterChipContainer}>
-                <TouchableOpacity
-                  style={[
-                    styles.userChip,
-                    highlightFilterUser === "all" && styles.userChipActive,
-                  ]}
-                  onPress={() => setHighlightFilterUser("all")}
-                >
-                  <Text
-                    style={[
-                      styles.userChipText,
-                      highlightFilterUser === "all" &&
-                        styles.userChipTextActive,
-                    ]}
-                  >
-                    すべて
-                  </Text>
-                </TouchableOpacity>
-                {availableUsers.map((u) => (
-                  <TouchableOpacity
-                    key={u}
-                    style={[
-                      styles.userChip,
-                      highlightFilterUser === u && styles.userChipActive,
-                    ]}
-                    onPress={() => setHighlightFilterUser(u)}
-                  >
-                    <Text
-                      style={[
-                        styles.userChipText,
-                        highlightFilterUser === u && styles.userChipTextActive,
-                      ]}
-                    >
-                      {u}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
-              <TouchableOpacity
-                style={styles.clearFilterBtn}
-                onPress={() => {
-                  setHighlightFilterPeriod("all");
-                  setHighlightFilterType("all");
-                  setHighlightFilterUser("all");
-                  setHighlightSearchQuery("");
-                }}
-              >
-                <Text style={styles.clearFilterBtnText}>
-                  フィルターをリセット
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.submitBtn, { marginTop: 15 }]}
-                onPress={() => setIsFilterModalVisible(false)}
-              >
-                <Text style={styles.submitBtnText}>この条件で探す</Text>
-              </TouchableOpacity>
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
 
       {/* プロジェクト作成モーダル */}
       <Modal visible={isModalVisible} transparent={true} animationType="slide">
@@ -1301,7 +1160,7 @@ const ProjectListScreen = ({
         </View>
       </Modal>
 
-      {/* ★ 追加：プロジェクト編集用のモーダル */}
+      {/* プロジェクト編集用のモーダル */}
       <Modal
         visible={isEditModalVisible}
         transparent={true}
@@ -1424,75 +1283,12 @@ const styles = StyleSheet.create({
   badgeText: { fontSize: 10, fontWeight: "bold", color: "#333" },
   cardTitle: { fontSize: 16, fontWeight: "bold", color: "#333", flex: 1 },
 
-  // ★ 変更：編集アイコン用
   editIconBtn: { padding: 5, marginLeft: 10 },
   editIconText: { fontSize: 16 },
 
   cardSub: { fontSize: 12, color: "#888", marginBottom: 5 },
   urlText: { fontSize: 12, color: "#2ecc71", fontWeight: "bold" },
   noUrlText: { fontSize: 12, color: "#e74c3c" },
-
-  filterBarContainer: {
-    flexDirection: "row",
-    paddingHorizontal: 15,
-    paddingVertical: 10,
-    backgroundColor: "#fff",
-    borderBottomWidth: 1,
-    borderBottomColor: "#eee",
-    alignItems: "center",
-  },
-  filterInputWrapper: {
-    flex: 1,
-    flexDirection: "row",
-    backgroundColor: "#f5f5f5",
-    borderRadius: 20,
-    paddingHorizontal: 12,
-    alignItems: "center",
-    marginRight: 10,
-    height: 36,
-  },
-  filterIcon: { fontSize: 14, marginRight: 5 },
-  filterInput: { flex: 1, fontSize: 14, paddingVertical: 0 },
-  filterOptBtn: {
-    backgroundColor: "#f0f0f0",
-    paddingHorizontal: 12,
-    height: 36,
-    justifyContent: "center",
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: "#ddd",
-  },
-  filterOptBtnActive: { backgroundColor: "#e6f2ff", borderColor: "#0077cc" },
-  filterOptBtnText: { fontSize: 12, fontWeight: "bold", color: "#555" },
-  filterOptBtnTextActive: { color: "#0077cc" },
-  filterChipContainer: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    marginBottom: 10,
-  },
-  userChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: "#f5f5f5",
-    borderRadius: 16,
-    marginRight: 8,
-    marginBottom: 8,
-    borderWidth: 1,
-    borderColor: "#ddd",
-  },
-  userChipActive: { backgroundColor: "#0077cc", borderColor: "#0077cc" },
-  userChipText: { fontSize: 13, color: "#555" },
-  userChipTextActive: { color: "#fff", fontWeight: "bold" },
-  clearFilterBtn: {
-    marginTop: 10,
-    paddingVertical: 12,
-    alignItems: "center",
-    backgroundColor: "#fff5f5",
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#ffcccc",
-  },
-  clearFilterBtnText: { color: "#e74c3c", fontWeight: "bold", fontSize: 14 },
 
   summaryContainer: { flex: 1, marginHorizontal: -15 },
   tagSelectorWrapper: {
@@ -1503,6 +1299,47 @@ const styles = StyleSheet.create({
     borderBottomColor: "#ddd",
     backgroundColor: "#fff",
   },
+
+  searchModeContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 12,
+    paddingHorizontal: 5,
+  },
+  searchModeLabel: {
+    fontSize: 13,
+    fontWeight: "bold",
+    color: "#555",
+    marginRight: 10,
+  },
+  toggleGroup: {
+    flexDirection: "row",
+    backgroundColor: "#e2e8f0",
+    borderRadius: 8,
+    padding: 3,
+  },
+  toggleBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 15,
+    borderRadius: 6,
+  },
+  toggleBtnActive: {
+    backgroundColor: "#fff",
+    elevation: 1,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 1,
+  },
+  toggleText: {
+    fontSize: 12,
+    fontWeight: "bold",
+    color: "#64748b",
+  },
+  toggleTextActive: {
+    color: "#0f172a",
+  },
+
   summaryTagBtn: {
     backgroundColor: "#fff",
     paddingHorizontal: 16,
@@ -1588,14 +1425,15 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
   },
 
+  // ★ 変更：横画面用レイアウト割合を調整 (60%:40%)
   fsVideoCol: {
-    flex: 0.65,
+    flex: 0.6,
     backgroundColor: "#000",
     justifyContent: "center",
     position: "relative",
   },
   fsUiCol: {
-    flex: 0.35,
+    flex: 0.4,
     backgroundColor: "#1e293b",
     paddingTop: 10,
     paddingHorizontal: 10,
@@ -1612,6 +1450,36 @@ const styles = StyleSheet.create({
     borderBottomWidth: 0,
     paddingBottom: 10,
     paddingHorizontal: 0,
+  },
+
+  fsSearchModeContainer: {
+    flexDirection: "column",
+    alignItems: "stretch",
+    backgroundColor: "transparent",
+    padding: 0,
+    marginBottom: 10,
+  },
+  fsSearchModeLabel: {
+    color: "#cbd5e1",
+    marginBottom: 5,
+    marginLeft: 0,
+  },
+  fsToggleGroup: {
+    backgroundColor: "#334155",
+    flexDirection: "row",
+  },
+  fsToggleBtn: {
+    flex: 1,
+    alignItems: "center",
+  },
+  fsToggleBtnActive: {
+    backgroundColor: "#0077cc",
+  },
+  fsToggleText: {
+    color: "#94a3b8",
+  },
+  fsToggleTextActive: {
+    color: "#fff",
   },
 
   toggleSideUiBtn: {
@@ -1838,7 +1706,6 @@ const styles = StyleSheet.create({
   },
   submitBtnText: { color: "#fff", fontWeight: "bold", fontSize: 15 },
 
-  // ★ プロジェクト編集用スタイル
   editProjectModalContent: {
     backgroundColor: "#fff",
     borderRadius: 12,

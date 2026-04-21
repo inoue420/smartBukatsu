@@ -41,13 +41,11 @@ const ProjectDetailScreen = ({
 
   const [localTags, setLocalTags] = useState(project.tags || []);
 
-  // ★ タグボタンの初期状態
   const defaultQuickTags = ["ナイスプレー", "得点", "罰則"];
   const [quickTags, setQuickTags] = useState(
     project.quickTags || defaultQuickTags,
   );
 
-  // ★ 複数選択用のステートを追加
   const [selectedQuickTags, setSelectedQuickTags] = useState([]);
 
   const { width, height } = useWindowDimensions();
@@ -237,7 +235,6 @@ const ProjectDetailScreen = ({
     setVideoTime(newTime);
   };
 
-  // ★ 変更：タグを選択/解除するトグル
   const toggleQuickTag = (tag) => {
     if (selectedQuickTags.includes(tag)) {
       setSelectedQuickTags(selectedQuickTags.filter((t) => t !== tag));
@@ -246,7 +243,6 @@ const ProjectDetailScreen = ({
     }
   };
 
-  // ★ 変更：選択した複数のタグをまとめて「未共有」として保存する
   const executeAddTag = async () => {
     if (selectedQuickTags.length === 0) return;
     const label = selectedQuickTags.join(" + ");
@@ -256,14 +252,14 @@ const ProjectDetailScreen = ({
       videoTime,
       label,
       user: displayUserName,
-      status: "private", // 初期は自分のみに見える
+      status: "private",
     };
 
     const newTags = [...localTags, newTag].sort(
       (a, b) => a.videoTime - b.videoTime,
     );
     setLocalTags(newTags);
-    setSelectedQuickTags([]); // 選択をクリア
+    setSelectedQuickTags([]);
 
     if (setProjects) {
       setProjects((prev) =>
@@ -271,7 +267,7 @@ const ProjectDetailScreen = ({
       );
     }
 
-    showToast(`✅ タグを記録しました（未共有）`);
+    showToast(`✅ タグを記録しました（未公開）`);
 
     try {
       const safeTeamId = activeTeamId || "test_team";
@@ -279,24 +275,45 @@ const ProjectDetailScreen = ({
     } catch (error) {}
   };
 
-  // ★ 追加：タグを全体に共有（公開）する処理
-  const handleShareTag = async (tagId) => {
-    const newTags = localTags.map((t) =>
-      t.id === tagId ? { ...t, status: "shared" } : t,
+  // ★ 追加：一括共有処理
+  const handleBulkShareTags = async () => {
+    const privateTagsCount = localTags.filter(
+      (t) => t.status === "private" && t.user === displayUserName,
+    ).length;
+    if (privateTagsCount === 0) return;
+
+    Alert.alert(
+      "一括公開",
+      `記録済みの未公開タグ ${privateTagsCount}件 をすべてチームに公開しますか？`,
+      [
+        { text: "キャンセル", style: "cancel" },
+        {
+          text: "公開する",
+          onPress: async () => {
+            const newTags = localTags.map((t) =>
+              t.status === "private" && t.user === displayUserName
+                ? { ...t, status: "shared" }
+                : t,
+            );
+            setLocalTags(newTags);
+
+            if (setProjects) {
+              setProjects((prev) =>
+                prev.map((p) =>
+                  p.id === project.id ? { ...p, tags: newTags } : p,
+                ),
+              );
+            }
+
+            try {
+              const safeTeamId = activeTeamId || "test_team";
+              await updateProject(safeTeamId, project.id, { tags: newTags });
+              showToast("📢 チーム全体に一括公開しました！");
+            } catch (error) {}
+          },
+        },
+      ],
     );
-    setLocalTags(newTags);
-
-    if (setProjects) {
-      setProjects((prev) =>
-        prev.map((p) => (p.id === project.id ? { ...p, tags: newTags } : p)),
-      );
-    }
-
-    try {
-      const safeTeamId = activeTeamId || "test_team";
-      await updateProject(safeTeamId, project.id, { tags: newTags });
-      showToast("📢 チーム全体に公開しました");
-    } catch (error) {}
   };
 
   const handleDeleteTag = async (id) => {
@@ -339,9 +356,7 @@ const ProjectDetailScreen = ({
         await updateProject(safeTeamId, project.id, {
           quickTags: newQuickTags,
         });
-      } catch (error) {
-        console.log("Firestoreタグボタン保存エラー:", error);
-      }
+      } catch (error) {}
     } else {
       setNewQuickTagName("");
       setIsAddQuickTagModalVisible(false);
@@ -467,12 +482,14 @@ const ProjectDetailScreen = ({
     </View>
   );
 
-  // ★ 変更：タグのUIのみを描画する処理（横画面・縦画面共通）
   const renderTaggingContent = () => {
     // 共有されているか、自分が作ったタグのみ表示
     const visibleTags = localTags.filter(
       (t) => t.status === "shared" || t.user === displayUserName,
     );
+    const privateTagsCount = localTags.filter(
+      (t) => t.status === "private" && t.user === displayUserName,
+    ).length;
 
     return (
       <View style={{ flex: 1 }}>
@@ -545,6 +562,18 @@ const ProjectDetailScreen = ({
           </TouchableOpacity>
         </View>
 
+        {/* ★ 追加：一括共有ボタン（未公開のタグがある場合のみ表示） */}
+        {privateTagsCount > 0 && (
+          <TouchableOpacity
+            style={styles.bulkShareBtn}
+            onPress={handleBulkShareTags}
+          >
+            <Text style={styles.bulkShareBtnText}>
+              📢 自分のみのタグ({privateTagsCount}件)を一括公開
+            </Text>
+          </TouchableOpacity>
+        )}
+
         <ScrollView
           style={styles.listScroll}
           showsVerticalScrollIndicator={false}
@@ -573,14 +602,7 @@ const ProjectDetailScreen = ({
                   </View>
                 </View>
 
-                {tag.status === "private" && tag.user === displayUserName && (
-                  <TouchableOpacity
-                    style={styles.shareAction}
-                    onPress={() => handleShareTag(tag.id)}
-                  >
-                    <Text style={styles.shareActionText}>📢 公開</Text>
-                  </TouchableOpacity>
-                )}
+                {/* 個別の共有ボタンを撤去済み */}
 
                 {(canDeleteAnyTag || tag.user === displayUserName) && (
                   <TouchableOpacity
@@ -646,7 +668,6 @@ const ProjectDetailScreen = ({
               isLandscape && !isSideUiVisible && { display: "none" },
             ]}
           >
-            {/* ★ 縦・横ともに同じタグ付けUIを表示 */}
             {renderTaggingContent()}
           </View>
         </View>
@@ -899,6 +920,23 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
   },
 
+  // ★ 一括共有ボタンのスタイル
+  bulkShareBtn: {
+    backgroundColor: "#2ecc71",
+    paddingVertical: 12,
+    marginHorizontal: 15,
+    marginTop: 5,
+    marginBottom: 5,
+    borderRadius: 8,
+    alignItems: "center",
+    elevation: 2,
+  },
+  bulkShareBtnText: {
+    color: "#fff",
+    fontWeight: "bold",
+    fontSize: 14,
+  },
+
   listScroll: { flex: 1, padding: 15 },
   listItemCard: {
     flexDirection: "row",
@@ -936,18 +974,6 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     borderRadius: 4,
     marginLeft: 8,
-    fontWeight: "bold",
-  },
-  shareAction: {
-    backgroundColor: "#2ecc71",
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 8,
-    marginRight: 5,
-  },
-  shareActionText: {
-    color: "#fff",
-    fontSize: 12,
     fontWeight: "bold",
   },
 
