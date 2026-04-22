@@ -35,7 +35,6 @@ const NoticeBoardScreen = ({
     global.TEST_ROLE ||
     (isAdmin ? "owner" : currentUserProfile.role || "member");
 
-  // ★ 修正: 管理者(admin)を含めるように強化
   const canManageNotices = ["owner", "admin", "staff", "captain"].includes(
     userRole,
   );
@@ -60,6 +59,9 @@ const NoticeBoardScreen = ({
 
   const [isSaving, setIsSaving] = useState(false);
 
+  const [readByListVisible, setReadByListVisible] = useState(false);
+  const [currentReadByList, setCurrentReadByList] = useState([]);
+
   let filteredNotices = notices.filter((n) => {
     if (n.status === "deleted") return false;
     if (searchQuery.trim() !== "") {
@@ -80,24 +82,28 @@ const NoticeBoardScreen = ({
 
   const handleOpenNotice = async (notice) => {
     setSelectedNotice(notice);
+  };
 
-    if (!notice.readBy.includes(currentUser)) {
-      const newReadBy = [...notice.readBy, currentUser];
+  const handleConfirmNotice = async (notice) => {
+    if (notice.readBy.includes(currentUser)) return;
 
-      // 画面上はすぐに既読にする（UI優先）
-      const updatedNotices = notices.map((n) =>
-        n.id === notice.id ? { ...n, readBy: newReadBy } : n,
-      );
-      setNotices(updatedNotices);
+    const newReadBy = [...notice.readBy, currentUser];
 
-      // 裏でFirestoreに送信
-      try {
-        if (activeTeamId) {
-          await updateNotice(activeTeamId, notice.id, { readBy: newReadBy });
-        }
-      } catch (error) {
-        console.log("Firestore更新エラー（既読）", error);
+    const updatedNotices = notices.map((n) =>
+      n.id === notice.id ? { ...n, readBy: newReadBy } : n,
+    );
+    setNotices(updatedNotices);
+
+    if (selectedNotice && selectedNotice.id === notice.id) {
+      setSelectedNotice({ ...selectedNotice, readBy: newReadBy });
+    }
+
+    try {
+      if (activeTeamId) {
+        await updateNotice(activeTeamId, notice.id, { readBy: newReadBy });
       }
+    } catch (error) {
+      console.log("Firestore更新エラー（確認ボタン）", error);
     }
   };
 
@@ -247,7 +253,7 @@ const NoticeBoardScreen = ({
           <Text style={styles.emptyText}>お知らせはありません。</Text>
         ) : (
           filteredNotices.map((notice) => {
-            const isUnread = !notice.readBy.includes(currentUser);
+            const isConfirmed = notice.readBy.includes(currentUser);
             const isPending = notice.status === "pending";
 
             return (
@@ -257,6 +263,7 @@ const NoticeBoardScreen = ({
                   styles.card,
                   notice.isImportant && styles.importantCard,
                   isPending && styles.pendingCard,
+                  !isConfirmed && styles.unconfirmedCard,
                 ]}
                 activeOpacity={0.8}
                 onPress={() => handleOpenNotice(notice)}
@@ -276,20 +283,44 @@ const NoticeBoardScreen = ({
                       <Text style={styles.importantBadge}>重要</Text>
                     )}
                     <Text
-                      style={[styles.cardTitle, isUnread && styles.unreadText]}
+                      style={[
+                        styles.cardTitle,
+                        !isConfirmed && styles.unreadText,
+                      ]}
                       numberOfLines={1}
                     >
                       {notice.title}
                     </Text>
                   </View>
-                  {isUnread && <View style={styles.unreadDot} />}
+                  {!isConfirmed && <View style={styles.unreadDot} />}
                 </View>
                 <Text style={styles.cardContent} numberOfLines={2}>
                   {notice.content}
                 </Text>
+
                 <View style={styles.cardFooter}>
-                  <Text style={styles.cardAuthor}>✍️ {notice.author}</Text>
-                  <Text style={styles.cardDate}>{notice.date}</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.cardAuthor}>✍️ {notice.author}</Text>
+                    <Text style={styles.cardDate}>{notice.date}</Text>
+                  </View>
+
+                  {isConfirmed ? (
+                    <View style={styles.confirmedBadge}>
+                      <Text style={styles.confirmedBadgeText}>✓ 確認済み</Text>
+                    </View>
+                  ) : (
+                    <TouchableOpacity
+                      style={styles.confirmButtonSmall}
+                      onPress={(e) => {
+                        e.stopPropagation();
+                        handleConfirmNotice(notice);
+                      }}
+                    >
+                      <Text style={styles.confirmButtonTextSmall}>
+                        確認しました
+                      </Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
               </TouchableOpacity>
             );
@@ -317,8 +348,13 @@ const NoticeBoardScreen = ({
         <SafeAreaView style={styles.modalSafeArea}>
           <View style={styles.detailContainer}>
             <View style={styles.detailHeader}>
-              <TouchableOpacity onPress={() => setSelectedNotice(null)}>
-                <Text style={styles.closeBtn}>✕ 閉じる</Text>
+              <TouchableOpacity
+                onPress={() => {
+                  setSelectedNotice(null);
+                  setReadByListVisible(false); // 詳細を閉じるときにリストも閉じる
+                }}
+              >
+                <Text style={styles.closeBtn}>◁ 戻る</Text>
               </TouchableOpacity>
               <Text style={styles.detailHeaderTitle}>お知らせ詳細</Text>
               <View style={{ width: 60 }} />
@@ -346,13 +382,47 @@ const NoticeBoardScreen = ({
                   </Text>
 
                   <View style={styles.readByContainer}>
-                    <Text style={styles.readByText}>
-                      👁️ 既読: {selectedNotice.readBy.length}人
-                    </Text>
+                    {selectedNotice.readBy.includes(currentUser) ? (
+                      <View style={styles.confirmedBadgeLarge}>
+                        <Text style={styles.confirmedBadgeTextLarge}>
+                          ✅ 確認済み
+                        </Text>
+                      </View>
+                    ) : (
+                      <TouchableOpacity
+                        style={styles.confirmButtonLarge}
+                        onPress={() => handleConfirmNotice(selectedNotice)}
+                      >
+                        <Text style={styles.confirmButtonTextLarge}>
+                          確認しました
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+
+                    <TouchableOpacity
+                      style={styles.readByCountBtn}
+                      disabled={selectedNotice.author !== displayUserName}
+                      onPress={() => {
+                        setCurrentReadByList(selectedNotice.readBy);
+                        setReadByListVisible(true);
+                      }}
+                    >
+                      <Text
+                        style={[
+                          styles.readByText,
+                          selectedNotice.author === displayUserName &&
+                            styles.readByTextClickable,
+                        ]}
+                      >
+                        👁️ 確認済み: {selectedNotice.readBy.length}人{" "}
+                        {selectedNotice.author === displayUserName
+                          ? "(タップで詳細)"
+                          : ""}
+                      </Text>
+                    </TouchableOpacity>
                   </View>
                 </View>
 
-                {/* ★ 修正: 共有投稿の編集ブロック・削除制限を追加 */}
                 {(() => {
                   const isSharedPost =
                     selectedNotice.isSharedPost ||
@@ -364,12 +434,10 @@ const NoticeBoardScreen = ({
                   );
                   const isAuthor = selectedNotice.author === displayUserName;
 
-                  // 編集：共有投稿は誰も不可。通常投稿は「管理者」か「書いた本人(キャプテン等)」が可能
                   const canEdit =
                     !isSharedPost &&
                     (isStaffOrAbove || (canManageNotices && isAuthor));
 
-                  // 削除：共有投稿は「管理者」のみ。通常投稿は「管理者」か「書いた本人」
                   const canDelete = isSharedPost
                     ? isStaffOrAbove
                     : isStaffOrAbove || (canManageNotices && isAuthor);
@@ -398,6 +466,30 @@ const NoticeBoardScreen = ({
                   );
                 })()}
               </ScrollView>
+            )}
+
+            {/* ★ 修正：Modalを重ねるのではなく、内部での絶対配置レイヤー（オーバーレイ）としてリストを表示 */}
+            {readByListVisible && (
+              <View
+                style={[StyleSheet.absoluteFill, styles.readByModalOverlay]}
+              >
+                <View style={styles.readByModalContent}>
+                  <Text style={styles.readByModalTitle}>確認した人リスト</Text>
+                  <ScrollView style={styles.readByListScroll}>
+                    {currentReadByList.map((user, index) => (
+                      <Text key={index} style={styles.readByListItem}>
+                        ・ {user}
+                      </Text>
+                    ))}
+                  </ScrollView>
+                  <TouchableOpacity
+                    style={styles.readByModalCloseBtn}
+                    onPress={() => setReadByListVisible(false)}
+                  >
+                    <Text style={styles.readByModalCloseText}>閉じる</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
             )}
           </View>
         </SafeAreaView>
@@ -562,6 +654,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#f39c12",
   },
+  unconfirmedCard: {
+    borderLeftWidth: 6,
+    backgroundColor: "#f8f9fa",
+  },
   pendingText: {
     color: "#f39c12",
     fontSize: 12,
@@ -593,7 +689,7 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingRight: 10,
   },
-  unreadText: { color: "#000" },
+  unreadText: { color: "#000", fontWeight: "900" },
   unreadDot: {
     width: 10,
     height: 10,
@@ -611,9 +707,35 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
+    borderTopWidth: 1,
+    borderTopColor: "#f0f0f0",
+    paddingTop: 10,
   },
   cardAuthor: { fontSize: 12, color: "#888", fontWeight: "bold" },
-  cardDate: { fontSize: 12, color: "#aaa" },
+  cardDate: { fontSize: 12, color: "#aaa", marginTop: 2 },
+
+  confirmButtonSmall: {
+    backgroundColor: "#3498db",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 15,
+  },
+  confirmButtonTextSmall: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "bold",
+  },
+  confirmedBadge: {
+    backgroundColor: "#ecf0f1",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 15,
+  },
+  confirmedBadgeText: {
+    color: "#7f8c8d",
+    fontSize: 12,
+    fontWeight: "bold",
+  },
 
   fab: {
     position: "absolute",
@@ -689,13 +811,47 @@ const styles = StyleSheet.create({
   detailAuthor: { fontSize: 13, color: "#555", fontWeight: "bold" },
   detailDate: { fontSize: 13, color: "#888" },
   detailBody: { fontSize: 16, color: "#333", lineHeight: 26, minHeight: 150 },
+
   readByContainer: {
     marginTop: 20,
-    paddingTop: 10,
+    paddingTop: 20,
     borderTopWidth: 1,
     borderTopColor: "#f0f0f0",
+    alignItems: "center",
   },
-  readByText: { fontSize: 12, color: "#888", textAlign: "right" },
+  confirmButtonLarge: {
+    backgroundColor: "#3498db",
+    paddingVertical: 12,
+    paddingHorizontal: 30,
+    borderRadius: 25,
+    marginBottom: 15,
+    width: "80%",
+    alignItems: "center",
+  },
+  confirmButtonTextLarge: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "bold",
+  },
+  confirmedBadgeLarge: {
+    backgroundColor: "#f0f0f0",
+    paddingVertical: 12,
+    paddingHorizontal: 30,
+    borderRadius: 25,
+    marginBottom: 15,
+    width: "80%",
+    alignItems: "center",
+  },
+  confirmedBadgeTextLarge: {
+    color: "#27ae60",
+    fontSize: 16,
+    fontWeight: "bold",
+  },
+  readByCountBtn: {
+    padding: 10,
+  },
+  readByText: { fontSize: 13, color: "#888", textAlign: "center" },
+  readByTextClickable: { color: "#3498db", textDecorationLine: "underline" },
 
   adminActionRow: {
     flexDirection: "row",
@@ -770,6 +926,57 @@ const styles = StyleSheet.create({
     height: 50,
   },
   submitButtonText: { color: "#fff", fontSize: 18, fontWeight: "bold" },
+
+  // ★ 修正：モーダルの代わりに絶対配置するためのスタイル
+  readByModalOverlay: {
+    backgroundColor: "rgba(0,0,0,0.6)",
+    justifyContent: "center",
+    alignItems: "center",
+    zIndex: 9999, // 手前に表示
+  },
+  readByModalContent: {
+    width: "80%",
+    maxHeight: "70%",
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    padding: 20,
+    elevation: 10,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 5,
+  },
+  readByModalTitle: {
+    fontSize: 18,
+    fontWeight: "bold",
+    color: "#333",
+    marginBottom: 15,
+    textAlign: "center",
+    borderBottomWidth: 1,
+    borderBottomColor: "#eee",
+    paddingBottom: 10,
+  },
+  readByListScroll: {
+    marginBottom: 15,
+  },
+  readByListItem: {
+    fontSize: 16,
+    color: "#555",
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: "#f9f9f9",
+  },
+  readByModalCloseBtn: {
+    backgroundColor: "#3498db",
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: "center",
+  },
+  readByModalCloseText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "bold",
+  },
 });
 
 export default NoticeBoardScreen;

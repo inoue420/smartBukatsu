@@ -19,9 +19,6 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../AuthContext";
 import { createNotice } from "../services/firestoreService";
 
-// ==========================================
-// ★ カラーパレットの統一（テーマカラー）
-// ==========================================
 const COLORS = {
   primary: "#0077cc",
   secondary: "#f39c12",
@@ -68,8 +65,14 @@ const WorkspaceHomeScreen = ({
   };
   const displayUserName = roleNameMap[userRole] || currentUser;
 
+  // ★ 修正：キャプテンの権限を追加
   const isStaffOrAbove = ["owner", "staff", "admin"].includes(userRole);
-  const canCreateChannel = ["owner", "staff", "admin"].includes(userRole);
+  const canCreateChannel = ["owner", "staff", "admin", "captain"].includes(
+    userRole,
+  );
+  const canPostToReadOnly = ["owner", "staff", "admin", "captain"].includes(
+    userRole,
+  );
 
   const unreadNoticeCount = notices.filter(
     (n) => n.status !== "deleted" && !(n.readBy || []).includes(currentUser),
@@ -173,7 +176,8 @@ const WorkspaceHomeScreen = ({
 
       if (
         post.content.includes(`@${currentUser}`) &&
-        post.user !== displayUserName
+        post.user !== displayUserName &&
+        !(post.dismissedNotifs || []).includes(currentUser)
       ) {
         notifs.push({
           id: `notif_mention_${post.id}`,
@@ -182,11 +186,16 @@ const WorkspaceHomeScreen = ({
           content: post.content,
           time: post.time,
           postId: post.id,
+          isRead: (post.readNotifs || []).includes(currentUser),
         });
       }
 
       post.replies?.forEach((reply) => {
-        if (reply.status === "deleted") return;
+        if (
+          reply.status === "deleted" ||
+          (reply.dismissedNotifs || []).includes(currentUser)
+        )
+          return;
 
         if (post.user === displayUserName && reply.user !== displayUserName) {
           notifs.push({
@@ -196,6 +205,8 @@ const WorkspaceHomeScreen = ({
             content: reply.content,
             time: reply.time,
             postId: post.id,
+            replyId: reply.id,
+            isRead: (reply.readNotifs || []).includes(currentUser),
           });
         } else if (
           reply.content.includes(`@${currentUser}`) &&
@@ -208,12 +219,16 @@ const WorkspaceHomeScreen = ({
             content: reply.content,
             time: reply.time,
             postId: post.id,
+            replyId: reply.id,
+            isRead: (reply.readNotifs || []).includes(currentUser),
           });
         }
       });
     });
     return notifs.reverse();
   }, [posts, currentUser, displayUserName]);
+
+  const unreadNotifCount = notifications.filter((n) => !n.isRead).length;
 
   useEffect(() => {
     if (!isOffline) {
@@ -317,16 +332,13 @@ const WorkspaceHomeScreen = ({
     }
   };
 
-  // ★ 修正：確実にクリアされるように明示的にclearを呼び出し、最新のprevPostsを使用する
   const handleCreatePost = () => {
     if (newPostText.trim() === "") return;
 
     const contentToPost = newPostText.trim();
     const currentReplyTo = replyingTo;
 
-    // 即座にステートをクリア
     setNewPostText("");
-    // ★ 参照（ref）を使ってテキストボックスを強制的に空にする
     if (mainInputRef.current) {
       mainInputRef.current.clear();
     }
@@ -351,7 +363,6 @@ const WorkspaceHomeScreen = ({
           isPinned: false,
           status: isOffline ? "pending" : "sent",
         };
-        // 最新の投稿リストに安全に追加
         setPosts((prevPosts) => [newPost, ...prevPosts]);
         setIsLoading(false);
       },
@@ -359,14 +370,12 @@ const WorkspaceHomeScreen = ({
     );
   };
 
-  // ★ 修正：リプライ側も確実にクリアする
   const handleSendReply = (postId) => {
     if (replyText.trim() === "") return;
 
     const currentReplyText = replyText.trim();
 
     setReplyText("");
-    // ★ 参照（ref）を使ってテキストボックスを強制的に空にする
     if (replyInputRef.current) {
       replyInputRef.current.clear();
     }
@@ -375,7 +384,6 @@ const WorkspaceHomeScreen = ({
     setIsLoading(true);
 
     setTimeout(() => {
-      // 最新の投稿リストを更新
       setPosts((prevPosts) =>
         prevPosts.map((post) => {
           if (post.id === postId) {
@@ -608,6 +616,57 @@ const WorkspaceHomeScreen = ({
     );
   };
 
+  const handleManageNotification = (notif, action) => {
+    setPosts((prevPosts) =>
+      prevPosts.map((p) => {
+        if (p.id === notif.postId) {
+          if (notif.replyId) {
+            return {
+              ...p,
+              replies: p.replies.map((r) => {
+                if (r.id === notif.replyId) {
+                  if (action === "read") {
+                    return {
+                      ...r,
+                      readNotifs: [
+                        ...new Set([...(r.readNotifs || []), currentUser]),
+                      ],
+                    };
+                  } else {
+                    return {
+                      ...r,
+                      dismissedNotifs: [
+                        ...new Set([...(r.dismissedNotifs || []), currentUser]),
+                      ],
+                    };
+                  }
+                }
+                return r;
+              }),
+            };
+          } else {
+            if (action === "read") {
+              return {
+                ...p,
+                readNotifs: [
+                  ...new Set([...(p.readNotifs || []), currentUser]),
+                ],
+              };
+            } else {
+              return {
+                ...p,
+                dismissedNotifs: [
+                  ...new Set([...(p.dismissedNotifs || []), currentUser]),
+                ],
+              };
+            }
+          }
+        }
+        return p;
+      }),
+    );
+  };
+
   const renderContentWithMentions = (text) => {
     const parts = text.split(/(@\S+)/g);
     return parts.map((part, index) =>
@@ -685,6 +744,10 @@ const WorkspaceHomeScreen = ({
             styles.adminReportedCard,
           isPending && styles.pendingCard,
           isPinnedArea && { marginBottom: 10 },
+          activeLongPressPostId === post.id && {
+            zIndex: 9999,
+            elevation: 9999,
+          },
         ]}
         activeOpacity={0.8}
         onPress={() => {
@@ -945,6 +1008,10 @@ const WorkspaceHomeScreen = ({
                       isStaffOrAbove &&
                       styles.adminReportedCard,
                     isReplyPending && styles.pendingCard,
+                    activeLongPressReply?.replyId === reply.id && {
+                      zIndex: 9999,
+                      elevation: 9999,
+                    },
                   ]}
                   activeOpacity={0.8}
                   onLongPress={() =>
@@ -1090,10 +1157,10 @@ const WorkspaceHomeScreen = ({
               onPress={() => setIsNotifModalVisible(true)}
             >
               <Text style={styles.headerIcon}>🔔</Text>
-              {notifications.length > 0 && (
+              {unreadNotifCount > 0 && (
                 <View style={styles.badge}>
                   <Text style={styles.badgeText}>
-                    {notifications.length > 99 ? "99+" : notifications.length}
+                    {unreadNotifCount > 99 ? "99+" : unreadNotifCount}
                   </Text>
                 </View>
               )}
@@ -1297,10 +1364,11 @@ const WorkspaceHomeScreen = ({
 
         {!isReplyFocused && activeChannelObj && (
           <View style={styles.createPostContainer}>
-            {!isStaffOrAbove && activeChannelObj.isReadOnly ? (
+            {!canPostToReadOnly && activeChannelObj.isReadOnly ? (
               <View style={styles.readOnlyContainer}>
                 <Text style={styles.readOnlyText}>
-                  ※「{activeChannelObj.name}」は管理者のみ投稿可能です。
+                  ※「{activeChannelObj.name}
+                  」は管理者・キャプテンのみ投稿可能です。
                 </Text>
               </View>
             ) : (
@@ -1323,7 +1391,6 @@ const WorkspaceHomeScreen = ({
                     </TouchableOpacity>
                   </View>
                 )}
-
                 <View style={styles.inputRow}>
                   <TextInput
                     ref={mainInputRef}
@@ -1354,7 +1421,6 @@ const WorkspaceHomeScreen = ({
         )}
       </KeyboardAvoidingView>
 
-      {/* 全体ローディングオーバーレイ */}
       {isLoading && (
         <View style={styles.globalLoadingOverlay}>
           <ActivityIndicator size="large" color={COLORS.primary} />
@@ -1384,36 +1450,98 @@ const WorkspaceHomeScreen = ({
               </Text>
             ) : (
               notifications.map((n) => (
-                <TouchableOpacity
-                  key={n.id}
-                  style={styles.notifCard}
-                  onPress={() => {
-                    setIsNotifModalVisible(false);
-                    const targetPost = posts.find((p) => p.id === n.postId);
-                    if (targetPost) {
-                      const targetChannel = channels.find(
-                        (c) => c.name === targetPost.channel,
+                <View key={n.id} style={styles.notifWrapper}>
+                  <TouchableOpacity
+                    style={[styles.notifCard, n.isRead && styles.notifCardRead]}
+                    activeOpacity={0.8}
+                    onPress={() => {
+                      handleManageNotification(n, "read");
+                    }}
+                  >
+                    <View style={styles.notifHeader}>
+                      <View
+                        style={{
+                          flexDirection: "row",
+                          alignItems: "center",
+                          flex: 1,
+                        }}
+                      >
+                        {!n.isRead && <View style={styles.unreadMark} />}
+                        <Text
+                          style={[
+                            styles.notifTitle,
+                            n.isRead && { color: "#888" },
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {n.title}
+                        </Text>
+                      </View>
+                      <Text style={styles.notifTime}>{n.time}</Text>
+                    </View>
+                    <Text
+                      style={[
+                        styles.notifContent,
+                        n.isRead && { color: "#aaa" },
+                      ]}
+                      numberOfLines={2}
+                    >
+                      {n.content}
+                    </Text>
+
+                    <View style={styles.notifActionRow}>
+                      <TouchableOpacity
+                        style={styles.notifJumpBtn}
+                        onPress={() => {
+                          setIsNotifModalVisible(false);
+                          handleManageNotification(n, "read");
+                          const targetPost = posts.find(
+                            (p) => p.id === n.postId,
+                          );
+                          if (targetPost) {
+                            const targetChannel = channels.find(
+                              (c) => c.name === targetPost.channel,
+                            );
+                            if (targetChannel)
+                              setActiveChannelId(targetChannel.id);
+                          }
+                          setExpandedPostId(n.postId);
+                        }}
+                      >
+                        <Text style={styles.notifJumpBtnText}>
+                          👉 投稿を確認する
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.notifDismissBtn}
+                    onPress={() => {
+                      Alert.alert(
+                        "通知の削除",
+                        "この通知をリストから削除しますか？",
+                        [
+                          { text: "キャンセル", style: "cancel" },
+                          {
+                            text: "削除する",
+                            style: "destructive",
+                            onPress: () =>
+                              handleManageNotification(n, "dismiss"),
+                          },
+                        ],
                       );
-                      if (targetChannel) setActiveChannelId(targetChannel.id);
-                    }
-                    setExpandedPostId(n.postId);
-                  }}
-                >
-                  <View style={styles.notifHeader}>
-                    <Text style={styles.notifTitle}>{n.title}</Text>
-                    <Text style={styles.notifTime}>{n.time}</Text>
-                  </View>
-                  <Text style={styles.notifContent} numberOfLines={2}>
-                    {n.content}
-                  </Text>
-                </TouchableOpacity>
+                    }}
+                  >
+                    <Text style={styles.notifDismissText}>削除</Text>
+                  </TouchableOpacity>
+                </View>
               ))
             )}
           </ScrollView>
         </SafeAreaView>
       </Modal>
 
-      {/* 新規チャンネル追加モーダル */}
       <Modal
         visible={isAddChannelModalVisible}
         transparent={true}
@@ -1586,7 +1714,6 @@ const WorkspaceHomeScreen = ({
         </View>
       </Modal>
 
-      {/* 管理者用：通報管理ダッシュボード */}
       <Modal
         visible={isDashboardVisible}
         transparent={true}
@@ -1670,7 +1797,6 @@ const WorkspaceHomeScreen = ({
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.background },
-
   globalLoadingOverlay: {
     position: "absolute",
     top: 0,
@@ -1783,6 +1909,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 15,
     fontSize: 14,
   },
+
   channelSection: {
     backgroundColor: COLORS.card,
     paddingVertical: 10,
@@ -1828,6 +1955,7 @@ const styles = StyleSheet.create({
   pinnedHeaderTitleRow: { marginBottom: 8, paddingHorizontal: 5 },
   pinnedHeaderTitleText: { color: "#d4a000", fontSize: 13, fontWeight: "bold" },
   pinnedScrollArea: { maxHeight: 180 },
+
   feedSection: { flex: 1, padding: 15 },
   emptyText: {
     textAlign: "center",
@@ -1844,69 +1972,6 @@ const styles = StyleSheet.create({
     zIndex: 1,
     position: "relative",
   },
-  pendingCard: {
-    opacity: 0.8,
-    backgroundColor: "#fdfdfd",
-    borderStyle: "dashed",
-    borderWidth: 1,
-    borderColor: COLORS.secondary,
-  },
-  pendingHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 10,
-    paddingBottom: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: "#f0f0f0",
-  },
-  pendingHeaderText: {
-    color: COLORS.secondary,
-    fontSize: 12,
-    fontWeight: "bold",
-  },
-  pinnedCard: {
-    borderWidth: 1,
-    borderColor: "#f3c623",
-    backgroundColor: COLORS.card,
-    elevation: 1,
-  },
-  adminReportedCard: {
-    borderWidth: 1,
-    borderColor: COLORS.danger,
-    backgroundColor: "#fff5f5",
-  },
-  adminReportedHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 10,
-    paddingBottom: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: "#ffcccc",
-  },
-  adminReportedHeaderText: {
-    color: COLORS.danger,
-    fontSize: 12,
-    fontWeight: "bold",
-  },
-  reportedMaskCard: {
-    backgroundColor: "#e0e0e0",
-    padding: 15,
-    borderRadius: 12,
-    marginBottom: 15,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  reportedMaskText: { color: "#888", fontSize: 12, fontStyle: "italic" },
-
-  unreadDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: COLORS.danger,
-    marginRight: 8,
-    marginLeft: 5,
-  },
-
   postHeader: { flexDirection: "row", alignItems: "center", marginBottom: 10 },
   userIcon: {
     width: 36,
@@ -1925,21 +1990,6 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   postTime: { fontSize: 12, color: "#888" },
-  quoteContainer: {
-    backgroundColor: "#f9f9f9",
-    padding: 8,
-    borderRadius: 8,
-    borderLeftWidth: 3,
-    borderLeftColor: "#aaa",
-    marginBottom: 8,
-  },
-  quoteUser: {
-    fontSize: 12,
-    fontWeight: "bold",
-    color: "#555",
-    marginBottom: 2,
-  },
-  quoteContent: { fontSize: 13, color: "#777" },
   postContent: {
     fontSize: 15,
     color: COLORS.textMain,
@@ -1947,6 +1997,14 @@ const styles = StyleSheet.create({
     marginBottom: 5,
   },
   mentionText: { color: COLORS.primary, fontWeight: "bold" },
+  unreadDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: COLORS.danger,
+    marginRight: 8,
+    marginLeft: 5,
+  },
 
   compactFooter: {
     flexDirection: "row",
@@ -1957,14 +2015,8 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: "#f5f5f5",
   },
-  compactFooterText: {
-    fontSize: 12,
-    color: "#888",
-    fontWeight: "bold",
-  },
-  compactReactions: {
-    flexDirection: "row",
-  },
+  compactFooterText: { fontSize: 12, color: "#888", fontWeight: "bold" },
+  compactReactions: { flexDirection: "row" },
   compactReactionText: {
     fontSize: 11,
     color: "#555",
@@ -1989,13 +2041,6 @@ const styles = StyleSheet.create({
   replyCountText: { color: "#555", fontSize: 13, fontWeight: "bold" },
   actionRight: { flexDirection: "row", alignItems: "center" },
   readCountText: { fontSize: 12, color: "#888", marginRight: 10 },
-  replyButton: {
-    paddingVertical: 5,
-    paddingHorizontal: 10,
-    backgroundColor: "#f0f0f0",
-    borderRadius: 15,
-  },
-  replyButtonText: { color: "#555", fontSize: 13, fontWeight: "bold" },
   reactionsContainer: {
     flexDirection: "row",
     position: "relative",
@@ -2015,7 +2060,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     borderRadius: 12,
     marginLeft: 5,
-    justifyContent: "center",
   },
   addReactionText: { fontSize: 14, color: "#888", fontWeight: "bold" },
   reactionPicker: {
@@ -2027,13 +2071,10 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     padding: 8,
     elevation: 5,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 3,
     zIndex: 10,
   },
   reactionPickerEmoji: { fontSize: 22, marginHorizontal: 6 },
+
   longPressMenu: {
     position: "absolute",
     top: 40,
@@ -2042,10 +2083,6 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     padding: 5,
     elevation: 6,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
     zIndex: 20,
   },
   longPressMenuItem: {
@@ -2059,6 +2096,7 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     color: COLORS.primary,
   },
+
   threadContainer: {
     marginTop: 15,
     paddingTop: 15,
@@ -2103,6 +2141,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   sendButtonText: { color: "#fff", fontWeight: "bold", fontSize: 14 },
+
   createPostContainer: {
     backgroundColor: COLORS.card,
     padding: 15,
@@ -2160,52 +2199,6 @@ const styles = StyleSheet.create({
   createPostButtonDisabled: { backgroundColor: "#b3d9ff" },
   createPostButtonText: { color: "#fff", fontWeight: "bold", fontSize: 14 },
 
-  typeContainer: { flexDirection: "row", marginBottom: 15 },
-  typeBtn: {
-    flex: 1,
-    paddingVertical: 10,
-    alignItems: "center",
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#ddd",
-    marginRight: 10,
-  },
-  typeBtnActive: { backgroundColor: "#e6f2ff", borderColor: COLORS.primary },
-  typeBtnText: { fontSize: 13, color: "#555", fontWeight: "bold" },
-  typeBtnTextActive: { color: COLORS.primary },
-
-  switchContainer: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 20,
-    backgroundColor: "#f9f9f9",
-    padding: 15,
-    borderRadius: 8,
-  },
-  switchLabel: { fontSize: 15, fontWeight: "bold", color: COLORS.textMain },
-  switchSubLabel: { fontSize: 12, color: "#888", marginTop: 4 },
-  inputLabel: {
-    fontSize: 14,
-    fontWeight: "bold",
-    color: "#555",
-    marginBottom: 8,
-  },
-  memberSelector: {
-    maxHeight: 120,
-    borderWidth: 1,
-    borderColor: "#eee",
-    borderRadius: 8,
-    marginBottom: 15,
-  },
-  memberOption: {
-    padding: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: "#eee",
-  },
-  memberOptionSelected: { backgroundColor: "#e6f2ff" },
-  memberOptionTextSelected: { color: COLORS.primary, fontWeight: "bold" },
-
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.5)",
@@ -2217,7 +2210,6 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.card,
     padding: 20,
     borderRadius: 12,
-    elevation: 5,
   },
   modalTitle: {
     fontSize: 16,
@@ -2248,15 +2240,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   modalSubmitText: { color: "#fff", fontWeight: "bold", fontSize: 15 },
-  reasonBtn: { padding: 15, borderBottomWidth: 1, borderBottomColor: "#eee" },
-  reasonBtnText: {
-    fontSize: 16,
-    color: COLORS.primary,
-    textAlign: "center",
-    fontWeight: "bold",
-  },
 
-  // ★ 通知センター・ダッシュボード用のスタイル
   dashboardContainer: { flex: 1, backgroundColor: "#f9f9f9" },
   dashboardHeader: {
     flexDirection: "row",
@@ -2280,14 +2264,31 @@ const styles = StyleSheet.create({
   },
   dashBtn: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: 5 },
 
+  notifWrapper: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 10,
+  },
   notifCard: {
+    flex: 1,
     backgroundColor: COLORS.card,
     padding: 15,
     borderRadius: 10,
-    marginBottom: 10,
     borderLeftWidth: 4,
     borderLeftColor: COLORS.primary,
     elevation: 1,
+  },
+  notifCardRead: {
+    borderLeftColor: "#ccc",
+    backgroundColor: "#fafafa",
+    opacity: 0.8,
+  },
+  unreadMark: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: COLORS.danger,
+    marginRight: 8,
   },
   notifHeader: {
     flexDirection: "row",
@@ -2300,15 +2301,26 @@ const styles = StyleSheet.create({
     color: COLORS.textMain,
     flex: 1,
   },
-  notifTime: {
-    fontSize: 12,
-    color: COLORS.textSub,
-    marginLeft: 10,
+  notifTime: { fontSize: 12, color: COLORS.textSub, marginLeft: 10 },
+  notifContent: { fontSize: 13, color: COLORS.textSub, marginBottom: 10 },
+  notifActionRow: {
+    flexDirection: "row",
+    justifyContent: "flex-start",
+    marginTop: 5,
   },
-  notifContent: {
-    fontSize: 13,
-    color: COLORS.textSub,
+  notifJumpBtn: {
+    backgroundColor: "#e6f2ff",
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 6,
   },
+  notifJumpBtnText: { color: COLORS.primary, fontSize: 12, fontWeight: "bold" },
+  notifDismissBtn: {
+    paddingHorizontal: 15,
+    paddingVertical: 20,
+    justifyContent: "center",
+  },
+  notifDismissText: { color: "#ccc", fontSize: 16, fontWeight: "bold" },
 });
 
 export default WorkspaceHomeScreen;
