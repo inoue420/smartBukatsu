@@ -127,18 +127,23 @@ const RosterScreen = ({
         );
     }
 
-    // ソート: 役職順（監督・コーチが上）、その後に学年順、名前順
-    const roleOrder = { owner: 1, admin: 2, staff: 3, captain: 4, member: 5 };
+    // ★修正: 設定画面と同じく「役職順（管理者→スタッフ→キャプテン→部員）」かつ「五十音順」
+    const getRoleWeight = (role) => {
+      if (role === "owner" || role === "admin") return 1;
+      if (role === "staff") return 2;
+      if (role === "captain") return 3;
+      return 4;
+    };
+
     list.sort((a, b) => {
-      const roleA = roleOrder[a.profile.role || "member"];
-      const roleB = roleOrder[b.profile.role || "member"];
-      if (roleA !== roleB) return roleA - roleB;
+      const weightA = getRoleWeight(a.profile.role || "member");
+      const weightB = getRoleWeight(b.profile.role || "member");
 
-      const gradeA = a.profile.grade || "";
-      const gradeB = b.profile.grade || "";
-      if (gradeA !== gradeB) return gradeB.localeCompare(gradeA); // 3年生→1年生の順
+      if (weightA !== weightB) {
+        return weightA - weightB;
+      }
 
-      return a.name.localeCompare(b.name);
+      return a.name.localeCompare(b.name, "ja");
     });
 
     return list;
@@ -624,7 +629,6 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
 
-  // ★ 追加：コンパクトな1行リストのスタイル
   compactRow: {
     flexDirection: "row",
     justifyContent: "space-between",

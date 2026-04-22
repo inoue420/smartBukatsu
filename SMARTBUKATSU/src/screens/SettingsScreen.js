@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import {
   View,
   Text,
@@ -12,13 +12,13 @@ import {
   Switch,
   Modal,
   Clipboard,
-  ActivityIndicator, // ★ 追加
+  ActivityIndicator,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../AuthContext";
-import { auth } from "../firebase";
+import { auth, db } from "../firebase";
+import { doc, getDoc, updateDoc } from "firebase/firestore";
 
-// ★ 追加：パスワード再設定に必要なFirebase機能をインポート
 import {
   EmailAuthProvider,
   reauthenticateWithCredential,
@@ -96,7 +96,7 @@ const SettingsScreen = ({
   isAdmin,
   currentUser,
   setCurrentUser,
-  clubMembers, // App.jsからの同期リスト
+  clubMembers,
   grades,
   positions,
   alertThresholds,
@@ -140,13 +140,33 @@ const SettingsScreen = ({
     grade: false,
     position: false,
     myProfile: false,
-    myPassword: false, // パスワード変更セクション
+    myPassword: false,
   });
 
   const [myNewName, setMyNewName] = useState(currentUser);
   useEffect(() => {
     setMyNewName(currentUser);
   }, [currentUser]);
+
+  const [inputTeamName, setInputTeamName] = useState("読み込み中...");
+  useEffect(() => {
+    if (activeTeamId) {
+      const fetchTeamName = async () => {
+        try {
+          const teamRef = doc(db, "teams", activeTeamId);
+          const teamSnap = await getDoc(teamRef);
+          if (teamSnap.exists()) {
+            const data = teamSnap.data();
+            setInputTeamName(data.teamName || data.name || "");
+          }
+        } catch (error) {
+          console.log("チーム名取得エラー", error);
+          setInputTeamName("エラー");
+        }
+      };
+      fetchTeamName();
+    }
+  }, [activeTeamId]);
 
   const [myGrade, setMyGrade] = useState(
     userProfiles[currentUser]?.grade || "",
@@ -162,7 +182,6 @@ const SettingsScreen = ({
     }
   }, [userProfiles, currentUser]);
 
-  // ★ パスワード変更用のState
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -194,6 +213,33 @@ const SettingsScreen = ({
     const r = userProfiles[m]?.role;
     return r === "owner" || r === "staff" || r === "admin";
   });
+
+  // ★ 追加：部員リストを「役職順」かつ「五十音順」に自動並び替えする処理
+  const sortedMembers = useMemo(() => {
+    return [...clubMembers].sort((a, b) => {
+      const roleA = userProfiles[a]?.role || "member";
+      const roleB = userProfiles[b]?.role || "member";
+
+      // 権限の強さ（数字が小さいほど上に表示）
+      const getRoleWeight = (role) => {
+        if (role === "owner" || role === "admin") return 1; // 管理者
+        if (role === "staff") return 2; // スタッフ
+        if (role === "captain") return 3; // キャプテン
+        return 4; // 一般部員
+      };
+
+      const weightA = getRoleWeight(roleA);
+      const weightB = getRoleWeight(roleB);
+
+      // まず役職順で比較
+      if (weightA !== weightB) {
+        return weightA - weightB;
+      }
+
+      // 役職が同じ場合は名前で五十音順（日本語ソート）
+      return a.localeCompare(b, "ja");
+    });
+  }, [clubMembers, userProfiles]);
 
   const toggleSection = (sectionKey) => {
     setExpanded((prev) => ({ ...prev, [sectionKey]: !prev[sectionKey] }));
@@ -280,7 +326,29 @@ const SettingsScreen = ({
     }
   };
 
-  // ★ 追加：パスワード変更の処理
+  const handleSaveTeamName = async () => {
+    const trimmedName = inputTeamName.trim();
+    if (!trimmedName) {
+      return Alert.alert("エラー", "チーム名を入力してください。");
+    }
+    try {
+      if (activeTeamId) {
+        const teamRef = doc(db, "teams", activeTeamId);
+        await updateDoc(teamRef, {
+          teamName: trimmedName,
+          name: trimmedName,
+        });
+        Alert.alert(
+          "保存完了",
+          "チーム名を更新しました！\n※ホーム画面に戻ると反映されます。",
+        );
+      }
+    } catch (error) {
+      console.log("チーム名更新エラー:", error);
+      Alert.alert("エラー", "チーム名の更新に失敗しました。");
+    }
+  };
+
   const handleChangePassword = async () => {
     if (!currentPassword || !newPassword || !confirmPassword) {
       Alert.alert("エラー", "すべての項目を入力してください。");
@@ -302,18 +370,14 @@ const SettingsScreen = ({
     try {
       const user = auth.currentUser;
       if (user && user.email) {
-        // 現在のパスワードで再認証（本人確認）
         const credential = EmailAuthProvider.credential(
           user.email,
           currentPassword,
         );
         await reauthenticateWithCredential(user, credential);
-
-        // パスワードの更新
         await updatePassword(user, newPassword);
 
         Alert.alert("成功", "パスワードを安全に変更しました。");
-        // フォームをリセットして閉じる
         setCurrentPassword("");
         setNewPassword("");
         setConfirmPassword("");
@@ -522,7 +586,6 @@ const SettingsScreen = ({
                 </TouchableOpacity>
               </SectionCard>
 
-              {/* ★ 変更：パスワード変更機能 */}
               <SectionCard
                 isExp={expanded.myPassword}
                 onToggle={() => toggleSection("myPassword")}
@@ -611,7 +674,6 @@ const SettingsScreen = ({
                 チームの管理・設定を行うことができます。
               </Text>
 
-              {/* Profile setup for admin */}
               <SectionCard
                 isExp={expanded.myProfile}
                 onToggle={() => toggleSection("myProfile")}
@@ -637,13 +699,40 @@ const SettingsScreen = ({
                 </TouchableOpacity>
               </SectionCard>
 
-              {/* ★ 変更：部員リストに統合 */}
               <SectionCard
                 isExp={expanded.teamInfo}
                 onToggle={() => toggleSection("teamInfo")}
-                title="🏟️ 所属チーム・入部用コード"
+                title="🏟️ 所属チーム情報・入部用コード"
               >
-                <View style={styles.idInfoBox}>
+                <Text style={styles.label}>現在のチーム名</Text>
+                <View style={styles.addMemberRow}>
+                  <TextInput
+                    style={styles.inputFlex}
+                    value={inputTeamName}
+                    onChangeText={setInputTeamName}
+                    placeholder="チーム名を入力"
+                  />
+                  <TouchableOpacity
+                    style={[
+                      styles.addMemberBtn,
+                      { backgroundColor: "#3498db" },
+                    ]}
+                    onPress={handleSaveTeamName}
+                  >
+                    <Text style={styles.addMemberBtnText}>保存</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <View
+                  style={[
+                    styles.idInfoBox,
+                    {
+                      borderTopWidth: 1,
+                      borderTopColor: "#eee",
+                      paddingTop: 15,
+                    },
+                  ]}
+                >
                   <Text style={styles.idLabel}>
                     部員に教える【招待コード】:
                   </Text>
@@ -675,7 +764,6 @@ const SettingsScreen = ({
                 </View>
               </SectionCard>
 
-              {/* パスワード変更（管理者用にも表示） */}
               <SectionCard
                 isExp={expanded.myPassword}
                 onToggle={() => toggleSection("myPassword")}
@@ -833,10 +921,12 @@ const SettingsScreen = ({
                 </Text>
 
                 <View style={styles.memberList}>
-                  {clubMembers.map((name) => {
+                  {/* ★ 修正：並び替えた sortedMembers を使って表示する */}
+                  {sortedMembers.map((name) => {
                     const profile = userProfiles[name] || {};
                     const memberRole = profile.role || "member";
-                    const roleData = roleConfig[memberRole];
+                    const roleData =
+                      roleConfig[memberRole] || roleConfig.member;
                     const assignedStaff = profile.assignedStaff || "未設定";
                     const staffScope = profile.staffScope || "all";
 
@@ -900,7 +990,7 @@ const SettingsScreen = ({
                       </View>
                     );
                   })}
-                  {clubMembers.length === 0 && (
+                  {sortedMembers.length === 0 && (
                     <Text style={styles.emptyText}>
                       登録されている部員がいません。
                     </Text>

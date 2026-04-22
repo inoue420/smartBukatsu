@@ -19,6 +19,10 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../AuthContext";
 import { createNotice } from "../services/firestoreService";
 
+// ★ 追加：Firestoreの直接操作用
+import { db } from "../firebase";
+import { doc, updateDoc, onSnapshot } from "firebase/firestore";
+
 const COLORS = {
   primary: "#0077cc",
   secondary: "#f39c12",
@@ -33,6 +37,31 @@ const COLORS = {
 
 const REACTION_EMOJIS = ["👍", "❤️", "😂", "🔥", "👀", "🙏"];
 const REPORT_REASONS = ["暴言・誹謗中傷", "スパム・宣伝", "その他"];
+
+// ★ 初期タブの定義
+const defaultChannels = [
+  {
+    id: "ch_1",
+    name: "全体連絡",
+    isReadOnly: true,
+    shareScope: "team",
+    allowedMembers: ["all"],
+  },
+  {
+    id: "ch_diary",
+    name: "共有日記",
+    isReadOnly: true,
+    shareScope: "team",
+    allowedMembers: ["all"],
+  },
+  {
+    id: "ch_2",
+    name: "トレーニング",
+    isReadOnly: false,
+    shareScope: "team",
+    allowedMembers: ["all"],
+  },
+];
 
 const WorkspaceHomeScreen = ({
   navigation,
@@ -105,32 +134,35 @@ const WorkspaceHomeScreen = ({
     : 0;
 
   const [searchQuery, setSearchQuery] = useState("");
-  const [channels, setChannels] = useState([
-    {
-      id: "ch_1",
-      name: "全体連絡",
-      isReadOnly: true,
-      shareScope: "team",
-      allowedMembers: ["all"],
-    },
-    {
-      id: "ch_diary",
-      name: "共有日記",
-      isReadOnly: true,
-      shareScope: "team",
-      allowedMembers: ["all"],
-    },
-    {
-      id: "ch_2",
-      name: "トレーニング",
-      isReadOnly: false,
-      shareScope: "team",
-      allowedMembers: ["all"],
-    },
-  ]);
+
+  // ★ 修正：初期値は defaultChannels に設定
+  const [channels, setChannels] = useState(defaultChannels);
   const [activeChannelId, setActiveChannelId] = useState("ch_1");
 
   const [isLoading, setIsLoading] = useState(false);
+
+  // ★ 追加：Firestoreから「タブ（チャンネル）一覧」をリアルタイムで同期する処理
+  useEffect(() => {
+    if (!activeTeamId || isOffline) return;
+
+    const teamRef = doc(db, "teams", activeTeamId);
+    const unsubscribe = onSnapshot(teamRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (
+          data.channels &&
+          Array.isArray(data.channels) &&
+          data.channels.length > 0
+        ) {
+          setChannels(data.channels);
+        } else {
+          setChannels(defaultChannels);
+        }
+      }
+    });
+
+    return () => unsubscribe();
+  }, [activeTeamId, isOffline]);
 
   const visibleChannels = channels.filter((ch) => {
     if (isStaffOrAbove) return true;
@@ -269,12 +301,13 @@ const WorkspaceHomeScreen = ({
   });
   const reportCount = reportedItems.length;
 
+  // ★ 修正：タブ追加時にFirestoreにも保存する
   const handleAddChannel = () => {
     const trimmedName = newChannelName.trim();
     if (trimmedName === "") return;
 
     setIsLoading(true);
-    setTimeout(() => {
+    setTimeout(async () => {
       const newCh = {
         id: "ch_" + Date.now().toString(),
         name: trimmedName,
@@ -282,8 +315,22 @@ const WorkspaceHomeScreen = ({
         shareScope: newChannelScope,
         allowedMembers: newChannelScope === "group" ? selectedMembers : ["all"],
       };
-      setChannels([...channels, newCh]);
+
+      const updatedChannels = [...channels, newCh];
+      setChannels(updatedChannels);
       setActiveChannelId(newCh.id);
+
+      // Firestoreのチーム情報に保存して全員に同期させる
+      if (!isOffline && activeTeamId) {
+        try {
+          const teamRef = doc(db, "teams", activeTeamId);
+          await updateDoc(teamRef, { channels: updatedChannels });
+        } catch (error) {
+          console.error("チャンネル保存エラー:", error);
+          Alert.alert("エラー", "チャンネルの保存に失敗しました。");
+        }
+      }
+
       setIsAddChannelModalVisible(false);
       setNewChannelName("");
       setNewChannelIsReadOnly(false);
@@ -293,6 +340,7 @@ const WorkspaceHomeScreen = ({
     }, 500);
   };
 
+  // ★ 修正：タブ削除時にもFirestoreから消去する
   const handleDeleteChannel = (channel) => {
     if (channel.id === "ch_1" || channel.id === "ch_diary") {
       Alert.alert(
@@ -309,10 +357,19 @@ const WorkspaceHomeScreen = ({
         {
           text: "削除する",
           style: "destructive",
-          onPress: () => {
+          onPress: async () => {
             const newChannels = channels.filter((c) => c.id !== channel.id);
             setChannels(newChannels);
             if (activeChannelId === channel.id) setActiveChannelId("ch_1");
+
+            if (!isOffline && activeTeamId) {
+              try {
+                const teamRef = doc(db, "teams", activeTeamId);
+                await updateDoc(teamRef, { channels: newChannels });
+              } catch (error) {
+                console.error("チャンネル削除エラー:", error);
+              }
+            }
           },
         },
       ],
@@ -1428,7 +1485,6 @@ const WorkspaceHomeScreen = ({
         </View>
       )}
 
-      {/* 通知センターモーダル */}
       <Modal
         visible={isNotifModalVisible}
         transparent={true}
@@ -1542,7 +1598,6 @@ const WorkspaceHomeScreen = ({
         </SafeAreaView>
       </Modal>
 
-      {/* ★ 修正：チャンネル追加モーダルのUIを全体的に整理 */}
       <Modal
         visible={isAddChannelModalVisible}
         transparent={true}
@@ -1643,7 +1698,7 @@ const WorkspaceHomeScreen = ({
                     style={[
                       styles.typeBtn,
                       newChannelScope === "coach" && styles.typeBtnActive,
-                      { marginRight: 0 }, // 右端の余白を消す
+                      { marginRight: 0 },
                     ]}
                     onPress={() => setNewChannelScope("coach")}
                   >
@@ -1745,7 +1800,14 @@ const WorkspaceHomeScreen = ({
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>管理者に報告する</Text>
+            <Text
+              style={[
+                styles.modalTitle,
+                { textAlign: "center", marginBottom: 20 },
+              ]}
+            >
+              管理者に報告する
+            </Text>
             {REPORT_REASONS.map((reason) => (
               <TouchableOpacity
                 key={reason}
@@ -1756,13 +1818,12 @@ const WorkspaceHomeScreen = ({
               </TouchableOpacity>
             ))}
             <TouchableOpacity
-              style={[
-                styles.modalCancelBtn,
-                { marginTop: 10, alignSelf: "flex-end" },
-              ]}
+              style={{ marginTop: 20, alignItems: "center", padding: 10 }}
               onPress={() => setIsReportModalVisible(false)}
             >
-              <Text style={styles.modalCancelText}>キャンセル</Text>
+              <Text style={{ color: "#888", fontWeight: "bold", fontSize: 15 }}>
+                キャンセル
+              </Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -2376,7 +2437,6 @@ const styles = StyleSheet.create({
   },
   notifDismissText: { color: "#ccc", fontSize: 16, fontWeight: "bold" },
 
-  // ★ 修正：新しいタブ追加モーダル用の追加スタイル
   typeContainer: { flexDirection: "row", marginBottom: 15 },
   typeBtn: {
     flex: 1,
@@ -2430,6 +2490,22 @@ const styles = StyleSheet.create({
   memberOptionText: { fontSize: 15, color: "#333" },
   memberOptionTextSelected: { color: COLORS.primary, fontWeight: "bold" },
   checkIcon: { color: COLORS.primary, fontSize: 16, fontWeight: "bold" },
+
+  reasonBtn: {
+    backgroundColor: "#f9f9f9",
+    paddingVertical: 15,
+    paddingHorizontal: 20,
+    borderRadius: 8,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: "#ddd",
+    alignItems: "center",
+  },
+  reasonBtnText: {
+    fontSize: 16,
+    color: COLORS.danger,
+    fontWeight: "bold",
+  },
 });
 
 export default WorkspaceHomeScreen;
