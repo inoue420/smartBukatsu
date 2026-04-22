@@ -10,15 +10,16 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  Modal, // ★ 追加：ポップアップ表示用
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
+  sendPasswordResetEmail, // ★ 追加：パスワードリセット用
 } from "firebase/auth";
 import { auth } from "../firebase";
 
-// ★ 追加：Firestoreへの登録処理をインポート
 import { executeRegistration } from "../services/firestoreService";
 
 const LoginScreen = () => {
@@ -34,6 +35,10 @@ const LoginScreen = () => {
   const [role, setRole] = useState("member"); // "admin" or "member"
   const [teamName, setTeamName] = useState(""); // 管理者用
   const [inviteCode, setInviteCode] = useState(""); // 部員用
+
+  // ★ 追加：パスワードリセット用の状態
+  const [isResetModalVisible, setIsResetModalVisible] = useState(false);
+  const [resetEmail, setResetEmail] = useState("");
 
   const handleAuth = async () => {
     // 1. バリデーション（入力チェック）
@@ -100,6 +105,33 @@ const LoginScreen = () => {
       Alert.alert("エラー", errorMsg);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  // ★ 追加：パスワードリセットの送信処理
+  const handlePasswordReset = async () => {
+    if (!resetEmail.trim()) {
+      return Alert.alert("エラー", "メールアドレスを入力してください。");
+    }
+
+    try {
+      await sendPasswordResetEmail(auth, resetEmail.trim());
+      Alert.alert(
+        "メール送信完了",
+        "パスワード再設定用のメールを送信しました。\nメール内のリンクから新しいパスワードを設定してください。",
+      );
+      setIsResetModalVisible(false);
+      setResetEmail("");
+    } catch (error) {
+      console.log("パスワードリセットエラー:", error);
+      let errorMsg =
+        "メールの送信に失敗しました。時間をおいて再度お試しください。";
+      if (error.code === "auth/user-not-found") {
+        errorMsg = "このメールアドレスは登録されていません。";
+      } else if (error.code === "auth/invalid-email") {
+        errorMsg = "メールアドレスの形式が正しくありません。";
+      }
+      Alert.alert("エラー", errorMsg);
     }
   };
 
@@ -262,9 +294,67 @@ const LoginScreen = () => {
                 </Text>
               </TouchableOpacity>
             )}
+
+            {/* ★ 追加：パスワードを忘れた場合のリンク（ログイン時のみ表示） */}
+            {isLogin && !isLoading && (
+              <TouchableOpacity
+                style={{ marginTop: 20, alignItems: "center" }}
+                onPress={() => {
+                  setResetEmail(email); // 入力途中のメールアドレスがあれば引き継ぐ
+                  setIsResetModalVisible(true);
+                }}
+              >
+                <Text
+                  style={{ color: "#27ae60", fontWeight: "bold", fontSize: 13 }}
+                >
+                  パスワードを忘れた方はこちら
+                </Text>
+              </TouchableOpacity>
+            )}
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* ★ 追加：パスワードリセット用モーダル */}
+      <Modal
+        visible={isResetModalVisible}
+        transparent={true}
+        animationType="fade"
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>パスワードの再設定</Text>
+            <Text style={styles.modalText}>
+              登録したメールアドレスを入力してください。再設定用のリンクをお送りします。
+            </Text>
+            <TextInput
+              style={styles.modalInput}
+              placeholder="email@example.com"
+              value={resetEmail}
+              onChangeText={setResetEmail}
+              keyboardType="email-address"
+              autoCapitalize="none"
+            />
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={styles.modalCancelBtn}
+                onPress={() => {
+                  setIsResetModalVisible(false);
+                  setResetEmail("");
+                }}
+              >
+                <Text style={styles.modalCancelText}>キャンセル</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.modalSubmitBtn}
+                onPress={handlePasswordReset}
+              >
+                <Text style={styles.modalSubmitText}>送信する</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -370,6 +460,68 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 16,
     fontWeight: "bold",
+  },
+
+  // ★ 追加：モーダル用のスタイル
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  modalContent: {
+    width: "85%",
+    backgroundColor: "#fff",
+    padding: 25,
+    borderRadius: 12,
+    elevation: 5,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: "bold",
+    marginBottom: 10,
+    color: "#333",
+    textAlign: "center",
+  },
+  modalText: {
+    fontSize: 13,
+    color: "#666",
+    marginBottom: 20,
+    lineHeight: 18,
+  },
+  modalInput: {
+    backgroundColor: "#f5f5f5",
+    borderWidth: 1,
+    borderColor: "#ddd",
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 15,
+    marginBottom: 20,
+  },
+  modalButtons: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+  },
+  modalCancelBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 15,
+    marginRight: 10,
+  },
+  modalCancelText: {
+    color: "#888",
+    fontWeight: "bold",
+    fontSize: 14,
+  },
+  modalSubmitBtn: {
+    backgroundColor: "#27ae60",
+    paddingVertical: 10,
+    paddingHorizontal: 15,
+    borderRadius: 8,
+  },
+  modalSubmitText: {
+    color: "#fff",
+    fontWeight: "bold",
+    fontSize: 14,
   },
 });
 

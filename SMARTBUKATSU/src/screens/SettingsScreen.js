@@ -12,10 +12,19 @@ import {
   Switch,
   Modal,
   Clipboard,
+  ActivityIndicator, // ★ 追加
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../AuthContext";
 import { auth } from "../firebase";
+
+// ★ 追加：パスワード再設定に必要なFirebase機能をインポート
+import {
+  EmailAuthProvider,
+  reauthenticateWithCredential,
+  updatePassword,
+} from "firebase/auth";
+
 import {
   getTeamInviteCode,
   subscribeTeamData,
@@ -23,7 +32,7 @@ import {
   removeTeamArrayItem,
   updateMemberProfile,
   updateMemberRoleConfig,
-  removeTeamMember, // ★ 追加：退部処理
+  removeTeamMember,
 } from "../services/firestoreService";
 
 const ThresholdSelector = ({ label, value, min, max, onChange }) => (
@@ -87,10 +96,6 @@ const SettingsScreen = ({
   isAdmin,
   currentUser,
   setCurrentUser,
-  adminPassword,
-  setAdminPassword,
-  memberPassword,
-  setMemberPassword,
   clubMembers, // App.jsからの同期リスト
   grades,
   positions,
@@ -125,23 +130,17 @@ const SettingsScreen = ({
     };
   }, [activeTeamId, isStaffOrAbove]);
 
-  const [newAdminPass, setNewAdminPass] = useState(adminPassword);
-  const [newMemberPass, setNewMemberPass] = useState(memberPassword);
-  const [showAdminPass, setShowAdminPass] = useState(false);
-  const [showMemberPass, setShowMemberPass] = useState(false);
-
   const [newGradeName, setNewGradeName] = useState("");
   const [newPositionName, setNewPositionName] = useState("");
 
   const [expanded, setExpanded] = useState({
     teamInfo: false,
     alert: false,
-    password: false,
     member: false,
     grade: false,
     position: false,
     myProfile: false,
-    myPassword: false,
+    myPassword: false, // パスワード変更セクション
   });
 
   const [myNewName, setMyNewName] = useState(currentUser);
@@ -163,10 +162,14 @@ const SettingsScreen = ({
     }
   }, [userProfiles, currentUser]);
 
-  const [myPassword, setMyPassword] = useState(
-    userProfiles[currentUser]?.password || "",
-  );
-  const [showMyPassword, setShowMyPassword] = useState(false);
+  // ★ パスワード変更用のState
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showCurrentPass, setShowCurrentPass] = useState(false);
+  const [showNewPass, setShowNewPass] = useState(false);
+  const [showConfirmPass, setShowConfirmPass] = useState(false);
+  const [isChangingPassword, setIsChangingPassword] = useState(false);
 
   const [isRoleModalVisible, setIsRoleModalVisible] = useState(false);
   const [selectedMemberForRole, setSelectedMemberForRole] = useState(null);
@@ -196,17 +199,6 @@ const SettingsScreen = ({
     setExpanded((prev) => ({ ...prev, [sectionKey]: !prev[sectionKey] }));
   };
 
-  const handleSavePasswords = () => {
-    if (newAdminPass.trim() === "" || newMemberPass.trim() === "") {
-      Alert.alert("エラー", "パスワードは空にできません。");
-      return;
-    }
-    setAdminPassword(newAdminPass);
-    setMemberPassword(newMemberPass);
-    Alert.alert("保存完了", "チームの共通パスワードを更新しました。");
-  };
-
-  // ★ 修正：手動追加を廃止し、部員を削除（強制退部）する機能に変更
   const handleDeleteMember = (memberName) => {
     Alert.alert(
       "部員の削除",
@@ -288,19 +280,61 @@ const SettingsScreen = ({
     }
   };
 
-  const handleSaveMemberPassword = () => {
-    if (myPassword.trim() === "") {
-      Alert.alert("エラー", "パスワードは空にできません。");
+  // ★ 追加：パスワード変更の処理
+  const handleChangePassword = async () => {
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      Alert.alert("エラー", "すべての項目を入力してください。");
       return;
     }
-    setUserProfiles((prev) => ({
-      ...prev,
-      [currentUser]: { ...(prev[currentUser] || {}), password: myPassword },
-    }));
-    Alert.alert(
-      "保存完了",
-      "自分専用のパスワードを設定しました。次回のログインから使用できます。",
-    );
+    if (newPassword.length < 6) {
+      Alert.alert("エラー", "新しいパスワードは6文字以上で入力してください。");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      Alert.alert(
+        "エラー",
+        "新しいパスワードと確認用パスワードが一致しません。",
+      );
+      return;
+    }
+
+    setIsChangingPassword(true);
+    try {
+      const user = auth.currentUser;
+      if (user && user.email) {
+        // 現在のパスワードで再認証（本人確認）
+        const credential = EmailAuthProvider.credential(
+          user.email,
+          currentPassword,
+        );
+        await reauthenticateWithCredential(user, credential);
+
+        // パスワードの更新
+        await updatePassword(user, newPassword);
+
+        Alert.alert("成功", "パスワードを安全に変更しました。");
+        // フォームをリセットして閉じる
+        setCurrentPassword("");
+        setNewPassword("");
+        setConfirmPassword("");
+        setExpanded((prev) => ({ ...prev, myPassword: false }));
+      }
+    } catch (error) {
+      console.log("パスワード変更エラー:", error);
+      if (
+        error.code === "auth/invalid-credential" ||
+        error.code === "auth/wrong-password"
+      ) {
+        Alert.alert("エラー", "現在のパスワードが間違っています。");
+      } else {
+        Alert.alert(
+          "エラー",
+          "パスワードの変更に失敗しました。再度ログインし直してからお試しください。",
+        );
+      }
+    } finally {
+      setIsChangingPassword(false);
+    }
   };
 
   const handleOpenRoleModal = (memberName) => {
@@ -488,40 +522,86 @@ const SettingsScreen = ({
                 </TouchableOpacity>
               </SectionCard>
 
+              {/* ★ 変更：パスワード変更機能 */}
               <SectionCard
                 isExp={expanded.myPassword}
                 onToggle={() => toggleSection("myPassword")}
-                title="🔑 自分専用パスワードの設定"
+                title="🔑 パスワードの変更"
               >
                 <Text style={styles.subText}>
-                  チーム共通パスワードの代わりに、自分だけがログインできる秘密のパスワードを設定します。
+                  セキュリティのため、現在のパスワードを入力してから新しいパスワードを設定してください。
                 </Text>
-                <Text style={styles.label}>自分専用パスワード</Text>
+
+                <Text style={styles.label}>現在のパスワード</Text>
                 <View style={styles.passwordRow}>
                   <TextInput
                     style={styles.passwordInput}
-                    placeholder="未設定"
-                    secureTextEntry={!showMyPassword}
-                    value={myPassword}
-                    onChangeText={setMyPassword}
+                    placeholder="現在のパスワード"
+                    secureTextEntry={!showCurrentPass}
+                    value={currentPassword}
+                    onChangeText={setCurrentPassword}
                   />
                   <TouchableOpacity
                     style={styles.toggleBtn}
-                    onPress={() => setShowMyPassword(!showMyPassword)}
+                    onPress={() => setShowCurrentPass(!showCurrentPass)}
                   >
                     <Text style={styles.toggleBtnText}>
-                      {showMyPassword ? "隠す" : "表示"}
+                      {showCurrentPass ? "隠す" : "表示"}
                     </Text>
                   </TouchableOpacity>
                 </View>
+
+                <Text style={styles.label}>新しいパスワード (6文字以上)</Text>
+                <View style={styles.passwordRow}>
+                  <TextInput
+                    style={styles.passwordInput}
+                    placeholder="新しいパスワード"
+                    secureTextEntry={!showNewPass}
+                    value={newPassword}
+                    onChangeText={setNewPassword}
+                  />
+                  <TouchableOpacity
+                    style={styles.toggleBtn}
+                    onPress={() => setShowNewPass(!showNewPass)}
+                  >
+                    <Text style={styles.toggleBtnText}>
+                      {showNewPass ? "隠す" : "表示"}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                <Text style={styles.label}>新しいパスワード (確認用)</Text>
+                <View style={styles.passwordRow}>
+                  <TextInput
+                    style={styles.passwordInput}
+                    placeholder="もう一度入力してください"
+                    secureTextEntry={!showConfirmPass}
+                    value={confirmPassword}
+                    onChangeText={setConfirmPassword}
+                  />
+                  <TouchableOpacity
+                    style={styles.toggleBtn}
+                    onPress={() => setShowConfirmPass(!showConfirmPass)}
+                  >
+                    <Text style={styles.toggleBtnText}>
+                      {showConfirmPass ? "隠す" : "表示"}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
                 <TouchableOpacity
                   style={[
                     styles.saveBtn,
                     { backgroundColor: "#3498db", marginTop: 5 },
                   ]}
-                  onPress={handleSaveMemberPassword}
+                  onPress={handleChangePassword}
+                  disabled={isChangingPassword}
                 >
-                  <Text style={styles.saveBtnText}>パスワードを設定</Text>
+                  {isChangingPassword ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text style={styles.saveBtnText}>パスワードを変更</Text>
+                  )}
                 </TouchableOpacity>
               </SectionCard>
             </>
@@ -557,6 +637,7 @@ const SettingsScreen = ({
                 </TouchableOpacity>
               </SectionCard>
 
+              {/* ★ 変更：部員リストに統合 */}
               <SectionCard
                 isExp={expanded.teamInfo}
                 onToggle={() => toggleSection("teamInfo")}
@@ -592,6 +673,89 @@ const SettingsScreen = ({
                     {activeTeamId || "---"}
                   </Text>
                 </View>
+              </SectionCard>
+
+              {/* パスワード変更（管理者用にも表示） */}
+              <SectionCard
+                isExp={expanded.myPassword}
+                onToggle={() => toggleSection("myPassword")}
+                title="🔑 パスワードの変更"
+              >
+                <Text style={styles.subText}>
+                  セキュリティのため、現在のパスワードを入力してから新しいパスワードを設定してください。
+                </Text>
+
+                <Text style={styles.label}>現在のパスワード</Text>
+                <View style={styles.passwordRow}>
+                  <TextInput
+                    style={styles.passwordInput}
+                    placeholder="現在のパスワード"
+                    secureTextEntry={!showCurrentPass}
+                    value={currentPassword}
+                    onChangeText={setCurrentPassword}
+                  />
+                  <TouchableOpacity
+                    style={styles.toggleBtn}
+                    onPress={() => setShowCurrentPass(!showCurrentPass)}
+                  >
+                    <Text style={styles.toggleBtnText}>
+                      {showCurrentPass ? "隠す" : "表示"}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                <Text style={styles.label}>新しいパスワード (6文字以上)</Text>
+                <View style={styles.passwordRow}>
+                  <TextInput
+                    style={styles.passwordInput}
+                    placeholder="新しいパスワード"
+                    secureTextEntry={!showNewPass}
+                    value={newPassword}
+                    onChangeText={setNewPassword}
+                  />
+                  <TouchableOpacity
+                    style={styles.toggleBtn}
+                    onPress={() => setShowNewPass(!showNewPass)}
+                  >
+                    <Text style={styles.toggleBtnText}>
+                      {showNewPass ? "隠す" : "表示"}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                <Text style={styles.label}>新しいパスワード (確認用)</Text>
+                <View style={styles.passwordRow}>
+                  <TextInput
+                    style={styles.passwordInput}
+                    placeholder="もう一度入力してください"
+                    secureTextEntry={!showConfirmPass}
+                    value={confirmPassword}
+                    onChangeText={setConfirmPassword}
+                  />
+                  <TouchableOpacity
+                    style={styles.toggleBtn}
+                    onPress={() => setShowConfirmPass(!showConfirmPass)}
+                  >
+                    <Text style={styles.toggleBtnText}>
+                      {showConfirmPass ? "隠す" : "表示"}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                <TouchableOpacity
+                  style={[
+                    styles.saveBtn,
+                    { backgroundColor: "#3498db", marginTop: 5 },
+                  ]}
+                  onPress={handleChangePassword}
+                  disabled={isChangingPassword}
+                >
+                  {isChangingPassword ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text style={styles.saveBtnText}>パスワードを変更</Text>
+                  )}
+                </TouchableOpacity>
               </SectionCard>
 
               <SectionCard
@@ -655,58 +819,10 @@ const SettingsScreen = ({
               </SectionCard>
 
               <SectionCard
-                isExp={expanded.password}
-                onToggle={() => toggleSection("password")}
-                title="🔑 チームパスワード設定"
-              >
-                <Text style={styles.label}>管理者・スタッフ用パスワード</Text>
-                <View style={styles.passwordRow}>
-                  <TextInput
-                    style={styles.passwordInput}
-                    value={newAdminPass}
-                    onChangeText={setNewAdminPass}
-                    secureTextEntry={!showAdminPass}
-                  />
-                  <TouchableOpacity
-                    style={styles.toggleBtn}
-                    onPress={() => setShowAdminPass(!showAdminPass)}
-                  >
-                    <Text style={styles.toggleBtnText}>
-                      {showAdminPass ? "隠す" : "表示"}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-                <Text style={styles.label}>部員用共通パスワード（初期）</Text>
-                <View style={styles.passwordRow}>
-                  <TextInput
-                    style={styles.passwordInput}
-                    value={newMemberPass}
-                    onChangeText={setNewMemberPass}
-                    secureTextEntry={!showMemberPass}
-                  />
-                  <TouchableOpacity
-                    style={styles.toggleBtn}
-                    onPress={() => setShowMemberPass(!showMemberPass)}
-                  >
-                    <Text style={styles.toggleBtnText}>
-                      {showMemberPass ? "隠す" : "表示"}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-                <TouchableOpacity
-                  style={styles.saveBtn}
-                  onPress={handleSavePasswords}
-                >
-                  <Text style={styles.saveBtnText}>パスワードを保存</Text>
-                </TouchableOpacity>
-              </SectionCard>
-
-              <SectionCard
                 isExp={expanded.member}
                 onToggle={() => toggleSection("member")}
                 title="👥 部員リスト・権限・担当管理"
               >
-                {/* ★ 修正：手動追加の行を削除し、説明文を追加 */}
                 <Text
                   style={[
                     styles.hintText,
@@ -728,7 +844,6 @@ const SettingsScreen = ({
                       <View key={name} style={styles.memberItem}>
                         <View style={{ flex: 1 }}>
                           <Text style={styles.memberName}>{name}</Text>
-                          {/* ★ 修正：強制退部処理に変更 */}
                           <TouchableOpacity
                             onPress={() => handleDeleteMember(name)}
                           >

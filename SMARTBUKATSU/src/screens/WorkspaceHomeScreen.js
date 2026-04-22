@@ -65,7 +65,6 @@ const WorkspaceHomeScreen = ({
   };
   const displayUserName = roleNameMap[userRole] || currentUser;
 
-  // ★ 修正：キャプテンの権限を追加
   const isStaffOrAbove = ["owner", "staff", "admin"].includes(userRole);
   const canCreateChannel = ["owner", "staff", "admin", "captain"].includes(
     userRole,
@@ -1391,6 +1390,7 @@ const WorkspaceHomeScreen = ({
                     </TouchableOpacity>
                   </View>
                 )}
+
                 <View style={styles.inputRow}>
                   <TextInput
                     ref={mainInputRef}
@@ -1542,145 +1542,199 @@ const WorkspaceHomeScreen = ({
         </SafeAreaView>
       </Modal>
 
+      {/* ★ 修正：チャンネル追加モーダルのUIを全体的に整理 */}
       <Modal
         visible={isAddChannelModalVisible}
         transparent={true}
         animationType="fade"
       >
         <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>新しいチャンネルを作成</Text>
-            <Text style={styles.inputLabel}>チャンネル名</Text>
-            <TextInput
-              style={styles.modalInput}
-              placeholder="例: 1年生専用"
-              value={newChannelName}
-              onChangeText={setNewChannelName}
-            />
-            <View style={styles.switchContainer}>
-              <View>
-                <Text style={styles.switchLabel}>
-                  部員は閲覧のみ (投稿不可)
-                </Text>
-                <Text style={styles.switchSubLabel}>
-                  オンにすると、管理者の発信専用になります。
-                </Text>
-              </View>
-              <Switch
-                value={newChannelIsReadOnly}
-                onValueChange={setNewChannelIsReadOnly}
-                trackColor={{ false: "#d9d9d9", true: "#81b0ff" }}
-                thumbColor={newChannelIsReadOnly ? COLORS.primary : "#f4f3f4"}
-              />
-            </View>
-
-            <Text style={styles.inputLabel}>共有範囲（アクセス権）</Text>
-            <View style={styles.typeContainer}>
-              <TouchableOpacity
-                style={[
-                  styles.typeBtn,
-                  newChannelScope === "team" && styles.typeBtnActive,
-                ]}
-                onPress={() => setNewChannelScope("team")}
-              >
-                <Text
-                  style={[
-                    styles.typeBtnText,
-                    newChannelScope === "team" && styles.typeBtnTextActive,
-                  ]}
-                >
-                  全体
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  styles.typeBtn,
-                  newChannelScope === "group" && styles.typeBtnActive,
-                ]}
-                onPress={() => setNewChannelScope("group")}
-              >
-                <Text
-                  style={[
-                    styles.typeBtnText,
-                    newChannelScope === "group" && styles.typeBtnTextActive,
-                  ]}
-                >
-                  限定
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  styles.typeBtn,
-                  newChannelScope === "coach" && styles.typeBtnActive,
-                ]}
-                onPress={() => setNewChannelScope("coach")}
-              >
-                <Text
-                  style={[
-                    styles.typeBtnText,
-                    newChannelScope === "coach" && styles.typeBtnTextActive,
-                  ]}
-                >
-                  指導者のみ
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            {newChannelScope === "group" && (
-              <>
-                <Text style={[styles.inputLabel, { marginTop: 10 }]}>
-                  参加メンバーを選択
-                </Text>
-                <ScrollView
-                  style={styles.memberSelector}
-                  nestedScrollEnabled={true}
-                >
-                  {clubMembers.map((m) => (
-                    <TouchableOpacity
-                      key={m}
-                      style={[
-                        styles.memberOption,
-                        selectedMembers.includes(m) &&
-                          styles.memberOptionSelected,
-                      ]}
-                      onPress={() => toggleMemberSelection(m)}
-                    >
-                      <Text
-                        style={
-                          selectedMembers.includes(m)
-                            ? styles.memberOptionTextSelected
-                            : {}
-                        }
-                      >
-                        {m}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </ScrollView>
-              </>
-            )}
-
-            <View style={styles.modalButtons}>
-              <TouchableOpacity
-                style={styles.modalCancelBtn}
-                onPress={() => {
-                  setIsAddChannelModalVisible(false);
-                  setNewChannelName("");
-                  setNewChannelIsReadOnly(false);
-                  setNewChannelScope("team");
-                  setSelectedMembers(["all"]);
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            style={{ width: "90%", maxHeight: "85%" }}
+          >
+            <View
+              style={[
+                styles.modalContent,
+                { width: "100%", maxHeight: "100%", padding: 0 },
+              ]}
+            >
+              <View
+                style={{
+                  padding: 20,
+                  borderBottomWidth: 1,
+                  borderBottomColor: "#eee",
                 }}
               >
-                <Text style={styles.modalCancelText}>キャンセル</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.modalSubmitBtn}
-                onPress={handleAddChannel}
+                <Text style={[styles.modalTitle, { marginBottom: 0 }]}>
+                  新しいタブを作成
+                </Text>
+              </View>
+
+              <ScrollView
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={{ padding: 20 }}
               >
-                <Text style={styles.modalSubmitText}>作成する</Text>
-              </TouchableOpacity>
+                <Text style={styles.inputLabel}>
+                  チャンネル名{" "}
+                  <Text style={{ color: COLORS.danger, fontSize: 12 }}>*</Text>
+                </Text>
+                <TextInput
+                  style={styles.modalInput}
+                  placeholder="例: 1年生専用"
+                  value={newChannelName}
+                  onChangeText={setNewChannelName}
+                />
+
+                <View style={styles.switchContainer}>
+                  <View style={{ flex: 1, paddingRight: 15 }}>
+                    <Text style={styles.switchLabel}>
+                      部員は閲覧のみ (投稿不可)
+                    </Text>
+                    <Text style={styles.switchSubLabel}>
+                      オンにすると、管理者の発信専用になります。
+                    </Text>
+                  </View>
+                  <Switch
+                    value={newChannelIsReadOnly}
+                    onValueChange={setNewChannelIsReadOnly}
+                    trackColor={{ false: "#d9d9d9", true: "#81b0ff" }}
+                    thumbColor={
+                      newChannelIsReadOnly ? COLORS.primary : "#f4f3f4"
+                    }
+                  />
+                </View>
+
+                <Text style={styles.inputLabel}>共有範囲（アクセス権）</Text>
+                <View style={styles.typeContainer}>
+                  <TouchableOpacity
+                    style={[
+                      styles.typeBtn,
+                      newChannelScope === "team" && styles.typeBtnActive,
+                    ]}
+                    onPress={() => setNewChannelScope("team")}
+                  >
+                    <Text
+                      style={[
+                        styles.typeBtnText,
+                        newChannelScope === "team" && styles.typeBtnTextActive,
+                      ]}
+                    >
+                      全体
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.typeBtn,
+                      newChannelScope === "group" && styles.typeBtnActive,
+                    ]}
+                    onPress={() => setNewChannelScope("group")}
+                  >
+                    <Text
+                      style={[
+                        styles.typeBtnText,
+                        newChannelScope === "group" && styles.typeBtnTextActive,
+                      ]}
+                    >
+                      限定
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.typeBtn,
+                      newChannelScope === "coach" && styles.typeBtnActive,
+                      { marginRight: 0 }, // 右端の余白を消す
+                    ]}
+                    onPress={() => setNewChannelScope("coach")}
+                  >
+                    <Text
+                      style={[
+                        styles.typeBtnText,
+                        newChannelScope === "coach" && styles.typeBtnTextActive,
+                      ]}
+                    >
+                      指導者
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                {newChannelScope === "group" && (
+                  <View style={{ marginTop: 10 }}>
+                    <Text style={styles.inputLabel}>参加メンバーを選択</Text>
+                    <View style={styles.memberSelectorWrapper}>
+                      <ScrollView
+                        style={styles.memberSelector}
+                        nestedScrollEnabled={true}
+                      >
+                        {clubMembers.map((m) => {
+                          const isSelected = selectedMembers.includes(m);
+                          return (
+                            <TouchableOpacity
+                              key={m}
+                              style={[
+                                styles.memberOption,
+                                isSelected && styles.memberOptionSelected,
+                              ]}
+                              onPress={() => toggleMemberSelection(m)}
+                            >
+                              <Text
+                                style={[
+                                  styles.memberOptionText,
+                                  isSelected && styles.memberOptionTextSelected,
+                                ]}
+                              >
+                                {m}
+                              </Text>
+                              {isSelected && (
+                                <Text style={styles.checkIcon}>✓</Text>
+                              )}
+                            </TouchableOpacity>
+                          );
+                        })}
+                        {clubMembers.length === 0 && (
+                          <Text
+                            style={{
+                              padding: 15,
+                              color: "#888",
+                              textAlign: "center",
+                            }}
+                          >
+                            部員がいません
+                          </Text>
+                        )}
+                      </ScrollView>
+                    </View>
+                  </View>
+                )}
+              </ScrollView>
+
+              <View
+                style={[
+                  styles.modalButtons,
+                  { padding: 15, borderTopWidth: 1, borderTopColor: "#eee" },
+                ]}
+              >
+                <TouchableOpacity
+                  style={styles.modalCancelBtn}
+                  onPress={() => {
+                    setIsAddChannelModalVisible(false);
+                    setNewChannelName("");
+                    setNewChannelIsReadOnly(false);
+                    setNewChannelScope("team");
+                    setSelectedMembers(["all"]);
+                  }}
+                >
+                  <Text style={styles.modalCancelText}>キャンセル</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.modalSubmitBtn}
+                  onPress={handleAddChannel}
+                >
+                  <Text style={styles.modalSubmitText}>作成する</Text>
+                </TouchableOpacity>
+              </View>
             </View>
-          </View>
+          </KeyboardAvoidingView>
         </View>
       </Modal>
 
@@ -2321,6 +2375,61 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   notifDismissText: { color: "#ccc", fontSize: 16, fontWeight: "bold" },
+
+  // ★ 修正：新しいタブ追加モーダル用の追加スタイル
+  typeContainer: { flexDirection: "row", marginBottom: 15 },
+  typeBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    alignItems: "center",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#ddd",
+    marginRight: 10,
+  },
+  typeBtnActive: { backgroundColor: "#e6f2ff", borderColor: COLORS.primary },
+  typeBtnText: { fontSize: 13, color: "#555", fontWeight: "bold" },
+  typeBtnTextActive: { color: COLORS.primary },
+
+  switchContainer: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 20,
+    backgroundColor: "#f9f9f9",
+    padding: 15,
+    borderRadius: 8,
+  },
+  switchLabel: { fontSize: 15, fontWeight: "bold", color: COLORS.textMain },
+  switchSubLabel: { fontSize: 12, color: "#888", marginTop: 4 },
+  inputLabel: {
+    fontSize: 14,
+    fontWeight: "bold",
+    color: "#555",
+    marginBottom: 8,
+  },
+
+  memberSelectorWrapper: {
+    borderWidth: 1,
+    borderColor: "#ddd",
+    borderRadius: 8,
+    overflow: "hidden",
+    marginBottom: 15,
+    backgroundColor: "#fff",
+  },
+  memberSelector: { maxHeight: 200 },
+  memberOption: {
+    padding: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: "#eee",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  memberOptionSelected: { backgroundColor: "#e6f2ff" },
+  memberOptionText: { fontSize: 15, color: "#333" },
+  memberOptionTextSelected: { color: COLORS.primary, fontWeight: "bold" },
+  checkIcon: { color: COLORS.primary, fontSize: 16, fontWeight: "bold" },
 });
 
 export default WorkspaceHomeScreen;
