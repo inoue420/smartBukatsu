@@ -13,6 +13,8 @@ import {
   Alert,
   StatusBar,
   useWindowDimensions,
+  InputAccessoryView,
+  Button,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Video, ResizeMode } from "expo-av";
@@ -41,7 +43,6 @@ const ProjectDetailScreen = ({
 
   const [localTags, setLocalTags] = useState(project.tags || []);
 
-  // ★ 修正：初期タグを変更
   const defaultQuickTags = ["得点", "罰則", "2min", "ナイス"];
   const [quickTags, setQuickTags] = useState(
     project.quickTags || defaultQuickTags,
@@ -49,7 +50,6 @@ const ProjectDetailScreen = ({
 
   const [selectedQuickTags, setSelectedQuickTags] = useState([]);
 
-  // ★ 追加：切り抜きの秒数設定
   const [preSec, setPreSec] = useState(5);
   const [postSec, setPostSec] = useState(3);
 
@@ -252,7 +252,6 @@ const ProjectDetailScreen = ({
     if (selectedQuickTags.length === 0) return;
     const label = selectedQuickTags.join(" + ");
 
-    // ★ 修正：タグに切り抜き秒数を保存
     const newTag = {
       id: "tag_" + Date.now(),
       videoTime,
@@ -551,7 +550,6 @@ const ProjectDetailScreen = ({
             </TouchableOpacity>
           </View>
 
-          {/* ★ 修正：切り抜き秒数の設定UI */}
           <View style={styles.clipSettingsRow}>
             <Text style={styles.clipSettingsLabel}>✂️ 切り抜き:</Text>
             <Text style={styles.clipSettingsText}>前</Text>
@@ -561,6 +559,7 @@ const ProjectDetailScreen = ({
               value={String(preSec)}
               onChangeText={(v) => setPreSec(Number(v) || 0)}
               selectTextOnFocus
+              inputAccessoryViewID="doneAccessory" // ★ 両方のInputに共通のIDを設定
             />
             <Text style={styles.clipSettingsText}>秒 〜 後</Text>
             <TextInput
@@ -569,6 +568,7 @@ const ProjectDetailScreen = ({
               value={String(postSec)}
               onChangeText={(v) => setPostSec(Number(v) || 0)}
               selectTextOnFocus
+              inputAccessoryViewID="doneAccessory" // ★ 両方のInputに共通のIDを設定
             />
             <Text style={styles.clipSettingsText}>秒</Text>
           </View>
@@ -701,6 +701,15 @@ const ProjectDetailScreen = ({
         <View style={styles.toastContainer}>
           <Text style={styles.toastText}>{toastMessage}</Text>
         </View>
+      )}
+
+      {/* ★ 修正：ツールバー（InputAccessoryView）を画面の一番外側に配置 */}
+      {Platform.OS === "ios" && (
+        <InputAccessoryView nativeID="doneAccessory">
+          <View style={styles.accessoryBar}>
+            <Button onPress={() => Keyboard.dismiss()} title="完了" />
+          </View>
+        </InputAccessoryView>
       )}
 
       <Modal
@@ -1037,7 +1046,17 @@ const styles = StyleSheet.create({
     color: "#fff",
   },
 
-  // ★ 修正：切り抜き秒数設定用スタイル
+  accessoryBar: {
+    backgroundColor: "#e5e5ea",
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    alignItems: "center",
+    paddingHorizontal: 10,
+    height: 44,
+    borderTopWidth: 1,
+    borderColor: "#ccc",
+  },
+
   clipSettingsRow: {
     flexDirection: "row",
     alignItems: "center",
