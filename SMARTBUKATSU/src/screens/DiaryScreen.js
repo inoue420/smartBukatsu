@@ -15,7 +15,9 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-// ★ Firestore通信用の関数をインポート
+// ★ 追加：下書きをアプリ終了後も保持するためのライブラリ
+import AsyncStorage from "@react-native-async-storage/async-storage";
+
 import { useAuth } from "../AuthContext";
 import {
   createDailyReport,
@@ -86,7 +88,7 @@ const DiaryScreen = ({
   userProfiles = {},
   dailyReports = [],
   setDailyReports,
-  clubMembers = [], // ★ App.jsから受け取る部員リスト
+  clubMembers = [],
   alertThresholds = {
     fatigueWarning: 7,
     fatigueDanger: 9,
@@ -142,7 +144,81 @@ const DiaryScreen = ({
   const [searchQuery, setSearchQuery] = useState("");
   const [expandedDates, setExpandedDates] = useState({});
 
-  // ★ 提出義務のある「選手」のみのリストを抽出（管理者やコーチはグレー表示させないため）
+  // ★ 追加：下書き保存用のキー（ユーザーごとに分ける）
+  const DRAFT_KEY = `diary_draft_${currentUser}`;
+
+  // ★ 追加：初回起動時に下書きデータを読み込む
+  useEffect(() => {
+    const loadDraft = async () => {
+      try {
+        const draftStr = await AsyncStorage.getItem(DRAFT_KEY);
+        if (draftStr) {
+          const draft = JSON.parse(draftStr);
+          setReportDate(draft.reportDate || getTodayString());
+          setCondition(draft.condition || "良い");
+          setFatigue(draft.fatigue !== undefined ? draft.fatigue : 5);
+          setIsParticipating(draft.isParticipating || "通常");
+          setHasPain(draft.hasPain || false);
+          setPainPart(draft.painPart || "");
+          setPainLevel(draft.painLevel !== undefined ? draft.painLevel : 5);
+          setSinceWhen(draft.sinceWhen || "");
+          setTreatment(draft.treatment || "");
+          setReflection(draft.reflection || "");
+          setAchievement(
+            draft.achievement !== undefined ? draft.achievement : 3,
+          );
+          setMemo(draft.memo || "");
+        }
+      } catch (error) {
+        console.log("下書き読み込みエラー:", error);
+      }
+    };
+    loadDraft();
+  }, [DRAFT_KEY]);
+
+  // ★ 追加：入力が変わるたびに自動で下書きを保存する
+  useEffect(() => {
+    if (editingReportId) return; // 過去の記録を修正中の場合は下書き上書きしない
+
+    const saveDraft = async () => {
+      const draft = {
+        reportDate,
+        condition,
+        fatigue,
+        isParticipating,
+        hasPain,
+        painPart,
+        painLevel,
+        sinceWhen,
+        treatment,
+        reflection,
+        achievement,
+        memo,
+      };
+      try {
+        await AsyncStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
+      } catch (error) {
+        console.log("下書き保存エラー:", error);
+      }
+    };
+    saveDraft();
+  }, [
+    reportDate,
+    condition,
+    fatigue,
+    isParticipating,
+    hasPain,
+    painPart,
+    painLevel,
+    sinceWhen,
+    treatment,
+    reflection,
+    achievement,
+    memo,
+    editingReportId,
+    DRAFT_KEY,
+  ]);
+
   const targetPlayers = useMemo(() => {
     const players = [];
     const baseList =
@@ -383,9 +459,11 @@ const DiaryScreen = ({
       {
         text: "破棄する",
         style: "destructive",
-        onPress: () => {
+        onPress: async () => {
           resetForm();
           setIsCreateModalVisible(false);
+          // ★追加：破棄した場合はストレージの下書きも完全に消去
+          await AsyncStorage.removeItem(DRAFT_KEY);
         },
       },
     ]);
@@ -483,6 +561,9 @@ const DiaryScreen = ({
           await createDailyReport(safeTeamId, newReport);
         }
         Alert.alert("提出完了", "振り返りを提出しました。");
+
+        // ★ 追加：提出完了したら下書きを消去
+        await AsyncStorage.removeItem(DRAFT_KEY);
       }
     } catch (error) {
       console.log("Firestore保存エラー:", error);
@@ -802,11 +883,9 @@ const DiaryScreen = ({
             const expanded = isExpanded(date, index);
             const hasUnreviewed = reportsInDate.some((d) => !d.isReviewed);
 
-            // リストに表示するメンバーの決定（管理者向け）
             let membersToRender = [];
             if (isStaffOrAbove && activeTab === "all" && searchQuery === "") {
               const actualSubmitters = reportsInDate.map((r) => r.author);
-              // targetPlayers と actualSubmitters の両方を統合して表示
               membersToRender = Array.from(
                 new Set([...targetPlayers, ...actualSubmitters]),
               );
@@ -837,7 +916,6 @@ const DiaryScreen = ({
 
                 {expanded &&
                   (isStaffOrAbove ? (
-                    // ★ 管理者向け：1行のコンパクトなリスト表示
                     <View style={styles.memberList}>
                       {membersToRender.map((memberName) => {
                         const report = reportsInDate.find(
@@ -949,7 +1027,6 @@ const DiaryScreen = ({
                       })}
                     </View>
                   ) : (
-                    // ★ 部員向け：今まで通りの大きなカード表示
                     <View>
                       {reportsInDate.map((report) => {
                         const alertLevel = getAlertLevel(report);
@@ -1044,7 +1121,7 @@ const DiaryScreen = ({
         <TouchableOpacity
           style={[styles.fab, isOffline && { backgroundColor: "#f39c12" }]}
           onPress={() => {
-            resetForm();
+            setEditingReportId(null);
             setIsCreateModalVisible(true);
           }}
         >
@@ -1739,7 +1816,6 @@ const styles = StyleSheet.create({
   },
   unreadAlertBadgeText: { color: "#fff", fontSize: 10, fontWeight: "bold" },
 
-  // ★ 管理者用：コンパクトな1行カードのスタイル
   memberList: {
     paddingHorizontal: 2,
   },
@@ -1780,7 +1856,6 @@ const styles = StyleSheet.create({
     color: "#aaa",
   },
 
-  // 状態ごとのタブカラー
   tabMissing: {
     backgroundColor: "#f9f9f9",
     borderColor: "#e0e0e0",
@@ -1810,7 +1885,6 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
   },
 
-  // ★ 部員用：詳細カードスタイル
   card: {
     backgroundColor: "#fff",
     borderRadius: 12,
@@ -1989,6 +2063,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 15,
+    marginTop: 5,
   },
   editBtnText: { color: "#fff", fontSize: 12, fontWeight: "bold" },
 

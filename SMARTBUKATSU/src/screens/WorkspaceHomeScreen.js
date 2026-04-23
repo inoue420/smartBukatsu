@@ -125,23 +125,31 @@ const WorkspaceHomeScreen = ({
     return level;
   };
 
+  // ★修正：「担当の生徒のみ」の権限をバッジのカウントにも反映させる
+  const staffScope = currentUserProfile.staffScope || "all";
+
   const unreadMedicalDangerCount = dailyReports
     ? dailyReports.filter((r) => {
         if (r.status === "deleted") return false;
         if (r.isReviewed) return false;
+
+        // コーチ権限で「担当のみ」になっている場合は、他の生徒の通知を除外する
+        if (userRole === "staff" && staffScope === "assigned") {
+          const authorProfile = userProfiles[r.author] || {};
+          if (authorProfile.assignedStaff !== currentUser) return false;
+        }
+
         return getAlertLevel(r, dailyReports) === "danger";
       }).length
     : 0;
 
   const [searchQuery, setSearchQuery] = useState("");
 
-  // ★ 修正：初期値は defaultChannels に設定
   const [channels, setChannels] = useState(defaultChannels);
   const [activeChannelId, setActiveChannelId] = useState("ch_1");
 
   const [isLoading, setIsLoading] = useState(false);
 
-  // ★ 追加：Firestoreから「タブ（チャンネル）一覧」をリアルタイムで同期する処理
   useEffect(() => {
     if (!activeTeamId || isOffline) return;
 
@@ -301,7 +309,6 @@ const WorkspaceHomeScreen = ({
   });
   const reportCount = reportedItems.length;
 
-  // ★ 修正：タブ追加時にFirestoreにも保存する
   const handleAddChannel = () => {
     const trimmedName = newChannelName.trim();
     if (trimmedName === "") return;
@@ -320,7 +327,6 @@ const WorkspaceHomeScreen = ({
       setChannels(updatedChannels);
       setActiveChannelId(newCh.id);
 
-      // Firestoreのチーム情報に保存して全員に同期させる
       if (!isOffline && activeTeamId) {
         try {
           const teamRef = doc(db, "teams", activeTeamId);
@@ -340,7 +346,6 @@ const WorkspaceHomeScreen = ({
     }, 500);
   };
 
-  // ★ 修正：タブ削除時にもFirestoreから消去する
   const handleDeleteChannel = (channel) => {
     if (channel.id === "ch_1" || channel.id === "ch_diary") {
       Alert.alert(
@@ -1274,6 +1279,14 @@ const WorkspaceHomeScreen = ({
             >
               <View style={styles.menuIconContainer}>
                 <Text style={styles.menuIconText}>📝</Text>
+                {/* ★ 修正：カレンダーにあったメディカルの通知バッジを振り返りに移動！ */}
+                {isStaffOrAbove && unreadMedicalDangerCount > 0 && (
+                  <View style={styles.menuBadge}>
+                    <Text style={styles.menuBadgeText}>
+                      {unreadMedicalDangerCount}
+                    </Text>
+                  </View>
+                )}
               </View>
               <Text style={styles.menuLabel}>振り返り</Text>
             </TouchableOpacity>
@@ -1284,13 +1297,7 @@ const WorkspaceHomeScreen = ({
             >
               <View style={styles.menuIconContainer}>
                 <Text style={styles.menuIconText}>📅</Text>
-                {isStaffOrAbove && unreadMedicalDangerCount > 0 && (
-                  <View style={styles.menuBadge}>
-                    <Text style={styles.menuBadgeText}>
-                      {unreadMedicalDangerCount}
-                    </Text>
-                  </View>
-                )}
+                {/* ★ 修正：ここからバッジを削除しました */}
               </View>
               <Text style={styles.menuLabel}>カレンダー</Text>
             </TouchableOpacity>
