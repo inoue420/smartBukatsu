@@ -1,1 +1,53 @@
-node_modules
+# dependencies
+node_modules/
+**/node_modules/
+
+# Expo
+.expo/
+**/.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# env files
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+
+# Native / secrets
+.kotlin/
+*.orig.*
+*.jks
+*.keystore
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.pem
+*.cer
+
+# generated native folders
+/ios
+/android
+**/ios
+**/android
+
+# build outputs
+*.apk
+*.aab
+*.ipa
+*.log
+
+# misc
+.metro-health-check*
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+.DS_Store
+Thumbs.db
+.idea/
+*.iml
+*.tsbuildinfo
