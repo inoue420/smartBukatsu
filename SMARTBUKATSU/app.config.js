@@ -26,6 +26,10 @@ module.exports = {
       messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
       appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID,
       measurementId: process.env.EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID,
+      // EAS project ID
+      eas: {
+        projectId: "e741f7bd-7361-4112-aa43-06b192f2be13",
+      },
     },
   },
 };
