@@ -1,0 +1,32 @@
+{
+  "cli": {
+    "version": ">= 7.8.2",
+    "appVersionSource": "remote",
+    "requireCommit": true
+  },
+  "build": {
+    "development": {
+      "node": "20.20.0",
+      "developmentClient": true,
+      "distribution": "internal",
+      "cache": {
+        "disabled": true
+      }
+    },
+    "preview": {
+      "node": "20.20.0",
+      "distribution": "internal",
+      "ios": {},
+      "cache": {
+        "disabled": true
+      }
+    },
+    "production": {
+      "node": "20.20.0",
+      "ios": {},
+      "cache": {
+        "disabled": true
+      }
+    }
+  }
+}
