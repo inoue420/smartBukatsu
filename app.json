@@ -1,0 +1,18 @@
+{
+  "expo": {
+    "extra": {
+      "eas": {
+        "projectId": "a832db29-e0bb-43b4-947c-68ec96029a8f"
+      }
+    },
+    "android": {
+      "package": "com.inoue420.smartbukatsu"
+    },
+    "ios": {
+      "bundleIdentifier": "com.inoue420.smartbukatsu",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    }
+  }
+}
