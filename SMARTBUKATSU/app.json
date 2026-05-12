@@ -1,7 +1,8 @@
 {
   "expo": {
     "name": "SMARTBUKATSU",
-    "slug": "SMARTBUKATSU",
+    "slug": "smartbukatsu",
+    "scheme": "smartbukatsu",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -14,7 +15,13 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.sharprise.smartbukatsu"
+      "bundleIdentifier": "com.sharprise.smartbukatsu",
+      "config": {
+        "usesNonExemptEncryption": false
+      },
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "package": "com.sharprise.smartbukatsu",
