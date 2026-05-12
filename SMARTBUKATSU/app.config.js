@@ -6,19 +6,31 @@ const appJson = require("./app.json");
 
 dotenvExpand.expand(
   dotenvFlow.config({
-    path: path.resolve(__dirname), // ルート直下の .env* を読む（.env.local 最優先）
+    path: path.resolve(__dirname),
     default_node_env: "development",
-  }),
+  })
 );
-// ↓↓↓ ここから追加 ↓↓↓
+
+// 開発中の確認用。本番提出前には削除推奨
 console.log("========== 環境変数のチェック ==========");
-console.log("APIキーは入ってる？: ", process.env.EXPO_PUBLIC_FIREBASE_API_KEY);
+console.log(
+  "APIキーは入ってる？: ",
+  process.env.EXPO_PUBLIC_FIREBASE_API_KEY ? "YES" : "NO"
+);
 console.log("=======================================");
-// ↑↑↑ ここまで追加 ↑↑↑
-module.exports = {
-  expo: {
+
+module.exports = ({ config }) => {
+  return {
+    ...config,
     ...appJson.expo,
+
+    // 明示しておくと development build のURL scheme事故を減らせます
+    scheme: "smartbukatsu",
+
     extra: {
+      ...(config.extra || {}),
+      ...(appJson.expo.extra || {}),
+
       firebaseApiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY,
       authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN,
       projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID,
@@ -26,10 +38,10 @@ module.exports = {
       messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
       appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID,
       measurementId: process.env.EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID,
-      // EAS project ID
+
       eas: {
         projectId: "e741f7bd-7361-4112-aa43-06b192f2be13",
       },
     },
-  },
+  };
 };
