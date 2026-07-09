@@ -28,5 +28,15 @@
         "disabled": true
       }
     }
+  },
+  "submit": {
+    "production": {
+      "ios": {
+        "ascAppId": "6764191653",
+        "ascApiKeyPath": "C:\\Users\\81902\\OneDrive\\Documents\\smartbukatsu\\AuthKey_FY8533TYD5.p8",
+        "ascApiKeyId": "FY8533TYD5",
+        "ascApiKeyIssuerId": "25459f54-877f-4208-a4fb-848547a170f9"
+      }
+    }
   }
 }
