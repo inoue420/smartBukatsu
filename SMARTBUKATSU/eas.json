@@ -7,6 +7,7 @@
   "build": {
     "development": {
       "node": "20.20.0",
+      "environment": "development",
       "developmentClient": true,
       "distribution": "internal",
       "cache": {
@@ -15,6 +16,7 @@
     },
     "preview": {
       "node": "20.20.0",
+      "environment": "preview",
       "distribution": "internal",
       "ios": {},
       "cache": {
@@ -23,6 +25,7 @@
     },
     "production": {
       "node": "20.20.0",
+      "environment": "production",
       "ios": {},
       "cache": {
         "disabled": true
