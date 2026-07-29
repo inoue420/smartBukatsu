@@ -401,7 +401,7 @@ const ProjectListScreen = ({
 
   const handleCreateProject = async () => {
     if (title.trim() === "") {
-      return Alert.alert("エラー", "プロジェクト名を入力してください。");
+      return Alert.alert("エラー", "動画名を入力してください。");
     }
 
     const realUid = user?.uid || currentUser || "local_user";
@@ -426,7 +426,7 @@ const ProjectListScreen = ({
     setType("試合");
     setParticipants("team");
     setVideoUrl("");
-    Alert.alert("成功", "プロジェクトを作成しました！");
+    Alert.alert("成功", "動画を作成しました！");
 
     try {
       if (activeTeamId) {
@@ -445,7 +445,7 @@ const ProjectListScreen = ({
 
   const handleSaveEditProject = async () => {
     if (!editTitle.trim()) {
-      return Alert.alert("エラー", "プロジェクト名を入力してください。");
+      return Alert.alert("エラー", "動画名を入力してください。");
     }
 
     setProjects(
@@ -954,7 +954,7 @@ const ProjectListScreen = ({
           >
             <Text style={styles.backButtonText}>◁ ホーム</Text>
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>📁 プロジェクト</Text>
+          <Text style={styles.headerTitle}>🎬 動画</Text>
           <View style={{ width: 60 }} />
         </View>
       )}
@@ -962,7 +962,7 @@ const ProjectListScreen = ({
       {!isLandscape && (
         <View style={styles.tabContainer}>
           {[
-            { id: "list", label: "プロジェクト一覧" },
+            { id: "list", label: "動画一覧" },
             { id: "summary", label: "ハイライトまとめ" },
           ].map((tab) => (
             <TouchableOpacity
@@ -1039,7 +1039,7 @@ const ProjectListScreen = ({
         ) : (
           <>
             <View style={styles.topRow}>
-              <Text style={styles.sectionTitle}>プロジェクト一覧</Text>
+              <Text style={styles.sectionTitle}>動画一覧</Text>
               {canCreateProject && (
                 <TouchableOpacity
                   style={styles.createBtn}
@@ -1055,7 +1055,7 @@ const ProjectListScreen = ({
               keyExtractor={(item) => item.id}
               renderItem={renderProjectItem}
               ListEmptyComponent={
-                <Text style={styles.emptyText}>プロジェクトがありません。</Text>
+                <Text style={styles.emptyText}>動画がありません。</Text>
               }
             />
           </>
@@ -1069,13 +1069,13 @@ const ProjectListScreen = ({
             behavior={Platform.OS === "ios" ? "padding" : "height"}
             style={styles.modalContent}
           >
-            <Text style={styles.modalTitle}>新しいプロジェクトを追加</Text>
+            <Text style={styles.modalTitle}>新しい動画を追加</Text>
 
             <ScrollView
               showsVerticalScrollIndicator={false}
               contentContainerStyle={{ paddingBottom: 50 }}
             >
-              <Text style={styles.label}>プロジェクト名</Text>
+              <Text style={styles.label}>動画名</Text>
               <TextInput
                 style={styles.input}
                 placeholder="例: 秋季大会 決勝戦"
@@ -1184,14 +1184,14 @@ const ProjectListScreen = ({
             behavior={Platform.OS === "ios" ? "padding" : "height"}
             style={styles.editProjectModalContent}
           >
-            <Text style={styles.modalTitle}>プロジェクトの編集</Text>
+            <Text style={styles.modalTitle}>動画の編集</Text>
 
-            <Text style={styles.label}>プロジェクト名</Text>
+            <Text style={styles.label}>動画名</Text>
             <TextInput
               style={styles.editProjectInput}
               value={editTitle}
               onChangeText={setEditTitle}
-              placeholder="プロジェクト名"
+              placeholder="動画名"
             />
 
             <TouchableOpacity
@@ -1199,7 +1199,7 @@ const ProjectListScreen = ({
               onPress={handleDeleteProjectFromEdit}
             >
               <Text style={styles.editProjectDeleteBtnText}>
-                🗑️ このプロジェクトを消去する
+                🗑️ この動画を消去する
               </Text>
             </TouchableOpacity>
 

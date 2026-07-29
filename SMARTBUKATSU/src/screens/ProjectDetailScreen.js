@@ -36,7 +36,7 @@ const ProjectDetailScreen = ({
 
   const project =
     projects?.find((p) => p.id === routeProject?.id) || routeProject || {};
-  const projectTitle = project.title || "未定のプロジェクト";
+  const projectTitle = project.title || "未定の動画";
   const projectVideoUrl = project.videoUrl || "";
 
   const { activeTeamId } = useAuth();
@@ -445,7 +445,7 @@ const ProjectDetailScreen = ({
             ※ 動画URLが設定されていません
           </Text>
           <Text style={styles.videoPlaceholderSub}>
-            一覧画面でプロジェクトを作成し直すか、管理者に確認してください
+            一覧画面で動画を作成し直すか、管理者に確認してください
           </Text>
         </View>
       )}

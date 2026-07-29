@@ -1307,9 +1307,9 @@ const WorkspaceHomeScreen = ({
               onPress={() => navigation.navigate("ProjectList")}
             >
               <View style={styles.menuIconContainer}>
-                <Text style={styles.menuIconText}>📁</Text>
+                <Text style={styles.menuIconText}>🎬</Text>
               </View>
-              <Text style={styles.menuLabel}>プロジェクト</Text>
+              <Text style={styles.menuLabel}>動画</Text>
             </TouchableOpacity>
 
             {isStaffOrAbove && (
