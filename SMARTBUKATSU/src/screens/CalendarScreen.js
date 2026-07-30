@@ -242,6 +242,8 @@ const CalendarScreen = ({
   const [clubEndTime, setClubEndTime] = useState("12:00");
   const [isClubAllDay, setIsClubAllDay] = useState(false);
   const [clubTimeSchedules, setClubTimeSchedules] = useState({});
+  const [selectedAbsenceEvent, setSelectedAbsenceEvent] = useState(null);
+  const [absenceCommentText, setAbsenceCommentText] = useState("");
 
   // === 個人の予定ステート ===
   const [editingPersonalEventId, setEditingPersonalEventId] = useState(null);
@@ -330,6 +332,14 @@ const CalendarScreen = ({
       r.status !== "deleted",
   );
 
+  const activeAbsenceEvent = selectedAbsenceEvent
+    ? clubEvents.find((event) => event.id === selectedAbsenceEvent.id) ||
+      selectedAbsenceEvent
+    : null;
+
+  const getAbsenceComments = (event) =>
+    Array.isArray(event?.absenceComments) ? event.absenceComments : [];
+
   useEffect(() => {
     if (!isOffline) {
       const hasPendingEvents =
@@ -398,6 +408,11 @@ const CalendarScreen = ({
         participants: "team",
         status: isOffline ? "pending" : "active",
         createdBy: user?.uid || "local_user",
+        absenceComments: editingClubEventId
+          ? getAbsenceComments(
+              clubEvents.find((event) => event.id === editingClubEventId),
+            )
+          : [],
       };
 
       try {
@@ -461,6 +476,50 @@ const CalendarScreen = ({
         },
       },
     ]);
+  };
+
+  const openAbsenceModal = (event) => {
+    setSelectedAbsenceEvent(event);
+    setAbsenceCommentText("");
+  };
+
+  const closeAbsenceModal = () => {
+    setSelectedAbsenceEvent(null);
+    setAbsenceCommentText("");
+  };
+
+  const handleSendAbsenceComment = async () => {
+    const text = absenceCommentText.trim();
+    if (!activeAbsenceEvent || !text) return;
+    if (isOffline) {
+      Alert.alert("通信エラー", "不参加連絡はオンライン時に送信してください。");
+      return;
+    }
+
+    const newComment = {
+      id: `absence_${Date.now()}`,
+      user: currentUser || "名称未設定",
+      uid: user?.uid || "",
+      text,
+      date: selectedDate,
+      time: new Date().toISOString(),
+    };
+    const nextComments = [...getAbsenceComments(activeAbsenceEvent), newComment];
+
+    setIsLoading(true);
+    try {
+      await updateClubEvent(activeTeamId, activeAbsenceEvent.id, {
+        absenceComments: nextComments,
+      });
+      setSelectedAbsenceEvent((prev) =>
+        prev ? { ...prev, absenceComments: nextComments } : prev,
+      );
+      setAbsenceCommentText("");
+    } catch (error) {
+      Alert.alert("エラー", "不参加連絡の送信に失敗しました。");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleSavePersonalEvent = async () => {
@@ -732,6 +791,19 @@ const CalendarScreen = ({
                         ? `(期間: ${item.date.replace(/-/g, "/")} 〜 ${item.endDate.replace(/-/g, "/")})`
                         : ""}
                     </Text>
+                    <View style={styles.absenceSummaryRow}>
+                      <Text style={styles.absenceSummaryText}>
+                        不参加連絡 {getAbsenceComments(item).length}件
+                      </Text>
+                      {!isPending && (
+                        <TouchableOpacity
+                          onPress={() => openAbsenceModal(item)}
+                          style={styles.absenceBtn}
+                        >
+                          <Text style={styles.absenceBtnText}>不参加連絡</Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
                   </View>
                   {canManageClubEvents && !isPending && (
                     <View style={styles.actionRow}>
@@ -948,6 +1020,64 @@ const CalendarScreen = ({
               </View>
             </ScrollView>
           </View>
+        </View>
+      </Modal>
+
+      {/* 不参加連絡モーダル */}
+      <Modal visible={activeAbsenceEvent !== null} transparent animationType="slide">
+        <View style={styles.modalOverlay}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            style={styles.modalContent}
+          >
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>不参加連絡</Text>
+              {activeAbsenceEvent && (
+                <Text style={styles.modalSubTitle}>
+                  {activeAbsenceEvent.title || activeAbsenceEvent.name}
+                </Text>
+              )}
+            </View>
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={{ paddingBottom: 30 }}
+            >
+              <Text style={styles.label}>連絡一覧</Text>
+              {getAbsenceComments(activeAbsenceEvent).length === 0 ? (
+                <Text style={styles.emptyText}>不参加連絡はありません</Text>
+              ) : (
+                getAbsenceComments(activeAbsenceEvent).map((comment) => (
+                  <View key={comment.id} style={styles.commentBox}>
+                    <Text style={styles.commentUser}>{comment.user}</Text>
+                    <Text style={styles.commentText}>{comment.text}</Text>
+                  </View>
+                ))
+              )}
+
+              <Text style={styles.label}>不参加コメント</Text>
+              <TextInput
+                style={[styles.input, styles.textArea]}
+                value={absenceCommentText}
+                onChangeText={setAbsenceCommentText}
+                placeholder="例: 体調不良のため欠席します"
+                multiline
+              />
+              <View style={styles.modalButtons}>
+                <TouchableOpacity
+                  style={styles.cancelBtn}
+                  onPress={closeAbsenceModal}
+                >
+                  <Text style={styles.cancelBtnText}>閉じる</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.submitBtn}
+                  onPress={handleSendAbsenceComment}
+                >
+                  <Text style={styles.submitBtnText}>送信</Text>
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
+          </KeyboardAvoidingView>
         </View>
       </Modal>
 
@@ -1652,6 +1782,31 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   eventSub: { fontSize: 11, color: "#aaa", marginTop: 4 },
+  absenceSummaryRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    marginTop: 8,
+  },
+  absenceSummaryText: {
+    fontSize: 12,
+    color: COLORS.danger,
+    fontWeight: "bold",
+    marginRight: 8,
+  },
+  absenceBtn: {
+    borderWidth: 1,
+    borderColor: COLORS.danger,
+    borderRadius: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    backgroundColor: "#fff5f5",
+  },
+  absenceBtnText: {
+    fontSize: 12,
+    color: COLORS.danger,
+    fontWeight: "bold",
+  },
 
   actionRow: { flexDirection: "row", marginLeft: "auto" },
   iconBtn: { padding: 10, marginLeft: 5 },
@@ -1692,6 +1847,11 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     color: "#333",
     marginBottom: 5,
+  },
+  modalSubTitle: {
+    fontSize: 13,
+    color: COLORS.textSub,
+    textAlign: "center",
   },
   label: {
     fontSize: 14,
