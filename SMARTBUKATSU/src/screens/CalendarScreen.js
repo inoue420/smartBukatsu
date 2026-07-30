@@ -123,6 +123,27 @@ const getDatesInRange = (startDate, endDate) => {
   return dates;
 };
 
+const getUniqueSortedDates = (dates = []) =>
+  Array.from(new Set(dates.map(normalizeDate).filter(Boolean))).sort();
+
+const getEventDates = (event) => {
+  const explicitDates = getUniqueSortedDates(event?.selectedDates || []);
+  if (explicitDates.length > 0) return explicitDates;
+
+  const start = normalizeDate(event?.date);
+  if (!start) return [];
+  const end = event?.endDate ? normalizeDate(event.endDate) : start;
+  return getDatesInRange(start, end);
+};
+
+const getDefaultClubSchedule = () => ({
+  start: "09:00",
+  end: "12:00",
+  isAllDay: false,
+});
+
+const getDateLabel = (date) => date.substring(5).replace("-", "/");
+
 const TimePickerOverlay = ({
   onClose,
   onSelect,
@@ -237,6 +258,7 @@ const CalendarScreen = ({
   const [clubEventType, setClubEventType] = useState("練習");
   const [isMultiDay, setIsMultiDay] = useState(false);
   const [endDate, setEndDate] = useState("");
+  const [clubSelectedDates, setClubSelectedDates] = useState([]);
   const [showEndDatePicker, setShowEndDatePicker] = useState(false);
   const [clubStartTime, setClubStartTime] = useState("09:00");
   const [clubEndTime, setClubEndTime] = useState("12:00");
@@ -275,15 +297,13 @@ const CalendarScreen = ({
 
     clubEvents.forEach((p) => {
       if (p.status !== "deleted") {
-        const start = normalizeDate(p.date);
-        const end = p.endDate ? normalizeDate(p.endDate) : start;
         const color =
           p.status === "pending"
             ? "#aaa"
             : p.type === "試合"
               ? COLORS.danger
               : COLORS.primary;
-        getDatesInRange(start, end).forEach((d) => addMark(d, p.id, color));
+        getEventDates(p).forEach((d) => addMark(d, p.id, color));
       }
     });
 
@@ -313,9 +333,7 @@ const CalendarScreen = ({
 
   const dailyClubEvents = clubEvents.filter((p) => {
     if (p.status === "deleted") return false;
-    const start = normalizeDate(p.date);
-    const end = p.endDate ? normalizeDate(p.endDate) : start;
-    return selectedDate >= start && selectedDate <= end;
+    return getEventDates(p).includes(selectedDate);
   });
 
   const dailyPersonalEvents = personalEvents.filter((pe) => {
@@ -331,6 +349,45 @@ const CalendarScreen = ({
       r.author === currentUser &&
       r.status !== "deleted",
   );
+
+  const sortedClubSelectedDates = useMemo(
+    () =>
+      getUniqueSortedDates(clubSelectedDates.length ? clubSelectedDates : [selectedDate]),
+    [clubSelectedDates, selectedDate],
+  );
+
+  const clubSelectionMarkedDates = useMemo(() => {
+    const marks = {};
+    sortedClubSelectedDates.forEach((date) => {
+      marks[date] = {
+        selected: true,
+        selectedColor: COLORS.primary,
+        selectedTextColor: "#ffffff",
+      };
+    });
+    return marks;
+  }, [sortedClubSelectedDates]);
+
+  const getClubEventDateSummary = (event) => {
+    const eventDates = getEventDates(event);
+    if (!event.isMultiDay || eventDates.length <= 1) return "";
+    if (Array.isArray(event.selectedDates) && event.selectedDates.length > 0) {
+      return `(日付: ${eventDates.map((date) => date.replace(/-/g, "/")).join("、")})`;
+    }
+    return `(期間: ${event.date.replace(/-/g, "/")} 〜 ${event.endDate.replace(/-/g, "/")})`;
+  };
+
+  const toggleClubSelectedDate = (dateString) => {
+    setClubSelectedDates((prev) => {
+      const current = getUniqueSortedDates(prev.length ? prev : [selectedDate]);
+      if (current.includes(dateString)) {
+        return current.length === 1
+          ? current
+          : current.filter((date) => date !== dateString);
+      }
+      return getUniqueSortedDates([...current, dateString]);
+    });
+  };
 
   const activeAbsenceEvent = selectedAbsenceEvent
     ? clubEvents.find((event) => event.id === selectedAbsenceEvent.id) ||
@@ -375,21 +432,33 @@ const CalendarScreen = ({
   const handleSaveClubEvent = async () => {
     if (!clubEventTitle.trim())
       return Alert.alert("エラー", "タイトルを入力してください");
-    if (isMultiDay && endDate < selectedDate)
-      return Alert.alert("エラー", "終了日を正しく選択してください");
+
+    const eventDates = getUniqueSortedDates(
+      isMultiDay
+        ? sortedClubSelectedDates.length
+          ? sortedClubSelectedDates
+          : [selectedDate]
+        : [selectedDate],
+    );
+    if (isMultiDay && eventDates.length === 0) {
+      return Alert.alert("エラー", "予定日を1日以上選択してください");
+    }
+
+    const firstEventDate = eventDates[0] || selectedDate;
+    const lastEventDate = eventDates[eventDates.length - 1] || firstEventDate;
 
     setIsLoading(true);
 
     setTimeout(async () => {
       const schedules = {};
       if (isMultiDay) {
-        const dates = getDatesInRange(selectedDate, endDate);
-        dates.forEach((d) => {
-          schedules[d] = clubTimeSchedules[d] || {
-            start: "09:00",
-            end: "12:00",
-            isAllDay: false,
-          };
+        const commonSchedule = {
+          start: isClubAllDay ? "" : clubStartTime,
+          end: isClubAllDay ? "" : clubEndTime,
+          isAllDay: isClubAllDay,
+        };
+        eventDates.forEach((d) => {
+          schedules[d] = commonSchedule;
         });
       }
 
@@ -398,12 +467,13 @@ const CalendarScreen = ({
         name: clubEventTitle.trim(),
         description: clubEventDescription.trim(),
         type: clubEventType,
-        date: selectedDate,
-        endDate: isMultiDay ? endDate : selectedDate,
+        date: isMultiDay ? firstEventDate : selectedDate,
+        endDate: isMultiDay ? lastEventDate : selectedDate,
+        selectedDates: isMultiDay ? eventDates : null,
         isMultiDay,
-        isAllDay: isMultiDay ? false : isClubAllDay,
-        startTime: isMultiDay || isClubAllDay ? "" : clubStartTime,
-        endTime: isMultiDay || isClubAllDay ? "" : clubEndTime,
+        isAllDay: isClubAllDay,
+        startTime: isClubAllDay ? "" : clubStartTime,
+        endTime: isClubAllDay ? "" : clubEndTime,
         timeSchedules: isMultiDay ? schedules : null,
         participants: "team",
         status: isOffline ? "pending" : "active",
@@ -439,6 +509,7 @@ const CalendarScreen = ({
     setClubEventType("練習");
     setIsMultiDay(false);
     setEndDate("");
+    setClubSelectedDates([selectedDate]);
     setShowEndDatePicker(false);
     setClubStartTime("09:00");
     setClubEndTime("12:00");
@@ -451,11 +522,16 @@ const CalendarScreen = ({
     setClubEventTitle(event.title || event.name);
     setClubEventDescription(event.description || "");
     setClubEventType(event.type || "練習");
+    const eventDates = getEventDates(event);
+    const firstSchedule = eventDates.length
+      ? event.timeSchedules?.[eventDates[0]]
+      : null;
     setIsMultiDay(event.isMultiDay || false);
     setEndDate(event.endDate || event.date);
-    setClubStartTime(event.startTime || "09:00");
-    setClubEndTime(event.endTime || "12:00");
-    setIsClubAllDay(event.isAllDay || false);
+    setClubSelectedDates(eventDates);
+    setClubStartTime(firstSchedule?.start || event.startTime || "09:00");
+    setClubEndTime(firstSchedule?.end || event.endTime || "12:00");
+    setIsClubAllDay(firstSchedule?.isAllDay ?? event.isAllDay ?? false);
     setClubTimeSchedules(event.timeSchedules || {});
     setIsClubModalVisible(true);
   };
@@ -668,13 +744,13 @@ const CalendarScreen = ({
       const d = timePickerTarget.replace("club_multi_start_", "");
       setClubTimeSchedules((prev) => ({
         ...prev,
-        [d]: { ...prev[d], start: timeStr },
+        [d]: { ...getDefaultClubSchedule(), ...prev[d], start: timeStr },
       }));
     } else if (timePickerTarget.startsWith("club_multi_end_")) {
       const d = timePickerTarget.replace("club_multi_end_", "");
       setClubTimeSchedules((prev) => ({
         ...prev,
-        [d]: { ...prev[d], end: timeStr },
+        [d]: { ...getDefaultClubSchedule(), ...prev[d], end: timeStr },
       }));
     } else if (timePickerTarget === "personal_single_start")
       setPersonalStartTime(timeStr);
@@ -786,10 +862,7 @@ const CalendarScreen = ({
                       </Text>
                     ) : null}
                     <Text style={styles.eventSub}>
-                      {item.type}{" "}
-                      {item.isMultiDay
-                        ? `(期間: ${item.date.replace(/-/g, "/")} 〜 ${item.endDate.replace(/-/g, "/")})`
-                        : ""}
+                      {item.type} {getClubEventDateSummary(item)}
                     </Text>
                     <View style={styles.absenceSummaryRow}>
                       <Text style={styles.absenceSummaryText}>
@@ -951,7 +1024,10 @@ const CalendarScreen = ({
             </View>
             <ScrollView
               showsVerticalScrollIndicator={false}
-              contentContainerStyle={{ paddingBottom: 50 }}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+              automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
+              contentContainerStyle={styles.clubModalScrollContent}
             >
               {viewingReport && (
                 <>
@@ -1083,11 +1159,13 @@ const CalendarScreen = ({
 
       {/* 部活予定モーダル */}
       <Modal visible={isClubModalVisible} transparent animationType="slide">
-        <View style={styles.modalOverlay}>
-          <KeyboardAvoidingView
-            behavior={Platform.OS === "ios" ? "padding" : "height"}
-            style={styles.modalContent}
-          >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          keyboardVerticalOffset={Platform.OS === "ios" ? 20 : 0}
+          style={styles.modalKeyboardAvoiding}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>
                 {editingClubEventId ? "予定の編集" : "新しい予定を追加"}
@@ -1095,7 +1173,10 @@ const CalendarScreen = ({
             </View>
             <ScrollView
               showsVerticalScrollIndicator={false}
-              contentContainerStyle={{ paddingBottom: 50 }}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+              automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
+              contentContainerStyle={styles.clubModalScrollContent}
             >
               <Text style={styles.label}>予定のタイトル</Text>
               <TextInput
@@ -1103,6 +1184,8 @@ const CalendarScreen = ({
                 placeholder="例: 練習試合"
                 value={clubEventTitle}
                 onChangeText={setClubEventTitle}
+                returnKeyType="done"
+                blurOnSubmit
               />
 
               <Text style={styles.label}>日程 (開始日: {selectedDate})</Text>
@@ -1112,6 +1195,7 @@ const CalendarScreen = ({
                   onPress={() => {
                     setIsMultiDay(false);
                     setEndDate(selectedDate);
+                    setClubSelectedDates([selectedDate]);
                   }}
                 >
                   <Text
@@ -1128,6 +1212,9 @@ const CalendarScreen = ({
                   onPress={() => {
                     setIsMultiDay(true);
                     setEndDate(endDate || selectedDate);
+                    setClubSelectedDates((prev) =>
+                      prev.length ? getUniqueSortedDates(prev) : [selectedDate],
+                    );
                   }}
                 >
                   <Text
@@ -1153,109 +1240,76 @@ const CalendarScreen = ({
                       },
                     ]}
                   >
-                    ▼ 終了日をタップして選択 ▼
+                    ▼ カレンダーで予定日をタップして選択 ▼
                   </Text>
-                  <TouchableOpacity
-                    style={styles.endDateSelector}
-                    onPress={() => setShowEndDatePicker(!showEndDatePicker)}
-                  >
-                    <Text style={styles.endDateText}>
-                      🗓️ {endDate || selectedDate}
-                    </Text>
-                  </TouchableOpacity>
-                  {showEndDatePicker && (
-                    <Calendar
-                      onDayPress={(day) => {
-                        setEndDate(day.dateString);
-                        setShowEndDatePicker(false);
-                      }}
-                      markedDates={{
-                        [endDate]: {
-                          selected: true,
-                          selectedColor: COLORS.primary,
-                        },
-                      }}
-                    />
-                  )}
+                  <Calendar
+                    current={sortedClubSelectedDates[0] || selectedDate}
+                    onDayPress={(day) => toggleClubSelectedDate(day.dateString)}
+                    markedDates={clubSelectionMarkedDates}
+                    theme={{ todayTextColor: COLORS.primary, arrowColor: "#555" }}
+                  />
+                  <Text style={styles.multiDateSummary}>
+                    選択中: {sortedClubSelectedDates.map((date) => date.replace(/-/g, "/")).join("、")}
+                  </Text>
 
-                  {endDate >= selectedDate && (
-                    <View style={{ marginTop: 15 }}>
-                      <Text style={[styles.label, { marginBottom: 10 }]}>
-                        ⏰ 日ごとの時間設定
-                      </Text>
-                      {getDatesInRange(selectedDate, endDate).map((date) => {
-                        const sched = clubTimeSchedules[date] || {
-                          start: "09:00",
-                          end: "12:00",
-                          isAllDay: false,
-                        };
-                        return (
-                          <View key={date} style={styles.multiTimeRow}>
-                            <View style={styles.multiTimeLeft}>
-                              <Text style={styles.multiTimeDate}>
-                                {date.substring(5).replace("-", "/")}
-                              </Text>
-                              <View style={styles.allDaySwitchRow}>
-                                <Switch
-                                  value={sched.isAllDay}
-                                  onValueChange={(val) =>
-                                    setClubTimeSchedules((prev) => ({
-                                      ...prev,
-                                      [date]: { ...sched, isAllDay: val },
-                                    }))
-                                  }
-                                  scaleX={0.7}
-                                  scaleY={0.7}
-                                />
-                                <Text style={styles.allDayLabelSmall}>
-                                  終日
-                                </Text>
-                              </View>
-                            </View>
-                            <View style={styles.multiTimeRight}>
-                              {!sched.isAllDay ? (
-                                <View style={styles.multiTimeInputContainer}>
-                                  <TouchableOpacity
-                                    style={styles.multiTimeBtn}
-                                    onPress={() => {
-                                      setTimePickerTarget(
-                                        `club_multi_start_${date}`,
-                                      );
-                                      setIsTimePickerVisible(true);
-                                    }}
-                                  >
-                                    <Text style={styles.multiTimeBtnText}>
-                                      {sched.start}
-                                    </Text>
-                                  </TouchableOpacity>
-                                  <Text style={styles.timeBetweenSmall}>
-                                    〜
-                                  </Text>
-                                  <TouchableOpacity
-                                    style={styles.multiTimeBtn}
-                                    onPress={() => {
-                                      setTimePickerTarget(
-                                        `club_multi_end_${date}`,
-                                      );
-                                      setIsTimePickerVisible(true);
-                                    }}
-                                  >
-                                    <Text style={styles.multiTimeBtnText}>
-                                      {sched.end}
-                                    </Text>
-                                  </TouchableOpacity>
-                                </View>
-                              ) : (
-                                <Text style={styles.allDayActiveText}>
-                                  終日設定中
-                                </Text>
-                              )}
-                            </View>
-                          </View>
-                        );
-                      })}
+                  <View style={{ marginTop: 15 }}>
+                    <View
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        marginTop: 10,
+                      }}
+                    >
+                      <Text style={styles.label}>⏰ 時間設定</Text>
+                      <View style={{ flexDirection: "row", alignItems: "center" }}>
+                        <Text
+                          style={{
+                            marginRight: 5,
+                            fontSize: 14,
+                            fontWeight: "bold",
+                            color: COLORS.textSub,
+                          }}
+                        >
+                          終日
+                        </Text>
+                        <Switch
+                          value={isClubAllDay}
+                          onValueChange={setIsClubAllDay}
+                        />
+                      </View>
                     </View>
-                  )}
+                    {!isClubAllDay && (
+                      <View style={styles.timeInputRow}>
+                        <TouchableOpacity
+                          style={styles.timeSelectBtn}
+                          onPress={() => {
+                            setTimePickerTarget("club_single_start");
+                            setIsTimePickerVisible(true);
+                          }}
+                        >
+                          <Text style={styles.timeSelectBtnText}>
+                            {clubStartTime}
+                          </Text>
+                        </TouchableOpacity>
+                        <Text style={styles.timeBetween}>〜</Text>
+                        <TouchableOpacity
+                          style={styles.timeSelectBtn}
+                          onPress={() => {
+                            setTimePickerTarget("club_single_end");
+                            setIsTimePickerVisible(true);
+                          }}
+                        >
+                          <Text style={styles.timeSelectBtnText}>
+                            {clubEndTime}
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                    <Text style={styles.multiDateSummary}>
+                      選択した全日に同じ時間設定を保存します。
+                    </Text>
+                  </View>
                 </View>
               ) : (
                 <View>
@@ -1348,6 +1402,7 @@ const CalendarScreen = ({
                 onChangeText={setClubEventDescription}
                 placeholder="集合時間、持ち物など"
                 multiline
+                blurOnSubmit={false}
               />
 
               <View style={styles.modalButtons}>
@@ -1365,7 +1420,7 @@ const CalendarScreen = ({
                 </TouchableOpacity>
               </View>
             </ScrollView>
-          </KeyboardAvoidingView>
+            </View>
 
           {isTimePickerVisible && timePickerTarget.includes("club") && (
             <TimePickerOverlay
@@ -1376,7 +1431,8 @@ const CalendarScreen = ({
               onSelect={handleTimeSelect}
             />
           )}
-        </View>
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* 個人予定モーダル */}
@@ -1395,7 +1451,10 @@ const CalendarScreen = ({
             </View>
             <ScrollView
               showsVerticalScrollIndicator={false}
-              contentContainerStyle={{ paddingBottom: 50 }}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+              automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
+              contentContainerStyle={styles.clubModalScrollContent}
             >
               <Text style={styles.label}>予定のタイトル</Text>
               <TextInput
@@ -1829,6 +1888,8 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
 
+  modalKeyboardAvoiding: { flex: 1 },
+
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.5)",
@@ -1841,6 +1902,8 @@ const styles = StyleSheet.create({
     padding: 20,
     maxHeight: "90%",
   },
+  clubModalScrollContent: { paddingBottom: 120 },
+
   modalHeader: { marginBottom: 15, alignItems: "center" },
   modalTitle: {
     fontSize: 18,
@@ -1927,6 +1990,14 @@ const styles = StyleSheet.create({
   multiTimeDate: { fontSize: 14, fontWeight: "bold", color: COLORS.textMain },
   allDaySwitchRow: { flexDirection: "row", alignItems: "center", marginTop: 3 },
   allDayLabelSmall: { fontSize: 11, color: "#666", fontWeight: "bold" },
+
+  multiDateSummary: {
+    marginTop: 10,
+    fontSize: 13,
+    color: COLORS.primary,
+    fontWeight: "bold",
+    lineHeight: 19,
+  },
 
   multiTimeRight: { flex: 1, alignItems: "flex-end" },
   multiTimeInputContainer: { flexDirection: "row", alignItems: "center" },
