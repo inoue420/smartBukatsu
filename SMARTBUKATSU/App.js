@@ -8,6 +8,7 @@ import NetInfo from "@react-native-community/netinfo";
 import { AuthProvider, useAuth } from "./src/AuthContext";
 import {
   subscribeProjects,
+  subscribeHighlightProjects,
   subscribeDailyReports,
   subscribeNotices,
   subscribePersonalEvents,
@@ -41,6 +42,7 @@ function AppContent() {
   } = useAuth();
 
   const [projects, setProjects] = useState([]);
+  const [highlightProjects, setHighlightProjects] = useState([]);
   const [notices, setNotices] = useState([]);
   const [dailyReports, setDailyReports] = useState([]);
   const [personalEvents, setPersonalEvents] = useState([]);
@@ -78,6 +80,10 @@ function AppContent() {
   useEffect(() => {
     if (user && activeTeamId) {
       const unsubProjects = subscribeProjects(activeTeamId, setProjects);
+      const unsubHighlightProjects = subscribeHighlightProjects(
+        activeTeamId,
+        setHighlightProjects,
+      );
       const unsubReports = subscribeDailyReports(activeTeamId, setDailyReports);
       const unsubNotices = subscribeNotices(activeTeamId, setNotices);
       const unsubPersonal = subscribePersonalEvents(
@@ -118,6 +124,7 @@ function AppContent() {
 
       return () => {
         unsubProjects();
+        unsubHighlightProjects();
         unsubReports();
         unsubNotices();
         unsubPersonal();
@@ -127,6 +134,7 @@ function AppContent() {
       };
     } else {
       setClubMembers([]);
+      setHighlightProjects([]);
       setUserProfiles({});
     }
   }, [user, activeTeamId]);
@@ -260,6 +268,8 @@ function AppContent() {
                   currentUser={safeUserName}
                   projects={projects}
                   setProjects={setProjects}
+                  highlightProjects={highlightProjects}
+                  setHighlightProjects={setHighlightProjects}
                   userProfiles={userProfiles}
                 />
               )}

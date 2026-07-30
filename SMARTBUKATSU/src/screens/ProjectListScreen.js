@@ -29,6 +29,7 @@ import * as ScreenOrientation from "expo-screen-orientation";
 import { useAuth } from "../AuthContext";
 import {
   createProject,
+  createHighlightProject,
   deleteProject,
   updateProject,
 } from "../services/firestoreService";
@@ -52,6 +53,7 @@ const ProjectListScreen = ({
   currentUser,
   projects,
   setProjects,
+  highlightProjects = [],
   userProfiles,
 }) => {
   const currentUserProfile = userProfiles[currentUser] || {};
@@ -70,6 +72,8 @@ const ProjectListScreen = ({
 
   const [activeTab, setActiveTab] = useState("list");
   const [summaryTab, setSummaryTab] = useState("playlist");
+  const [selectedHighlightProjectId, setSelectedHighlightProjectId] =
+    useState(null);
 
   const { width, height } = useWindowDimensions();
   const isLandscape = width > height;
@@ -90,6 +94,26 @@ const ProjectListScreen = ({
     return projects.filter((p) => p.status !== "deleted");
   }, [projects]);
 
+  const activeHighlightProjects = useMemo(() => {
+    return highlightProjects.filter((p) => p.status !== "deleted");
+  }, [highlightProjects]);
+
+  const selectedHighlightProject = useMemo(() => {
+    return (
+      activeHighlightProjects.find((p) => p.id === selectedHighlightProjectId) ||
+      null
+    );
+  }, [activeHighlightProjects, selectedHighlightProjectId]);
+
+  const selectedHighlightVideoIds = useMemo(() => {
+    return new Set(selectedHighlightProject?.videoIds || []);
+  }, [selectedHighlightProject]);
+
+  const highlightClipProjects = useMemo(() => {
+    if (!selectedHighlightProject) return projects;
+    return projects.filter((p) => selectedHighlightVideoIds.has(p.id));
+  }, [projects, selectedHighlightProject, selectedHighlightVideoIds]);
+
   // デフォルトのクリップ秒数（設定がない場合のフォールバック）
   const clipPreSeconds = currentUserProfile.clipPreSeconds ?? 5;
   const clipPostSeconds = currentUserProfile.clipPostSeconds ?? 3;
@@ -104,7 +128,7 @@ const ProjectListScreen = ({
     const clips = [];
     const tagSet = new Set();
 
-    projects.forEach((p) => {
+    highlightClipProjects.forEach((p) => {
       if (p.status === "deleted") return;
 
       p.quickTags?.forEach((qt) => tagSet.add(qt));
@@ -156,7 +180,7 @@ const ProjectListScreen = ({
 
     clips.sort((a, b) => a.start - b.start);
     return { allClips: clips, availableTags: Array.from(tagSet).sort() };
-  }, [projects, displayUserName, currentUser, clipPreSeconds, clipPostSeconds]);
+  }, [highlightClipProjects, displayUserName, currentUser, clipPreSeconds, clipPostSeconds]);
 
   const currentClips = useMemo(() => {
     if (selectedHighlightTags.length === 0) {
@@ -220,6 +244,13 @@ const ProjectListScreen = ({
       prev.filter((t) => availableTags.includes(t)),
     );
   }, [availableTags]);
+
+  useEffect(() => {
+    if (selectedHighlightProjectId && !selectedHighlightProject) {
+      setSelectedHighlightProjectId(null);
+      setIsPlaying(false);
+    }
+  }, [selectedHighlightProject, selectedHighlightProjectId]);
 
   const currentClip = currentClips[currentClipIndex] || null;
 
@@ -399,6 +430,13 @@ const ProjectListScreen = ({
   const [videoUrl, setVideoUrl] = useState("");
   const [isSaving, setIsSaving] = useState(false);
 
+  const [isHighlightProjectModalVisible, setIsHighlightProjectModalVisible] =
+    useState(false);
+  const [highlightProjectTitle, setHighlightProjectTitle] = useState("");
+  const [draftHighlightVideoIds, setDraftHighlightVideoIds] = useState([]);
+  const [isSavingHighlightProject, setIsSavingHighlightProject] =
+    useState(false);
+
   const handleCreateProject = async () => {
     if (title.trim() === "") {
       return Alert.alert("エラー", "動画名を入力してください。");
@@ -434,6 +472,61 @@ const ProjectListScreen = ({
       }
     } catch (error) {
       console.log("Firestore保存エラー:", error);
+    }
+  };
+
+  const handleOpenHighlightProjectModal = () => {
+    setHighlightProjectTitle("");
+    setDraftHighlightVideoIds([]);
+    setIsHighlightProjectModalVisible(true);
+  };
+
+  const handleToggleDraftHighlightVideo = (videoId) => {
+    setDraftHighlightVideoIds((prev) =>
+      prev.includes(videoId)
+        ? prev.filter((id) => id !== videoId)
+        : [...prev, videoId],
+    );
+  };
+
+  const handleOpenHighlightProject = (projectId) => {
+    setSelectedHighlightProjectId(projectId);
+    setSelectedHighlightTags([]);
+    setCurrentClipIndex(0);
+    setSummaryTab("playlist");
+    setIsPlaying(false);
+  };
+
+  const handleCreateHighlightProject = async () => {
+    const trimmedTitle = highlightProjectTitle.trim();
+    if (!trimmedTitle) {
+      return Alert.alert("エラー", "プロジェクト名を入力してください。");
+    }
+    if (draftHighlightVideoIds.length === 0) {
+      return Alert.alert("エラー", "動画を1件以上選択してください。");
+    }
+
+    const realUid = user?.uid || currentUser || "local_user";
+    const newHighlightProject = {
+      title: trimmedTitle,
+      videoIds: draftHighlightVideoIds,
+      status: "active",
+      createdBy: realUid,
+    };
+
+    setIsSavingHighlightProject(true);
+    try {
+      if (activeTeamId) {
+        await createHighlightProject(activeTeamId, newHighlightProject);
+      }
+      setIsHighlightProjectModalVisible(false);
+      setHighlightProjectTitle("");
+      setDraftHighlightVideoIds([]);
+      Alert.alert("成功", "プロジェクトを作成しました！");
+    } catch (error) {
+      Alert.alert("エラー", "プロジェクトの作成に失敗しました。");
+    } finally {
+      setIsSavingHighlightProject(false);
     }
   };
 
@@ -575,6 +668,78 @@ const ProjectListScreen = ({
       </TouchableOpacity>
     );
   };
+
+  const renderHighlightProjectItem = ({ item }) => {
+    const videoIdSet = new Set(item.videoIds || []);
+    const selectedVideos = activeProjects.filter((p) => videoIdSet.has(p.id));
+    const previewTitle = selectedVideos.map((p) => p.title).join("、");
+
+    return (
+      <TouchableOpacity
+        style={styles.card}
+        onPress={() => handleOpenHighlightProject(item.id)}
+      >
+        <View style={styles.cardHeader}>
+          <Text style={styles.cardTitle} numberOfLines={1}>
+            {item.title}
+          </Text>
+        </View>
+        <Text style={styles.highlightProjectMeta}>
+          動画 {selectedVideos.length} 件
+        </Text>
+        <Text style={styles.cardSub} numberOfLines={2}>
+          {previewTitle || "動画が選択されていません"}
+        </Text>
+      </TouchableOpacity>
+    );
+  };
+
+  const renderHighlightProjectList = () => (
+    <>
+      <View style={styles.topRow}>
+        <Text style={styles.sectionTitle}>プロジェクト一覧</Text>
+        {canCreateProject && (
+          <TouchableOpacity
+            style={styles.createBtn}
+            onPress={handleOpenHighlightProjectModal}
+          >
+            <Text style={styles.createBtnText}>＋ 新規追加</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+
+      <FlatList
+        data={activeHighlightProjects}
+        keyExtractor={(item) => item.id}
+        renderItem={renderHighlightProjectItem}
+        ListEmptyComponent={
+          <Text style={styles.emptyText}>プロジェクトがありません。</Text>
+        }
+      />
+    </>
+  );
+
+  const renderHighlightProjectDetailHeader = () => (
+    <View style={styles.highlightDetailHeader}>
+      <TouchableOpacity
+        style={styles.highlightBackBtn}
+        onPress={() => {
+          setSelectedHighlightProjectId(null);
+          setIsPlaying(false);
+        }}
+      >
+        <Text style={styles.highlightBackText}>一覧へ</Text>
+      </TouchableOpacity>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.highlightDetailTitle} numberOfLines={1}>
+          {selectedHighlightProject?.title || "プロジェクト"}
+        </Text>
+        <Text style={styles.highlightDetailSub}>
+          動画 {selectedHighlightProject?.videoIds?.length || 0} 件 / タグ絞り込み利用可
+        </Text>
+      </View>
+    </View>
+  );
 
   const renderTagSelector = () => (
     <View
@@ -988,12 +1153,15 @@ const ProjectListScreen = ({
 
       <View style={[styles.content, isLandscape && { padding: 0 }]}>
         {activeTab === "summary" ? (
-          <View
-            style={[
-              styles.summaryContainer,
-              isLandscape && { flexDirection: "row", marginHorizontal: 0 },
-            ]}
-          >
+          selectedHighlightProject ? (
+            <>
+              {!isLandscape && renderHighlightProjectDetailHeader()}
+              <View
+                style={[
+                  styles.summaryContainer,
+                  isLandscape && { flexDirection: "row", marginHorizontal: 0 },
+                ]}
+              >
             <View
               style={[
                 isLandscape ? styles.fsVideoCol : {},
@@ -1035,7 +1203,11 @@ const ProjectListScreen = ({
               {isLandscape && renderTagSelector()}
               {currentClips.length > 0 && renderSummaryRightPane()}
             </View>
-          </View>
+              </View>
+            </>
+          ) : (
+            renderHighlightProjectList()
+          )
         ) : (
           <>
             <View style={styles.topRow}>
@@ -1172,8 +1344,103 @@ const ProjectListScreen = ({
           </KeyboardAvoidingView>
         </View>
       </Modal>
+      {/* Highlight project creation modal */}
+      <Modal
+        visible={isHighlightProjectModalVisible}
+        transparent={true}
+        animationType="slide"
+      >
+        <View style={styles.modalOverlay}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            style={styles.highlightProjectModalContent}
+          >
+            <Text style={styles.modalTitle}>新しいプロジェクトを追加</Text>
 
-      {/* プロジェクト編集用のモーダル */}
+            <View style={styles.highlightProjectModalBody}>
+              <Text style={styles.label}>プロジェクト名</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="例: 決勝戦ハイライト"
+                value={highlightProjectTitle}
+                onChangeText={setHighlightProjectTitle}
+              />
+
+              <Text style={styles.label}>格納する動画</Text>
+              <ScrollView
+                style={styles.videoSelectList}
+                contentContainerStyle={styles.videoSelectListContent}
+                showsVerticalScrollIndicator={true}
+                nestedScrollEnabled={true}
+                keyboardShouldPersistTaps="handled"
+              >
+                {activeProjects.length === 0 ? (
+                  <Text style={styles.videoSelectEmptyText}>
+                    選択できる動画がありません。
+                  </Text>
+                ) : (
+                  activeProjects.map((item) => {
+                    const isSelected = draftHighlightVideoIds.includes(item.id);
+                    return (
+                      <TouchableOpacity
+                        key={item.id}
+                        style={[
+                          styles.videoSelectItem,
+                          isSelected && styles.videoSelectItemActive,
+                        ]}
+                        onPress={() => handleToggleDraftHighlightVideo(item.id)}
+                      >
+                        <View
+                          style={[
+                            styles.checkbox,
+                            isSelected && styles.checkboxActive,
+                          ]}
+                        >
+                          <Text style={styles.checkboxText}>
+                            {isSelected ? "✓" : ""}
+                          </Text>
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.videoSelectTitle} numberOfLines={1}>
+                            {item.title}
+                          </Text>
+                          <Text style={styles.videoSelectSub} numberOfLines={1}>
+                            {item.videoUrl ? "動画リンクあり" : "動画未設定"}
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })
+                )}
+              </ScrollView>
+            </View>
+
+            <View style={styles.highlightProjectFooter}>
+              <TouchableOpacity
+                style={styles.cancelBtn}
+                onPress={() => setIsHighlightProjectModalVisible(false)}
+                disabled={isSavingHighlightProject}
+              >
+                <Text style={styles.cancelBtnText}>キャンセル</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.submitBtn,
+                  isSavingHighlightProject && { opacity: 0.7 },
+                ]}
+                onPress={handleCreateHighlightProject}
+                disabled={isSavingHighlightProject}
+              >
+                <Text style={styles.submitBtnText}>
+                  {isSavingHighlightProject ? "保存中..." : "作成する"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
+
+      {/* Project edit modal */}
       <Modal
         visible={isEditModalVisible}
         transparent={true}
@@ -1742,6 +2009,122 @@ const styles = StyleSheet.create({
     marginBottom: 15,
   },
   editProjectDeleteBtnText: { color: "#c0392b", fontWeight: "bold" },
+  highlightProjectMeta: {
+    fontSize: 13,
+    color: "#0077cc",
+    fontWeight: "bold",
+    marginBottom: 6,
+  },
+  highlightDetailHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#fff",
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: "#e8edf3",
+  },
+  highlightBackBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: "#f0f4f8",
+    marginRight: 12,
+  },
+  highlightBackText: {
+    color: "#0077cc",
+    fontWeight: "bold",
+  },
+  highlightDetailTitle: {
+    fontSize: 16,
+    fontWeight: "bold",
+    color: "#2c3e50",
+  },
+  highlightDetailSub: {
+    fontSize: 12,
+    color: "#7f8c8d",
+    marginTop: 3,
+  },
+  highlightProjectModalContent: {
+    width: "90%",
+    maxHeight: "86%",
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    paddingTop: 20,
+    overflow: "hidden",
+  },
+  highlightProjectModalBody: {
+    paddingHorizontal: 20,
+    flexShrink: 1,
+  },
+  highlightProjectFooter: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    paddingHorizontal: 20,
+    paddingTop: 14,
+    paddingBottom: 18,
+    borderTopWidth: 1,
+    borderTopColor: "#eef2f6",
+    backgroundColor: "#fff",
+  },
+  videoSelectList: {
+    maxHeight: 320,
+    minHeight: 120,
+    borderWidth: 1,
+    borderColor: "#eee",
+    borderRadius: 8,
+    marginTop: 4,
+    marginBottom: 14,
+  },
+  videoSelectListContent: {
+    paddingBottom: 8,
+  },
+  videoSelectEmptyText: {
+    textAlign: "center",
+    color: "#888",
+    paddingVertical: 24,
+  },
+  videoSelectItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#f2f2f2",
+  },
+  videoSelectItemActive: {
+    backgroundColor: "#eef7ff",
+  },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: "#b8c2cc",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 10,
+    backgroundColor: "#fff",
+  },
+  checkboxActive: {
+    backgroundColor: "#0077cc",
+    borderColor: "#0077cc",
+  },
+  checkboxText: {
+    color: "#fff",
+    fontWeight: "bold",
+    fontSize: 14,
+  },
+  videoSelectTitle: {
+    fontSize: 14,
+    fontWeight: "bold",
+    color: "#2c3e50",
+  },
+  videoSelectSub: {
+    fontSize: 12,
+    color: "#7f8c8d",
+    marginTop: 2,
+  },
 });
 
 export default ProjectListScreen;

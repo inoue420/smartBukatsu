@@ -72,6 +72,52 @@ export async function deleteProject(teamId, projectId) {
 }
 
 // ==========================================
+// 🎬 ハイライト用プロジェクト関連
+// ==========================================
+export function subscribeHighlightProjects(teamId, callback) {
+  if (!teamId) return () => {};
+  const ref = collection(db, "teams", teamId, "highlightProjects");
+  const q = query(ref, orderBy("createdAt", "desc"));
+  return onSnapshot(q, (snapshot) => {
+    const data = snapshot.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
+    callback(data);
+  });
+}
+
+export async function createHighlightProject(teamId, projectData) {
+  if (!teamId) throw new Error("チームIDがありません。");
+  const ref = collection(db, "teams", teamId, "highlightProjects");
+  await addDoc(ref, {
+    ...projectData,
+    teamId,
+    status: projectData.status || "active",
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+}
+
+export async function updateHighlightProject(teamId, projectId, updateData) {
+  if (!teamId || !projectId) throw new Error("IDが不足しています");
+  const ref = doc(db, "teams", teamId, "highlightProjects", projectId);
+  await setDoc(
+    ref,
+    { ...updateData, updatedAt: serverTimestamp() },
+    { merge: true },
+  );
+}
+
+export async function deleteHighlightProject(teamId, projectId) {
+  if (!teamId || !projectId) return;
+  const ref = doc(db, "teams", teamId, "highlightProjects", projectId);
+  await updateDoc(ref, {
+    status: "deleted",
+    updatedAt: serverTimestamp(),
+  });
+}
+// ==========================================
 // 📅 カレンダー（チーム共通の予定）関連 ★新規追加
 // ==========================================
 export function subscribeClubEvents(teamId, callback) {
