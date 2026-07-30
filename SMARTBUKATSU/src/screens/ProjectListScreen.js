@@ -47,6 +47,14 @@ const COLORS = {
   border: "#eeeeee",
 };
 
+const DEFAULT_TAG_GROUP_ID = "__default_tag_group__";
+const DEFAULT_TAGS = ["得点", "罰則", "2min", "ナイス"];
+const DEFAULT_TAG_GROUP = {
+  id: DEFAULT_TAG_GROUP_ID,
+  name: "基本タグ",
+  tags: DEFAULT_TAGS,
+};
+
 const ProjectListScreen = ({
   navigation,
   isAdmin,
@@ -54,6 +62,7 @@ const ProjectListScreen = ({
   projects,
   setProjects,
   highlightProjects = [],
+  tagGroups = [],
   userProfiles,
 }) => {
   const currentUserProfile = userProfiles[currentUser] || {};
@@ -98,6 +107,54 @@ const ProjectListScreen = ({
     return highlightProjects.filter((p) => p.status !== "deleted");
   }, [highlightProjects]);
 
+  const activeTagGroups = useMemo(() => {
+    return tagGroups.filter((group) => group.status !== "deleted");
+  }, [tagGroups]);
+
+  const selectableTagGroups = useMemo(() => {
+    return [DEFAULT_TAG_GROUP, ...activeTagGroups];
+  }, [activeTagGroups]);
+
+  const getTagGroupById = useCallback(
+    (groupId) =>
+      selectableTagGroups.find((group) => group.id === groupId) ||
+      DEFAULT_TAG_GROUP,
+    [selectableTagGroups],
+  );
+
+  const getProjectTagGroup = useCallback(
+    (project) => {
+      const matchedGroup = project?.tagGroupId
+        ? activeTagGroups.find((group) => group.id === project.tagGroupId)
+        : null;
+      if (matchedGroup) return matchedGroup;
+      if (project?.tagGroupName) {
+        return {
+          id: project.tagGroupId || DEFAULT_TAG_GROUP_ID,
+          name: project.tagGroupName,
+          tags: project.quickTags || DEFAULT_TAGS,
+        };
+      }
+      return {
+        ...DEFAULT_TAG_GROUP,
+        tags: project?.quickTags?.length ? project.quickTags : DEFAULT_TAGS,
+      };
+    },
+    [activeTagGroups],
+  );
+
+  const buildTagGroupProjectFields = useCallback(
+    (groupId) => {
+      const group = getTagGroupById(groupId);
+      return {
+        tagGroupId: group.id === DEFAULT_TAG_GROUP_ID ? null : group.id,
+        tagGroupName: group.name,
+        quickTags: group.tags || DEFAULT_TAGS,
+      };
+    },
+    [getTagGroupById],
+  );
+
   const selectedHighlightProject = useMemo(() => {
     return (
       activeHighlightProjects.find((p) => p.id === selectedHighlightProjectId) ||
@@ -131,7 +188,7 @@ const ProjectListScreen = ({
     highlightClipProjects.forEach((p) => {
       if (p.status === "deleted") return;
 
-      p.quickTags?.forEach((qt) => tagSet.add(qt));
+      getProjectTagGroup(p).tags?.forEach((qt) => tagSet.add(qt));
 
       if (!p.videoUrl || !p.tags || p.tags.length === 0) return;
 
@@ -180,7 +237,7 @@ const ProjectListScreen = ({
 
     clips.sort((a, b) => a.start - b.start);
     return { allClips: clips, availableTags: Array.from(tagSet).sort() };
-  }, [highlightClipProjects, displayUserName, currentUser, clipPreSeconds, clipPostSeconds]);
+  }, [highlightClipProjects, displayUserName, currentUser, clipPreSeconds, clipPostSeconds, getProjectTagGroup]);
 
   const currentClips = useMemo(() => {
     if (selectedHighlightTags.length === 0) {
@@ -428,6 +485,10 @@ const ProjectListScreen = ({
   const [type, setType] = useState("試合");
   const [participants, setParticipants] = useState("team");
   const [videoUrl, setVideoUrl] = useState("");
+  const [selectedTagGroupId, setSelectedTagGroupId] = useState(
+    DEFAULT_TAG_GROUP_ID,
+  );
+  const [editTagGroupId, setEditTagGroupId] = useState(DEFAULT_TAG_GROUP_ID);
   const [isSaving, setIsSaving] = useState(false);
 
   const [isHighlightProjectModalVisible, setIsHighlightProjectModalVisible] =
@@ -437,12 +498,23 @@ const ProjectListScreen = ({
   const [isSavingHighlightProject, setIsSavingHighlightProject] =
     useState(false);
 
+  const handleOpenCreateProjectModal = () => {
+    setTitle("");
+    setType("試合");
+    setParticipants("team");
+    setVideoUrl("");
+    setSelectedTagGroupId(DEFAULT_TAG_GROUP_ID);
+    setIsModalVisible(true);
+  };
+
   const handleCreateProject = async () => {
     if (title.trim() === "") {
       return Alert.alert("エラー", "動画名を入力してください。");
     }
 
     const realUid = user?.uid || currentUser || "local_user";
+
+    const tagGroupFields = buildTagGroupProjectFields(selectedTagGroupId);
 
     const newProject = {
       id: "proj_" + Date.now().toString(),
@@ -453,6 +525,7 @@ const ProjectListScreen = ({
       date: new Date().toLocaleDateString("ja-JP"),
       status: "active",
       tags: [],
+      ...tagGroupFields,
       memos: [],
       sharedMemos: [],
       createdBy: realUid,
@@ -464,6 +537,7 @@ const ProjectListScreen = ({
     setType("試合");
     setParticipants("team");
     setVideoUrl("");
+    setSelectedTagGroupId(DEFAULT_TAG_GROUP_ID);
     Alert.alert("成功", "動画を作成しました！");
 
     try {
@@ -533,6 +607,7 @@ const ProjectListScreen = ({
   const handleOpenEditProject = (item) => {
     setEditingProject(item);
     setEditTitle(item.title);
+    setEditTagGroupId(item.tagGroupId || DEFAULT_TAG_GROUP_ID);
     setIsEditModalVisible(true);
   };
 
@@ -541,9 +616,13 @@ const ProjectListScreen = ({
       return Alert.alert("エラー", "動画名を入力してください。");
     }
 
+    const tagGroupFields = buildTagGroupProjectFields(editTagGroupId);
+
     setProjects(
       projects.map((p) =>
-        p.id === editingProject.id ? { ...p, title: editTitle.trim() } : p,
+        p.id === editingProject.id
+          ? { ...p, title: editTitle.trim(), ...tagGroupFields }
+          : p,
       ),
     );
     setIsEditModalVisible(false);
@@ -552,6 +631,7 @@ const ProjectListScreen = ({
       if (activeTeamId) {
         await updateProject(activeTeamId, editingProject.id, {
           title: editTitle.trim(),
+          ...tagGroupFields,
         });
       }
     } catch (e) {}
@@ -660,6 +740,9 @@ const ProjectListScreen = ({
           )}
         </View>
         <Text style={styles.cardSub}>作成日: {item.date}</Text>
+        <Text style={styles.tagGroupText} numberOfLines={1}>
+          タグリスト: {getProjectTagGroup(item).name}
+        </Text>
         {item.videoUrl ? (
           <Text style={styles.urlText}>🔗 動画リンクあり</Text>
         ) : (
@@ -1213,12 +1296,20 @@ const ProjectListScreen = ({
             <View style={styles.topRow}>
               <Text style={styles.sectionTitle}>動画一覧</Text>
               {canCreateProject && (
-                <TouchableOpacity
-                  style={styles.createBtn}
-                  onPress={() => setIsModalVisible(true)}
-                >
-                  <Text style={styles.createBtnText}>＋ 新規追加</Text>
-                </TouchableOpacity>
+                <View style={styles.topActions}>
+                  <TouchableOpacity
+                    style={styles.createBtn}
+                    onPress={handleOpenCreateProjectModal}
+                  >
+                    <Text style={styles.createBtnText}>＋ 新規追加</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.tagEditBtn}
+                    onPress={() => navigation.navigate("TagGroupEdit")}
+                  >
+                    <Text style={styles.tagEditBtnText}>タグ編集</Text>
+                  </TouchableOpacity>
+                </View>
               )}
             </View>
 
@@ -1313,6 +1404,33 @@ const ProjectListScreen = ({
                 )}
               </View>
 
+
+              <Text style={styles.label}>タグリスト</Text>
+              <View style={styles.tagGroupSelector}>
+                {selectableTagGroups.map((group) => {
+                  const isSelected = selectedTagGroupId === group.id;
+                  return (
+                    <TouchableOpacity
+                      key={group.id}
+                      style={[
+                        styles.tagGroupOption,
+                        isSelected && styles.tagGroupOptionActive,
+                      ]}
+                      onPress={() => setSelectedTagGroupId(group.id)}
+                    >
+                      <Text
+                        style={[
+                          styles.tagGroupOptionText,
+                          isSelected && styles.tagGroupOptionTextActive,
+                        ]}
+                        numberOfLines={1}
+                      >
+                        {group.name}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
               <Text style={styles.label}>動画のURL (YouTubeなど)</Text>
               <TextInput
                 style={styles.input}
@@ -1461,6 +1579,33 @@ const ProjectListScreen = ({
               placeholder="動画名"
             />
 
+            <Text style={styles.label}>タグリスト</Text>
+            <View style={styles.tagGroupSelector}>
+              {selectableTagGroups.map((group) => {
+                const isSelected = editTagGroupId === group.id;
+                return (
+                  <TouchableOpacity
+                    key={group.id}
+                    style={[
+                      styles.tagGroupOption,
+                      isSelected && styles.tagGroupOptionActive,
+                    ]}
+                    onPress={() => setEditTagGroupId(group.id)}
+                  >
+                    <Text
+                      style={[
+                        styles.tagGroupOptionText,
+                        isSelected && styles.tagGroupOptionTextActive,
+                      ]}
+                      numberOfLines={1}
+                    >
+                      {group.name}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
             <TouchableOpacity
               style={styles.editProjectDeleteBtn}
               onPress={handleDeleteProjectFromEdit}
@@ -1540,6 +1685,18 @@ const styles = StyleSheet.create({
     borderRadius: 20,
   },
   createBtnText: { color: "#fff", fontWeight: "bold", fontSize: 13 },
+  topActions: { alignItems: "stretch" },
+  tagEditBtn: {
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: "#0077cc",
+    paddingHorizontal: 15,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: "#fff",
+    alignItems: "center",
+  },
+  tagEditBtnText: { color: "#0077cc", fontWeight: "bold", fontSize: 13 },
   emptyText: { textAlign: "center", color: "#888", marginTop: 30 },
   card: {
     backgroundColor: "#fff",
@@ -1567,6 +1724,7 @@ const styles = StyleSheet.create({
   editIconText: { fontSize: 16 },
 
   cardSub: { fontSize: 12, color: "#888", marginBottom: 5 },
+  tagGroupText: { fontSize: 12, color: "#0077cc", fontWeight: "bold", marginBottom: 5 },
   urlText: { fontSize: 12, color: "#2ecc71", fontWeight: "bold" },
   noUrlText: { fontSize: 12, color: "#e74c3c" },
 
@@ -1969,6 +2127,28 @@ const styles = StyleSheet.create({
   },
   typeBtnText: { fontSize: 13, color: "#555", fontWeight: "bold" },
   typeBtnTextActive: { color: "#0077cc" },
+  tagGroupSelector: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    marginBottom: 10,
+  },
+  tagGroupOption: {
+    borderWidth: 1,
+    borderColor: "#ddd",
+    backgroundColor: "#f9f9f9",
+    borderRadius: 18,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginRight: 8,
+    marginBottom: 8,
+    maxWidth: "48%",
+  },
+  tagGroupOptionActive: {
+    backgroundColor: "#e6f2ff",
+    borderColor: "#0077cc",
+  },
+  tagGroupOptionText: { color: "#555", fontSize: 13, fontWeight: "bold" },
+  tagGroupOptionTextActive: { color: "#0077cc" },
   modalButtons: {
     flexDirection: "row",
     justifyContent: "flex-end",

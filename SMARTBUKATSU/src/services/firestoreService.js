@@ -70,6 +70,52 @@ export async function deleteProject(teamId, projectId) {
     updatedAt: serverTimestamp(),
   });
 }
+// ==========================================
+// 🏷️ タググループ関連
+// ==========================================
+export function subscribeTagGroups(teamId, callback) {
+  if (!teamId) return () => {};
+  const ref = collection(db, "teams", teamId, "tagGroups");
+  const q = query(ref, orderBy("createdAt", "asc"));
+  return onSnapshot(q, (snapshot) => {
+    const data = snapshot.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
+    callback(data);
+  });
+}
+
+export async function createTagGroup(teamId, groupData) {
+  if (!teamId) throw new Error("チームIDがありません。");
+  const ref = collection(db, "teams", teamId, "tagGroups");
+  const created = await addDoc(ref, {
+    ...groupData,
+    status: groupData.status || "active",
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+  return created.id;
+}
+
+export async function updateTagGroup(teamId, groupId, updateData) {
+  if (!teamId || !groupId) throw new Error("IDが不足しています。");
+  const ref = doc(db, "teams", teamId, "tagGroups", groupId);
+  await setDoc(
+    ref,
+    { ...updateData, updatedAt: serverTimestamp() },
+    { merge: true },
+  );
+}
+
+export async function deleteTagGroup(teamId, groupId) {
+  if (!teamId || !groupId) return;
+  const ref = doc(db, "teams", teamId, "tagGroups", groupId);
+  await updateDoc(ref, {
+    status: "deleted",
+    updatedAt: serverTimestamp(),
+  });
+}
 
 // ==========================================
 // 🎬 ハイライト用プロジェクト関連

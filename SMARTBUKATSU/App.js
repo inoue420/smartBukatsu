@@ -15,6 +15,7 @@ import {
   subscribeTeamData,
   subscribeTeamMembers,
   subscribeClubEvents, // ★ 追加
+  subscribeTagGroups,
 } from "./src/services/firestoreService";
 
 // 画面
@@ -26,6 +27,7 @@ import SettingsScreen from "./src/screens/SettingsScreen";
 import DiaryScreen from "./src/screens/DiaryScreen";
 import ProjectListScreen from "./src/screens/ProjectListScreen";
 import ProjectDetailScreen from "./src/screens/ProjectDetailScreen";
+import TagGroupEditScreen from "./src/screens/TagGroupEditScreen";
 import CalendarScreen from "./src/screens/CalendarScreen";
 import RosterScreen from "./src/screens/RosterScreen";
 
@@ -43,6 +45,7 @@ function AppContent() {
 
   const [projects, setProjects] = useState([]);
   const [highlightProjects, setHighlightProjects] = useState([]);
+  const [tagGroups, setTagGroups] = useState([]);
   const [notices, setNotices] = useState([]);
   const [dailyReports, setDailyReports] = useState([]);
   const [personalEvents, setPersonalEvents] = useState([]);
@@ -91,6 +94,7 @@ function AppContent() {
         setPersonalEvents,
       );
       const unsubClubEvents = subscribeClubEvents(activeTeamId, setClubEvents); // ★ 追加
+      const unsubTagGroups = subscribeTagGroups(activeTeamId, setTagGroups);
 
       const unsubTeam = subscribeTeamData(activeTeamId, (data) => {
         if (data) {
@@ -131,10 +135,12 @@ function AppContent() {
         unsubTeam();
         unsubMembers();
         unsubClubEvents(); // ★ 追加
+        unsubTagGroups();
       };
     } else {
       setClubMembers([]);
       setHighlightProjects([]);
+      setTagGroups([]);
       setUserProfiles({});
     }
   }, [user, activeTeamId]);
@@ -270,6 +276,8 @@ function AppContent() {
                   setProjects={setProjects}
                   highlightProjects={highlightProjects}
                   setHighlightProjects={setHighlightProjects}
+                  tagGroups={tagGroups}
+                  setTagGroups={setTagGroups}
                   userProfiles={userProfiles}
                 />
               )}
@@ -285,6 +293,18 @@ function AppContent() {
                   userProfiles={userProfiles}
                   projects={projects}
                   setProjects={setProjects}
+                  tagGroups={tagGroups}
+                />
+              )}
+            </Stack.Screen>
+
+            <Stack.Screen name="TagGroupEdit">
+              {(props) => (
+                <TagGroupEditScreen
+                  {...props}
+                  currentUser={safeUserName}
+                  tagGroups={tagGroups}
+                  setTagGroups={setTagGroups}
                 />
               )}
             </Stack.Screen>

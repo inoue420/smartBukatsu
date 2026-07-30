@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   View,
   Text,
@@ -25,12 +25,21 @@ import { useAuth } from "../AuthContext";
 import { auth } from "../firebase";
 import { updateProject } from "../services/firestoreService";
 
+const DEFAULT_TAGS = ["得点", "罰則", "2min", "ナイス"];
+
+const splitTagLabel = (label) =>
+  String(label || "")
+    .split("+")
+    .map((tag) => tag.trim())
+    .filter((tag, index, tags) => tag && tags.indexOf(tag) === index);
+
 const ProjectDetailScreen = ({
   route,
   navigation,
   currentUser,
   projects,
   setProjects,
+  tagGroups = [],
 }) => {
   const { project: routeProject, userRole = "member" } = route.params || {};
 
@@ -43,12 +52,38 @@ const ProjectDetailScreen = ({
 
   const [localTags, setLocalTags] = useState(project.tags || []);
 
-  const defaultQuickTags = ["得点", "罰則", "2min", "ナイス"];
-  const [quickTags, setQuickTags] = useState(
-    project.quickTags || defaultQuickTags,
+  const activeTagGroups = useMemo(
+    () => tagGroups.filter((group) => group.status !== "deleted"),
+    [tagGroups],
   );
 
+  const selectedTagGroup = useMemo(() => {
+    if (!project.tagGroupId) return null;
+    return activeTagGroups.find((group) => group.id === project.tagGroupId) || null;
+  }, [activeTagGroups, project.tagGroupId]);
+
+  const defaultQuickTags = DEFAULT_TAGS;
+  const currentQuickTags = useMemo(() => {
+    if (selectedTagGroup?.tags?.length) return selectedTagGroup.tags;
+    if (project.quickTags?.length) return project.quickTags;
+    return defaultQuickTags;
+  }, [selectedTagGroup, project.quickTags, defaultQuickTags]);
+
+  const [quickTags, setQuickTags] = useState(currentQuickTags);
+  const usesTagGroup = Boolean(project.tagGroupId);
+  const activeTagGroupName =
+    selectedTagGroup?.name || project.tagGroupName || "基本タグ";
+
   const [selectedQuickTags, setSelectedQuickTags] = useState([]);
+  const [editingRecordedTag, setEditingRecordedTag] = useState(null);
+  const [editingRecordedTags, setEditingRecordedTags] = useState([]);
+
+  const registeredTagSet = useMemo(() => new Set(quickTags), [quickTags]);
+
+  const getUnregisteredTags = useCallback(
+    (tag) => splitTagLabel(tag.label).filter((label) => !registeredTagSet.has(label)),
+    [registeredTagSet],
+  );
 
   const [preSec, setPreSec] = useState(5);
   const [postSec, setPostSec] = useState(3);
@@ -105,10 +140,19 @@ const ProjectDetailScreen = ({
   useEffect(() => {
     const updatedProject = projects?.find((p) => p.id === routeProject?.id);
     if (updatedProject) {
+      const updatedGroup = updatedProject.tagGroupId
+        ? activeTagGroups.find((group) => group.id === updatedProject.tagGroupId)
+        : null;
       setLocalTags(updatedProject.tags || []);
-      setQuickTags(updatedProject.quickTags || defaultQuickTags);
+      setQuickTags(
+        updatedGroup?.tags?.length
+          ? updatedGroup.tags
+          : updatedProject.quickTags || defaultQuickTags,
+      );
+    } else {
+      setQuickTags(currentQuickTags);
     }
-  }, [projects, routeProject?.id]);
+  }, [projects, routeProject?.id, activeTagGroups, currentQuickTags]);
 
   useEffect(() => {
     if (projectVideoUrl) {
@@ -322,9 +366,37 @@ const ProjectDetailScreen = ({
     );
   };
 
-  const handleDeleteTag = async (id) => {
-    const newTags = localTags.filter((t) => t.id !== id);
+  const handleOpenRecordedTagEditor = (tag) => {
+    setEditingRecordedTag(tag);
+    setEditingRecordedTags(splitTagLabel(tag.label));
+  };
+
+  const handleCloseRecordedTagEditor = () => {
+    setEditingRecordedTag(null);
+    setEditingRecordedTags([]);
+  };
+
+  const toggleEditingRecordedTag = (label) => {
+    setEditingRecordedTags((prev) =>
+      prev.includes(label)
+        ? prev.filter((tag) => tag !== label)
+        : [...prev, label],
+    );
+  };
+
+  const handleSaveRecordedTagLabels = async () => {
+    if (!editingRecordedTag) return;
+    if (editingRecordedTags.length === 0) {
+      return Alert.alert("未選択", "タグを1件以上選択してください。");
+    }
+
+    const newLabel = editingRecordedTags.join(" + ");
+    const newTags = localTags.map((tag) =>
+      tag.id === editingRecordedTag.id ? { ...tag, label: newLabel } : tag,
+    );
+
     setLocalTags(newTags);
+    handleCloseRecordedTagEditor();
 
     if (setProjects) {
       setProjects((prev) =>
@@ -335,10 +407,17 @@ const ProjectDetailScreen = ({
     try {
       const safeTeamId = activeTeamId || "test_team";
       await updateProject(safeTeamId, project.id, { tags: newTags });
+      showToast("タグを更新しました");
     } catch (error) {}
   };
 
   const handleCreateQuickTag = async () => {
+    if (usesTagGroup) {
+      return Alert.alert(
+        "タグリストを使用中",
+        "この動画はタグリストを使用しています。タグ内容は動画一覧の「タグ編集」から変更してください。",
+      );
+    }
     const trimmed = newQuickTagName.trim();
     if (trimmed === "") return;
     if (!quickTags.includes(trimmed)) {
@@ -370,6 +449,7 @@ const ProjectDetailScreen = ({
   };
 
   const handleDeleteQuickTag = (tagToDelete) => {
+    if (usesTagGroup) return;
     Alert.alert(
       "タグボタンの削除",
       `「${tagToDelete}」ボタンを削除しますか？\n（※過去に付けたタグ履歴は消えません）`,
@@ -500,7 +580,8 @@ const ProjectDetailScreen = ({
       <View style={{ flex: 1 }}>
         <View style={isLandscape ? styles.fsTagArea : styles.quickTagArea}>
           <Text style={isLandscape ? styles.fsTagTitle : styles.quickTagTitle}>
-            💡 複数選択してから「記録」をタップ (長押しで削除)
+            タグリスト: {activeTagGroupName} / 複数選択してから「記録」をタップ
+            {!usesTagGroup ? " (長押しで削除)" : ""}
           </Text>
 
           <View
@@ -516,7 +597,7 @@ const ProjectDetailScreen = ({
                     isSelected && styles.quickTagBtnSelected,
                   ]}
                   onPress={() => toggleQuickTag(tag)}
-                  onLongPress={() => handleDeleteQuickTag(tag)}
+                  onLongPress={usesTagGroup ? undefined : () => handleDeleteQuickTag(tag)}
                 >
                   <Text
                     style={[
@@ -531,23 +612,25 @@ const ProjectDetailScreen = ({
                 </TouchableOpacity>
               );
             })}
-            <TouchableOpacity
-              style={isLandscape ? styles.fsAddTagBtn : styles.addQuickTagBtn}
-              onPress={() => {
-                setNewQuickTagName("");
-                setIsAddQuickTagModalVisible(true);
-              }}
-            >
-              <Text
-                style={
-                  isLandscape
-                    ? styles.fsAddTagBtnText
-                    : styles.addQuickTagBtnText
-                }
+            {!usesTagGroup && (
+              <TouchableOpacity
+                style={isLandscape ? styles.fsAddTagBtn : styles.addQuickTagBtn}
+                onPress={() => {
+                  setNewQuickTagName("");
+                  setIsAddQuickTagModalVisible(true);
+                }}
               >
-                ＋ ボタン追加
-              </Text>
-            </TouchableOpacity>
+                <Text
+                  style={
+                    isLandscape
+                      ? styles.fsAddTagBtnText
+                      : styles.addQuickTagBtnText
+                  }
+                >
+                  ＋ ボタン追加
+                </Text>
+              </TouchableOpacity>
+            )}
           </View>
 
           <View style={styles.clipSettingsRow}>
@@ -607,37 +690,61 @@ const ProjectDetailScreen = ({
           {visibleTags.length === 0 ? (
             <Text style={styles.emptyText}>タグがありません。</Text>
           ) : (
-            visibleTags.map((tag) => (
-              <View key={tag.id} style={styles.listItemCard}>
-                <TouchableOpacity
-                  style={styles.timeJumpBtn}
-                  onPress={() => jumpToTime(tag.videoTime)}
-                >
-                  <Text style={styles.timeJumpText}>
-                    ▶ {formatTime(tag.videoTime)}
-                  </Text>
-                </TouchableOpacity>
+            visibleTags.map((tag) => {
+              const labelParts = splitTagLabel(tag.label);
+              const unregisteredTags = getUnregisteredTags(tag);
+              const canEditTag = canDeleteAnyTag || tag.user === displayUserName;
 
-                <View style={styles.listInfo}>
-                  <Text style={styles.listLabelText}>{tag.label}</Text>
-                  <View style={{ flexDirection: "row", alignItems: "center" }}>
-                    <Text style={styles.listUserText}>by {tag.user}</Text>
-                    {tag.status === "private" && (
-                      <Text style={styles.privateBadge}>🔒 自分のみ</Text>
-                    )}
-                  </View>
-                </View>
-
-                {(canDeleteAnyTag || tag.user === displayUserName) && (
+              return (
+                <View key={tag.id} style={styles.listItemCard}>
                   <TouchableOpacity
-                    style={styles.deleteAction}
-                    onPress={() => handleDeleteTag(tag.id)}
+                    style={styles.timeJumpBtn}
+                    onPress={() => jumpToTime(tag.videoTime)}
                   >
-                    <Text style={styles.deleteActionText}>✕</Text>
+                    <Text style={styles.timeJumpText}>
+                      ▶ {formatTime(tag.videoTime)}
+                    </Text>
                   </TouchableOpacity>
-                )}
-              </View>
-            ))
+
+                  <View style={styles.listInfo}>
+                    <View style={styles.listLabelWrap}>
+                      {labelParts.map((label) => {
+                        const isUnregistered = unregisteredTags.includes(label);
+                        return (
+                          <Text
+                            key={`${tag.id}_${label}`}
+                            style={[
+                              styles.listLabelChip,
+                              isUnregistered && styles.warningLabelChip,
+                            ]}
+                          >
+                            {isUnregistered ? `⚠ ${label}` : label}
+                          </Text>
+                        );
+                      })}
+                    </View>
+                    <View style={styles.tagMetaRow}>
+                      <Text style={styles.listUserText}>by {tag.user}</Text>
+                      {tag.status === "private" && (
+                        <Text style={styles.privateBadge}>🔒 自分のみ</Text>
+                      )}
+                      {unregisteredTags.length > 0 && (
+                        <Text style={styles.warningBadge}>未登録タグあり</Text>
+                      )}
+                    </View>
+                  </View>
+
+                  {canEditTag && (
+                    <TouchableOpacity
+                      style={styles.editRecordedTagAction}
+                      onPress={() => handleOpenRecordedTagEditor(tag)}
+                    >
+                      <Text style={styles.editRecordedTagActionText}>編集</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              );
+            })
           )}
         </ScrollView>
       </View>
@@ -712,6 +819,81 @@ const ProjectDetailScreen = ({
         </InputAccessoryView>
       )}
 
+      <Modal
+        visible={Boolean(editingRecordedTag)}
+        transparent={true}
+        animationType="fade"
+        supportedOrientations={[
+          "portrait",
+          "landscape",
+          "landscape-left",
+          "landscape-right",
+        ]}
+      >
+        <View style={styles.modalOverlay}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            style={styles.modalContent}
+          >
+            <Text style={styles.modalTitle}>切り取りタグを編集</Text>
+            <Text style={styles.modalSubText}>
+              切り取り位置はそのまま、タグだけを付けなおします。
+            </Text>
+
+            <View style={styles.editTagModalList}>
+              {quickTags.map((tag) => {
+                const isSelected = editingRecordedTags.includes(tag);
+                return (
+                  <TouchableOpacity
+                    key={tag}
+                    style={[
+                      styles.editTagOption,
+                      isSelected && styles.editTagOptionActive,
+                    ]}
+                    onPress={() => toggleEditingRecordedTag(tag)}
+                  >
+                    <Text
+                      style={[
+                        styles.editTagOptionText,
+                        isSelected && styles.editTagOptionTextActive,
+                      ]}
+                    >
+                      {tag}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+
+              {editingRecordedTags
+                .filter((tag) => !registeredTagSet.has(tag))
+                .map((tag) => (
+                  <TouchableOpacity
+                    key={`unregistered_${tag}`}
+                    style={[styles.editTagOption, styles.warningTagOption]}
+                    onPress={() => toggleEditingRecordedTag(tag)}
+                  >
+                    <Text style={styles.warningTagOptionText}>⚠ {tag}</Text>
+                  </TouchableOpacity>
+                ))}
+            </View>
+
+            <View style={styles.modalButtonsRow}>
+              <TouchableOpacity
+                style={styles.cancelBtn}
+                onPress={handleCloseRecordedTagEditor}
+              >
+                <Text style={styles.cancelBtnText}>キャンセル</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.addBtn}
+                onPress={handleSaveRecordedTagLabels}
+              >
+                <Text style={styles.addBtnText}>保存</Text>
+              </TouchableOpacity>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
       <Modal
         visible={isAddQuickTagModalVisible}
         transparent={true}
@@ -992,6 +1174,20 @@ const styles = StyleSheet.create({
     color: "#333",
     marginBottom: 4,
   },
+  listLabelWrap: { flexDirection: "row", flexWrap: "wrap", marginBottom: 4 },
+  listLabelChip: {
+    backgroundColor: "#eef6ff",
+    color: "#1f5f99",
+    fontSize: 13,
+    fontWeight: "bold",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+    marginRight: 6,
+    marginBottom: 4,
+  },
+  warningLabelChip: { backgroundColor: "#fff4d6", color: "#9a6700" },
+  tagMetaRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap" },
   listUserText: { fontSize: 11, color: "#888" },
 
   privateBadge: {
@@ -1004,9 +1200,23 @@ const styles = StyleSheet.create({
     marginLeft: 8,
     fontWeight: "bold",
   },
+  warningBadge: {
+    fontSize: 10,
+    backgroundColor: "#fff4d6",
+    color: "#9a6700",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    marginLeft: 8,
+    fontWeight: "bold",
+  },
 
-  deleteAction: { padding: 10 },
-  deleteActionText: { color: "#aaa", fontSize: 16, fontWeight: "bold" },
+  editRecordedTagAction: { paddingHorizontal: 8, paddingVertical: 10 },
+  editRecordedTagActionText: {
+    color: "#0077cc",
+    fontSize: 12,
+    fontWeight: "bold",
+  },
 
   quickTagArea: {
     backgroundColor: "#fff",
@@ -1139,6 +1349,38 @@ const styles = StyleSheet.create({
     marginBottom: 15,
     color: "#333",
     textAlign: "center",
+  },
+  modalSubText: {
+    color: "#666",
+    fontSize: 12,
+    lineHeight: 18,
+    marginBottom: 12,
+    textAlign: "center",
+  },
+  editTagModalList: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    marginBottom: 10,
+  },
+  editTagOption: {
+    backgroundColor: "#f0f0f0",
+    borderWidth: 1,
+    borderColor: "#ddd",
+    borderRadius: 18,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginRight: 8,
+    marginBottom: 8,
+  },
+  editTagOptionActive: { backgroundColor: "#0077cc", borderColor: "#0077cc" },
+  editTagOptionText: { color: "#333", fontSize: 13, fontWeight: "bold" },
+  editTagOptionTextActive: { color: "#fff" },
+  warningTagOption: { backgroundColor: "#fff4d6", borderColor: "#f1c40f" },
+  warningTagOptionText: { color: "#9a6700", fontSize: 13, fontWeight: "bold" },
+  modalButtonsRow: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    marginTop: 20,
   },
   modalInputField: {
     backgroundColor: "#f9f9f9",
