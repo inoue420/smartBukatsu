@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -38,8 +38,10 @@ const TeamSelectScreen = ({ navigation }) => {
   const [inviteCode, setInviteCode] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [isJoining, setIsJoining] = useState(false);
+  const [shouldReturnHome, setShouldReturnHome] = useState(false);
 
   const canAddTeam = (teamIds?.length || 0) < MAX_TEAMS_PER_USER;
+  const canGoBack = navigation.canGoBack();
 
   const loadTeams = useCallback(async () => {
     if (!user?.uid) return;
@@ -61,15 +63,26 @@ const TeamSelectScreen = ({ navigation }) => {
     }, [loadTeams, teamIds?.length, activeTeamId]),
   );
 
-  const leaveScreenIfPossible = () => {
-    if (navigation.canGoBack()) navigation.goBack();
-  };
+  useEffect(() => {
+    if (!shouldReturnHome || !activeTeamId) return undefined;
+
+    const timer = setTimeout(() => {
+      if (navigation.canGoBack()) {
+        navigation.goBack();
+        return;
+      }
+
+      navigation.replace("WorkspaceHome");
+    }, 100);
+
+    return () => clearTimeout(timer);
+  }, [activeTeamId, navigation, shouldReturnHome]);
 
   const handleSelectTeam = async (teamId) => {
     setBusyTeamId(teamId);
     try {
       await selectTeam(teamId);
-      leaveScreenIfPossible();
+      setShouldReturnHome(true);
     } catch (error) {
       console.log("チーム切替エラー:", error);
       Alert.alert("エラー", error.message || "チームの切替に失敗しました。");
@@ -99,7 +112,7 @@ const TeamSelectScreen = ({ navigation }) => {
         "チームを作成しました",
         `招待コード: ${result.inviteCode}`,
       );
-      leaveScreenIfPossible();
+      setShouldReturnHome(true);
     } catch (error) {
       console.log("チーム作成エラー:", error);
       Alert.alert("エラー", error.message || "チームの作成に失敗しました。");
@@ -126,7 +139,7 @@ const TeamSelectScreen = ({ navigation }) => {
       setInviteCode("");
       await loadTeams();
       Alert.alert("チームに参加しました", "選択中のチームを切り替えました。");
-      leaveScreenIfPossible();
+      setShouldReturnHome(true);
     } catch (error) {
       console.log("チーム参加エラー:", error);
       Alert.alert("エラー", error.message || "チームへの参加に失敗しました。");
@@ -143,8 +156,18 @@ const TeamSelectScreen = ({ navigation }) => {
       >
         <ScrollView contentContainerStyle={styles.content}>
           <View style={styles.header}>
-            <Text style={styles.title}>チーム選択</Text>
-            <Text style={styles.subtitle}>{teams.length} / {MAX_TEAMS_PER_USER}</Text>
+            <View style={styles.titleBox}>
+              <Text style={styles.title}>チーム管理</Text>
+              <Text style={styles.subtitle}>所属 {teams.length} / {MAX_TEAMS_PER_USER}</Text>
+            </View>
+            {canGoBack && (
+              <TouchableOpacity
+                style={styles.closeBtn}
+                onPress={() => navigation.goBack()}
+              >
+                <Text style={styles.closeBtnText}>閉じる</Text>
+              </TouchableOpacity>
+            )}
           </View>
 
           {isLoading ? (
@@ -153,6 +176,7 @@ const TeamSelectScreen = ({ navigation }) => {
             </View>
           ) : (
             <View style={styles.section}>
+              <Text style={styles.sectionTitle}>所属チーム</Text>
               {teams.map((team) => {
                 const isActive = team.id === activeTeamId;
                 return (
@@ -256,8 +280,18 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     marginBottom: 16,
   },
+  titleBox: { flex: 1, marginRight: 12 },
   title: { fontSize: 24, fontWeight: "bold", color: "#222" },
-  subtitle: { fontSize: 14, fontWeight: "bold", color: "#0077cc" },
+  subtitle: { fontSize: 13, fontWeight: "bold", color: "#0077cc", marginTop: 3 },
+  closeBtn: {
+    borderWidth: 1,
+    borderColor: "#dce2e8",
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: "#fff",
+  },
+  closeBtnText: { color: "#333", fontSize: 13, fontWeight: "bold" },
   section: {
     backgroundColor: "#fff",
     borderRadius: 8,

@@ -10,6 +10,7 @@ import {
   getDoc,
   updateDoc,
   deleteDoc,
+  writeBatch,
   arrayUnion,
   arrayRemove,
 } from "firebase/firestore";
@@ -450,7 +451,34 @@ export async function updateMemberRoleConfig(teamId, uid, updateData) {
 
 export async function removeTeamMember(teamId, targetUid) {
   if (!teamId || !targetUid) return;
-  await deleteDoc(doc(db, "teams", teamId, "members", targetUid));
+
+  const userRef = doc(db, "users", targetUid);
+  const userSnap = await getDoc(userRef);
+  const userData = userSnap.exists() ? userSnap.data() : {};
+  const remainingTeamIds = normalizeTeamIds(userData).filter(
+    (id) => id !== teamId,
+  );
+  const currentActiveTeamId =
+    typeof userData.activeTeamId === "string" ? userData.activeTeamId : "";
+  const nextActiveTeamId =
+    currentActiveTeamId === teamId ||
+    (currentActiveTeamId && !remainingTeamIds.includes(currentActiveTeamId))
+      ? remainingTeamIds[0] || ""
+      : currentActiveTeamId;
+
+  const batch = writeBatch(db);
+  batch.set(
+    userRef,
+    {
+      activeTeamId: nextActiveTeamId,
+      teamIds: remainingTeamIds,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true },
+  );
+  batch.delete(doc(db, "teams", teamId, "members", targetUid));
+  await batch.commit();
+  return { activeTeamId: nextActiveTeamId || null, teamIds: remainingTeamIds };
 }
 
 // ==========================================
