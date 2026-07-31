@@ -257,9 +257,11 @@ const ProjectListScreen = ({
 
   const [videoTime, setVideoTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [hasReachedPlaylistEnd, setHasReachedPlaylistEnd] = useState(false);
 
   const videoRef = useRef(null);
   const youtubeRef = useRef(null);
+  const hasReachedPlaylistEndRef = useRef(false);
 
   const [newSharedMemo, setNewSharedMemo] = useState("");
 
@@ -378,7 +380,41 @@ const ProjectListScreen = ({
   };
   const ytId = currentClip ? extractYoutubeId(currentClip.url) : null;
 
+  const stopAtClipEnd = useCallback(
+    async (clip = currentClip) => {
+      hasReachedPlaylistEndRef.current = true;
+      setHasReachedPlaylistEnd(true);
+      setIsPlaying(false);
+
+      const endMillis =
+        typeof clip?.end === "number" ? Math.max(0, Math.round(clip.end * 1000)) : null;
+
+      try {
+        if (ytId) {
+          return;
+        }
+
+        if (videoRef.current) {
+          await videoRef.current.setStatusAsync({
+            shouldPlay: false,
+            ...(endMillis !== null ? { positionMillis: endMillis } : {}),
+          });
+        }
+      } catch (error) {
+        console.log("Highlight clip stop error:", error);
+        try {
+          await videoRef.current?.pauseAsync();
+        } catch (pauseError) {
+          console.log("Highlight clip pause fallback error:", pauseError);
+        }
+      }
+    },
+    [currentClip, ytId],
+  );
+
   const handleToggleTag = (tag) => {
+    hasReachedPlaylistEndRef.current = false;
+    setHasReachedPlaylistEnd(false);
     setSelectedHighlightTags((prev) => {
       if (prev.includes(tag)) {
         return prev.filter((t) => t !== tag);
@@ -391,38 +427,44 @@ const ProjectListScreen = ({
   };
 
   const handleSelectClip = (index) => {
+    hasReachedPlaylistEndRef.current = false;
+    setHasReachedPlaylistEnd(false);
     setCurrentClipIndex(index);
     setIsPlaying(true);
   };
 
   const playNextClip = () => {
     if (currentClipIndex < currentClips.length - 1) {
+      hasReachedPlaylistEndRef.current = false;
+      setHasReachedPlaylistEnd(false);
       setCurrentClipIndex((prev) => prev + 1);
     } else {
-      setIsPlaying(false);
-      if (videoRef.current) {
-        videoRef.current.pauseAsync();
-      }
+      stopAtClipEnd();
     }
   };
 
   useEffect(() => {
-    if (!currentClip) return;
-    if (ytId) {
-      setTimeout(() => {
-        if (youtubeRef.current)
+    if (!currentClip) return undefined;
+
+    const startTimer = setTimeout(() => {
+      if (hasReachedPlaylistEndRef.current) return;
+
+      if (ytId) {
+        if (youtubeRef.current) {
           youtubeRef.current.seekTo(currentClip.start, true);
-      }, 500);
-    } else {
-      setTimeout(() => {
-        if (videoRef.current) {
-          videoRef.current.setPositionAsync(currentClip.start * 1000);
-          videoRef.current.playAsync();
-          setIsPlaying(true);
         }
-      }, 300);
-    }
-  }, [currentClipIndex, selectedHighlightTags, searchMode]);
+        return;
+      }
+
+      if (videoRef.current) {
+        videoRef.current.setPositionAsync(currentClip.start * 1000);
+        videoRef.current.playAsync();
+        setIsPlaying(true);
+      }
+    }, ytId ? 500 : 300);
+
+    return () => clearTimeout(startTimer);
+  }, [currentClip, currentClipIndex, selectedHighlightTags, searchMode, ytId]);
 
   useEffect(() => {
     let interval;
@@ -434,31 +476,56 @@ const ProjectListScreen = ({
 
           if (currentTime >= currentClip.end) {
             if (currentClipIndex < currentClips.length - 1) {
+              hasReachedPlaylistEndRef.current = false;
+              setHasReachedPlaylistEnd(false);
               setCurrentClipIndex((prev) => prev + 1);
             } else {
-              setIsPlaying(false);
+              stopAtClipEnd();
             }
           }
         }
       }, 500);
     }
     return () => clearInterval(interval);
-  }, [isPlaying, ytId, currentClip, currentClipIndex, currentClips.length]);
+  }, [
+    isPlaying,
+    ytId,
+    currentClip,
+    currentClipIndex,
+    currentClips.length,
+    stopAtClipEnd,
+  ]);
 
   const handlePlaybackStatusUpdate = (status) => {
     if (!status.isLoaded) return;
 
-    const currentTime = Math.floor(status.positionMillis / 1000);
-    setVideoTime(currentTime);
+    const positionMillis = status.positionMillis || 0;
+    const clipEndMillis =
+      typeof currentClip?.end === "number"
+        ? Math.max(0, Math.round(currentClip.end * 1000))
+        : null;
+    setVideoTime(Math.floor(positionMillis / 1000));
 
-    if (currentClip && currentTime >= currentClip.end) {
+    if (
+      hasReachedPlaylistEndRef.current &&
+      currentClipIndex >= currentClips.length - 1
+    ) {
+      if (status.isPlaying) {
+        videoRef.current?.setStatusAsync({
+          shouldPlay: false,
+          ...(clipEndMillis !== null ? { positionMillis: clipEndMillis } : {}),
+        });
+      }
+      return;
+    }
+
+    if (currentClip && clipEndMillis !== null && positionMillis >= clipEndMillis) {
       if (currentClipIndex < currentClips.length - 1) {
+        hasReachedPlaylistEndRef.current = false;
+        setHasReachedPlaylistEnd(false);
         setCurrentClipIndex((prev) => prev + 1);
       } else {
-        setIsPlaying(false);
-        if (status.isPlaying) {
-          videoRef.current?.pauseAsync();
-        }
+        stopAtClipEnd(currentClip);
       }
     } else {
       if (isPlaying !== status.isPlaying) {
@@ -468,9 +535,19 @@ const ProjectListScreen = ({
   };
 
   const onYoutubeStateChange = useCallback((state) => {
-    if (state === "playing") setIsPlaying(true);
-    else if (state === "paused" || state === "ended") setIsPlaying(false);
-  }, []);
+    if (state === "playing") {
+      if (
+        hasReachedPlaylistEndRef.current &&
+        currentClipIndex >= currentClips.length - 1
+      ) {
+        setIsPlaying(false);
+        return;
+      }
+      setIsPlaying(true);
+    } else if (state === "paused" || state === "ended") {
+      setIsPlaying(false);
+    }
+  }, [currentClipIndex, currentClips.length]);
 
   const formatTime = (seconds) => {
     const m = Math.floor(seconds / 60)
@@ -946,7 +1023,11 @@ const ProjectListScreen = ({
     <View
       style={[styles.videoPlayerArea, isLandscape && styles.fsVideoPlayerArea]}
     >
-      {ytId ? (
+      {hasReachedPlaylistEnd ? (
+        <View style={styles.stoppedVideoPlaceholder}>
+          <Text style={styles.stoppedVideoText}>再生終了</Text>
+        </View>
+      ) : ytId ? (
         <View
           style={[
             styles.youtubeContainer,
@@ -1805,6 +1886,17 @@ const styles = StyleSheet.create({
     left: 0,
     bottom: 0,
     right: 0,
+  },
+  stoppedVideoPlaceholder: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#000",
+  },
+  stoppedVideoText: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "bold",
   },
   videoOverlay: {
     position: "absolute",
