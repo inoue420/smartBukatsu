@@ -20,7 +20,7 @@ import {
 
 // 画面
 import LoginScreen from "./src/screens/LoginScreen";
-import TeamSetupScreen from "./src/screens/TeamSetupScreen";
+import TeamSelectScreen from "./src/screens/TeamSelectScreen";
 import WorkspaceHomeScreen from "./src/screens/WorkspaceHomeScreen";
 import NoticeBoardScreen from "./src/screens/NoticeBoardScreen";
 import SettingsScreen from "./src/screens/SettingsScreen";
@@ -39,6 +39,7 @@ function AppContent() {
     user,
     userName,
     activeTeamId,
+    teamSelectionRequired,
     isAdmin: authIsAdmin,
     loading: authLoading,
   } = useAuth();
@@ -173,6 +174,8 @@ function AppContent() {
       <Stack.Navigator screenOptions={{ headerShown: false }}>
         {!user ? (
           <Stack.Screen name="Login" component={LoginScreen} />
+        ) : teamSelectionRequired ? (
+          <Stack.Screen name="TeamSelect" component={TeamSelectScreen} />
         ) : !activeTeamId && isResolvingTeam ? (
           <Stack.Screen name="LoadingTeam">
             {() => (
@@ -194,7 +197,7 @@ function AppContent() {
             )}
           </Stack.Screen>
         ) : !activeTeamId ? (
-          <Stack.Screen name="TeamSetup" component={TeamSetupScreen} />
+          <Stack.Screen name="TeamSelect" component={TeamSelectScreen} />
         ) : (
           <>
             <Stack.Screen name="WorkspaceHome">
@@ -216,6 +219,8 @@ function AppContent() {
                 />
               )}
             </Stack.Screen>
+
+            <Stack.Screen name="TeamSelect" component={TeamSelectScreen} />
 
             <Stack.Screen name="NoticeBoard">
               {(props) => (

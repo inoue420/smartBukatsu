@@ -95,6 +95,7 @@ const WorkspaceHomeScreen = ({
   const displayUserName = roleNameMap[userRole] || currentUser;
 
   const isStaffOrAbove = ["owner", "staff", "admin"].includes(userRole);
+  const canOpenTeamSelect = !isOffline;
   const canCreateChannel = ["owner", "staff", "admin", "captain"].includes(
     userRole,
   );
@@ -1194,7 +1195,12 @@ const WorkspaceHomeScreen = ({
             { paddingVertical: 10, height: "auto", minHeight: 60 },
           ]}
         >
-          <View style={{ flex: 1, justifyContent: "center", marginRight: 10 }}>
+          <TouchableOpacity
+            style={{ flex: 1, justifyContent: "center", marginRight: 10 }}
+            activeOpacity={canOpenTeamSelect ? 0.75 : 1}
+            disabled={!canOpenTeamSelect}
+            onPress={() => navigation.navigate("TeamSelect")}
+          >
             <Text style={styles.headerTitle} numberOfLines={1}>
               {isOffline
                 ? "⚠️ オフラインモード"
@@ -1211,7 +1217,7 @@ const WorkspaceHomeScreen = ({
             >
               こんにちは、{displayUserName} さん
             </Text>
-          </View>
+          </TouchableOpacity>
           <View style={styles.headerRight}>
             <TouchableOpacity
               style={styles.headerIconBtn}

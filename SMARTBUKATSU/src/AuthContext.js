@@ -20,6 +20,7 @@ import {
   setDoc,
 } from "firebase/firestore";
 import { auth, db } from "./firebase";
+import { switchActiveTeam } from "./services/firestoreService";
 
 const AuthContext = createContext(null);
 
@@ -28,7 +29,9 @@ export function AuthProvider({ children }) {
   const [userName, setUserName] = useState(""); // ★追加：ユーザー名を保持
   const [loading, setLoading] = useState(true);
   const [activeTeamId, setActiveTeamId] = useState(null);
+  const [teamIds, setTeamIds] = useState([]);
   const [role, setRole] = useState(null);
+  const [hasSelectedTeam, setHasSelectedTeam] = useState(false);
 
   // Firebaseの認証状態を監視
   useEffect(() => {
@@ -36,7 +39,9 @@ export function AuthProvider({ children }) {
       setUser(u || null);
       setRole(null);
       setActiveTeamId(null);
+      setTeamIds([]);
       setUserName(""); // リセット
+      setHasSelectedTeam(false);
       setLoading(false);
 
       if (u?.uid) {
@@ -45,7 +50,7 @@ export function AuthProvider({ children }) {
         if (!snap.exists()) {
           await setDoc(
             ref,
-            { activeTeamId: "", createdAt: serverTimestamp() },
+            { activeTeamId: "", teamIds: [], createdAt: serverTimestamp() },
             { merge: true },
           );
         }
@@ -61,9 +66,19 @@ export function AuthProvider({ children }) {
     const unsub = onSnapshot(ref, (snap) => {
       const data = snap.data() || {};
       const t = typeof data.activeTeamId === "string" ? data.activeTeamId : "";
+      const ids = Array.isArray(data.teamIds)
+        ? data.teamIds.filter((id) => typeof id === "string" && id)
+        : [];
+      const normalizedTeamIds = [...new Set([...ids, ...(t ? [t] : [])])];
+
+      setTeamIds(normalizedTeamIds);
       setActiveTeamId(t || null);
       // ★取得した名前をセット（名前がなければメールアドレスを表示）
       setUserName(data.name || user.email || "ゲスト");
+
+      if (!t && normalizedTeamIds.length === 1) {
+        setDoc(ref, { activeTeamId: normalizedTeamIds[0] }, { merge: true });
+      }
     });
     return () => unsub();
   }, [user?.uid]);
@@ -95,19 +110,27 @@ export function AuthProvider({ children }) {
     const signOut = async () => {
       await fbSignOut(auth);
     };
+    const selectTeam = async (teamId) => {
+      if (!user?.uid) throw new Error("ユーザー情報を確認できませんでした。");
+      await switchActiveTeam(user.uid, teamId);
+      setHasSelectedTeam(true);
+    };
     return {
       user,
       userName, // ★追加：Contextで名前を配信
       loading,
       activeTeamId,
+      teamIds,
       role,
       isAdmin: role === "admin" || role === "owner", // ownerも管理者として扱うように強化
+      teamSelectionRequired: teamIds.length > 1 && !hasSelectedTeam,
+      selectTeam,
       signIn,
       signUp,
       resetPassword,
       signOut,
     };
-  }, [user, userName, loading, activeTeamId, role]);
+  }, [user, userName, loading, activeTeamId, teamIds, role, hasSelectedTeam]);
 
   return <AuthContext.Provider value={api}>{children}</AuthContext.Provider>;
 }
