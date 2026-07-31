@@ -8,12 +8,15 @@ import {
   Modal,
   TextInput,
   Alert,
+  Linking,
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
   Switch,
+  Share,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import * as Clipboard from "expo-clipboard";
 import { Calendar, LocaleConfig } from "react-native-calendars";
 
 import { useAuth } from "../AuthContext";
@@ -25,6 +28,14 @@ import {
   updatePersonalEvent,
   deletePersonalEvent,
 } from "../services/firestoreService";
+
+const NativeMaps =
+  Platform.OS === "web"
+    ? { default: null, Marker: null }
+    : require("react-native-maps");
+const MapView = NativeMaps.default;
+const Marker = NativeMaps.Marker;
+const PROVIDER_GOOGLE = NativeMaps.PROVIDER_GOOGLE;
 
 LocaleConfig.locales["ja"] = {
   monthNames: [
@@ -98,6 +109,80 @@ const MINUTE_OPTIONS = [
   "50",
   "55",
 ];
+
+const DEFAULT_LOCATION_COORDINATE = {
+  latitude: 36.6953,
+  longitude: 137.2137,
+};
+
+const DEFAULT_MAP_DELTA = {
+  latitudeDelta: 0.01,
+  longitudeDelta: 0.01,
+};
+
+const isValidCoordinate = (latitude, longitude) => {
+  const lat = Number(latitude);
+  const lng = Number(longitude);
+  return (
+    Number.isFinite(lat) &&
+    Number.isFinite(lng) &&
+    lat >= -90 &&
+    lat <= 90 &&
+    lng >= -180 &&
+    lng <= 180
+  );
+};
+
+const buildGoogleMapsUrl = (latitude, longitude) =>
+  `https://www.google.com/maps/search/?api=1&query=${latitude},${longitude}`;
+
+const encodeMapQuery = (query) =>
+  `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
+
+const getLocationFromEvent = (event) => {
+  if (!event) return null;
+  if (event.location && typeof event.location === "object") {
+    return event.location;
+  }
+  if (
+    event.locationName ||
+    event.locationAddress ||
+    event.locationLatitude ||
+    event.locationLongitude ||
+    event.locationUrl
+  ) {
+    return {
+      name: event.locationName || "",
+      address: event.locationAddress || "",
+      note: event.locationNote || "",
+      latitude: event.locationLatitude,
+      longitude: event.locationLongitude,
+      url: event.locationUrl,
+      source: event.locationSource || "legacy",
+      manuallyAdjusted: !!event.locationManuallyAdjusted,
+    };
+  }
+  return null;
+};
+
+const getLocationUrl = (location) => {
+  if (!location) return "";
+  if (isValidCoordinate(location.latitude, location.longitude)) {
+    return buildGoogleMapsUrl(
+      Number(location.latitude),
+      Number(location.longitude),
+    );
+  }
+  const fallbackQuery = [location.name, location.address].filter(Boolean).join(" ");
+  return fallbackQuery ? encodeMapQuery(fallbackQuery) : location.url || "";
+};
+
+const getCoordinateText = (location) => {
+  if (!location || !isValidCoordinate(location.latitude, location.longitude)) {
+    return "";
+  }
+  return `${Number(location.latitude).toFixed(6)},${Number(location.longitude).toFixed(6)}`;
+};
 
 const normalizeDate = (dateStr) => {
   if (!dateStr) return "";
@@ -264,6 +349,17 @@ const CalendarScreen = ({
   const [clubEndTime, setClubEndTime] = useState("12:00");
   const [isClubAllDay, setIsClubAllDay] = useState(false);
   const [clubTimeSchedules, setClubTimeSchedules] = useState({});
+  const [clubLocationName, setClubLocationName] = useState("");
+  const [clubLocationAddress, setClubLocationAddress] = useState("");
+  const [clubLocationNote, setClubLocationNote] = useState("");
+  const [clubLocationLatitude, setClubLocationLatitude] = useState(null);
+  const [clubLocationLongitude, setClubLocationLongitude] = useState(null);
+  const [clubLocationManuallyAdjusted, setClubLocationManuallyAdjusted] =
+    useState(false);
+  const [isLocationMapVisible, setIsLocationMapVisible] = useState(false);
+  const [mapDraftCoordinate, setMapDraftCoordinate] = useState(
+    DEFAULT_LOCATION_COORDINATE,
+  );
   const [selectedAbsenceEvent, setSelectedAbsenceEvent] = useState(null);
   const [absenceCommentText, setAbsenceCommentText] = useState("");
 
@@ -350,6 +446,27 @@ const CalendarScreen = ({
       r.status !== "deleted",
   );
 
+  const recentClubLocations = useMemo(() => {
+    const seen = new Set();
+    const locations = [];
+    clubEvents.forEach((event) => {
+      const location = getLocationFromEvent(event);
+      if (!location || !isValidCoordinate(location.latitude, location.longitude)) {
+        return;
+      }
+      const key = [
+        location.name || "",
+        location.address || "",
+        Number(location.latitude).toFixed(6),
+        Number(location.longitude).toFixed(6),
+      ].join("|");
+      if (seen.has(key)) return;
+      seen.add(key);
+      locations.push(location);
+    });
+    return locations.slice(0, 5);
+  }, [clubEvents]);
+
   const sortedClubSelectedDates = useMemo(
     () =>
       getUniqueSortedDates(clubSelectedDates.length ? clubSelectedDates : [selectedDate]),
@@ -397,6 +514,141 @@ const CalendarScreen = ({
   const getAbsenceComments = (event) =>
     Array.isArray(event?.absenceComments) ? event.absenceComments : [];
 
+  const hasClubLocationDraft = () =>
+    !!(
+      clubLocationName.trim() ||
+      clubLocationAddress.trim() ||
+      clubLocationNote.trim() ||
+      clubLocationLatitude !== null ||
+      clubLocationLongitude !== null
+    );
+
+  const getClubLocationDraft = () => {
+    if (!hasClubLocationDraft()) return null;
+    const latitude =
+      clubLocationLatitude === null ? NaN : Number(clubLocationLatitude);
+    const longitude =
+      clubLocationLongitude === null ? NaN : Number(clubLocationLongitude);
+    return {
+      name: clubLocationName.trim(),
+      address: clubLocationAddress.trim(),
+      latitude,
+      longitude,
+      placeId: "",
+      note: clubLocationNote.trim(),
+      source: "manual_pin",
+      manuallyAdjusted: clubLocationManuallyAdjusted,
+      updatedAt: new Date().toISOString(),
+    };
+  };
+
+  const applyClubLocation = (location) => {
+    if (!location) return;
+    setClubLocationName(location.name || "");
+    setClubLocationAddress(location.address || "");
+    setClubLocationNote(location.note || "");
+    if (isValidCoordinate(location.latitude, location.longitude)) {
+      setClubLocationLatitude(Number(location.latitude));
+      setClubLocationLongitude(Number(location.longitude));
+      setMapDraftCoordinate({
+        latitude: Number(location.latitude),
+        longitude: Number(location.longitude),
+      });
+    } else {
+      setClubLocationLatitude(null);
+      setClubLocationLongitude(null);
+    }
+    setClubLocationManuallyAdjusted(!!location.manuallyAdjusted);
+  };
+
+  const clearClubLocation = () => {
+    setClubLocationName("");
+    setClubLocationAddress("");
+    setClubLocationNote("");
+    setClubLocationLatitude(null);
+    setClubLocationLongitude(null);
+    setClubLocationManuallyAdjusted(false);
+    setMapDraftCoordinate(DEFAULT_LOCATION_COORDINATE);
+  };
+
+  const openLocationMap = () => {
+    const coordinate = isValidCoordinate(
+      clubLocationLatitude,
+      clubLocationLongitude,
+    )
+      ? {
+          latitude: Number(clubLocationLatitude),
+          longitude: Number(clubLocationLongitude),
+        }
+      : DEFAULT_LOCATION_COORDINATE;
+    setMapDraftCoordinate(coordinate);
+    setIsLocationMapVisible(true);
+  };
+
+  const confirmLocationPin = () => {
+    setClubLocationLatitude(mapDraftCoordinate.latitude);
+    setClubLocationLongitude(mapDraftCoordinate.longitude);
+    setClubLocationManuallyAdjusted(true);
+    setIsLocationMapVisible(false);
+  };
+
+  const openExternalMap = async (location) => {
+    const url = getLocationUrl(location);
+    if (!url) {
+      Alert.alert("地図情報なし", "この予定には地図情報が登録されていません。");
+      return;
+    }
+    try {
+      const canOpen = await Linking.canOpenURL(url);
+      if (!canOpen) throw new Error("Cannot open map URL");
+      await Linking.openURL(url);
+    } catch (error) {
+      Alert.alert("地図を開けません", "Googleマップを開けませんでした。");
+    }
+  };
+
+  const buildLocationShareMessage = (event) => {
+    const location = getLocationFromEvent(event);
+    if (!location) return "";
+    const lines = ["【活動場所】"];
+    const title = event.title || event.name;
+    if (title) lines.push(`活動名：${title}`);
+    lines.push(`日時：${selectedDate} ${getDisplayTime(event, selectedDate)}`);
+    if (location.name) lines.push(`場所：${location.name}`);
+    if (location.address) lines.push(`住所：${location.address}`);
+    if (location.note) lines.push(`補足：${location.note}`);
+    const url = getLocationUrl(location);
+    if (url) lines.push("Googleマップで確認", url);
+    return lines.filter(Boolean).join("\n");
+  };
+
+  const shareEventLocation = async (event) => {
+    const message = buildLocationShareMessage(event);
+    if (!message) {
+      Alert.alert("地図情報なし", "この予定には共有できる場所情報がありません。");
+      return;
+    }
+    try {
+      await Share.share({ message });
+    } catch (error) {
+      Alert.alert("共有できません", "場所情報を共有できませんでした。");
+    }
+  };
+
+  const copyEventCoordinates = async (event) => {
+    const coordinateText = getCoordinateText(getLocationFromEvent(event));
+    if (!coordinateText) {
+      Alert.alert("座標情報なし", "この予定にはコピーできる座標がありません。");
+      return;
+    }
+    try {
+      await Clipboard.setStringAsync(coordinateText);
+      Alert.alert("コピー完了", "座標をコピーしました。");
+    } catch (error) {
+      Alert.alert("コピー失敗", "座標をコピーできませんでした。");
+    }
+  };
+
   useEffect(() => {
     if (!isOffline) {
       const hasPendingEvents =
@@ -432,6 +684,19 @@ const CalendarScreen = ({
   const handleSaveClubEvent = async () => {
     if (!clubEventTitle.trim())
       return Alert.alert("エラー", "タイトルを入力してください");
+
+    const locationDraft = getClubLocationDraft();
+    if (locationDraft) {
+      if (!locationDraft.name) {
+        return Alert.alert("場所情報エラー", "施設名または場所名を入力してください。");
+      }
+      if (!isValidCoordinate(locationDraft.latitude, locationDraft.longitude)) {
+        return Alert.alert(
+          "場所情報エラー",
+          "地図上でピン位置を確定してください。",
+        );
+      }
+    }
 
     const eventDates = getUniqueSortedDates(
       isMultiDay
@@ -475,6 +740,7 @@ const CalendarScreen = ({
         startTime: isClubAllDay ? "" : clubStartTime,
         endTime: isClubAllDay ? "" : clubEndTime,
         timeSchedules: isMultiDay ? schedules : null,
+        location: locationDraft,
         participants: "team",
         status: isOffline ? "pending" : "active",
         createdBy: user?.uid || "local_user",
@@ -515,6 +781,7 @@ const CalendarScreen = ({
     setClubEndTime("12:00");
     setIsClubAllDay(false);
     setClubTimeSchedules({});
+    clearClubLocation();
   };
 
   const openEditClubEvent = (event) => {
@@ -533,6 +800,12 @@ const CalendarScreen = ({
     setClubEndTime(firstSchedule?.end || event.endTime || "12:00");
     setIsClubAllDay(firstSchedule?.isAllDay ?? event.isAllDay ?? false);
     setClubTimeSchedules(event.timeSchedules || {});
+    const location = getLocationFromEvent(event);
+    if (location) {
+      applyClubLocation(location);
+    } else {
+      clearClubLocation();
+    }
     setIsClubModalVisible(true);
   };
 
@@ -834,6 +1107,7 @@ const CalendarScreen = ({
           ) : (
             dailyClubEvents.map((item) => {
               const isPending = item.status === "pending";
+              const itemLocation = getLocationFromEvent(item);
               return (
                 <View
                   key={item.id}
@@ -860,6 +1134,45 @@ const CalendarScreen = ({
                       <Text style={styles.eventDescription} numberOfLines={2}>
                         {item.description}
                       </Text>
+                    ) : null}
+                    {itemLocation ? (
+                      <View style={styles.locationSummaryBox}>
+                        {itemLocation.name ? (
+                          <Text style={styles.locationSummaryName}>
+                            場所：{itemLocation.name}
+                          </Text>
+                        ) : null}
+                        {itemLocation.address ? (
+                          <Text style={styles.locationSummaryText}>
+                            住所：{itemLocation.address}
+                          </Text>
+                        ) : null}
+                        {itemLocation.note ? (
+                          <Text style={styles.locationSummaryText}>
+                            補足：{itemLocation.note}
+                          </Text>
+                        ) : null}
+                        <View style={styles.locationButtonRow}>
+                          <TouchableOpacity
+                            style={styles.locationMiniBtn}
+                            onPress={() => openExternalMap(itemLocation)}
+                          >
+                            <Text style={styles.locationMiniBtnText}>Googleマップ</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={styles.locationMiniBtn}
+                            onPress={() => shareEventLocation(item)}
+                          >
+                            <Text style={styles.locationMiniBtnText}>場所を共有</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={styles.locationMiniBtn}
+                            onPress={() => copyEventCoordinates(item)}
+                          >
+                            <Text style={styles.locationMiniBtnText}>座標をコピー</Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
                     ) : null}
                     <Text style={styles.eventSub}>
                       {item.type} {getClubEventDateSummary(item)}
@@ -1405,6 +1718,83 @@ const CalendarScreen = ({
                 blurOnSubmit={false}
               />
 
+
+              <Text style={styles.label}>場所</Text>
+              <TextInput
+                style={styles.input}
+                value={clubLocationName}
+                onChangeText={setClubLocationName}
+                placeholder="施設名・集合場所名"
+                returnKeyType="done"
+              />
+              <TextInput
+                style={[styles.input, styles.textAreaSmall]}
+                value={clubLocationAddress}
+                onChangeText={setClubLocationAddress}
+                placeholder="住所（任意）"
+                multiline
+                blurOnSubmit={false}
+              />
+
+              {recentClubLocations.length > 0 ? (
+                <View style={styles.recentLocationBox}>
+                  <Text style={styles.recentLocationTitle}>最近使用した場所</Text>
+                  {recentClubLocations.map((location, index) => (
+                    <TouchableOpacity
+                      key={`${location.name || "location"}-${index}`}
+                      style={styles.recentLocationItem}
+                      onPress={() => applyClubLocation(location)}
+                    >
+                      <Text style={styles.recentLocationName}>
+                        {location.name || "名称未設定"}
+                      </Text>
+                      {location.address ? (
+                        <Text style={styles.recentLocationAddress} numberOfLines={1}>
+                          {location.address}
+                        </Text>
+                      ) : null}
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              ) : null}
+
+              <View style={styles.locationEditorActions}>
+                <TouchableOpacity
+                  style={styles.mapOpenBtn}
+                  onPress={openLocationMap}
+                >
+                  <Text style={styles.mapOpenBtnText}>地図でピンを調整</Text>
+                </TouchableOpacity>
+                {hasClubLocationDraft() ? (
+                  <TouchableOpacity
+                    style={styles.locationClearBtn}
+                    onPress={clearClubLocation}
+                  >
+                    <Text style={styles.locationClearBtnText}>場所を削除</Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+
+              {isValidCoordinate(clubLocationLatitude, clubLocationLongitude) ? (
+                <Text style={styles.coordinatePreview}>
+                  座標：{Number(clubLocationLatitude).toFixed(6)},
+                  {Number(clubLocationLongitude).toFixed(6)}
+                </Text>
+              ) : (
+                <Text style={styles.coordinateHint}>
+                  地図でピン位置を確定すると座標が保存されます。
+                </Text>
+              )}
+
+              <TextInput
+                style={[styles.input, styles.textAreaSmall]}
+                value={clubLocationNote}
+                onChangeText={setClubLocationNote}
+                placeholder="場所に関する補足（例：正面入口前に集合）"
+                multiline
+                blurOnSubmit={false}
+              />
+
               <View style={styles.modalButtons}>
                 <TouchableOpacity
                   style={styles.cancelBtn}
@@ -1433,6 +1823,65 @@ const CalendarScreen = ({
           )}
           </View>
         </KeyboardAvoidingView>
+      </Modal>
+
+
+      <Modal visible={isLocationMapVisible} transparent animationType="slide">
+        <View style={styles.mapModalOverlay}>
+          <View style={styles.mapModalContent}>
+            <View style={styles.mapModalHeader}>
+              <Text style={styles.mapModalTitle}>ピン位置を調整</Text>
+              <Text style={styles.mapModalSubTitle}>
+                地図を拡大・移動し、ピンを集合場所にドラッグしてください。
+              </Text>
+            </View>
+            {Platform.OS === "web" || !MapView || !Marker ? (
+              <View style={styles.mapUnavailableBox}>
+                <Text style={styles.mapUnavailableText}>
+                  アプリ内地図はAndroid/iOSで利用できます。
+                </Text>
+              </View>
+            ) : (
+              <MapView
+                key={`${mapDraftCoordinate.latitude}-${mapDraftCoordinate.longitude}`}
+                provider={PROVIDER_GOOGLE}
+                style={styles.mapView}
+                initialRegion={{
+                  ...mapDraftCoordinate,
+                  ...DEFAULT_MAP_DELTA,
+                }}
+              >
+                <Marker
+                  coordinate={mapDraftCoordinate}
+                  draggable
+                  title={clubLocationName || "活動場所"}
+                  description="ピンをドラッグして微調整できます"
+                  onDragEnd={(event) => {
+                    setMapDraftCoordinate(event.nativeEvent.coordinate);
+                  }}
+                />
+              </MapView>
+            )}
+            <Text style={styles.mapCoordinateText}>
+              {mapDraftCoordinate.latitude.toFixed(6)},
+              {mapDraftCoordinate.longitude.toFixed(6)}
+            </Text>
+            <View style={styles.mapModalButtons}>
+              <TouchableOpacity
+                style={styles.cancelBtn}
+                onPress={() => setIsLocationMapVisible(false)}
+              >
+                <Text style={styles.cancelBtnText}>キャンセル</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.submitBtn}
+                onPress={confirmLocationPin}
+              >
+                <Text style={styles.submitBtnText}>ピン位置を確定</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
       </Modal>
 
       {/* 個人予定モーダル */}
@@ -1867,6 +2316,46 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
   },
 
+  locationSummaryBox: {
+    marginTop: 8,
+    padding: 10,
+    borderRadius: 8,
+    backgroundColor: "#eef7f1",
+    borderWidth: 1,
+    borderColor: "#cde9d5",
+  },
+  locationSummaryName: {
+    fontSize: 13,
+    color: COLORS.textMain,
+    fontWeight: "bold",
+    marginBottom: 3,
+  },
+  locationSummaryText: {
+    fontSize: 12,
+    color: COLORS.textSub,
+    lineHeight: 17,
+  },
+  locationButtonRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    marginTop: 8,
+  },
+  locationMiniBtn: {
+    borderWidth: 1,
+    borderColor: COLORS.success,
+    borderRadius: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 9,
+    marginRight: 6,
+    marginBottom: 6,
+    backgroundColor: "#ffffff",
+  },
+  locationMiniBtnText: {
+    fontSize: 11,
+    color: COLORS.success,
+    fontWeight: "bold",
+  },
+
   actionRow: { flexDirection: "row", marginLeft: "auto" },
   iconBtn: { padding: 10, marginLeft: 5 },
 
@@ -1933,6 +2422,132 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   textArea: { minHeight: 80, textAlignVertical: "top" },
+  textAreaSmall: { minHeight: 56, textAlignVertical: "top" },
+  recentLocationBox: {
+    backgroundColor: "#f6fbff",
+    borderWidth: 1,
+    borderColor: "#d7eaff",
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 10,
+  },
+  recentLocationTitle: {
+    fontSize: 12,
+    color: COLORS.primary,
+    fontWeight: "bold",
+    marginBottom: 6,
+  },
+  recentLocationItem: {
+    paddingVertical: 8,
+    borderTopWidth: 1,
+    borderTopColor: "#e7f1ff",
+  },
+  recentLocationName: {
+    fontSize: 13,
+    color: COLORS.textMain,
+    fontWeight: "bold",
+  },
+  recentLocationAddress: {
+    fontSize: 12,
+    color: COLORS.textSub,
+    marginTop: 2,
+  },
+  locationEditorActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  mapOpenBtn: {
+    flex: 1,
+    backgroundColor: COLORS.success,
+    borderRadius: 8,
+    paddingVertical: 12,
+    alignItems: "center",
+  },
+  mapOpenBtnText: { color: "#fff", fontSize: 14, fontWeight: "bold" },
+  locationClearBtn: {
+    marginLeft: 8,
+    borderWidth: 1,
+    borderColor: COLORS.danger,
+    borderRadius: 8,
+    paddingVertical: 11,
+    paddingHorizontal: 12,
+    backgroundColor: "#fff5f5",
+  },
+  locationClearBtnText: {
+    color: COLORS.danger,
+    fontSize: 13,
+    fontWeight: "bold",
+  },
+  coordinatePreview: {
+    fontSize: 12,
+    color: COLORS.success,
+    fontWeight: "bold",
+    marginBottom: 8,
+  },
+  coordinateHint: {
+    fontSize: 12,
+    color: COLORS.textSub,
+    marginBottom: 8,
+  },
+  mapModalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "center",
+    padding: 16,
+  },
+  mapModalContent: {
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    padding: 16,
+    maxHeight: "90%",
+  },
+  mapModalHeader: { marginBottom: 10 },
+  mapModalTitle: {
+    fontSize: 18,
+    fontWeight: "bold",
+    color: COLORS.textMain,
+    textAlign: "center",
+  },
+  mapModalSubTitle: {
+    fontSize: 12,
+    color: COLORS.textSub,
+    textAlign: "center",
+    marginTop: 6,
+    lineHeight: 18,
+  },
+  mapView: {
+    height: 360,
+    borderRadius: 8,
+    overflow: "hidden",
+    marginVertical: 10,
+  },
+  mapUnavailableBox: {
+    height: 220,
+    borderRadius: 8,
+    backgroundColor: "#f0f2f5",
+    alignItems: "center",
+    justifyContent: "center",
+    marginVertical: 10,
+    padding: 16,
+  },
+  mapUnavailableText: {
+    fontSize: 13,
+    color: COLORS.textSub,
+    textAlign: "center",
+    lineHeight: 18,
+  },
+  mapCoordinateText: {
+    fontSize: 12,
+    color: COLORS.primary,
+    fontWeight: "bold",
+    textAlign: "center",
+  },
+  mapModalButtons: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    marginTop: 14,
+  },
   typeContainer: { flexDirection: "row", marginBottom: 10 },
 
   // ★ 修正：種類/日程選択ボタンのスタイル

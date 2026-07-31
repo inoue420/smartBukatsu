@@ -20,12 +20,44 @@ console.log(
 console.log("=======================================");
 
 module.exports = ({ config }) => {
+  const androidMapsApiKey =
+    process.env.EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_API_KEY ||
+    process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY;
+  const iosMapsApiKey =
+    process.env.EXPO_PUBLIC_GOOGLE_MAPS_IOS_API_KEY ||
+    process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY;
+
+  const iosConfig = {
+    ...(appJson.expo.ios?.config || {}),
+  };
+  if (iosMapsApiKey) {
+    iosConfig.googleMapsApiKey = iosMapsApiKey;
+  }
+
+  const androidConfig = {
+    ...(appJson.expo.android?.config || {}),
+  };
+  if (androidMapsApiKey) {
+    androidConfig.googleMaps = {
+      ...(androidConfig.googleMaps || {}),
+      apiKey: androidMapsApiKey,
+    };
+  }
+
   return {
     ...config,
     ...appJson.expo,
 
     // 明示しておくと development build のURL scheme事故を減らせます
     scheme: "smartbukatsu",
+    ios: {
+      ...(appJson.expo.ios || {}),
+      config: iosConfig,
+    },
+    android: {
+      ...(appJson.expo.android || {}),
+      config: androidConfig,
+    },
 
     extra: {
       ...(config.extra || {}),
