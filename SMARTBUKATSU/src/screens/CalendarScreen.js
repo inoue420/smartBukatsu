@@ -8,7 +8,6 @@ import {
   Modal,
   TextInput,
   Alert,
-  Linking,
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
@@ -16,11 +15,11 @@ import {
   Share,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import * as Clipboard from "expo-clipboard";
 import * as Location from "expo-location";
 import { Calendar, LocaleConfig } from "react-native-calendars";
 
 import { useAuth } from "../AuthContext";
+import { cloudFunctions } from "../firebase";
 import {
   createClubEvent,
   updateClubEvent,
@@ -176,13 +175,6 @@ const getLocationUrl = (location) => {
   }
   const fallbackQuery = [location.name, location.address].filter(Boolean).join(" ");
   return fallbackQuery ? encodeMapQuery(fallbackQuery) : location.url || "";
-};
-
-const getCoordinateText = (location) => {
-  if (!location || !isValidCoordinate(location.latitude, location.longitude)) {
-    return "";
-  }
-  return `${Number(location.latitude).toFixed(6)},${Number(location.longitude).toFixed(6)}`;
 };
 
 const normalizeDate = (dateStr) => {
@@ -353,6 +345,8 @@ const CalendarScreen = ({
   const [clubLocationName, setClubLocationName] = useState("");
   const [clubLocationAddress, setClubLocationAddress] = useState("");
   const [clubLocationNote, setClubLocationNote] = useState("");
+  const [clubLocationPlaceId, setClubLocationPlaceId] = useState("");
+  const [clubLocationSource, setClubLocationSource] = useState("manual_pin");
   const [clubLocationLatitude, setClubLocationLatitude] = useState(null);
   const [clubLocationLongitude, setClubLocationLongitude] = useState(null);
   const [clubLocationManuallyAdjusted, setClubLocationManuallyAdjusted] =
@@ -536,9 +530,9 @@ const CalendarScreen = ({
       address: clubLocationAddress.trim(),
       latitude,
       longitude,
-      placeId: "",
+      placeId: clubLocationPlaceId,
       note: clubLocationNote.trim(),
-      source: clubLocationManuallyAdjusted ? "manual_pin" : "device_geocode",
+      source: clubLocationManuallyAdjusted ? "manual_pin" : clubLocationSource,
       manuallyAdjusted: clubLocationManuallyAdjusted,
       updatedAt: new Date().toISOString(),
     };
@@ -546,9 +540,12 @@ const CalendarScreen = ({
 
   const applyClubLocation = (location) => {
     if (!location) return;
-    setClubLocationName(location.name || "");
-    setClubLocationAddress(location.address || "");
+    const locationName = location.name || location.address || "";
+    setClubLocationName(locationName);
+    setClubLocationAddress(location.name ? location.address || "" : "");
     setClubLocationNote(location.note || "");
+    setClubLocationPlaceId(location.placeId || "");
+    setClubLocationSource(location.source || "manual_pin");
     if (isValidCoordinate(location.latitude, location.longitude)) {
       setClubLocationLatitude(Number(location.latitude));
       setClubLocationLongitude(Number(location.longitude));
@@ -567,16 +564,14 @@ const CalendarScreen = ({
     setClubLocationLatitude(null);
     setClubLocationLongitude(null);
     setClubLocationManuallyAdjusted(false);
+    setClubLocationPlaceId("");
+    setClubLocationSource("manual_pin");
     setMapDraftCoordinate(DEFAULT_LOCATION_COORDINATE);
   };
 
   const handleClubLocationNameChange = (text) => {
     setClubLocationName(text);
-    clearClubLocationCoordinate();
-  };
-
-  const handleClubLocationAddressChange = (text) => {
-    setClubLocationAddress(text);
+    setClubLocationAddress("");
     clearClubLocationCoordinate();
   };
 
@@ -587,11 +582,91 @@ const CalendarScreen = ({
     clearClubLocationCoordinate();
   };
 
+  const normalizeLocationSearchText = (value) =>
+    value.trim().replace(/\s+/g, " ");
+
   const getClubLocationSearchText = () =>
-    [clubLocationName, clubLocationAddress]
-      .map((value) => value.trim())
-      .filter(Boolean)
-      .join(" ");
+    normalizeLocationSearchText(
+      [clubLocationName, clubLocationAddress]
+        .map((value) => value.trim())
+        .filter(Boolean)
+        .join(" "),
+    );
+
+  const getClubLocationSearchQueries = () => {
+    const searchText = getClubLocationSearchText();
+    if (!searchText) return [];
+
+    const queries = [searchText];
+    if (Platform.OS === "ios") {
+      const japanHintQuery = `${searchText} 日本`;
+      if (!queries.includes(japanHintQuery)) queries.push(japanHintQuery);
+    }
+    return queries;
+  };
+
+  const getManualFallbackCoordinate = () => {
+    if (isValidCoordinate(clubLocationLatitude, clubLocationLongitude)) {
+      return {
+        latitude: Number(clubLocationLatitude),
+        longitude: Number(clubLocationLongitude),
+      };
+    }
+    if (isValidCoordinate(mapDraftCoordinate.latitude, mapDraftCoordinate.longitude)) {
+      return mapDraftCoordinate;
+    }
+    return DEFAULT_LOCATION_COORDINATE;
+  };
+
+  const openManualLocationMap = () => {
+    setMapDraftCoordinate(getManualFallbackCoordinate());
+    setIsLocationMapVisible(true);
+  };
+
+  const applyResolvedClubLocation = ({
+    latitude,
+    longitude,
+    source,
+    placeId = "",
+    name = "",
+    address = "",
+  }) => {
+    const coordinate = {
+      latitude: Number(latitude),
+      longitude: Number(longitude),
+    };
+    setClubLocationLatitude(coordinate.latitude);
+    setClubLocationLongitude(coordinate.longitude);
+    setClubLocationManuallyAdjusted(false);
+    setClubLocationPlaceId(placeId || "");
+    setClubLocationSource(source || "device_geocode");
+    setMapDraftCoordinate(coordinate);
+    if (!clubLocationName.trim() && name) {
+      setClubLocationName(name);
+    }
+    if (address) {
+      setClubLocationAddress(address);
+    }
+    return coordinate;
+  };
+
+  const searchGooglePlaceLocation = async (query) => {
+    try {
+      const searchPlaceLocation = httpsCallable(cloudFunctions, "searchPlaceLocation");
+      const response = await searchPlaceLocation({ query });
+      const place = response.data?.place;
+      if (
+        !response.data?.found ||
+        !place ||
+        !isValidCoordinate(place.latitude, place.longitude)
+      ) {
+        return null;
+      }
+      return place;
+    } catch (error) {
+      return null;
+    }
+  };
 
   const ensureGeocodingPermission = async () => {
     if (Platform.OS === "web") {
@@ -618,7 +693,7 @@ const CalendarScreen = ({
     if (!searchText) {
       Alert.alert(
         "場所を入力してください",
-        "施設名または住所を入力してから座標を取得してください。",
+        "場所を入力してから座標を取得してください。",
       );
       return null;
     }
@@ -628,27 +703,58 @@ const CalendarScreen = ({
 
     setIsLocationGeocoding(true);
     try {
-      const results = await Location.geocodeAsync(searchText);
-      const result = (Array.isArray(results) ? results : []).find((item) =>
-        isValidCoordinate(item.latitude, item.longitude),
-      );
+      let result = null;
+      const queries = getClubLocationSearchQueries();
+      for (const query of queries) {
+        const results = await Location.geocodeAsync(query);
+        result = (Array.isArray(results) ? results : []).find((item) =>
+          isValidCoordinate(item.latitude, item.longitude),
+        );
+        if (result) break;
+      }
 
       if (!result) {
-        Alert.alert(
-          "場所が見つかりません",
-          "入力内容を少し具体的にして、もう一度お試しください。",
-        );
+        const googlePlace = await searchGooglePlaceLocation(searchText);
+        if (googlePlace) {
+          const coordinate = applyResolvedClubLocation({
+            latitude: googlePlace.latitude,
+            longitude: googlePlace.longitude,
+            source: googlePlace.source || "google_places_text_search",
+            placeId: googlePlace.placeId || "",
+            name: googlePlace.name || "",
+            address: googlePlace.address || "",
+          });
+          if (openMapAfterSearch) {
+            setIsLocationMapVisible(true);
+          } else {
+            Alert.alert(
+              "座標を取得しました",
+              "Googleの場所検索で座標を取得しました。地図でピンを調整すると、集合場所をさらに正確にできます。",
+            );
+          }
+          return coordinate;
+        }
+
+        if (openMapAfterSearch) {
+          openManualLocationMap();
+          Alert.alert(
+            "場所が見つかりません",
+            "検索では見つからなかったため、地図上で手動でピンを調整してください。",
+          );
+        } else {
+          Alert.alert(
+            "場所が見つかりません",
+            "入力内容を少し具体的にして、もう一度お試しください。地図でピンを調整する場合は、手動で位置を指定できます。",
+          );
+        }
         return null;
       }
 
-      const coordinate = {
-        latitude: Number(result.latitude),
-        longitude: Number(result.longitude),
-      };
-      setClubLocationLatitude(coordinate.latitude);
-      setClubLocationLongitude(coordinate.longitude);
-      setClubLocationManuallyAdjusted(false);
-      setMapDraftCoordinate(coordinate);
+      const coordinate = applyResolvedClubLocation({
+        latitude: result.latitude,
+        longitude: result.longitude,
+        source: "device_geocode",
+      });
 
       if (openMapAfterSearch) {
         setIsLocationMapVisible(true);
@@ -660,10 +766,39 @@ const CalendarScreen = ({
       }
       return coordinate;
     } catch (error) {
-      Alert.alert(
-        "場所を検索できません",
-        "通信状況や入力内容を確認して、もう一度お試しください。",
-      );
+      const googlePlace = await searchGooglePlaceLocation(searchText);
+      if (googlePlace) {
+        const coordinate = applyResolvedClubLocation({
+          latitude: googlePlace.latitude,
+          longitude: googlePlace.longitude,
+          source: googlePlace.source || "google_places_text_search",
+          placeId: googlePlace.placeId || "",
+          name: googlePlace.name || "",
+          address: googlePlace.address || "",
+        });
+        if (openMapAfterSearch) {
+          setIsLocationMapVisible(true);
+        } else {
+          Alert.alert(
+            "座標を取得しました",
+            "Googleの場所検索で座標を取得しました。地図でピンを調整すると、集合場所をさらに正確にできます。",
+          );
+        }
+        return coordinate;
+      }
+
+      if (openMapAfterSearch) {
+        openManualLocationMap();
+        Alert.alert(
+          "場所を検索できません",
+          "検索に失敗したため、地図上で手動でピンを調整してください。",
+        );
+      } else {
+        Alert.alert(
+          "場所を検索できません",
+          "通信状況や入力内容を確認して、もう一度お試しください。",
+        );
+      }
       return null;
     } finally {
       setIsLocationGeocoding(false);
@@ -686,29 +821,14 @@ const CalendarScreen = ({
       return;
     }
 
-    setMapDraftCoordinate(DEFAULT_LOCATION_COORDINATE);
-    setIsLocationMapVisible(true);
+    openManualLocationMap();
   };
+
   const confirmLocationPin = () => {
     setClubLocationLatitude(mapDraftCoordinate.latitude);
     setClubLocationLongitude(mapDraftCoordinate.longitude);
     setClubLocationManuallyAdjusted(true);
     setIsLocationMapVisible(false);
-  };
-
-  const openExternalMap = async (location) => {
-    const url = getLocationUrl(location);
-    if (!url) {
-      Alert.alert("地図情報なし", "この予定には地図情報が登録されていません。");
-      return;
-    }
-    try {
-      const canOpen = await Linking.canOpenURL(url);
-      if (!canOpen) throw new Error("Cannot open map URL");
-      await Linking.openURL(url);
-    } catch (error) {
-      Alert.alert("地図を開けません", "Googleマップを開けませんでした。");
-    }
   };
 
   const buildLocationShareMessage = (event) => {
@@ -736,20 +856,6 @@ const CalendarScreen = ({
       await Share.share({ message });
     } catch (error) {
       Alert.alert("共有できません", "場所情報を共有できませんでした。");
-    }
-  };
-
-  const copyEventCoordinates = async (event) => {
-    const coordinateText = getCoordinateText(getLocationFromEvent(event));
-    if (!coordinateText) {
-      Alert.alert("座標情報なし", "この予定にはコピーできる座標がありません。");
-      return;
-    }
-    try {
-      await Clipboard.setStringAsync(coordinateText);
-      Alert.alert("コピー完了", "座標をコピーしました。");
-    } catch (error) {
-      Alert.alert("コピー失敗", "座標をコピーできませんでした。");
     }
   };
 
@@ -792,7 +898,7 @@ const CalendarScreen = ({
     const locationDraft = getClubLocationDraft();
     if (locationDraft) {
       if (!locationDraft.name && !locationDraft.address) {
-        return Alert.alert("場所情報エラー", "施設名または場所名を入力してください。");
+        return Alert.alert("場所情報エラー", "場所を入力してください。");
       }
       if (!isValidCoordinate(locationDraft.latitude, locationDraft.longitude)) {
         return Alert.alert(
@@ -1259,21 +1365,9 @@ const CalendarScreen = ({
                         <View style={styles.locationButtonRow}>
                           <TouchableOpacity
                             style={styles.locationMiniBtn}
-                            onPress={() => openExternalMap(itemLocation)}
-                          >
-                            <Text style={styles.locationMiniBtnText}>Googleマップ</Text>
-                          </TouchableOpacity>
-                          <TouchableOpacity
-                            style={styles.locationMiniBtn}
                             onPress={() => shareEventLocation(item)}
                           >
                             <Text style={styles.locationMiniBtnText}>場所を共有</Text>
-                          </TouchableOpacity>
-                          <TouchableOpacity
-                            style={styles.locationMiniBtn}
-                            onPress={() => copyEventCoordinates(item)}
-                          >
-                            <Text style={styles.locationMiniBtnText}>座標をコピー</Text>
                           </TouchableOpacity>
                         </View>
                       </View>
@@ -1828,18 +1922,9 @@ const CalendarScreen = ({
                 style={styles.input}
                 value={clubLocationName}
                 onChangeText={handleClubLocationNameChange}
-                placeholder="施設名・集合場所名"
+                placeholder="施設名・住所・集合場所名"
                 returnKeyType="done"
               />
-              <TextInput
-                style={[styles.input, styles.textAreaSmall]}
-                value={clubLocationAddress}
-                onChangeText={handleClubLocationAddressChange}
-                placeholder="住所（任意）"
-                multiline
-                blurOnSubmit={false}
-              />
-
               {recentClubLocations.length > 0 ? (
                 <View style={styles.recentLocationBox}>
                   <Text style={styles.recentLocationTitle}>最近使用した場所</Text>
@@ -1943,12 +2028,8 @@ const CalendarScreen = ({
               onSelect={handleTimeSelect}
             />
           )}
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
 
-
-      <Modal visible={isLocationMapVisible} transparent animationType="slide">
+          {isLocationMapVisible ? (
         <View style={styles.mapModalOverlay}>
           <View style={styles.mapModalContent}>
             <View style={styles.mapModalHeader}>
@@ -2004,7 +2085,11 @@ const CalendarScreen = ({
             </View>
           </View>
         </View>
+          ) : null}
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
+
 
       {/* 個人予定モーダル */}
       <Modal visible={isPersonalModalVisible} transparent animationType="slide">
@@ -2630,10 +2715,12 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   mapModalOverlay: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(0,0,0,0.5)",
     justifyContent: "center",
     padding: 16,
+    zIndex: 20,
+    elevation: 20,
   },
   mapModalContent: {
     backgroundColor: "#fff",
