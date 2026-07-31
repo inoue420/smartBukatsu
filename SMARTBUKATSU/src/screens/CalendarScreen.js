@@ -17,6 +17,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import * as Location from "expo-location";
 import { Calendar, LocaleConfig } from "react-native-calendars";
+import { httpsCallable } from "firebase/functions";
 
 import { useAuth } from "../AuthContext";
 import { cloudFunctions } from "../firebase";
@@ -214,6 +215,16 @@ const getEventDates = (event) => {
   return getDatesInRange(start, end);
 };
 
+const getClubScheduleForDate = (event, date) => {
+  const schedule = event?.timeSchedules?.[date];
+  const isAllDay = schedule?.isAllDay ?? event?.isAllDay ?? false;
+  return {
+    start: isAllDay ? "" : schedule?.start || event?.startTime || "09:00",
+    end: isAllDay ? "" : schedule?.end || event?.endTime || "12:00",
+    isAllDay,
+  };
+};
+
 const getDefaultClubSchedule = () => ({
   start: "09:00",
   end: "12:00",
@@ -222,13 +233,55 @@ const getDefaultClubSchedule = () => ({
 
 const getDateLabel = (date) => date.substring(5).replace("-", "/");
 
+const getMinutesFromTime = (time) => {
+  const [hour, minute] = String(time || "00:00").split(":").map(Number);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return 0;
+  return Math.max(0, Math.min(23 * 60 + 55, hour * 60 + minute));
+};
+
+const formatMinutesAsTime = (minutes) => {
+  const safeMinutes = Math.max(0, Math.min(23 * 60 + 55, minutes));
+  const hour = String(Math.floor(safeMinutes / 60)).padStart(2, "0");
+  const minute = String(safeMinutes % 60).padStart(2, "0");
+  return `${hour}:${minute}`;
+};
+
+const getTimeAtOrAfter = (time, minTime) =>
+  getMinutesFromTime(time) < getMinutesFromTime(minTime) ? minTime : time;
+
+const getAdjustedEndTime = (startTime, endTime) => {
+  if (getMinutesFromTime(endTime) > getMinutesFromTime(startTime)) {
+    return endTime;
+  }
+  return formatMinutesAsTime(getMinutesFromTime(startTime) + 60);
+};
+
+const getScheduleColor = (schedule) => {
+  if (schedule?.isAllDay) return COLORS.primary;
+  const hour = Number(String(schedule?.start || "00:00").split(":")[0]);
+  return Number.isFinite(hour) && hour >= 12 ? COLORS.danger : COLORS.primary;
+};
+
+const getPersonalScheduleForDate = (event, date) => {
+  const schedule = event?.timeSchedules?.[date];
+  const isAllDay = schedule?.isAllDay ?? event?.isAllDay ?? false;
+  return {
+    start: isAllDay ? "" : schedule?.start || event?.startTime || "18:00",
+    end: isAllDay ? "" : schedule?.end || event?.endTime || "19:00",
+    isAllDay,
+  };
+};
+
 const TimePickerOverlay = ({
   onClose,
   onSelect,
   currentHour,
   currentMin,
   title,
-}) => (
+  minTime = "",
+}) => {
+  const minMinutes = minTime ? getMinutesFromTime(minTime) : null;
+  return (
   <View
     style={[
       StyleSheet.absoluteFill,
@@ -247,50 +300,65 @@ const TimePickerOverlay = ({
           style={styles.timeScroll}
           showsVerticalScrollIndicator={false}
         >
-          {HOUR_OPTIONS.map((h) => (
+          {HOUR_OPTIONS.map((h) => {
+            const hourDisabled =
+              minMinutes !== null && Number(h) * 60 + 55 < minMinutes;
+            return (
             <TouchableOpacity
               key={h}
+              disabled={hourDisabled}
               onPress={() => onSelect(h, currentMin)}
               style={[
                 styles.timeOption,
                 currentHour === h && styles.timeOptionActive,
+                hourDisabled && styles.timeOptionDisabled,
               ]}
             >
               <Text
                 style={[
                   styles.timeOptionText,
                   currentHour === h && styles.timeOptionTextActive,
+                  hourDisabled && styles.timeOptionTextDisabled,
                 ]}
               >
                 {h}時
               </Text>
             </TouchableOpacity>
-          ))}
+            );
+          })}
         </ScrollView>
         <Text style={styles.timeSeparator}>:</Text>
         <ScrollView
           style={styles.timeScroll}
           showsVerticalScrollIndicator={false}
         >
-          {MINUTE_OPTIONS.map((m) => (
+          {MINUTE_OPTIONS.map((m) => {
+            const minuteDisabled =
+              minMinutes !== null &&
+              getMinutesFromTime(`${currentHour}:${m}`) < minMinutes;
+            return (
             <TouchableOpacity
               key={m}
+              disabled={minuteDisabled}
               onPress={() => onSelect(currentHour, m)}
               style={[
                 styles.timeOption,
                 currentMin === m && styles.timeOptionActive,
+                minuteDisabled && styles.timeOptionDisabled,
               ]}
             >
               <Text
                 style={[
                   styles.timeOptionText,
                   currentMin === m && styles.timeOptionTextActive,
+                  minuteDisabled && styles.timeOptionTextDisabled,
                 ]}
               >
                 {m}分
               </Text>
             </TouchableOpacity>
-          ))}
+            );
+          })}
         </ScrollView>
       </View>
       <TouchableOpacity style={styles.timePickerCloseBtn} onPress={onClose}>
@@ -298,7 +366,8 @@ const TimePickerOverlay = ({
       </TouchableOpacity>
     </View>
   </View>
-);
+  );
+};
 
 const CalendarScreen = ({
   navigation,
@@ -331,6 +400,7 @@ const CalendarScreen = ({
 
   // === 部活の予定ステート ===
   const [editingClubEventId, setEditingClubEventId] = useState(null);
+  const [editingClubEventSplit, setEditingClubEventSplit] = useState(null);
   const [clubEventTitle, setClubEventTitle] = useState("");
   const [clubEventDescription, setClubEventDescription] = useState("");
   const [clubEventType, setClubEventType] = useState("練習");
@@ -350,6 +420,8 @@ const CalendarScreen = ({
   const [clubLocationLatitude, setClubLocationLatitude] = useState(null);
   const [clubLocationLongitude, setClubLocationLongitude] = useState(null);
   const [clubLocationManuallyAdjusted, setClubLocationManuallyAdjusted] =
+    useState(false);
+  const [isClubLocationDetailsEnabled, setIsClubLocationDetailsEnabled] =
     useState(false);
   const [isLocationMapVisible, setIsLocationMapVisible] = useState(false);
   const [isLocationGeocoding, setIsLocationGeocoding] = useState(false);
@@ -377,51 +449,53 @@ const CalendarScreen = ({
   const [isTimePickerVisible, setIsTimePickerVisible] = useState(false);
   const [timePickerTarget, setTimePickerTarget] = useState("");
 
-  const markedDates = useMemo(() => {
-    const marks = {};
-    const addMark = (dateStr, key, color) => {
+  const calendarDayIndicators = useMemo(() => {
+    const indicators = {};
+    const addIndicator = (dateStr, key, color) => {
       const normDate = normalizeDate(dateStr);
-      if (!marks[normDate]) marks[normDate] = { dots: [] };
-      if (!marks[normDate].dots.find((d) => d.key === key)) {
-        marks[normDate].dots.push({ key, color });
+      if (!normDate) return;
+      if (!indicators[normDate]) indicators[normDate] = [];
+      if (!indicators[normDate].some((item) => item.key === key)) {
+        indicators[normDate].push({ key, color });
       }
     };
 
-    clubEvents.forEach((p) => {
-      if (p.status !== "deleted") {
-        const color =
-          p.status === "pending"
-            ? "#aaa"
-            : p.type === "試合"
-              ? COLORS.danger
-              : COLORS.primary;
-        getEventDates(p).forEach((d) => addMark(d, p.id, color));
+    clubEvents.forEach((event) => {
+      if (event.status === "deleted") return;
+      const isPending = event.status === "pending";
+      getEventDates(event).forEach((date) => {
+        addIndicator(
+          date,
+          `club-${event.id}-${date}`,
+          getScheduleColor(getClubScheduleForDate(event, date), isPending),
+        );
+      });
+    });
+
+    personalEvents.forEach((event) => {
+      if (event.status === "deleted") return;
+      const start = normalizeDate(event.date);
+      const end = event.endDate ? normalizeDate(event.endDate) : start;
+      getDatesInRange(start, end).forEach((date) => {
+        addIndicator(
+          date,
+          `personal-${event.id}-${date}`,
+          getScheduleColor(
+            getPersonalScheduleForDate(event, date),
+            event.status === "pending",
+          ),
+        );
+      });
+    });
+
+    dailyReports.forEach((report) => {
+      if (report.author === currentUser && report.status !== "deleted") {
+        addIndicator(report.date, `report-${report.id}`, COLORS.secondary);
       }
     });
 
-    personalEvents.forEach((pe) => {
-      if (pe.status !== "deleted") {
-        const start = normalizeDate(pe.date);
-        const end = pe.endDate ? normalizeDate(pe.endDate) : start;
-        const color = pe.status === "pending" ? "#aaa" : COLORS.success;
-        getDatesInRange(start, end).forEach((d) => addMark(d, pe.id, color));
-      }
-    });
-
-    dailyReports.forEach((r) => {
-      if (r.author === currentUser && r.status !== "deleted") {
-        const color = r.status === "pending" ? "#aaa" : COLORS.secondary;
-        addMark(r.date, r.id, color);
-      }
-    });
-
-    if (!marks[selectedDate]) marks[selectedDate] = { dots: [] };
-    marks[selectedDate].selected = true;
-    marks[selectedDate].selectedColor = "#e8f0fe";
-    marks[selectedDate].selectedTextColor = COLORS.textMain;
-
-    return marks;
-  }, [clubEvents, personalEvents, dailyReports, selectedDate, currentUser]);
+    return indicators;
+  }, [clubEvents, personalEvents, dailyReports, currentUser]);
 
   const dailyClubEvents = clubEvents.filter((p) => {
     if (p.status === "deleted") return false;
@@ -441,6 +515,53 @@ const CalendarScreen = ({
       r.author === currentUser &&
       r.status !== "deleted",
   );
+
+  const renderCalendarDay = ({ date, state }) => {
+    const dateString = date?.dateString;
+    const indicators = calendarDayIndicators[dateString] || [];
+    const isSelected = dateString === selectedDate;
+    const isDisabled = state === "disabled";
+    const isToday = dateString === new Date().toISOString().split("T")[0];
+    const dayTextStyle = [
+      styles.calendarDayText,
+      isToday && styles.calendarDayTodayText,
+      isSelected && styles.calendarDaySelectedText,
+      isDisabled && styles.calendarDayDisabledText,
+    ];
+
+    return (
+      <TouchableOpacity
+        style={[
+          styles.calendarDayCell,
+          isSelected && styles.calendarDayCellSelected,
+        ]}
+        onPress={() => !isDisabled && setSelectedDate(dateString)}
+        disabled={isDisabled}
+        activeOpacity={0.75}
+      >
+        <Text style={dayTextStyle}>{date?.day}</Text>
+        {indicators.length >= 3 ? (
+          <View style={styles.calendarCountBadge}>
+            <Text style={styles.calendarCountText}>{indicators.length}</Text>
+          </View>
+        ) : indicators.length > 0 ? (
+          <View style={styles.calendarDotRow}>
+            {indicators.map((indicator) => (
+              <View
+                key={indicator.key}
+                style={[
+                  styles.calendarTimeDot,
+                  { backgroundColor: indicator.color },
+                ]}
+              />
+            ))}
+          </View>
+        ) : (
+          <View style={styles.calendarEmptyMarker} />
+        )}
+      </TouchableOpacity>
+    );
+  };
 
   const recentClubLocations = useMemo(() => {
     const seen = new Set();
@@ -510,6 +631,65 @@ const CalendarScreen = ({
   const getAbsenceComments = (event) =>
     Array.isArray(event?.absenceComments) ? event.absenceComments : [];
 
+  const getAbsenceCommentsOutsideDate = (event, date) =>
+    getAbsenceComments(event).filter(
+      (comment) => normalizeDate(comment?.date) !== date,
+    );
+
+  const getAbsenceCommentsForDate = (event, date) =>
+    getAbsenceComments(event).filter(
+      (comment) => normalizeDate(comment?.date) === date,
+    );
+
+  const buildRemainingClubEventData = (event, removedDate) => {
+    const remainingDates = getEventDates(event).filter(
+      (date) => date !== removedDate,
+    );
+    if (remainingDates.length === 0) return null;
+
+    const firstDate = remainingDates[0];
+    const lastDate = remainingDates[remainingDates.length - 1];
+    const firstSchedule = getClubScheduleForDate(event, firstDate);
+    const remainingComments = getAbsenceCommentsOutsideDate(event, removedDate);
+
+    if (remainingDates.length === 1) {
+      return {
+        date: firstDate,
+        endDate: firstDate,
+        selectedDates: null,
+        isMultiDay: false,
+        isAllDay: firstSchedule.isAllDay,
+        startTime: firstSchedule.start,
+        endTime: firstSchedule.end,
+        timeSchedules: null,
+        absenceComments: remainingComments,
+      };
+    }
+
+    const hasTimeSchedules =
+      event?.timeSchedules && typeof event.timeSchedules === "object";
+    const remainingSchedules = hasTimeSchedules
+      ? remainingDates.reduce((nextSchedules, date) => {
+          if (event.timeSchedules[date]) {
+            nextSchedules[date] = event.timeSchedules[date];
+          }
+          return nextSchedules;
+        }, {})
+      : null;
+
+    return {
+      date: firstDate,
+      endDate: lastDate,
+      selectedDates: remainingDates,
+      isMultiDay: true,
+      isAllDay: event?.isAllDay ?? false,
+      startTime: event?.startTime || "09:00",
+      endTime: event?.endTime || "12:00",
+      timeSchedules: remainingSchedules,
+      absenceComments: remainingComments,
+    };
+  };
+
   const hasClubLocationDraft = () =>
     !!(
       clubLocationName.trim() ||
@@ -521,10 +701,12 @@ const CalendarScreen = ({
 
   const getClubLocationDraft = () => {
     if (!hasClubLocationDraft()) return null;
-    const latitude =
-      clubLocationLatitude === null ? NaN : Number(clubLocationLatitude);
-    const longitude =
-      clubLocationLongitude === null ? NaN : Number(clubLocationLongitude);
+    const hasCoordinate = isValidCoordinate(
+      clubLocationLatitude,
+      clubLocationLongitude,
+    );
+    const latitude = hasCoordinate ? Number(clubLocationLatitude) : null;
+    const longitude = hasCoordinate ? Number(clubLocationLongitude) : null;
     return {
       name: clubLocationName.trim(),
       address: clubLocationAddress.trim(),
@@ -663,7 +845,7 @@ const CalendarScreen = ({
         return null;
       }
       return place;
-    } catch (error) {
+    } catch {
       return null;
     }
   };
@@ -701,8 +883,50 @@ const CalendarScreen = ({
     const hasPermission = await ensureGeocodingPermission();
     if (!hasPermission) return null;
 
+    const applyGooglePlace = (googlePlace) => {
+      const coordinate = applyResolvedClubLocation({
+        latitude: googlePlace.latitude,
+        longitude: googlePlace.longitude,
+        source: googlePlace.source || "google_places_text_search",
+        placeId: googlePlace.placeId || "",
+        name: googlePlace.name || "",
+        address: googlePlace.address || "",
+      });
+      if (openMapAfterSearch) {
+        setIsLocationMapVisible(true);
+      } else {
+        Alert.alert(
+          "座標を取得しました",
+          "Googleの場所検索で座標を取得しました。地図でピンを調整すると、集合場所をさらに正確にできます。",
+        );
+      }
+      return coordinate;
+    };
+
+    const applyDeviceResult = (result) => {
+      const coordinate = applyResolvedClubLocation({
+        latitude: result.latitude,
+        longitude: result.longitude,
+        source: "device_geocode",
+      });
+      if (openMapAfterSearch) {
+        setIsLocationMapVisible(true);
+      } else {
+        Alert.alert(
+          "座標を取得しました",
+          "地図でピンを調整すると、集合場所をさらに正確にできます。",
+        );
+      }
+      return coordinate;
+    };
+
     setIsLocationGeocoding(true);
     try {
+      if (Platform.OS === "ios") {
+        const googlePlace = await searchGooglePlaceLocation(searchText);
+        if (googlePlace) return applyGooglePlace(googlePlace);
+      }
+
       let result = null;
       const queries = getClubLocationSearchQueries();
       for (const query of queries) {
@@ -713,78 +937,30 @@ const CalendarScreen = ({
         if (result) break;
       }
 
-      if (!result) {
+      if (result) return applyDeviceResult(result);
+
+      if (Platform.OS !== "ios") {
         const googlePlace = await searchGooglePlaceLocation(searchText);
-        if (googlePlace) {
-          const coordinate = applyResolvedClubLocation({
-            latitude: googlePlace.latitude,
-            longitude: googlePlace.longitude,
-            source: googlePlace.source || "google_places_text_search",
-            placeId: googlePlace.placeId || "",
-            name: googlePlace.name || "",
-            address: googlePlace.address || "",
-          });
-          if (openMapAfterSearch) {
-            setIsLocationMapVisible(true);
-          } else {
-            Alert.alert(
-              "座標を取得しました",
-              "Googleの場所検索で座標を取得しました。地図でピンを調整すると、集合場所をさらに正確にできます。",
-            );
-          }
-          return coordinate;
-        }
-
-        if (openMapAfterSearch) {
-          openManualLocationMap();
-          Alert.alert(
-            "場所が見つかりません",
-            "検索では見つからなかったため、地図上で手動でピンを調整してください。",
-          );
-        } else {
-          Alert.alert(
-            "場所が見つかりません",
-            "入力内容を少し具体的にして、もう一度お試しください。地図でピンを調整する場合は、手動で位置を指定できます。",
-          );
-        }
-        return null;
+        if (googlePlace) return applyGooglePlace(googlePlace);
       }
-
-      const coordinate = applyResolvedClubLocation({
-        latitude: result.latitude,
-        longitude: result.longitude,
-        source: "device_geocode",
-      });
 
       if (openMapAfterSearch) {
-        setIsLocationMapVisible(true);
+        openManualLocationMap();
+        Alert.alert(
+          "場所が見つかりません",
+          "検索では見つからなかったため、地図上で手動でピンを調整してください。",
+        );
       } else {
         Alert.alert(
-          "座標を取得しました",
-          "地図でピンを調整すると、集合場所をさらに正確にできます。",
+          "場所が見つかりません",
+          "入力内容を少し具体的にして、もう一度お試しください。地図でピンを調整する場合は、手動で位置を指定できます。",
         );
       }
-      return coordinate;
+      return null;
     } catch (error) {
-      const googlePlace = await searchGooglePlaceLocation(searchText);
-      if (googlePlace) {
-        const coordinate = applyResolvedClubLocation({
-          latitude: googlePlace.latitude,
-          longitude: googlePlace.longitude,
-          source: googlePlace.source || "google_places_text_search",
-          placeId: googlePlace.placeId || "",
-          name: googlePlace.name || "",
-          address: googlePlace.address || "",
-        });
-        if (openMapAfterSearch) {
-          setIsLocationMapVisible(true);
-        } else {
-          Alert.alert(
-            "座標を取得しました",
-            "Googleの場所検索で座標を取得しました。地図でピンを調整すると、集合場所をさらに正確にできます。",
-          );
-        }
-        return coordinate;
+      if (Platform.OS !== "ios") {
+        const googlePlace = await searchGooglePlaceLocation(searchText);
+        if (googlePlace) return applyGooglePlace(googlePlace);
       }
 
       if (openMapAfterSearch) {
@@ -804,7 +980,6 @@ const CalendarScreen = ({
       setIsLocationGeocoding(false);
     }
   };
-
   const openLocationMap = async () => {
     if (isLocationGeocoding) return;
     if (isValidCoordinate(clubLocationLatitude, clubLocationLongitude)) {
@@ -892,35 +1067,43 @@ const CalendarScreen = ({
   };
 
   const handleSaveClubEvent = async () => {
-    if (!clubEventTitle.trim())
-      return Alert.alert("エラー", "タイトルを入力してください");
+    const eventTitle = clubEventType;
 
     const locationDraft = getClubLocationDraft();
     if (locationDraft) {
-      if (!locationDraft.name && !locationDraft.address) {
+      const hasLocationText = !!(
+        locationDraft.name ||
+        locationDraft.address ||
+        locationDraft.note
+      );
+      const hasLocationCoordinate = isValidCoordinate(
+        locationDraft.latitude,
+        locationDraft.longitude,
+      );
+      if (!hasLocationText && !hasLocationCoordinate) {
         return Alert.alert("場所情報エラー", "場所を入力してください。");
-      }
-      if (!isValidCoordinate(locationDraft.latitude, locationDraft.longitude)) {
-        return Alert.alert(
-          "場所情報エラー",
-          "地図上でピン位置を確定してください。",
-        );
       }
     }
 
+    const saveEventDate = editingClubEventSplit?.date || selectedDate;
     const eventDates = getUniqueSortedDates(
       isMultiDay
         ? sortedClubSelectedDates.length
           ? sortedClubSelectedDates
-          : [selectedDate]
-        : [selectedDate],
+          : [saveEventDate]
+        : [saveEventDate],
     );
     if (isMultiDay && eventDates.length === 0) {
       return Alert.alert("エラー", "予定日を1日以上選択してください");
     }
 
-    const firstEventDate = eventDates[0] || selectedDate;
+    const firstEventDate = eventDates[0] || saveEventDate;
     const lastEventDate = eventDates[eventDates.length - 1] || firstEventDate;
+
+    const editingClubEvent = editingClubEventId
+      ? clubEvents.find((event) => event.id === editingClubEventId)
+      : null;
+    const splitEditDate = saveEventDate;
 
     setIsLoading(true);
 
@@ -938,12 +1121,12 @@ const CalendarScreen = ({
       }
 
       const eventData = {
-        title: clubEventTitle.trim(),
-        name: clubEventTitle.trim(),
+        title: eventTitle,
+        name: eventTitle,
         description: clubEventDescription.trim(),
         type: clubEventType,
-        date: isMultiDay ? firstEventDate : selectedDate,
-        endDate: isMultiDay ? lastEventDate : selectedDate,
+        date: isMultiDay ? firstEventDate : saveEventDate,
+        endDate: isMultiDay ? lastEventDate : saveEventDate,
         selectedDates: isMultiDay ? eventDates : null,
         isMultiDay,
         isAllDay: isClubAllDay,
@@ -954,17 +1137,41 @@ const CalendarScreen = ({
         participants: "team",
         status: isOffline ? "pending" : "active",
         createdBy: user?.uid || "local_user",
-        absenceComments: editingClubEventId
-          ? getAbsenceComments(
-              clubEvents.find((event) => event.id === editingClubEventId),
-            )
-          : [],
+        absenceComments: editingClubEventSplit
+          ? getAbsenceCommentsForDate(editingClubEvent, splitEditDate)
+          : editingClubEventId
+            ? getAbsenceComments(editingClubEvent)
+            : [],
+        ...(editingClubEventSplit
+          ? {
+              splitFromEventId: editingClubEventSplit.sourceEventId,
+              splitFromDate: editingClubEventSplit.date,
+            }
+          : {}),
       };
 
       try {
         if (editingClubEventId) {
-          if (!isOffline)
-            await updateClubEvent(activeTeamId, editingClubEventId, eventData);
+          if (!isOffline) {
+            if (editingClubEventSplit && editingClubEvent) {
+              const remainingEventData = buildRemainingClubEventData(
+                editingClubEvent,
+                splitEditDate,
+              );
+              await createClubEvent(activeTeamId, eventData);
+              if (remainingEventData) {
+                await updateClubEvent(
+                  activeTeamId,
+                  editingClubEventId,
+                  remainingEventData,
+                );
+              } else {
+                await deleteClubEvent(activeTeamId, editingClubEventId);
+              }
+            } else {
+              await updateClubEvent(activeTeamId, editingClubEventId, eventData);
+            }
+          }
         } else {
           if (!isOffline) await createClubEvent(activeTeamId, eventData);
         }
@@ -980,6 +1187,7 @@ const CalendarScreen = ({
 
   const resetClubForm = () => {
     setEditingClubEventId(null);
+    setEditingClubEventSplit(null);
     setClubEventTitle("");
     setClubEventDescription("");
     setClubEventType("練習");
@@ -992,6 +1200,7 @@ const CalendarScreen = ({
     setIsClubAllDay(false);
     setClubTimeSchedules({});
     clearClubLocation();
+    setIsClubLocationDetailsEnabled(false);
   };
 
   const openEditClubEvent = (event) => {
@@ -1000,21 +1209,34 @@ const CalendarScreen = ({
     setClubEventDescription(event.description || "");
     setClubEventType(event.type || "練習");
     const eventDates = getEventDates(event);
-    const firstSchedule = eventDates.length
-      ? event.timeSchedules?.[eventDates[0]]
-      : null;
-    setIsMultiDay(event.isMultiDay || false);
-    setEndDate(event.endDate || event.date);
-    setClubSelectedDates(eventDates);
-    setClubStartTime(firstSchedule?.start || event.startTime || "09:00");
-    setClubEndTime(firstSchedule?.end || event.endTime || "12:00");
-    setIsClubAllDay(firstSchedule?.isAllDay ?? event.isAllDay ?? false);
-    setClubTimeSchedules(event.timeSchedules || {});
+    const targetDate = eventDates.includes(selectedDate)
+      ? selectedDate
+      : eventDates[0] || normalizeDate(event.date) || selectedDate;
+    const editsSingleOccurrence = eventDates.length > 1;
+    const schedule = getClubScheduleForDate(event, targetDate);
+    setEditingClubEventSplit(
+      editsSingleOccurrence
+        ? { sourceEventId: event.id, date: targetDate }
+        : null,
+    );
+    setIsMultiDay(editsSingleOccurrence ? false : event.isMultiDay || false);
+    setEndDate(editsSingleOccurrence ? targetDate : event.endDate || event.date);
+    setClubSelectedDates(editsSingleOccurrence ? [targetDate] : eventDates);
+    setClubStartTime(schedule.start || "09:00");
+    setClubEndTime(schedule.end || "12:00");
+    setIsClubAllDay(schedule.isAllDay);
+    setClubTimeSchedules(editsSingleOccurrence ? {} : event.timeSchedules || {});
     const location = getLocationFromEvent(event);
     if (location) {
       applyClubLocation(location);
+      setIsClubLocationDetailsEnabled(
+        !!location.note ||
+          !!location.address ||
+          isValidCoordinate(location.latitude, location.longitude),
+      );
     } else {
       clearClubLocation();
+      setIsClubLocationDetailsEnabled(false);
     }
     setIsClubModalVisible(true);
   };
@@ -1184,12 +1406,17 @@ const CalendarScreen = ({
   let currentPickerHour = "09";
   let currentPickerMin = "00";
   let pickerTitle = "時間を選択";
+  let pickerMinTime = "";
 
   if (timePickerTarget === "club_single_start") {
     [currentPickerHour, currentPickerMin] = clubStartTime.split(":");
     pickerTitle = "開始時間を選択";
   } else if (timePickerTarget === "club_single_end") {
-    [currentPickerHour, currentPickerMin] = clubEndTime.split(":");
+    pickerMinTime = clubStartTime;
+    [currentPickerHour, currentPickerMin] = getTimeAtOrAfter(
+      clubEndTime,
+      pickerMinTime,
+    ).split(":");
     pickerTitle = "終了時間を選択";
   } else if (timePickerTarget.startsWith("club_multi_start_")) {
     const d = timePickerTarget.replace("club_multi_start_", "");
@@ -1198,14 +1425,22 @@ const CalendarScreen = ({
     pickerTitle = `${d.substring(5).replace("-", "/")} の開始時間`;
   } else if (timePickerTarget.startsWith("club_multi_end_")) {
     const d = timePickerTarget.replace("club_multi_end_", "");
-    const t = clubTimeSchedules[d]?.end || "12:00";
+    pickerMinTime = clubTimeSchedules[d]?.start || "09:00";
+    const t = getTimeAtOrAfter(
+      clubTimeSchedules[d]?.end || "12:00",
+      pickerMinTime,
+    );
     [currentPickerHour, currentPickerMin] = t.split(":");
     pickerTitle = `${d.substring(5).replace("-", "/")} の終了時間`;
   } else if (timePickerTarget === "personal_single_start") {
     [currentPickerHour, currentPickerMin] = personalStartTime.split(":");
     pickerTitle = "開始時間を選択";
   } else if (timePickerTarget === "personal_single_end") {
-    [currentPickerHour, currentPickerMin] = personalEndTime.split(":");
+    pickerMinTime = personalStartTime;
+    [currentPickerHour, currentPickerMin] = getTimeAtOrAfter(
+      personalEndTime,
+      pickerMinTime,
+    ).split(":");
     pickerTitle = "終了時間を選択";
   } else if (timePickerTarget.startsWith("personal_multi_start_")) {
     const d = timePickerTarget.replace("personal_multi_start_", "");
@@ -1214,42 +1449,74 @@ const CalendarScreen = ({
     pickerTitle = `${d.substring(5).replace("-", "/")} の開始時間`;
   } else if (timePickerTarget.startsWith("personal_multi_end_")) {
     const d = timePickerTarget.replace("personal_multi_end_", "");
-    const t = personalTimeSchedules[d]?.end || "19:00";
+    pickerMinTime = personalTimeSchedules[d]?.start || "18:00";
+    const t = getTimeAtOrAfter(
+      personalTimeSchedules[d]?.end || "19:00",
+      pickerMinTime,
+    );
     [currentPickerHour, currentPickerMin] = t.split(":");
     pickerTitle = `${d.substring(5).replace("-", "/")} の終了時間`;
   }
 
   const handleTimeSelect = (h, m) => {
     const timeStr = `${h}:${m}`;
-    if (timePickerTarget === "club_single_start") setClubStartTime(timeStr);
-    else if (timePickerTarget === "club_single_end") setClubEndTime(timeStr);
+    if (timePickerTarget === "club_single_start") {
+      setClubStartTime(timeStr);
+      setClubEndTime((prev) => getAdjustedEndTime(timeStr, prev));
+    } else if (timePickerTarget === "club_single_end") {
+      setClubEndTime(getTimeAtOrAfter(timeStr, clubStartTime));
+    }
     else if (timePickerTarget.startsWith("club_multi_start_")) {
       const d = timePickerTarget.replace("club_multi_start_", "");
       setClubTimeSchedules((prev) => ({
         ...prev,
-        [d]: { ...getDefaultClubSchedule(), ...prev[d], start: timeStr },
+        [d]: {
+          ...getDefaultClubSchedule(),
+          ...prev[d],
+          start: timeStr,
+          end: getAdjustedEndTime(
+            timeStr,
+            prev[d]?.end || getDefaultClubSchedule().end,
+          ),
+        },
       }));
     } else if (timePickerTarget.startsWith("club_multi_end_")) {
       const d = timePickerTarget.replace("club_multi_end_", "");
       setClubTimeSchedules((prev) => ({
         ...prev,
-        [d]: { ...getDefaultClubSchedule(), ...prev[d], end: timeStr },
+        [d]: {
+          ...getDefaultClubSchedule(),
+          ...prev[d],
+          end: getTimeAtOrAfter(
+            timeStr,
+            prev[d]?.start || getDefaultClubSchedule().start,
+          ),
+        },
       }));
-    } else if (timePickerTarget === "personal_single_start")
+    } else if (timePickerTarget === "personal_single_start") {
       setPersonalStartTime(timeStr);
-    else if (timePickerTarget === "personal_single_end")
-      setPersonalEndTime(timeStr);
+      setPersonalEndTime((prev) => getAdjustedEndTime(timeStr, prev));
+    } else if (timePickerTarget === "personal_single_end") {
+      setPersonalEndTime(getTimeAtOrAfter(timeStr, personalStartTime));
+    }
     else if (timePickerTarget.startsWith("personal_multi_start_")) {
       const d = timePickerTarget.replace("personal_multi_start_", "");
       setPersonalTimeSchedules((prev) => ({
         ...prev,
-        [d]: { ...prev[d], start: timeStr },
+        [d]: {
+          ...prev[d],
+          start: timeStr,
+          end: getAdjustedEndTime(timeStr, prev[d]?.end || "19:00"),
+        },
       }));
     } else if (timePickerTarget.startsWith("personal_multi_end_")) {
       const d = timePickerTarget.replace("personal_multi_end_", "");
       setPersonalTimeSchedules((prev) => ({
         ...prev,
-        [d]: { ...prev[d], end: timeStr },
+        [d]: {
+          ...prev[d],
+          end: getTimeAtOrAfter(timeStr, prev[d]?.start || "18:00"),
+        },
       }));
     }
   };
@@ -1282,8 +1549,7 @@ const CalendarScreen = ({
 
       <Calendar
         onDayPress={(day) => setSelectedDate(day.dateString)}
-        markedDates={markedDates}
-        markingType={"multi-dot"}
+        dayComponent={renderCalendarDay}
         theme={{ todayTextColor: COLORS.primary, arrowColor: "#555" }}
       />
 
@@ -1335,7 +1601,7 @@ const CalendarScreen = ({
                   )}
                   <View style={{ flex: 1 }}>
                     <Text style={styles.eventTitle}>
-                      {item.title || item.name}
+                      {item.type || item.title || item.name}
                     </Text>
                     <Text style={styles.timeRangeText}>
                       {getDisplayTime(item, selectedDate)}
@@ -1689,318 +1955,59 @@ const CalendarScreen = ({
               automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
               contentContainerStyle={styles.clubModalScrollContent}
             >
-              <Text style={styles.label}>予定のタイトル</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="例: 練習試合"
-                value={clubEventTitle}
-                onChangeText={setClubEventTitle}
-                returnKeyType="done"
-                blurOnSubmit
-              />
+              <Text style={styles.label}>予定の種類</Text>
+              <View style={styles.typeContainer}>
+                {["練習", "試合", "その他"].map((t) => (
+                  <TouchableOpacity key={t} style={[styles.typeBtn, clubEventType === t && styles.typeBtnActive]} onPress={() => setClubEventType(t)}>
+                    <Text style={[styles.typeBtnText, clubEventType === t && styles.typeBtnTextActive]}>{t}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
 
               <Text style={styles.label}>日程 (開始日: {selectedDate})</Text>
               <View style={styles.typeContainer}>
-                <TouchableOpacity
-                  style={[styles.typeBtn, !isMultiDay && styles.typeBtnActive]}
-                  onPress={() => {
-                    setIsMultiDay(false);
-                    setEndDate(selectedDate);
-                    setClubSelectedDates([selectedDate]);
-                  }}
-                >
-                  <Text
-                    style={[
-                      styles.typeBtnText,
-                      !isMultiDay && styles.typeBtnTextActive,
-                    ]}
-                  >
-                    当日のみ
-                  </Text>
+                <TouchableOpacity style={[styles.typeBtn, !isMultiDay && styles.typeBtnActive, editingClubEventSplit && styles.typeBtnDisabled]} disabled={!!editingClubEventSplit} onPress={() => { setIsMultiDay(false); setEndDate(selectedDate); setClubSelectedDates([selectedDate]); }}>
+                  <Text style={[styles.typeBtnText, !isMultiDay && styles.typeBtnTextActive]}>当日のみ</Text>
                 </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.typeBtn, isMultiDay && styles.typeBtnActive]}
-                  onPress={() => {
-                    setIsMultiDay(true);
-                    setEndDate(endDate || selectedDate);
-                    setClubSelectedDates((prev) =>
-                      prev.length ? getUniqueSortedDates(prev) : [selectedDate],
-                    );
-                  }}
-                >
-                  <Text
-                    style={[
-                      styles.typeBtnText,
-                      isMultiDay && styles.typeBtnTextActive,
-                    ]}
-                  >
-                    複数日
-                  </Text>
+                <TouchableOpacity style={[styles.typeBtn, isMultiDay && styles.typeBtnActive, editingClubEventSplit && styles.typeBtnDisabled]} disabled={!!editingClubEventSplit} onPress={() => { setIsMultiDay(true); setEndDate(endDate || selectedDate); setClubSelectedDates((prev) => prev.length ? getUniqueSortedDates(prev) : [selectedDate]); }}>
+                  <Text style={[styles.typeBtnText, isMultiDay && styles.typeBtnTextActive]}>複数日</Text>
                 </TouchableOpacity>
               </View>
 
               {isMultiDay ? (
                 <View style={styles.multiDayContainer}>
-                  <Text
-                    style={[
-                      styles.label,
-                      {
-                        color: COLORS.primary,
-                        textAlign: "center",
-                        marginBottom: 10,
-                      },
-                    ]}
-                  >
-                    ▼ カレンダーで予定日をタップして選択 ▼
-                  </Text>
-                  <Calendar
-                    current={sortedClubSelectedDates[0] || selectedDate}
-                    onDayPress={(day) => toggleClubSelectedDate(day.dateString)}
-                    markedDates={clubSelectionMarkedDates}
-                    theme={{ todayTextColor: COLORS.primary, arrowColor: "#555" }}
-                  />
-                  <Text style={styles.multiDateSummary}>
-                    選択中: {sortedClubSelectedDates.map((date) => date.replace(/-/g, "/")).join("、")}
-                  </Text>
-
+                  <Text style={[styles.label, { color: COLORS.primary, textAlign: "center", marginBottom: 10 }]}>▼ カレンダーで予定日を選択 ▼</Text>
+                  <Calendar current={sortedClubSelectedDates[0] || selectedDate} onDayPress={(day) => toggleClubSelectedDate(day.dateString)} markedDates={clubSelectionMarkedDates} theme={{ todayTextColor: COLORS.primary, arrowColor: "#555" }} />
+                  <Text style={styles.multiDateSummary}>選択中: {sortedClubSelectedDates.map((date) => date.replace(/-/g, "/")).join("?")}</Text>
                   <View style={{ marginTop: 15 }}>
-                    <View
-                      style={{
-                        flexDirection: "row",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        marginTop: 10,
-                      }}
-                    >
-                      <Text style={styles.label}>⏰ 時間設定</Text>
-                      <View style={{ flexDirection: "row", alignItems: "center" }}>
-                        <Text
-                          style={{
-                            marginRight: 5,
-                            fontSize: 14,
-                            fontWeight: "bold",
-                            color: COLORS.textSub,
-                          }}
-                        >
-                          終日
-                        </Text>
-                        <Switch
-                          value={isClubAllDay}
-                          onValueChange={setIsClubAllDay}
-                        />
-                      </View>
+                    <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 10 }}>
+                      <Text style={styles.label}>時間設定</Text>
+                      <View style={{ flexDirection: "row", alignItems: "center" }}><Text style={{ marginRight: 5, fontSize: 14, fontWeight: "bold", color: COLORS.textSub }}>終日</Text><Switch value={isClubAllDay} onValueChange={setIsClubAllDay} /></View>
                     </View>
-                    {!isClubAllDay && (
-                      <View style={styles.timeInputRow}>
-                        <TouchableOpacity
-                          style={styles.timeSelectBtn}
-                          onPress={() => {
-                            setTimePickerTarget("club_single_start");
-                            setIsTimePickerVisible(true);
-                          }}
-                        >
-                          <Text style={styles.timeSelectBtnText}>
-                            {clubStartTime}
-                          </Text>
-                        </TouchableOpacity>
-                        <Text style={styles.timeBetween}>〜</Text>
-                        <TouchableOpacity
-                          style={styles.timeSelectBtn}
-                          onPress={() => {
-                            setTimePickerTarget("club_single_end");
-                            setIsTimePickerVisible(true);
-                          }}
-                        >
-                          <Text style={styles.timeSelectBtnText}>
-                            {clubEndTime}
-                          </Text>
-                        </TouchableOpacity>
-                      </View>
-                    )}
-                    <Text style={styles.multiDateSummary}>
-                      選択した全日に同じ時間設定を保存します。
-                    </Text>
+                    {!isClubAllDay && <View style={styles.timeInputRow}><TouchableOpacity style={styles.timeSelectBtn} onPress={() => { setTimePickerTarget("club_single_start"); setIsTimePickerVisible(true); }}><Text style={styles.timeSelectBtnText}>{clubStartTime}</Text></TouchableOpacity><Text style={styles.timeBetween}>〜</Text><TouchableOpacity style={styles.timeSelectBtn} onPress={() => { setTimePickerTarget("club_single_end"); setIsTimePickerVisible(true); }}><Text style={styles.timeSelectBtnText}>{clubEndTime}</Text></TouchableOpacity></View>}
+                    <Text style={styles.multiDateSummary}>選択した全日に同じ時間設定を保存します。</Text>
                   </View>
                 </View>
               ) : (
                 <View>
-                  <View
-                    style={{
-                      flexDirection: "row",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      marginTop: 10,
-                    }}
-                  >
-                    <Text style={styles.label}>⏰ 時間</Text>
-                    <View
-                      style={{ flexDirection: "row", alignItems: "center" }}
-                    >
-                      <Text
-                        style={{
-                          marginRight: 5,
-                          fontSize: 14,
-                          fontWeight: "bold",
-                          color: COLORS.textSub,
-                        }}
-                      >
-                        終日
-                      </Text>
-                      <Switch
-                        value={isClubAllDay}
-                        onValueChange={setIsClubAllDay}
-                      />
-                    </View>
+                  <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 10 }}>
+                    <Text style={styles.label}>時間</Text>
+                    <View style={{ flexDirection: "row", alignItems: "center" }}><Text style={{ marginRight: 5, fontSize: 14, fontWeight: "bold", color: COLORS.textSub }}>終日</Text><Switch value={isClubAllDay} onValueChange={setIsClubAllDay} /></View>
                   </View>
-                  {!isClubAllDay && (
-                    <View style={styles.timeInputRow}>
-                      <TouchableOpacity
-                        style={styles.timeSelectBtn}
-                        onPress={() => {
-                          setTimePickerTarget("club_single_start");
-                          setIsTimePickerVisible(true);
-                        }}
-                      >
-                        <Text style={styles.timeSelectBtnText}>
-                          {clubStartTime}
-                        </Text>
-                      </TouchableOpacity>
-                      <Text style={styles.timeBetween}>〜</Text>
-                      <TouchableOpacity
-                        style={styles.timeSelectBtn}
-                        onPress={() => {
-                          setTimePickerTarget("club_single_end");
-                          setIsTimePickerVisible(true);
-                        }}
-                      >
-                        <Text style={styles.timeSelectBtnText}>
-                          {clubEndTime}
-                        </Text>
-                      </TouchableOpacity>
-                    </View>
-                  )}
+                  {!isClubAllDay && <View style={styles.timeInputRow}><TouchableOpacity style={styles.timeSelectBtn} onPress={() => { setTimePickerTarget("club_single_start"); setIsTimePickerVisible(true); }}><Text style={styles.timeSelectBtnText}>{clubStartTime}</Text></TouchableOpacity><Text style={styles.timeBetween}>〜</Text><TouchableOpacity style={styles.timeSelectBtn} onPress={() => { setTimePickerTarget("club_single_end"); setIsTimePickerVisible(true); }}><Text style={styles.timeSelectBtnText}>{clubEndTime}</Text></TouchableOpacity></View>}
                 </View>
               )}
-
-              <Text style={styles.label}>種類</Text>
-              <View style={styles.typeContainer}>
-                {["練習", "試合", "その他"].map((t) => (
-                  <TouchableOpacity
-                    key={t}
-                    style={[
-                      styles.typeBtn,
-                      clubEventType === t && styles.typeBtnActive,
-                    ]}
-                    onPress={() => setClubEventType(t)}
-                  >
-                    {/* ★ 修正：選択されたボタンは文字色を白くする */}
-                    <Text
-                      style={[
-                        styles.typeBtnText,
-                        clubEventType === t && styles.typeBtnTextActive,
-                      ]}
-                    >
-                      {t}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
 
               <Text style={styles.label}>詳細説明・備考</Text>
-              <TextInput
-                style={[styles.input, styles.textArea]}
-                value={clubEventDescription}
-                onChangeText={setClubEventDescription}
-                placeholder="集合時間、持ち物など"
-                multiline
-                blurOnSubmit={false}
-              />
-
+              <TextInput style={[styles.input, styles.textArea]} value={clubEventDescription} onChangeText={setClubEventDescription} placeholder="集合時間、持ち物など" multiline blurOnSubmit={false} />
 
               <Text style={styles.label}>場所</Text>
-              <TextInput
-                style={styles.input}
-                value={clubLocationName}
-                onChangeText={handleClubLocationNameChange}
-                placeholder="施設名・住所・集合場所名"
-                returnKeyType="done"
-              />
-              {recentClubLocations.length > 0 ? (
-                <View style={styles.recentLocationBox}>
-                  <Text style={styles.recentLocationTitle}>最近使用した場所</Text>
-                  {recentClubLocations.map((location, index) => (
-                    <TouchableOpacity
-                      key={`${location.name || "location"}-${index}`}
-                      style={styles.recentLocationItem}
-                      onPress={() => applyClubLocation(location)}
-                    >
-                      <Text style={styles.recentLocationName}>
-                        {location.name || "名称未設定"}
-                      </Text>
-                      {location.address ? (
-                        <Text style={styles.recentLocationAddress} numberOfLines={1}>
-                          {location.address}
-                        </Text>
-                      ) : null}
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              ) : null}
+              <TextInput style={styles.input} value={clubLocationName} onChangeText={handleClubLocationNameChange} placeholder="施設名・住所・集合場所名" returnKeyType="done" />
+              {recentClubLocations.length > 0 ? <View style={styles.recentLocationBox}><Text style={styles.recentLocationTitle}>最近使用した場所</Text>{recentClubLocations.map((location, index) => <TouchableOpacity key={`${location.name || "location"}-${index}`} style={styles.recentLocationItem} onPress={() => applyClubLocation(location)}><Text style={styles.recentLocationName}>{location.name || "名称未設定"}</Text>{location.address ? <Text style={styles.recentLocationAddress} numberOfLines={1}>{location.address}</Text> : null}</TouchableOpacity>)}</View> : null}
 
-              <TouchableOpacity
-                style={[
-                  styles.locationSearchBtn,
-                  isLocationGeocoding ? styles.locationDisabledBtn : null,
-                ]}
-                onPress={() => geocodeClubLocation()}
-                disabled={isLocationGeocoding}
-              >
-                {isLocationGeocoding ? (
-                  <ActivityIndicator color="#fff" size="small" />
-                ) : (
-                  <Text style={styles.locationSearchBtnText}>座標を取得</Text>
-                )}
-              </TouchableOpacity>
-              <View style={styles.locationEditorActions}>
-                <TouchableOpacity
-                  style={[
-                    styles.mapOpenBtn,
-                    isLocationGeocoding ? styles.locationDisabledBtn : null,
-                  ]}
-                  onPress={openLocationMap}
-                  disabled={isLocationGeocoding}
-                >
-                  <Text style={styles.mapOpenBtnText}>地図でピンを調整</Text>
-                </TouchableOpacity>
-                {hasClubLocationDraft() ? (
-                  <TouchableOpacity
-                    style={styles.locationClearBtn}
-                    onPress={clearClubLocation}
-                  >
-                    <Text style={styles.locationClearBtnText}>場所を削除</Text>
-                  </TouchableOpacity>
-                ) : null}
-              </View>
+              <View style={styles.locationDetailsToggleRow}><Text style={styles.locationDetailsToggleText}>場所詳細機能</Text><Switch value={isClubLocationDetailsEnabled} onValueChange={setIsClubLocationDetailsEnabled} /></View>
 
-              {isValidCoordinate(clubLocationLatitude, clubLocationLongitude) ? (
-                <Text style={styles.coordinatePreview}>
-                  座標：{Number(clubLocationLatitude).toFixed(6)},
-                  {Number(clubLocationLongitude).toFixed(6)}
-                </Text>
-              ) : (
-                <Text style={styles.coordinateHint}>
-                  地図でピン位置を確定すると座標が保存されます。
-                </Text>
-              )}
-
-              <TextInput
-                style={[styles.input, styles.textAreaSmall]}
-                value={clubLocationNote}
-                onChangeText={setClubLocationNote}
-                placeholder="場所に関する補足（例：正面入口前に集合）"
-                multiline
-                blurOnSubmit={false}
-              />
+              {isClubLocationDetailsEnabled ? <><TouchableOpacity style={[styles.locationSearchBtn, isLocationGeocoding ? styles.locationDisabledBtn : null]} onPress={() => geocodeClubLocation()} disabled={isLocationGeocoding}>{isLocationGeocoding ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.locationSearchBtnText}>座標を取得</Text>}</TouchableOpacity><View style={styles.locationEditorActions}><TouchableOpacity style={[styles.mapOpenBtn, isLocationGeocoding ? styles.locationDisabledBtn : null]} onPress={openLocationMap} disabled={isLocationGeocoding}><Text style={styles.mapOpenBtnText}>地図でピンを調整</Text></TouchableOpacity>{hasClubLocationDraft() ? <TouchableOpacity style={styles.locationClearBtn} onPress={clearClubLocation}><Text style={styles.locationClearBtnText}>場所を削除</Text></TouchableOpacity> : null}</View>{isValidCoordinate(clubLocationLatitude, clubLocationLongitude) ? <Text style={styles.coordinatePreview}>座標: {Number(clubLocationLatitude).toFixed(6)}, {Number(clubLocationLongitude).toFixed(6)}</Text> : <Text style={styles.coordinateHint}>地図でピン位置を確定すると座標が保存されます。</Text>}<TextInput style={[styles.input, styles.textAreaSmall]} value={clubLocationNote} onChangeText={setClubLocationNote} placeholder="場所に関する補足（例：正面入口前に集合）" multiline blurOnSubmit={false} /></> : null}
 
               <View style={styles.modalButtons}>
                 <TouchableOpacity
@@ -2026,6 +2033,7 @@ const CalendarScreen = ({
               currentHour={currentPickerHour}
               currentMin={currentPickerMin}
               onSelect={handleTimeSelect}
+              minTime={pickerMinTime}
             />
           )}
 
@@ -2388,6 +2396,7 @@ const CalendarScreen = ({
               currentHour={currentPickerHour}
               currentMin={currentPickerMin}
               onSelect={handleTimeSelect}
+              minTime={pickerMinTime}
             />
           )}
         </View>
@@ -2433,6 +2442,65 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: "bold",
     color: COLORS.textMain,
+  },
+
+  calendarDayCell: {
+    width: 36,
+    minHeight: 42,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 18,
+    paddingVertical: 3,
+  },
+  calendarDayCellSelected: {
+    backgroundColor: "#e8f0fe",
+  },
+  calendarDayText: {
+    fontSize: 15,
+    color: COLORS.textMain,
+    fontWeight: "600",
+  },
+  calendarDayTodayText: {
+    color: COLORS.primary,
+    fontWeight: "bold",
+  },
+  calendarDaySelectedText: {
+    color: COLORS.textMain,
+  },
+  calendarDayDisabledText: {
+    color: "#c7ced6",
+  },
+  calendarDotRow: {
+    height: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 2,
+  },
+  calendarTimeDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    marginHorizontal: 1.5,
+  },
+  calendarCountBadge: {
+    minWidth: 18,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: COLORS.textMain,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 4,
+    marginTop: 1,
+  },
+  calendarCountText: {
+    color: "#fff",
+    fontSize: 10,
+    fontWeight: "bold",
+  },
+  calendarEmptyMarker: {
+    height: 12,
+    marginTop: 2,
   },
 
   section: {
@@ -2659,6 +2727,21 @@ const styles = StyleSheet.create({
     color: COLORS.textSub,
     marginTop: 2,
   },
+  locationDetailsToggleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 10,
+    marginBottom: 8,
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: "#eeeeee",
+  },
+  locationDetailsToggleText: {
+    fontSize: 14,
+    color: COLORS.textMain,
+    fontWeight: "bold",
+  },
   locationSearchBtn: {
     backgroundColor: COLORS.primary,
     borderRadius: 8,
@@ -2790,6 +2873,9 @@ const styles = StyleSheet.create({
   typeBtnActive: {
     backgroundColor: COLORS.primary,
     borderColor: COLORS.primary,
+  },
+  typeBtnDisabled: {
+    opacity: 0.6,
   },
   typeBtnText: { fontSize: 13, color: "#555", fontWeight: "bold" },
   typeBtnTextActive: { color: "#ffffff" },
@@ -2927,8 +3013,10 @@ const styles = StyleSheet.create({
   timeSeparator: { fontSize: 24, fontWeight: "bold", marginHorizontal: 10 },
   timeOption: { paddingVertical: 15, alignItems: "center" },
   timeOptionActive: { backgroundColor: "#e8f0fe", borderRadius: 8 },
+  timeOptionDisabled: { opacity: 0.35 },
   timeOptionText: { fontSize: 18, color: "#555" },
   timeOptionTextActive: { color: COLORS.primary, fontWeight: "bold" },
+  timeOptionTextDisabled: { color: "#aaa" },
   timePickerCloseBtn: {
     marginTop: 20,
     backgroundColor: COLORS.primary,

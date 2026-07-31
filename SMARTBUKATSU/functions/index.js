@@ -4,7 +4,7 @@ const logger = require("firebase-functions/logger");
 
 const googleMapsServerApiKey = defineSecret("GOOGLE_MAPS_SERVER_API_KEY");
 
-const JAPAN_LOCATION_RESTRICTION = {
+const JAPAN_LOCATION_BIAS = {
   rectangle: {
     low: { latitude: 24.0, longitude: 122.0 },
     high: { latitude: 46.0, longitude: 154.0 },
@@ -70,7 +70,7 @@ exports.searchPlaceLocation = onCall(
         languageCode: "ja",
         regionCode: "JP",
         pageSize: 1,
-        locationRestriction: JAPAN_LOCATION_RESTRICTION,
+        locationBias: JAPAN_LOCATION_BIAS,
       }),
     });
 
