@@ -1,5 +1,6 @@
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
+import { getFunctions } from "firebase/functions";
 import {
   initializeAuth,
   getAuth,
@@ -27,6 +28,7 @@ const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 
 // 各サービスをエクスポート
 export const db = getFirestore(app);
+export const cloudFunctions = getFunctions(app, "asia-northeast1");
 
 let auth;
 
