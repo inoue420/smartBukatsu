@@ -26,7 +26,19 @@ module.exports = ({ config }) => {
   const iosMapsApiKey =
     process.env.EXPO_PUBLIC_GOOGLE_MAPS_IOS_API_KEY ||
     process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY;
-
+  const locationPermissionMessage =
+    "場所検索とピン調整のために位置情報の利用を許可してください。";
+  const expoPlugins = [...(appJson.expo.plugins || [])];
+  if (
+    !expoPlugins.some((plugin) =>
+      Array.isArray(plugin) ? plugin[0] === "expo-location" : plugin === "expo-location",
+    )
+  ) {
+    expoPlugins.push([
+      "expo-location",
+      { locationWhenInUsePermission: locationPermissionMessage },
+    ]);
+  }
   const iosConfig = {
     ...(appJson.expo.ios?.config || {}),
   };
@@ -50,9 +62,14 @@ module.exports = ({ config }) => {
 
     // 明示しておくと development build のURL scheme事故を減らせます
     scheme: "smartbukatsu",
+    plugins: expoPlugins,
     ios: {
       ...(appJson.expo.ios || {}),
       config: iosConfig,
+      infoPlist: {
+        ...(appJson.expo.ios?.infoPlist || {}),
+        NSLocationWhenInUseUsageDescription: locationPermissionMessage,
+      },
     },
     android: {
       ...(appJson.expo.android || {}),
