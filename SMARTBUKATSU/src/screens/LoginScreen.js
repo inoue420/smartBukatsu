@@ -96,7 +96,7 @@ const LoginScreen = () => {
       ) {
         errorMsg = "メールアドレスまたはパスワードが間違っています。";
       } else if (error.message.includes("email-already-in-use")) {
-        errorMsg = "このメールアドレスは既に登録されています。";
+        errorMsg = "このメールアドレスは既に登録されています。既存アカウントでログイン後、ホーム上部のチーム名から新しいチームを追加してください。";
       } else if (error.message.includes("weak-password")) {
         errorMsg = "パスワードは6文字以上で入力してください。";
       } else if (error.message.includes("無効な招待コード")) {

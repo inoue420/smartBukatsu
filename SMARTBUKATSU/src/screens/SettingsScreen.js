@@ -246,28 +246,55 @@ const SettingsScreen = ({
   };
 
   const handleDeleteMember = (memberName) => {
-    Alert.alert(
-      "部員の削除",
-      `${memberName} をチームから除外しますか？\n（この部員はログインできなくなります）`,
-      [
-        { text: "キャンセル", style: "cancel" },
-        {
-          text: "削除する",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              const targetUid = userProfiles[memberName]?.uid;
-              if (activeTeamId && targetUid) {
-                await removeTeamMember(activeTeamId, targetUid);
-                Alert.alert("削除完了", "部員を削除しました。");
-              }
-            } catch (error) {
-              Alert.alert("エラー", "削除に失敗しました。");
+    const targetUid = userProfiles[memberName]?.uid;
+    const isSelf = targetUid && targetUid === auth.currentUser?.uid;
+    const targetRole = userProfiles[memberName]?.role || "member";
+    const title = isSelf ? "チームから退会" : "メンバーの除外";
+    const message = isSelf
+      ? `${memberName} としてこのチームから退会しますか？\nチームの情報は削除されず、招待コードまたはFirestore上のチーム情報から確認できます。`
+      : `${memberName} をチームから除外しますか？\nチームの情報は削除されず、このユーザーの所属チーム枠は1つ空きます。`;
+    const actionText = isSelf ? "退会する" : "除外する";
+
+    Alert.alert(title, message, [
+      { text: "キャンセル", style: "cancel" },
+      {
+        text: actionText,
+        style: "destructive",
+        onPress: async () => {
+          try {
+            if (activeTeamId && targetUid) {
+              const result = await removeTeamMember(activeTeamId, targetUid);
+              Alert.alert(
+                isSelf ? "退会完了" : "除外完了",
+                isSelf
+                  ? "このチームから退会しました。"
+                  : `${memberName} をチームから除外しました。`,
+                isSelf
+                  ? [
+                      {
+                        text: "OK",
+                        onPress: () => {
+                          navigation.replace(
+                            result?.activeTeamId ? "WorkspaceHome" : "TeamSelect",
+                          );
+                        },
+                      },
+                    ]
+                  : undefined,
+              );
             }
-          },
+          } catch (error) {
+            console.log("メンバー除外エラー:", error);
+            Alert.alert(
+              "エラー",
+              targetRole === "admin" || targetRole === "owner"
+                ? "退会または除外に失敗しました。権限設定を確認してください。"
+                : "除外に失敗しました。",
+            );
+          }
         },
-      ],
-    );
+      },
+    ]);
   };
 
   const handleAddTeamArrayItem = async (field, value, setter) => {
@@ -937,7 +964,9 @@ const SettingsScreen = ({
                           <TouchableOpacity
                             onPress={() => handleDeleteMember(name)}
                           >
-                            <Text style={styles.deleteText}>削除</Text>
+                            <Text style={styles.deleteText}>
+                              {profile.uid === auth.currentUser?.uid ? "退会" : "除外"}
+                            </Text>
                           </TouchableOpacity>
                         </View>
 

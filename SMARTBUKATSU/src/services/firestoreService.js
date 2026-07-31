@@ -10,10 +10,159 @@ import {
   getDoc,
   updateDoc,
   deleteDoc,
+  writeBatch,
   arrayUnion,
   arrayRemove,
 } from "firebase/firestore";
 import { db } from "../firebase";
+export const MAX_TEAMS_PER_USER = 5;
+
+function normalizeTeamIds(data = {}) {
+  const ids = Array.isArray(data.teamIds)
+    ? data.teamIds.filter((id) => typeof id === "string" && id)
+    : [];
+  const activeTeamId =
+    typeof data.activeTeamId === "string" && data.activeTeamId
+      ? data.activeTeamId
+      : null;
+  return [...new Set([...ids, ...(activeTeamId ? [activeTeamId] : [])])];
+}
+
+async function assertCanAddTeam(uid, teamId = null) {
+  const userRef = doc(db, "users", uid);
+  const userSnap = await getDoc(userRef);
+  const teamIds = userSnap.exists() ? normalizeTeamIds(userSnap.data()) : [];
+
+  if (teamId && teamIds.includes(teamId)) return teamIds;
+  if (teamIds.length >= MAX_TEAMS_PER_USER) {
+    throw new Error(`所属できるチームは最大${MAX_TEAMS_PER_USER}件までです。`);
+  }
+  return teamIds;
+}
+
+async function rememberTeamMembership(uid, teamId) {
+  const userRef = doc(db, "users", uid);
+  const userSnap = await getDoc(userRef);
+  const currentTeamIds = userSnap.exists()
+    ? normalizeTeamIds(userSnap.data())
+    : [];
+  const nextTeamIds = [...new Set([...currentTeamIds, teamId])];
+
+  await setDoc(
+    userRef,
+    { activeTeamId: teamId, teamIds: nextTeamIds },
+    { merge: true },
+  );
+}
+
+export async function getUserTeams(uid) {
+  if (!uid) return [];
+
+  const userSnap = await getDoc(doc(db, "users", uid));
+  if (!userSnap.exists()) return [];
+
+  const teamIds = normalizeTeamIds(userSnap.data());
+  const teams = await Promise.all(
+    teamIds.map(async (teamId) => {
+      const [teamSnap, memberSnap] = await Promise.all([
+        getDoc(doc(db, "teams", teamId)),
+        getDoc(doc(db, "teams", teamId, "members", uid)),
+      ]);
+
+      if (!teamSnap.exists() || !memberSnap.exists()) return null;
+
+      const teamData = teamSnap.data() || {};
+      const memberData = memberSnap.data() || {};
+      return {
+        id: teamId,
+        name: teamData.name || "名称未設定のチーム",
+        role: memberData.role || "member",
+        inviteCode: teamData.inviteCode || "",
+      };
+    }),
+  );
+
+  return teams.filter(Boolean);
+}
+
+export async function switchActiveTeam(uid, teamId) {
+  if (!uid || !teamId) throw new Error("ユーザーまたはチーム情報を確認できませんでした。");
+
+  const memberSnap = await getDoc(doc(db, "teams", teamId, "members", uid));
+  if (!memberSnap.exists()) {
+    throw new Error("このチームへの所属を確認できませんでした。");
+  }
+
+  await rememberTeamMembership(uid, teamId);
+}
+
+export async function createTeam(uid, teamName, userName = "ゲスト") {
+  if (!uid) throw new Error("ユーザー情報を確認できませんでした。");
+  const trimmedTeamName = (teamName || "").trim();
+  if (!trimmedTeamName) throw new Error("チーム名を入力してください。");
+
+  await assertCanAddTeam(uid);
+
+  const newTeamRef = doc(collection(db, "teams"));
+  const teamId = newTeamRef.id;
+  const generatedInviteCode = Math.random()
+    .toString(36)
+    .substring(2, 8)
+    .toUpperCase();
+
+  await setDoc(newTeamRef, {
+    name: trimmedTeamName,
+    createdBy: uid,
+    inviteCode: generatedInviteCode,
+    createdAt: serverTimestamp(),
+    grades: ["1年生", "2年生", "3年生"],
+    positions: ["GK", "CP", "マネージャー"],
+  });
+
+  await setDoc(doc(db, "teams", teamId, "members", uid), {
+    name: userName || "ゲスト",
+    role: "admin",
+    joinedAt: serverTimestamp(),
+  });
+
+  await rememberTeamMembership(uid, teamId);
+  await setDoc(doc(db, "invites", generatedInviteCode), {
+    teamId: teamId,
+    active: true,
+    createdBy: uid,
+    createdAt: serverTimestamp(),
+  });
+
+  return { inviteCode: generatedInviteCode, teamId, type: "create" };
+}
+
+export async function joinTeamWithInvite(uid, inviteCodeInput, userName = "ゲスト") {
+  if (!uid) throw new Error("ユーザー情報を確認できませんでした。");
+  const inviteCode = (inviteCodeInput || "").trim().toUpperCase();
+  if (!inviteCode) throw new Error("招待コードを入力してください。");
+
+  const inviteSnap = await getDoc(doc(db, "invites", inviteCode));
+  if (!inviteSnap.exists() || !inviteSnap.data().active) {
+    throw new Error("無効な招待コードです。");
+  }
+
+  const teamId = inviteSnap.data().teamId;
+  await assertCanAddTeam(uid, teamId);
+
+  const memberRef = doc(db, "teams", teamId, "members", uid);
+  const memberSnap = await getDoc(memberRef);
+  if (!memberSnap.exists()) {
+    await setDoc(memberRef, {
+      name: userName || "ゲスト",
+      role: "member",
+      inviteCode: inviteCode,
+      joinedAt: serverTimestamp(),
+    });
+  }
+
+  await rememberTeamMembership(uid, teamId);
+  return { teamId, type: "join" };
+}
 
 // ==========================================
 // 📁 プロジェクト（部活の予定・動画等）関連
@@ -302,7 +451,34 @@ export async function updateMemberRoleConfig(teamId, uid, updateData) {
 
 export async function removeTeamMember(teamId, targetUid) {
   if (!teamId || !targetUid) return;
-  await deleteDoc(doc(db, "teams", teamId, "members", targetUid));
+
+  const userRef = doc(db, "users", targetUid);
+  const userSnap = await getDoc(userRef);
+  const userData = userSnap.exists() ? userSnap.data() : {};
+  const remainingTeamIds = normalizeTeamIds(userData).filter(
+    (id) => id !== teamId,
+  );
+  const currentActiveTeamId =
+    typeof userData.activeTeamId === "string" ? userData.activeTeamId : "";
+  const nextActiveTeamId =
+    currentActiveTeamId === teamId ||
+    (currentActiveTeamId && !remainingTeamIds.includes(currentActiveTeamId))
+      ? remainingTeamIds[0] || ""
+      : currentActiveTeamId;
+
+  const batch = writeBatch(db);
+  batch.set(
+    userRef,
+    {
+      activeTeamId: nextActiveTeamId,
+      teamIds: remainingTeamIds,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true },
+  );
+  batch.delete(doc(db, "teams", teamId, "members", targetUid));
+  await batch.commit();
+  return { activeTeamId: nextActiveTeamId || null, teamIds: remainingTeamIds };
 }
 
 // ==========================================
@@ -365,57 +541,10 @@ export async function executeRegistration(
   );
 
   if (role === "admin") {
-    const newTeamRef = doc(collection(db, "teams"));
-    const teamId = newTeamRef.id;
-    const generatedInviteCode = Math.random()
-      .toString(36)
-      .substring(2, 8)
-      .toUpperCase();
-
-    await setDoc(newTeamRef, {
-      name: teamName,
-      createdBy: uid,
-      inviteCode: generatedInviteCode,
-      createdAt: serverTimestamp(),
-      grades: ["1年生", "2年生", "3年生"],
-      positions: ["GK", "CP", "マネージャー"],
-    });
-
-    await setDoc(doc(db, "teams", teamId, "members", uid), {
-      name: userName,
-      role: "admin",
-      joinedAt: serverTimestamp(),
-    });
-
-    await setDoc(userRef, { activeTeamId: teamId }, { merge: true });
-    await setDoc(doc(db, "invites", generatedInviteCode), {
-      teamId: teamId,
-      active: true,
-      createdBy: uid,
-      createdAt: serverTimestamp(),
-    });
-
-    return { inviteCode: generatedInviteCode, teamId, type: "create" };
-  } else {
-    const inviteCode = inviteCodeInput.trim().toUpperCase();
-    const inviteSnap = await getDoc(doc(db, "invites", inviteCode));
-
-    if (!inviteSnap.exists() || !inviteSnap.data().active)
-      throw new Error("無効な招待コードです。");
-
-    const teamId = inviteSnap.data().teamId;
-
-    await setDoc(doc(db, "teams", teamId, "members", uid), {
-      name: userName,
-      role: "member",
-      inviteCode: inviteCode,
-      joinedAt: serverTimestamp(),
-    });
-
-    await setDoc(userRef, { activeTeamId: teamId }, { merge: true });
-
-    return { teamId, type: "join" };
+    return createTeam(uid, teamName, userName);
   }
+
+  return joinTeamWithInvite(uid, inviteCodeInput, userName);
 }
 
 // ==========================================
