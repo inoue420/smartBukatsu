@@ -389,6 +389,7 @@ const CalendarScreen = ({
   const canManageClubEvents = ["owner", "admin", "staff", "captain"].includes(
     userRole,
   );
+  const isGuardian = userRole === "guardian";
 
   const [selectedDate, setSelectedDate] = useState(
     new Date().toISOString().split("T")[0],
@@ -1270,6 +1271,7 @@ const CalendarScreen = ({
   };
 
   const handleSendAbsenceComment = async () => {
+    if (isGuardian) return;
     const text = absenceCommentText.trim();
     if (!activeAbsenceEvent || !text) return;
     if (isOffline) {
@@ -1645,7 +1647,7 @@ const CalendarScreen = ({
                       <Text style={styles.absenceSummaryText}>
                         不参加連絡 {getAbsenceComments(item).length}件
                       </Text>
-                      {!isPending && (
+                      {!isGuardian && !isPending && (
                         <TouchableOpacity
                           onPress={() => openAbsenceModal(item)}
                           style={styles.absenceBtn}

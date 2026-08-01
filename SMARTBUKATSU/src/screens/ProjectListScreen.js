@@ -71,10 +71,15 @@ const ProjectListScreen = ({
     global.TEST_ROLE ||
     (isAdmin ? "owner" : currentUserProfile.role || "member");
 
-  const canCreateProject = ["owner", "admin", "staff", "captain"].includes(
-    userRole,
-  );
+  const canUploadVideos = Boolean(currentUserProfile.canUploadVideos);
+  const canEditTags = Boolean(currentUserProfile.canEditTags);
+  const canCreateProject =
+    ["owner", "admin", "staff", "captain"].includes(userRole) ||
+    (userRole === "guardian" && canUploadVideos);
   const canManageProject = ["owner", "admin", "staff"].includes(userRole);
+  const canEditTagGroups =
+    ["owner", "admin", "staff"].includes(userRole) ||
+    (userRole === "guardian" && canEditTags);
 
   const { user, activeTeamId } = useAuth();
   const [isOffline, setIsOffline] = useState(false);
@@ -95,6 +100,7 @@ const ProjectListScreen = ({
     admin: `${currentUser}(管理者)`,
     staff: `${currentUser}(コーチ)`,
     captain: `${currentUser}(キャプテン)`,
+    guardian: `${currentUser}(保護者)`,
     member: currentUser,
   };
   const displayUserName = roleNameMap[userRole] || currentUser;
@@ -787,7 +793,11 @@ const ProjectListScreen = ({
       <TouchableOpacity
         style={styles.card}
         onPress={() =>
-          navigation.navigate("ProjectDetail", { project: item, userRole })
+          navigation.navigate("ProjectDetail", {
+            project: item,
+            userRole,
+            canEditTags,
+          })
         }
       >
         <View style={styles.cardHeader}>
@@ -1376,20 +1386,24 @@ const ProjectListScreen = ({
           <>
             <View style={styles.topRow}>
               <Text style={styles.sectionTitle}>動画一覧</Text>
-              {canCreateProject && (
+              {(canCreateProject || canEditTagGroups) && (
                 <View style={styles.topActions}>
-                  <TouchableOpacity
-                    style={styles.createBtn}
-                    onPress={handleOpenCreateProjectModal}
-                  >
-                    <Text style={styles.createBtnText}>＋ 新規追加</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.tagEditBtn}
-                    onPress={() => navigation.navigate("TagGroupEdit")}
-                  >
-                    <Text style={styles.tagEditBtnText}>タグ編集</Text>
-                  </TouchableOpacity>
+                  {canCreateProject && (
+                    <TouchableOpacity
+                      style={styles.createBtn}
+                      onPress={handleOpenCreateProjectModal}
+                    >
+                      <Text style={styles.createBtnText}>新規追加</Text>
+                    </TouchableOpacity>
+                  )}
+                  {canEditTagGroups && (
+                    <TouchableOpacity
+                      style={styles.tagEditBtn}
+                      onPress={() => navigation.navigate("TagGroupEdit")}
+                    >
+                      <Text style={styles.tagEditBtnText}>タグ編集</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
               )}
             </View>

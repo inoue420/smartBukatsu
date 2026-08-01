@@ -30,10 +30,19 @@ const normalizeTags = (value) =>
 export default function TagGroupEditScreen({
   navigation,
   currentUser,
+  isAdmin = false,
+  userProfiles = {},
   tagGroups = [],
   setTagGroups,
 }) {
   const { activeTeamId } = useAuth();
+  const currentUserProfile = userProfiles[currentUser] || {};
+  const userRole =
+    global.TEST_ROLE ||
+    (isAdmin ? "owner" : currentUserProfile.role || "member");
+  const canEditTagGroups =
+    ["owner", "admin", "staff"].includes(userRole) ||
+    (userRole === "guardian" && Boolean(currentUserProfile.canEditTags));
   const [editingGroupId, setEditingGroupId] = useState(null);
   const [name, setName] = useState("");
   const [tagsText, setTagsText] = useState(DEFAULT_TAGS.join("、"));
@@ -43,6 +52,17 @@ export default function TagGroupEditScreen({
     () => tagGroups.filter((group) => group.status !== "deleted"),
     [tagGroups],
   );
+
+  if (!canEditTagGroups) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <Text style={styles.title}>権限がありません</Text>
+        <Text style={styles.emptyText}>
+          タグ編集権限がないため、この画面は利用できません。
+        </Text>
+      </SafeAreaView>
+    );
+  }
 
   const resetForm = () => {
     setEditingGroupId(null);
