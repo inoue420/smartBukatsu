@@ -268,6 +268,8 @@ const ProjectListScreen = ({
   const videoRef = useRef(null);
   const youtubeRef = useRef(null);
   const hasReachedPlaylistEndRef = useRef(false);
+  const [isYoutubeReady, setIsYoutubeReady] = useState(false);
+  const [memoKeyboardInset, setMemoKeyboardInset] = useState(0);
 
   const [newSharedMemo, setNewSharedMemo] = useState("");
 
@@ -281,6 +283,26 @@ const ProjectListScreen = ({
       ScreenOrientation.lockAsync(
         ScreenOrientation.OrientationLock.PORTRAIT_UP,
       ).catch(() => {});
+    };
+  }, []);
+
+  useEffect(() => {
+    const showEvent =
+      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvent =
+      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+
+    const showSub = Keyboard.addListener(showEvent, (event) => {
+      const height = event.endCoordinates?.height || 0;
+      setMemoKeyboardInset(Math.max(0, height));
+    });
+    const hideSub = Keyboard.addListener(hideEvent, () => {
+      setMemoKeyboardInset(0);
+    });
+
+    return () => {
+      showSub.remove();
+      hideSub.remove();
     };
   }, []);
 
@@ -386,6 +408,22 @@ const ProjectListScreen = ({
   };
   const ytId = currentClip ? extractYoutubeId(currentClip.url) : null;
 
+  useEffect(() => {
+    setIsYoutubeReady(false);
+  }, [ytId]);
+
+  const seekYoutubeTo = useCallback(
+    (seconds) => {
+      if (!isYoutubeReady || !youtubeRef.current) return;
+      try {
+        youtubeRef.current.seekTo(seconds, true);
+      } catch (error) {
+        console.log("YouTube seek error:", error);
+      }
+    },
+    [isYoutubeReady],
+  );
+
   const stopAtClipEnd = useCallback(
     async (clip = currentClip) => {
       hasReachedPlaylistEndRef.current = true;
@@ -419,6 +457,7 @@ const ProjectListScreen = ({
   );
 
   const handleToggleTag = (tag) => {
+    Keyboard.dismiss();
     hasReachedPlaylistEndRef.current = false;
     setHasReachedPlaylistEnd(false);
     setSelectedHighlightTags((prev) => {
@@ -433,6 +472,7 @@ const ProjectListScreen = ({
   };
 
   const handleSelectClip = (index) => {
+    Keyboard.dismiss();
     hasReachedPlaylistEndRef.current = false;
     setHasReachedPlaylistEnd(false);
     setCurrentClipIndex(index);
@@ -456,9 +496,7 @@ const ProjectListScreen = ({
       if (hasReachedPlaylistEndRef.current) return;
 
       if (ytId) {
-        if (youtubeRef.current) {
-          youtubeRef.current.seekTo(currentClip.start, true);
-        }
+        seekYoutubeTo(currentClip.start);
         return;
       }
 
@@ -470,13 +508,21 @@ const ProjectListScreen = ({
     }, ytId ? 500 : 300);
 
     return () => clearTimeout(startTimer);
-  }, [currentClip, currentClipIndex, selectedHighlightTags, searchMode, ytId]);
+  }, [
+    currentClip,
+    currentClipIndex,
+    selectedHighlightTags,
+    searchMode,
+    ytId,
+    seekYoutubeTo,
+  ]);
 
   useEffect(() => {
     let interval;
-    if (isPlaying && ytId && currentClip) {
+    if (isPlaying && ytId && currentClip && isYoutubeReady) {
       interval = setInterval(async () => {
-        if (youtubeRef.current) {
+        if (!youtubeRef.current) return;
+        try {
           const currentTime = await youtubeRef.current.getCurrentTime();
           setVideoTime(Math.floor(currentTime));
 
@@ -489,6 +535,8 @@ const ProjectListScreen = ({
               stopAtClipEnd();
             }
           }
+        } catch (error) {
+          console.log("YouTube current time error:", error);
         }
       }, 500);
     }
@@ -499,6 +547,7 @@ const ProjectListScreen = ({
     currentClip,
     currentClipIndex,
     currentClips.length,
+    isYoutubeReady,
     stopAtClipEnd,
   ]);
 
@@ -1032,6 +1081,7 @@ const ProjectListScreen = ({
   const renderVideoPlayer = () => (
     <View
       style={[styles.videoPlayerArea, isLandscape && styles.fsVideoPlayerArea]}
+      onTouchStart={Keyboard.dismiss}
     >
       {hasReachedPlaylistEnd ? (
         <View style={styles.stoppedVideoPlaceholder}>
@@ -1046,10 +1096,12 @@ const ProjectListScreen = ({
           ]}
         >
           <YoutubePlayer
+            key={ytId}
             ref={youtubeRef}
             height={isLandscape ? height : 200}
             play={isPlaying}
             videoId={ytId}
+            onReady={() => setIsYoutubeReady(true)}
             onChangeState={onYoutubeStateChange}
             initialPlayerParams={{ controls: 0, rel: 0 }}
           />
@@ -1111,6 +1163,9 @@ const ProjectListScreen = ({
       <ScrollView
         style={[styles.playlistScroll, isLandscape && { paddingHorizontal: 0 }]}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        onTouchStart={Keyboard.dismiss}
+        onScrollBeginDrag={Keyboard.dismiss}
       >
         {!isLandscape && (
           <Text style={styles.playlistSub}>
@@ -1166,9 +1221,20 @@ const ProjectListScreen = ({
   );
 
   const renderSharedMemos = () => (
-    <View style={{ flex: 1 }}>
+    <View
+      style={[
+        styles.memoKeyboardAvoiding,
+        memoKeyboardInset > 0 && styles.memoKeyboardActive,
+      ]}
+    >
       <ScrollView
         style={[styles.memoScroll, isLandscape && { paddingHorizontal: 0 }]}
+        contentContainerStyle={styles.memoScrollContent}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+        automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
+        onTouchStart={Keyboard.dismiss}
+        onScrollBeginDrag={Keyboard.dismiss}
       >
         {currentClip?.memos.length === 0 ? (
           <Text style={[styles.emptyText, isLandscape && { color: "#94a3b8" }]}>
@@ -1215,7 +1281,17 @@ const ProjectListScreen = ({
           })
         )}
       </ScrollView>
-      <View style={styles.memoInputContainer}>
+      <View
+        style={[
+          styles.memoInputContainer,
+          memoKeyboardInset > 0 && {
+            bottom:
+              Platform.OS === "ios"
+                ? Math.max(memoKeyboardInset - 56, 0)
+                : memoKeyboardInset,
+          },
+        ]}
+      >
         <TextInput
           style={styles.memoInput}
           value={newSharedMemo}
@@ -1243,7 +1319,10 @@ const ProjectListScreen = ({
             styles.summaryTabBtn,
             summaryTab === "playlist" && styles.summaryTabBtnActive,
           ]}
-          onPress={() => setSummaryTab("playlist")}
+          onPress={() => {
+            Keyboard.dismiss();
+            setSummaryTab("playlist");
+          }}
         >
           <Text
             style={[
@@ -1259,7 +1338,10 @@ const ProjectListScreen = ({
             styles.summaryTabBtn,
             summaryTab === "memo" && styles.summaryTabBtnActive,
           ]}
-          onPress={() => setSummaryTab("memo")}
+          onPress={() => {
+            Keyboard.dismiss();
+            setSummaryTab("memo");
+          }}
         >
           <Text
             style={[
@@ -2120,7 +2202,10 @@ const styles = StyleSheet.create({
     marginLeft: 5,
   },
 
+  memoKeyboardAvoiding: { flex: 1, position: "relative" },
+  memoKeyboardActive: { overflow: "visible" },
   memoScroll: { flex: 1, paddingHorizontal: 15 },
+  memoScrollContent: { paddingBottom: 74 },
   chatBubbleContainer: { marginBottom: 15 },
   chatBubbleLeft: { alignItems: "flex-start" },
   chatBubbleRight: { alignItems: "flex-end" },
@@ -2143,12 +2228,18 @@ const styles = StyleSheet.create({
   chatTime: { fontSize: 10, color: "#aaa", marginTop: 2, marginHorizontal: 5 },
 
   memoInputContainer: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
     flexDirection: "row",
     alignItems: "flex-end",
     padding: 10,
     backgroundColor: "#fff",
     borderTopWidth: 1,
     borderTopColor: "#eee",
+    zIndex: 50,
+    elevation: 8,
   },
   memoInput: {
     flex: 1,

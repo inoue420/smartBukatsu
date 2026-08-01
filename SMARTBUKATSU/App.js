@@ -324,6 +324,7 @@ function AppContent() {
                   {...props}
                   isAdmin={authIsAdmin}
                   currentUser={safeUserName}
+                  activeTeamId={activeTeamId}
                   clubMembers={clubMembers}
                   userProfiles={userProfiles}
                   dailyReports={dailyReports}

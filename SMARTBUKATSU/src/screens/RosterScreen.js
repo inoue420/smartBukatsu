@@ -8,8 +8,10 @@ import {
   ScrollView,
   Modal,
   Image,
+  Alert,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { updateMemberRoleConfig } from "../services/firestoreService";
 
 // ★ カラーパレット（他画面と統一）
 const COLORS = {
@@ -28,6 +30,7 @@ const RosterScreen = ({
   navigation,
   isAdmin,
   currentUser,
+  activeTeamId,
   clubMembers = [],
   userProfiles = {},
   dailyReports = [],
@@ -57,6 +60,9 @@ const RosterScreen = ({
 
   // 選択されたユーザーの詳細モーダル用
   const [selectedUser, setSelectedUser] = useState(null);
+  const [editingGrade, setEditingGrade] = useState("");
+  const [editingPosition, setEditingPosition] = useState("");
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
 
   // --- データの事前計算 ---
 
@@ -160,6 +166,45 @@ const RosterScreen = ({
 
   // --- UIコンポーネント ---
 
+  const handleOpenMemberDetail = (member) => {
+    setSelectedUser(member);
+    setEditingGrade(member.profile.grade || "");
+    setEditingPosition(member.profile.position || "");
+  };
+
+  const handleSaveSelectedProfile = async () => {
+    if (!selectedUser?.profile?.uid || !activeTeamId) {
+      Alert.alert("エラー", "選手情報を保存できませんでした。");
+      return;
+    }
+
+    try {
+      setIsSavingProfile(true);
+      await updateMemberRoleConfig(activeTeamId, selectedUser.profile.uid, {
+        grade: editingGrade,
+        position: editingPosition,
+      });
+      setSelectedUser((prev) =>
+        prev
+          ? {
+              ...prev,
+              profile: {
+                ...prev.profile,
+                grade: editingGrade,
+                position: editingPosition,
+              },
+            }
+          : prev,
+      );
+      Alert.alert("保存完了", "学年・ポジションを更新しました。");
+    } catch (error) {
+      console.log("選手プロフィール更新エラー:", error);
+      Alert.alert("エラー", "学年・ポジションの更新に失敗しました。");
+    } finally {
+      setIsSavingProfile(false);
+    }
+  };
+
   const renderFilterScroll = (options, selected, onSelect, prefix = "") => (
     <ScrollView
       horizontal
@@ -205,6 +250,45 @@ const RosterScreen = ({
     </ScrollView>
   );
 
+  const renderProfileOptionSelector = (options, selected, onSelect) => (
+    <View style={styles.profileOptionWrap}>
+      <TouchableOpacity
+        style={[
+          styles.profileOptionChip,
+          selected === "" && styles.profileOptionChipActive,
+        ]}
+        onPress={() => onSelect("")}
+      >
+        <Text
+          style={[
+            styles.profileOptionText,
+            selected === "" && styles.profileOptionTextActive,
+          ]}
+        >
+          未設定
+        </Text>
+      </TouchableOpacity>
+      {options.map((opt) => (
+        <TouchableOpacity
+          key={opt}
+          style={[
+            styles.profileOptionChip,
+            selected === opt && styles.profileOptionChipActive,
+          ]}
+          onPress={() => onSelect(opt)}
+        >
+          <Text
+            style={[
+              styles.profileOptionText,
+              selected === opt && styles.profileOptionTextActive,
+            ]}
+          >
+            {opt}
+          </Text>
+        </TouchableOpacity>
+      ))}
+    </View>
+  );
   return (
     <SafeAreaView style={styles.container}>
       {/* ヘッダー */}
@@ -348,7 +432,7 @@ const RosterScreen = ({
               <TouchableOpacity
                 key={member.name}
                 style={rowStyle}
-                onPress={() => setSelectedUser(member)}
+                onPress={() => handleOpenMemberDetail(member)}
                 activeOpacity={0.7}
               >
                 <View style={styles.compactRowLeft}>
@@ -472,6 +556,50 @@ const RosterScreen = ({
                         {selectedUser.profile.position || "未設定"}
                       </Text>
                     </View>
+                    {isStaffOrAbove && (
+                      <View style={styles.profileEditBox}>
+                        <Text style={styles.profileEditLabel}>学年を設定</Text>
+                        {grades.length > 0 ? (
+                          renderProfileOptionSelector(
+                            grades,
+                            editingGrade,
+                            setEditingGrade,
+                          )
+                        ) : (
+                          <Text style={styles.profileEmptyText}>
+                            学年リストが登録されていません
+                          </Text>
+                        )}
+
+                        <Text style={styles.profileEditLabel}>
+                          ポジションを設定
+                        </Text>
+                        {positions.length > 0 ? (
+                          renderProfileOptionSelector(
+                            positions,
+                            editingPosition,
+                            setEditingPosition,
+                          )
+                        ) : (
+                          <Text style={styles.profileEmptyText}>
+                            ポジションリストが登録されていません
+                          </Text>
+                        )}
+
+                        <TouchableOpacity
+                          style={[
+                            styles.profileSaveBtn,
+                            isSavingProfile && styles.profileSaveBtnDisabled,
+                          ]}
+                          onPress={handleSaveSelectedProfile}
+                          disabled={isSavingProfile}
+                        >
+                          <Text style={styles.profileSaveBtnText}>
+                            {isSavingProfile ? "保存中..." : "基本情報を保存"}
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
                     <View style={[styles.detailRow, { borderBottomWidth: 0 }]}>
                       <Text style={styles.detailLabel}>👤 担当スタッフ</Text>
                       <Text style={styles.detailValue}>
@@ -746,6 +874,57 @@ const styles = StyleSheet.create({
   },
   detailLabel: { fontSize: 14, color: COLORS.textSub, fontWeight: "bold" },
   detailValue: { fontSize: 14, color: COLORS.textMain, fontWeight: "bold" },
+  profileEditBox: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: "#f0f0f0",
+  },
+  profileEditLabel: {
+    fontSize: 13,
+    color: COLORS.textSub,
+    fontWeight: "bold",
+    marginBottom: 8,
+  },
+  profileOptionWrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    marginBottom: 12,
+  },
+  profileOptionChip: {
+    borderWidth: 1,
+    borderColor: "#ddd",
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginRight: 8,
+    marginBottom: 8,
+    backgroundColor: "#f8f8f8",
+  },
+  profileOptionChipActive: {
+    backgroundColor: "#e6f2ff",
+    borderColor: COLORS.primary,
+  },
+  profileOptionText: {
+    fontSize: 12,
+    color: COLORS.textSub,
+    fontWeight: "bold",
+  },
+  profileOptionTextActive: { color: COLORS.primary },
+  profileEmptyText: {
+    color: "#888",
+    fontSize: 13,
+    marginBottom: 12,
+  },
+  profileSaveBtn: {
+    backgroundColor: COLORS.primary,
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: "center",
+    marginBottom: 6,
+  },
+  profileSaveBtnDisabled: { opacity: 0.6 },
+  profileSaveBtnText: { color: "#fff", fontSize: 14, fontWeight: "bold" },
 
   painAlertBox: {
     marginTop: 15,
