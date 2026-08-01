@@ -26,6 +26,7 @@ const roleLabels = {
   admin: "管理者",
   staff: "スタッフ",
   captain: "キャプテン",
+  guardian: "保護者",
   member: "部員",
 };
 

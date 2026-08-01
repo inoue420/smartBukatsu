@@ -90,11 +90,13 @@ const WorkspaceHomeScreen = ({
     admin: `${currentUser}(管理者)`,
     staff: `${currentUser}(コーチ)`,
     captain: `${currentUser}(キャプテン)`,
+    guardian: `${currentUser}(保護者)`,
     member: currentUser,
   };
   const displayUserName = roleNameMap[userRole] || currentUser;
 
   const isStaffOrAbove = ["owner", "staff", "admin"].includes(userRole);
+  const isGuardian = userRole === "guardian";
   const canOpenTeamSelect = !isOffline;
   const canCreateChannel = ["owner", "staff", "admin", "captain"].includes(
     userRole,
@@ -1262,6 +1264,7 @@ const WorkspaceHomeScreen = ({
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.menuScroll}
           >
+            {!isGuardian && (
             <TouchableOpacity
               style={styles.menuItem}
               onPress={() => navigation.navigate("NoticeBoard")}
@@ -1278,7 +1281,9 @@ const WorkspaceHomeScreen = ({
               </View>
               <Text style={styles.menuLabel}>掲示板</Text>
             </TouchableOpacity>
+            )}
 
+            {!isGuardian && (
             <TouchableOpacity
               style={styles.menuItem}
               onPress={() => navigation.navigate("Diary")}
@@ -1296,6 +1301,7 @@ const WorkspaceHomeScreen = ({
               </View>
               <Text style={styles.menuLabel}>振り返り</Text>
             </TouchableOpacity>
+            )}
 
             <TouchableOpacity
               style={styles.menuItem}

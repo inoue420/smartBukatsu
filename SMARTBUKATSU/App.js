@@ -119,6 +119,8 @@ function AppContent() {
             role: m.role || "member",
             assignedStaff: m.assignedStaff || null,
             staffScope: m.staffScope || "all",
+            canUploadVideos: Boolean(m.canUploadVideos),
+            canEditTags: Boolean(m.canEditTags),
             grade: m.grade || "",
             position: m.position || "",
           };
@@ -307,7 +309,9 @@ function AppContent() {
               {(props) => (
                 <TagGroupEditScreen
                   {...props}
+                  isAdmin={authIsAdmin}
                   currentUser={safeUserName}
+                  userProfiles={userProfiles}
                   tagGroups={tagGroups}
                   setTagGroups={setTagGroups}
                 />

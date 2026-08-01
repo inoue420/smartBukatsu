@@ -41,7 +41,11 @@ const ProjectDetailScreen = ({
   setProjects,
   tagGroups = [],
 }) => {
-  const { project: routeProject, userRole = "member" } = route.params || {};
+  const {
+    project: routeProject,
+    userRole = "member",
+    canEditTags = false,
+  } = route.params || {};
 
   const project =
     projects?.find((p) => p.id === routeProject?.id) || routeProject || {};
@@ -96,12 +100,14 @@ const ProjectDetailScreen = ({
   const toastTimeoutRef = useRef(null);
 
   const canDeleteAnyTag = ["owner", "admin", "staff"].includes(userRole);
+  const canEditVideoTags = userRole !== "guardian" || Boolean(canEditTags);
 
   const roleNameMap = {
     owner: `${currentUser}(監督)`,
     admin: `${currentUser}(管理者)`,
     staff: `${currentUser}(コーチ)`,
     captain: `${currentUser}(キャプテン)`,
+    guardian: `${currentUser}(保護者)`,
     member: currentUser,
   };
   const displayUserName = roleNameMap[userRole] || currentUser;
@@ -285,6 +291,7 @@ const ProjectDetailScreen = ({
   };
 
   const toggleQuickTag = (tag) => {
+    if (!canEditVideoTags) return;
     if (selectedQuickTags.includes(tag)) {
       setSelectedQuickTags(selectedQuickTags.filter((t) => t !== tag));
     } else {
@@ -293,6 +300,7 @@ const ProjectDetailScreen = ({
   };
 
   const executeAddTag = async () => {
+    if (!canEditVideoTags) return;
     if (selectedQuickTags.length === 0) return;
     const label = selectedQuickTags.join(" + ");
 
@@ -327,6 +335,7 @@ const ProjectDetailScreen = ({
   };
 
   const handleBulkShareTags = async () => {
+    if (!canEditVideoTags) return;
     const privateTagsCount = localTags.filter(
       (t) => t.status === "private" && t.user === displayUserName,
     ).length;
@@ -367,6 +376,7 @@ const ProjectDetailScreen = ({
   };
 
   const handleOpenRecordedTagEditor = (tag) => {
+    if (!canEditVideoTags) return;
     setEditingRecordedTag(tag);
     setEditingRecordedTags(splitTagLabel(tag.label));
   };
@@ -377,6 +387,7 @@ const ProjectDetailScreen = ({
   };
 
   const toggleEditingRecordedTag = (label) => {
+    if (!canEditVideoTags) return;
     setEditingRecordedTags((prev) =>
       prev.includes(label)
         ? prev.filter((tag) => tag !== label)
@@ -385,6 +396,7 @@ const ProjectDetailScreen = ({
   };
 
   const handleSaveRecordedTagLabels = async () => {
+    if (!canEditVideoTags) return;
     if (!editingRecordedTag) return;
     if (editingRecordedTags.length === 0) {
       return Alert.alert("未選択", "タグを1件以上選択してください。");
@@ -412,6 +424,7 @@ const ProjectDetailScreen = ({
   };
 
   const handleCreateQuickTag = async () => {
+    if (!canEditVideoTags) return;
     if (usesTagGroup) {
       return Alert.alert(
         "タグリストを使用中",
@@ -449,6 +462,7 @@ const ProjectDetailScreen = ({
   };
 
   const handleDeleteQuickTag = (tagToDelete) => {
+    if (!canEditVideoTags) return;
     if (usesTagGroup) return;
     Alert.alert(
       "タグボタンの削除",
@@ -597,7 +611,8 @@ const ProjectDetailScreen = ({
                     isSelected && styles.quickTagBtnSelected,
                   ]}
                   onPress={() => toggleQuickTag(tag)}
-                  onLongPress={usesTagGroup ? undefined : () => handleDeleteQuickTag(tag)}
+                  onLongPress={canEditVideoTags && !usesTagGroup ? () => handleDeleteQuickTag(tag) : undefined}
+                  disabled={!canEditVideoTags}
                 >
                   <Text
                     style={[
@@ -612,7 +627,7 @@ const ProjectDetailScreen = ({
                 </TouchableOpacity>
               );
             })}
-            {!usesTagGroup && (
+            {canEditVideoTags && !usesTagGroup && (
               <TouchableOpacity
                 style={isLandscape ? styles.fsAddTagBtn : styles.addQuickTagBtn}
                 onPress={() => {
@@ -628,51 +643,55 @@ const ProjectDetailScreen = ({
                   }
                 >
                   ＋ ボタン追加
-                </Text>
+                    </Text>
               </TouchableOpacity>
             )}
           </View>
 
-          <View style={styles.clipSettingsRow}>
-            <Text style={styles.clipSettingsLabel}>✂️ 切り抜き:</Text>
-            <Text style={styles.clipSettingsText}>前</Text>
-            <TextInput
-              style={styles.clipSettingsInput}
-              keyboardType="number-pad"
-              value={String(preSec)}
-              onChangeText={(v) => setPreSec(Number(v) || 0)}
-              selectTextOnFocus
-              inputAccessoryViewID="doneAccessory" // ★ 両方のInputに共通のIDを設定
-            />
+          {canEditVideoTags && (
+            <>
+              <View style={styles.clipSettingsRow}>
+                <Text style={styles.clipSettingsLabel}>✂️ 切り抜き:</Text>
+                <Text style={styles.clipSettingsText}>前</Text>
+                <TextInput
+                  style={styles.clipSettingsInput}
+                  keyboardType="number-pad"
+                  value={String(preSec)}
+                  onChangeText={(v) => setPreSec(Number(v) || 0)}
+                  selectTextOnFocus
+                  inputAccessoryViewID="doneAccessory" // ★ 両方のInputに共通のIDを設定
+                />
             <Text style={styles.clipSettingsText}>秒 〜 後</Text>
-            <TextInput
-              style={styles.clipSettingsInput}
-              keyboardType="number-pad"
-              value={String(postSec)}
-              onChangeText={(v) => setPostSec(Number(v) || 0)}
-              selectTextOnFocus
-              inputAccessoryViewID="doneAccessory" // ★ 両方のInputに共通のIDを設定
-            />
-            <Text style={styles.clipSettingsText}>秒</Text>
-          </View>
+                <TextInput
+                  style={styles.clipSettingsInput}
+                  keyboardType="number-pad"
+                  value={String(postSec)}
+                  onChangeText={(v) => setPostSec(Number(v) || 0)}
+                  selectTextOnFocus
+                  inputAccessoryViewID="doneAccessory" // ★ 両方のInputに共通のIDを設定
+                />
+                <Text style={styles.clipSettingsText}>秒</Text>
+              </View>
 
-          <TouchableOpacity
-            style={[
+              <TouchableOpacity
+                style={[
               styles.recordTagBtn,
               selectedQuickTags.length === 0 && styles.recordTagBtnDisabled,
             ]}
-            onPress={executeAddTag}
-            disabled={selectedQuickTags.length === 0}
-          >
-            <Text style={styles.recordTagBtnText}>
+                onPress={executeAddTag}
+                disabled={selectedQuickTags.length === 0}
+              >
+                <Text style={styles.recordTagBtnText}>
               {selectedQuickTags.length > 0
                 ? `「${selectedQuickTags.join(" + ")}」で記録する`
                 : "タグを選択してください"}
-            </Text>
-          </TouchableOpacity>
+                </Text>
+              </TouchableOpacity>
+            </>
+          )}
         </View>
 
-        {privateTagsCount > 0 && (
+        {canEditVideoTags && privateTagsCount > 0 && (
           <TouchableOpacity
             style={styles.bulkShareBtn}
             onPress={handleBulkShareTags}
@@ -693,7 +712,8 @@ const ProjectDetailScreen = ({
             visibleTags.map((tag) => {
               const labelParts = splitTagLabel(tag.label);
               const unregisteredTags = getUnregisteredTags(tag);
-              const canEditTag = canDeleteAnyTag || tag.user === displayUserName;
+              const canEditTag =
+                canEditVideoTags && (canDeleteAnyTag || tag.user === displayUserName);
 
               return (
                 <View key={tag.id} style={styles.listItemCard}>
@@ -917,7 +937,7 @@ const ProjectDetailScreen = ({
               value={newQuickTagName}
               onChangeText={setNewQuickTagName}
               autoFocus
-            />
+                />
             <View
               style={{
                 flexDirection: "row",

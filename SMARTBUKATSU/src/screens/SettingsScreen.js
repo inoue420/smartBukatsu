@@ -112,6 +112,7 @@ const SettingsScreen = ({
     global.TEST_ROLE ||
     (isAdmin ? "owner" : currentUserProfile.role || "member");
   const isStaffOrAbove = ["owner", "staff", "admin"].includes(userRole);
+  const canManageGuardianPermissions = userRole === "owner";
 
   useEffect(() => {
     if (!activeTeamId) return;
@@ -206,6 +207,7 @@ const SettingsScreen = ({
     admin: { label: "管理者", color: "#e74c3c", bg: "#fceeea" },
     staff: { label: "スタッフ", color: "#9b59b6", bg: "#f5eef8" },
     captain: { label: "キャプテン", color: "#e67e22", bg: "#fdf2e9" },
+    guardian: { label: "保護者", color: "#16a085", bg: "#e8f8f5" },
     member: { label: "一般部員", color: "#3498db", bg: "#ebf5fb" },
   };
 
@@ -225,7 +227,8 @@ const SettingsScreen = ({
         if (role === "owner" || role === "admin") return 1; // 管理者
         if (role === "staff") return 2; // スタッフ
         if (role === "captain") return 3; // キャプテン
-        return 4; // 一般部員
+        if (role === "guardian") return 4;
+        return 5; // 一般部員
       };
 
       const weightA = getRoleWeight(roleA);
@@ -469,6 +472,25 @@ const SettingsScreen = ({
       `${selectedMemberForRole} の権限を「${roleConfig[newRole].label}」に変更しました。`,
     );
     setSelectedMemberForRole(null);
+  };
+
+  const handleToggleGuardianPermission = async (memberName, field, value) => {
+    if (!canManageGuardianPermissions) return;
+    const targetUid = userProfiles[memberName]?.uid;
+    if (!activeTeamId || !targetUid) return;
+
+    try {
+      await updateMemberRoleConfig(activeTeamId, targetUid, { [field]: value });
+      setUserProfiles((prev) => ({
+        ...prev,
+        [memberName]: {
+          ...(prev[memberName] || {}),
+          [field]: value,
+        },
+      }));
+    } catch (error) {
+      Alert.alert("エラー", "保護者権限の更新に失敗しました。");
+    }
   };
 
   const handleOpenAssignStaffModal = (memberName) => {
@@ -956,6 +978,8 @@ const SettingsScreen = ({
                       roleConfig[memberRole] || roleConfig.member;
                     const assignedStaff = profile.assignedStaff || "未設定";
                     const staffScope = profile.staffScope || "all";
+                    const canUploadVideos = Boolean(profile.canUploadVideos);
+                    const canEditTags = Boolean(profile.canEditTags);
 
                     return (
                       <View key={name} style={styles.memberItem}>
@@ -1014,6 +1038,59 @@ const SettingsScreen = ({
                                 {staffScope === "all" ? "全体" : "担当のみ"} ▾
                               </Text>
                             </TouchableOpacity>
+                          )}
+
+                          {memberRole === "guardian" && (
+                            <>
+                              <TouchableOpacity
+                                style={[
+                                  styles.subSettingBadge,
+                                  canUploadVideos && styles.subSettingBadgeActive,
+                                  !canManageGuardianPermissions && { opacity: 0.45 },
+                                ]}
+                                disabled={!canManageGuardianPermissions}
+                                onPress={() =>
+                                  handleToggleGuardianPermission(
+                                    name,
+                                    "canUploadVideos",
+                                    !canUploadVideos,
+                                  )
+                                }
+                              >
+                                <Text
+                                  style={[
+                                    styles.subSettingText,
+                                    canUploadVideos && styles.subSettingTextActive,
+                                  ]}
+                                >
+                                  動画追加: {canUploadVideos ? "ON" : "OFF"}
+                                </Text>
+                              </TouchableOpacity>
+                              <TouchableOpacity
+                                style={[
+                                  styles.subSettingBadge,
+                                  canEditTags && styles.subSettingBadgeActive,
+                                  !canManageGuardianPermissions && { opacity: 0.45 },
+                                ]}
+                                disabled={!canManageGuardianPermissions}
+                                onPress={() =>
+                                  handleToggleGuardianPermission(
+                                    name,
+                                    "canEditTags",
+                                    !canEditTags,
+                                  )
+                                }
+                              >
+                                <Text
+                                  style={[
+                                    styles.subSettingText,
+                                    canEditTags && styles.subSettingTextActive,
+                                  ]}
+                                >
+                                  タグ編集: {canEditTags ? "ON" : "OFF"}
+                                </Text>
+                              </TouchableOpacity>
+                            </>
                           )}
                         </View>
                       </View>
@@ -1178,6 +1255,20 @@ const SettingsScreen = ({
               <Text style={styles.roleSelectTitle}>⭐ キャプテン</Text>
               <Text style={styles.roleSelectDesc}>
                 プロジェクトの作成や消去、全体への連絡が可能です。他メンバーの通報・メディカルは見られません。
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.roleSelectBtn,
+                userProfiles[selectedMemberForRole]?.role === "guardian" &&
+                  styles.roleSelectBtnActive,
+              ]}
+              onPress={() => handleChangeRole("guardian")}
+            >
+              <Text style={styles.roleSelectTitle}>保護者</Text>
+              <Text style={styles.roleSelectDesc}>
+                カレンダー・動画の閲覧のみ。個別許可時だけ動画追加・タグ編集ができます。
               </Text>
             </TouchableOpacity>
 
@@ -1508,10 +1599,17 @@ const styles = StyleSheet.create({
     borderColor: "#ccc",
     marginTop: 6,
   },
+  subSettingBadgeActive: {
+    backgroundColor: "#0077cc",
+    borderColor: "#0077cc",
+  },
   subSettingText: {
     fontSize: 10,
     color: "#666",
     fontWeight: "bold",
+  },
+  subSettingTextActive: {
+    color: "#fff",
   },
 
   modalOverlay: {
