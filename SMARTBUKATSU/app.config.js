@@ -4,6 +4,13 @@ const dotenvFlow = require("dotenv-flow");
 const dotenvExpand = require("dotenv-expand");
 const appJson = require("./app.json");
 
+const ADMOB_SAMPLE_ANDROID_APP_ID =
+  "ca-app-pub-3940256099942544~3347511713";
+const ADMOB_SAMPLE_IOS_APP_ID =
+  "ca-app-pub-3940256099942544~1458002511";
+const CONSENT_SDK_PROGUARD_RULE =
+  "-keep class com.google.android.gms.internal.consent_sdk.** { *; }";
+
 dotenvExpand.expand(
   dotenvFlow.config({
     path: path.resolve(__dirname),
@@ -29,6 +36,37 @@ module.exports = ({ config }) => {
   const locationPermissionMessage =
     "場所検索とピン調整のために位置情報の利用を許可してください。";
   const expoPlugins = [...(appJson.expo.plugins || [])];
+  const easBuildProfile = process.env.EAS_BUILD_PROFILE || "development";
+  const isProductionBuild = easBuildProfile === "production";
+  const androidAdMobAppId =
+    process.env.EXPO_PUBLIC_ADMOB_ANDROID_APP_ID ||
+    (!isProductionBuild ? ADMOB_SAMPLE_ANDROID_APP_ID : null);
+  const iosAdMobAppId =
+    process.env.EXPO_PUBLIC_ADMOB_IOS_APP_ID ||
+    (!isProductionBuild ? ADMOB_SAMPLE_IOS_APP_ID : null);
+
+  if (!androidAdMobAppId || !iosAdMobAppId) {
+    throw new Error(
+      "Production builds require EXPO_PUBLIC_ADMOB_ANDROID_APP_ID and EXPO_PUBLIC_ADMOB_IOS_APP_ID.",
+    );
+  }
+
+  expoPlugins.push([
+    "react-native-google-mobile-ads",
+    {
+      androidAppId: androidAdMobAppId,
+      iosAppId: iosAdMobAppId,
+      delayAppMeasurementInit: true,
+    },
+  ]);
+  expoPlugins.push([
+    "expo-build-properties",
+    {
+      android: {
+        extraProguardRules: CONSENT_SDK_PROGUARD_RULE,
+      },
+    },
+  ]);
   if (
     !expoPlugins.some((plugin) =>
       Array.isArray(plugin) ? plugin[0] === "expo-location" : plugin === "expo-location",

@@ -33,7 +33,18 @@ import {
   updateMemberProfile,
   updateMemberRoleConfig,
   removeTeamMember,
+  updateTeamAdSettings,
 } from "../services/firestoreService";
+import {
+  DEFAULT_INTERSTITIAL_SETTINGS,
+  INTERSTITIAL_DAILY_LIMIT_MAX,
+  INTERSTITIAL_DAILY_LIMIT_MIN,
+  INTERSTITIAL_NAVIGATION_INTERVAL_MAX,
+  INTERSTITIAL_NAVIGATION_INTERVAL_MIN,
+  getTeamAdSettingsForSave,
+  normalizeInterstitialSettings,
+} from "../ads/adSettings";
+
 
 const ThresholdSelector = ({ label, value, min, max, onChange }) => (
   <View style={styles.thresholdRow}>
@@ -102,6 +113,8 @@ const SettingsScreen = ({
   alertThresholds,
   setAlertThresholds,
   userProfiles,
+  interstitialSettings = DEFAULT_INTERSTITIAL_SETTINGS,
+  setInterstitialSettings,
   setUserProfiles,
 }) => {
   const { activeTeamId, logout } = useAuth();
@@ -139,12 +152,25 @@ const SettingsScreen = ({
     alert: false,
     member: false,
     grade: false,
+    ads: false,
     position: false,
     myProfile: false,
     myPassword: false,
   });
 
   const [myNewName, setMyNewName] = useState(currentUser);
+
+  const [adSettingsDraft, setAdSettingsDraft] = useState(() =>
+    normalizeInterstitialSettings(interstitialSettings),
+  );
+  const [isSavingAdSettings, setIsSavingAdSettings] = useState(false);
+
+  useEffect(() => {
+    setAdSettingsDraft(normalizeInterstitialSettings(interstitialSettings));
+  }, [
+    interstitialSettings.dailyLimit,
+    interstitialSettings.navigationInterval,
+  ]);
   useEffect(() => {
     setMyNewName(currentUser);
   }, [currentUser]);
@@ -428,6 +454,35 @@ const SettingsScreen = ({
       }
     } finally {
       setIsChangingPassword(false);
+    }
+  };
+
+  const handleSaveAdSettings = async () => {
+    if (userRole !== "owner" || !activeTeamId) return;
+
+    const normalizedSettings = normalizeInterstitialSettings(adSettingsDraft);
+    setIsSavingAdSettings(true);
+    try {
+      await updateTeamAdSettings(
+        activeTeamId,
+        getTeamAdSettingsForSave(normalizedSettings),
+      );
+      setAdSettingsDraft(normalizedSettings);
+      setInterstitialSettings?.(normalizedSettings);
+      Alert.alert(
+        "保存完了",
+        normalizedSettings.dailyLimit === 0
+          ? "インタースティシャル広告を停止しました。"
+          : "インタースティシャル広告の表示頻度を更新しました。",
+      );
+    } catch (error) {
+      console.log("広告表示頻度の保存エラー:", error);
+      Alert.alert(
+        "エラー",
+        "広告表示頻度を保存できませんでした。権限と通信状態を確認してください。",
+      );
+    } finally {
+      setIsSavingAdSettings(false);
     }
   };
 
@@ -895,6 +950,59 @@ const SettingsScreen = ({
                 </TouchableOpacity>
               </SectionCard>
 
+              {userRole === "owner" && (
+                <SectionCard
+                  isExp={expanded.ads}
+                  onToggle={() => toggleSection("ads")}
+                  title="📢 インタースティシャル広告頻度"
+                >
+                  <Text style={styles.subText}>
+                    この設定はチーム全員に適用されます。新規日誌提出後の広告も、1日の表示上限に含まれます。
+                  </Text>
+                  <ThresholdSelector
+                    label="画面遷移何回ごとに表示するか"
+                    value={adSettingsDraft.navigationInterval}
+                    min={INTERSTITIAL_NAVIGATION_INTERVAL_MIN}
+                    max={INTERSTITIAL_NAVIGATION_INTERVAL_MAX}
+                    onChange={(value) =>
+                      setAdSettingsDraft((previous) => ({
+                        ...previous,
+                        navigationInterval: value,
+                      }))
+                    }
+                  />
+                  <ThresholdSelector
+                    label="1日の最大表示回数"
+                    value={adSettingsDraft.dailyLimit}
+                    min={INTERSTITIAL_DAILY_LIMIT_MIN}
+                    max={INTERSTITIAL_DAILY_LIMIT_MAX}
+                    onChange={(value) =>
+                      setAdSettingsDraft((previous) => ({
+                        ...previous,
+                        dailyLimit: value,
+                      }))
+                    }
+                  />
+                  <Text style={styles.hintText}>
+                    ※1日の最大表示回数を0にすると、日誌提出後を含むインタースティシャル広告を停止します。バナー広告は引き続き表示されます。
+                  </Text>
+                  <TouchableOpacity
+                    style={[
+                      styles.saveBtn,
+                      isSavingAdSettings && { opacity: 0.7 },
+                    ]}
+                    onPress={handleSaveAdSettings}
+                    disabled={isSavingAdSettings}
+                  >
+                    {isSavingAdSettings ? (
+                      <ActivityIndicator color="#fff" />
+                    ) : (
+                      <Text style={styles.saveBtnText}>広告頻度を保存</Text>
+                    )}
+                  </TouchableOpacity>
+                </SectionCard>
+              )}
+
               <SectionCard
                 isExp={expanded.alert}
                 onToggle={() => toggleSection("alert")}
@@ -1239,7 +1347,7 @@ const SettingsScreen = ({
               >
                 <Text style={styles.roleSelectTitle}>🎓 スタッフ</Text>
                 <Text style={styles.roleSelectDesc}>
-                  監督と同等の権限を持ちます。通報の閲覧やメディカル管理、プロジェクトの消去が可能です。
+                  監督と同等の権限を持ちます。メディカル管理やプロジェクトの消去が可能です。
                 </Text>
               </TouchableOpacity>
             )}
@@ -1254,7 +1362,7 @@ const SettingsScreen = ({
             >
               <Text style={styles.roleSelectTitle}>⭐ キャプテン</Text>
               <Text style={styles.roleSelectDesc}>
-                プロジェクトの作成や消去、全体への連絡が可能です。他メンバーの通報・メディカルは見られません。
+                プロジェクトの作成や消去、全体への連絡が可能です。他メンバーのメディカルは見られません。
               </Text>
             </TouchableOpacity>
 

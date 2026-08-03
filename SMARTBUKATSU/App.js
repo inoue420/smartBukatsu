@@ -1,8 +1,18 @@
-import React, { useState, useEffect } from "react";
-import { NavigationContainer } from "@react-navigation/native";
+import React, { useState, useEffect, useRef } from "react";
+import {
+  NavigationContainer,
+  useNavigationContainerRef,
+} from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { Alert, LogBox, ActivityIndicator, View, Text } from "react-native";
 import NetInfo from "@react-native-community/netinfo";
+
+import { AdsProvider, useAds } from "./src/ads/AdManager";
+import AppBannerAd from "./src/ads/AppBannerAd";
+import {
+  DEFAULT_INTERSTITIAL_SETTINGS,
+  getInterstitialSettingsFromTeamData,
+} from "./src/ads/adSettings";
 
 // コンテキストとサービス
 import { AuthProvider, useAuth } from "./src/AuthContext";
@@ -35,6 +45,10 @@ LogBox.ignoreLogs(["[expo-av]"]);
 const Stack = createNativeStackNavigator();
 
 function AppContent() {
+  const navigationRef = useNavigationContainerRef();
+  const currentRouteNameRef = useRef();
+  const { configureInterstitial, recordScreenTransition, showAfterDiarySubmission } =
+    useAds();
   const {
     user,
     userName,
@@ -65,6 +79,9 @@ function AppContent() {
     painDanger: 7,
     autoEscalate: true,
   });
+  const [interstitialSettings, setInterstitialSettings] = useState({
+    ...DEFAULT_INTERSTITIAL_SETTINGS,
+  });
   const [isOffline, setIsOffline] = useState(false);
   const [posts, setPosts] = useState([]);
 
@@ -80,9 +97,14 @@ function AppContent() {
     }
   }, [user, activeTeamId]);
 
+  useEffect(() => {
+    configureInterstitial(interstitialSettings);
+  }, [configureInterstitial, interstitialSettings]);
+
   // Firestore同期
   useEffect(() => {
     if (user && activeTeamId) {
+      setInterstitialSettings({ ...DEFAULT_INTERSTITIAL_SETTINGS });
       const unsubProjects = subscribeProjects(activeTeamId, setProjects);
       const unsubHighlightProjects = subscribeHighlightProjects(
         activeTeamId,
@@ -102,6 +124,9 @@ function AppContent() {
           if (data.name) setTeamName(data.name);
           if (data.grades !== undefined) setGrades(data.grades);
           if (data.positions !== undefined) setPositions(data.positions);
+          setInterstitialSettings(
+            getInterstitialSettingsFromTeamData(data.adSettings),
+          );
         }
       });
 
@@ -171,9 +196,34 @@ function AppContent() {
 
   const safeUserName = userName || user?.email || "ユーザー";
 
+  const handleNavigationReady = () => {
+    currentRouteNameRef.current = navigationRef.getCurrentRoute()?.name;
+  };
+
+  const handleNavigationStateChange = () => {
+    const previousRouteName = currentRouteNameRef.current;
+    const currentRouteName = navigationRef.getCurrentRoute()?.name;
+
+    if (
+      previousRouteName &&
+      currentRouteName &&
+      previousRouteName !== currentRouteName &&
+      user &&
+      activeTeamId
+    ) {
+      recordScreenTransition();
+    }
+    currentRouteNameRef.current = currentRouteName;
+  };
+
   return (
-    <NavigationContainer>
-      <Stack.Navigator screenOptions={{ headerShown: false }}>
+    <View style={{ flex: 1 }}>
+      <NavigationContainer
+        ref={navigationRef}
+        onReady={handleNavigationReady}
+        onStateChange={handleNavigationStateChange}
+      >
+        <Stack.Navigator screenOptions={{ headerShown: false }}>
         {!user ? (
           <Stack.Screen name="Login" component={LoginScreen} />
         ) : teamSelectionRequired ? (
@@ -254,6 +304,7 @@ function AppContent() {
                   setDailyReports={setDailyReports}
                   alertThresholds={alertThresholds}
                   clubMembers={clubMembers}
+                  onDiarySubmitted={showAfterDiarySubmission}
                 />
               )}
             </Stack.Screen>
@@ -349,21 +400,27 @@ function AppContent() {
                   alertThresholds={alertThresholds}
                   setAlertThresholds={setAlertThresholds}
                   userProfiles={userProfiles}
+                  interstitialSettings={interstitialSettings}
+                  setInterstitialSettings={setInterstitialSettings}
                   setUserProfiles={setUserProfiles}
                 />
               )}
             </Stack.Screen>
           </>
         )}
-      </Stack.Navigator>
-    </NavigationContainer>
+        </Stack.Navigator>
+      </NavigationContainer>
+      <AppBannerAd />
+    </View>
   );
 }
 
 export default function App() {
   return (
-    <AuthProvider>
-      <AppContent />
-    </AuthProvider>
+    <AdsProvider>
+      <AuthProvider>
+        <AppContent />
+      </AuthProvider>
+    </AdsProvider>
   );
 }
