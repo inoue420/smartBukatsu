@@ -54,6 +54,13 @@ const DEFAULT_TAG_GROUP = {
   name: "基本タグ",
   tags: DEFAULT_TAGS,
 };
+const DEFAULT_CLIP_PRE_SECONDS = 5;
+const DEFAULT_CLIP_POST_SECONDS = 3;
+
+const normalizeClipSeconds = (value, fallback) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : fallback;
+};
 
 const ProjectListScreen = ({
   navigation,
@@ -177,10 +184,6 @@ const ProjectListScreen = ({
     return projects.filter((p) => selectedHighlightVideoIds.has(p.id));
   }, [projects, selectedHighlightProject, selectedHighlightVideoIds]);
 
-  // デフォルトのクリップ秒数（設定がない場合のフォールバック）
-  const clipPreSeconds = currentUserProfile.clipPreSeconds ?? 5;
-  const clipPostSeconds = currentUserProfile.clipPostSeconds ?? 3;
-
   // ==========================================
   // ハイライト（プレイリスト）用ステート
   // ==========================================
@@ -197,6 +200,15 @@ const ProjectListScreen = ({
       getProjectTagGroup(p).tags?.forEach((qt) => tagSet.add(qt));
 
       if (!p.videoUrl || !p.tags || p.tags.length === 0) return;
+
+      const projectPreSeconds = normalizeClipSeconds(
+        p.clipPreSeconds,
+        DEFAULT_CLIP_PRE_SECONDS,
+      );
+      const projectPostSeconds = normalizeClipSeconds(
+        p.clipPostSeconds,
+        DEFAULT_CLIP_POST_SECONDS,
+      );
 
       p.tags.forEach((tag) => {
         if (tag.status === "private" && tag.user !== displayUserName) return;
@@ -217,10 +229,13 @@ const ProjectListScreen = ({
             !(m.readBy || []).includes(currentUser),
         );
 
-        const pre =
-          tag.preSeconds !== undefined ? tag.preSeconds : clipPreSeconds;
-        const post =
-          tag.postSeconds !== undefined ? tag.postSeconds : clipPostSeconds;
+        const useCustomClipDuration = tag.useCustomClipDuration === true;
+        const pre = useCustomClipDuration
+          ? normalizeClipSeconds(tag.preSeconds, projectPreSeconds)
+          : projectPreSeconds;
+        const post = useCustomClipDuration
+          ? normalizeClipSeconds(tag.postSeconds, projectPostSeconds)
+          : projectPostSeconds;
 
         clips.push({
           id: tag.id,
@@ -243,7 +258,7 @@ const ProjectListScreen = ({
 
     clips.sort((a, b) => a.start - b.start);
     return { allClips: clips, availableTags: Array.from(tagSet).sort() };
-  }, [highlightClipProjects, displayUserName, currentUser, clipPreSeconds, clipPostSeconds, getProjectTagGroup]);
+  }, [highlightClipProjects, displayUserName, currentUser, getProjectTagGroup]);
 
   const currentClips = useMemo(() => {
     if (selectedHighlightTags.length === 0) {
