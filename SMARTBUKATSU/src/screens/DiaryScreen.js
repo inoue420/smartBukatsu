@@ -89,6 +89,7 @@ const DiaryScreen = ({
   dailyReports = [],
   setDailyReports,
   clubMembers = [],
+  onDiarySubmitted,
   alertThresholds = {
     fatigueWarning: 7,
     fatigueDanger: 9,
@@ -560,7 +561,14 @@ const DiaryScreen = ({
         if (!isOffline) {
           await createDailyReport(safeTeamId, newReport);
         }
-        Alert.alert("提出完了", "振り返りを提出しました。");
+        Alert.alert("提出完了", "振り返りを提出しました。", [
+          {
+            text: "OK",
+            onPress: () => {
+              if (!isOffline) onDiarySubmitted?.();
+            },
+          },
+        ]);
 
         // ★ 追加：提出完了したら下書きを消去
         await AsyncStorage.removeItem(DRAFT_KEY);

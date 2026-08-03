@@ -37,6 +37,7 @@ const COLORS = {
 
 const REACTION_EMOJIS = ["👍", "❤️", "😂", "🔥", "👀", "🙏"];
 const REPORT_REASONS = ["暴言・誹謗中傷", "スパム・宣伝", "その他"];
+const REPORTING_ENABLED = false;
 
 // ★ 初期タブの定義
 const defaultChannels = [
@@ -779,7 +780,7 @@ const WorkspaceHomeScreen = ({
     });
 
   const renderPostCard = (post, isPinnedArea = false) => {
-    if (isReportedByMe(post) && !isStaffOrAbove)
+    if (REPORTING_ENABLED && isReportedByMe(post) && !isStaffOrAbove)
       return (
         <View key={post.id} style={styles.reportedMaskCard}>
           <Text style={styles.reportedMaskText}>
@@ -803,6 +804,7 @@ const WorkspaceHomeScreen = ({
         style={[
           styles.postCard,
           isPinnedArea && styles.pinnedCard,
+          REPORTING_ENABLED &&
           post.reported?.length > 0 &&
             isStaffOrAbove &&
             styles.adminReportedCard,
@@ -843,7 +845,7 @@ const WorkspaceHomeScreen = ({
             </Text>
           </View>
         )}
-        {post.reported?.length > 0 && isStaffOrAbove && !isPending && (
+        {REPORTING_ENABLED && post.reported?.length > 0 && isStaffOrAbove && !isPending && (
           <View style={styles.adminReportedHeader}>
             <Text style={styles.adminReportedHeaderText}>
               🚨 {post.reported.length}件の報告があります
@@ -1008,7 +1010,7 @@ const WorkspaceHomeScreen = ({
               <Text style={styles.longPressMenuText}>↩️ リプライする</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={styles.longPressMenuItem}
+              style={[styles.longPressMenuItem, !REPORTING_ENABLED && { display: "none" }]}
               onPress={() => openReportModal("post", post.id)}
             >
               <Text
@@ -1056,7 +1058,7 @@ const WorkspaceHomeScreen = ({
 
             {validReplies.map((reply) => {
               const isReplyPending = reply.status === "pending";
-              if (isReportedByMe(reply) && !isStaffOrAbove)
+              if (REPORTING_ENABLED && isReportedByMe(reply) && !isStaffOrAbove)
                 return (
                   <View key={reply.id} style={styles.reportedMaskCard}>
                     <Text style={styles.reportedMaskText}>※報告済み</Text>
@@ -1068,6 +1070,7 @@ const WorkspaceHomeScreen = ({
                   style={[
                     styles.replyCard,
                     { position: "relative", zIndex: 1 },
+                    REPORTING_ENABLED &&
                     reply.reported?.length > 0 &&
                       isStaffOrAbove &&
                       styles.adminReportedCard,
@@ -1146,7 +1149,7 @@ const WorkspaceHomeScreen = ({
                           </TouchableOpacity>
                         )}
                         <TouchableOpacity
-                          style={styles.longPressMenuItem}
+                          style={[styles.longPressMenuItem, !REPORTING_ENABLED && { display: "none" }]}
                           onPress={() =>
                             openReportModal("reply", post.id, reply.id)
                           }
@@ -1235,7 +1238,7 @@ const WorkspaceHomeScreen = ({
               )}
             </TouchableOpacity>
 
-            {isStaffOrAbove && (
+            {REPORTING_ENABLED && isStaffOrAbove && (
               <TouchableOpacity
                 style={styles.headerIconBtn}
                 onPress={() => setIsDashboardVisible(true)}
@@ -1813,7 +1816,7 @@ const WorkspaceHomeScreen = ({
       </Modal>
 
       <Modal
-        visible={isReportModalVisible}
+        visible={REPORTING_ENABLED && isReportModalVisible}
         transparent={true}
         animationType="fade"
       >
@@ -1849,7 +1852,7 @@ const WorkspaceHomeScreen = ({
       </Modal>
 
       <Modal
-        visible={isDashboardVisible}
+        visible={REPORTING_ENABLED && isDashboardVisible}
         transparent={true}
         animationType="slide"
       >

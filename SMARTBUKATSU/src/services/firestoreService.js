@@ -516,6 +516,13 @@ export function subscribeTeamData(teamId, callback) {
   });
 }
 
+export async function updateTeamAdSettings(teamId, adSettings) {
+  if (!teamId) throw new Error("チームIDがありません");
+  await updateDoc(doc(db, "teams", teamId), {
+    adSettings,
+  });
+}
+
 export async function addTeamArrayItem(teamId, field, value) {
   const teamRef = doc(db, "teams", teamId);
   const snap = await getDoc(teamRef);
