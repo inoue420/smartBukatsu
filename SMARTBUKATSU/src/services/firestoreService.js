@@ -344,6 +344,19 @@ export async function updateClubEvent(teamId, eventId, updateData) {
   await updateDoc(ref, { ...updateData, updatedAt: serverTimestamp() });
 }
 
+export async function removeClubEventAbsenceComment(
+  teamId,
+  eventId,
+  comment,
+) {
+  if (!teamId || !eventId || !comment?.id) return;
+  const ref = doc(db, "teams", teamId, "clubEvents", eventId);
+  await updateDoc(ref, {
+    absenceComments: arrayRemove(comment),
+    updatedAt: serverTimestamp(),
+  });
+}
+
 export async function deleteClubEvent(teamId, eventId) {
   if (!teamId || !eventId) return;
   const ref = doc(db, "teams", teamId, "clubEvents", eventId);
