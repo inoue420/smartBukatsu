@@ -24,6 +24,7 @@ import { cloudFunctions } from "../firebase";
 import {
   createClubEvent,
   updateClubEvent,
+  removeClubEventAbsenceComment,
   deleteClubEvent,
   createPersonalEvent,
   updatePersonalEvent,
@@ -631,6 +632,9 @@ const CalendarScreen = ({
 
   const getAbsenceComments = (event) =>
     Array.isArray(event?.absenceComments) ? event.absenceComments : [];
+
+  const canCancelAbsenceComment = (comment) =>
+    !!user?.uid && comment?.uid === user.uid;
 
   const getAbsenceCommentsOutsideDate = (event, date) =>
     getAbsenceComments(event).filter(
@@ -1305,6 +1309,59 @@ const CalendarScreen = ({
     }
   };
 
+  const handleCancelAbsenceComment = (comment) => {
+    if (
+      !activeAbsenceEvent ||
+      !comment?.id ||
+      !canCancelAbsenceComment(comment)
+    ) {
+      return;
+    }
+    if (isOffline) {
+      Alert.alert(
+        "通信エラー",
+        "不参加連絡はオンライン時に取り消してください。",
+      );
+      return;
+    }
+
+    Alert.alert(
+      "不参加連絡の取り消し",
+      "この不参加連絡を取り消しますか？",
+      [
+        { text: "キャンセル", style: "cancel" },
+        {
+          text: "取り消す",
+          style: "destructive",
+          onPress: async () => {
+            setIsLoading(true);
+            try {
+              await removeClubEventAbsenceComment(
+                activeTeamId,
+                activeAbsenceEvent.id,
+                comment,
+              );
+              setSelectedAbsenceEvent((prev) =>
+                prev
+                  ? {
+                      ...prev,
+                      absenceComments: getAbsenceComments(prev).filter(
+                        (item) => item.id !== comment.id,
+                      ),
+                    }
+                  : prev,
+              );
+            } catch (error) {
+              Alert.alert("エラー", "不参加連絡の取り消しに失敗しました。");
+            } finally {
+              setIsLoading(false);
+            }
+          },
+        },
+      ],
+    );
+  };
+
   const handleSavePersonalEvent = async () => {
     if (!personalEventTitle.trim())
       return Alert.alert("エラー", "タイトルを入力してください");
@@ -1903,7 +1960,25 @@ const CalendarScreen = ({
               ) : (
                 getAbsenceComments(activeAbsenceEvent).map((comment) => (
                   <View key={comment.id} style={styles.commentBox}>
-                    <Text style={styles.commentUser}>{comment.user}</Text>
+                    <View style={styles.commentHeaderRow}>
+                      <Text
+                        style={[styles.commentUser, styles.commentHeaderUser]}
+                      >
+                        {comment.user}
+                      </Text>
+                      {canCancelAbsenceComment(comment) && (
+                        <TouchableOpacity
+                          style={[
+                            styles.absenceCancelBtn,
+                            isLoading && styles.absenceCancelBtnDisabled,
+                          ]}
+                          onPress={() => handleCancelAbsenceComment(comment)}
+                          disabled={isLoading}
+                        >
+                          <Text style={styles.absenceCancelBtnText}>取り消す</Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
                     <Text style={styles.commentText}>{comment.text}</Text>
                   </View>
                 ))
@@ -3047,6 +3122,33 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     color: COLORS.primary,
     marginBottom: 4,
+  },
+  commentHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 4,
+  },
+  commentHeaderUser: {
+    flex: 1,
+    marginBottom: 0,
+  },
+  absenceCancelBtn: {
+    borderWidth: 1,
+    borderColor: COLORS.danger,
+    borderRadius: 6,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    marginLeft: 8,
+    backgroundColor: "#fff5f5",
+  },
+  absenceCancelBtnDisabled: {
+    opacity: 0.5,
+  },
+  absenceCancelBtnText: {
+    fontSize: 11,
+    color: COLORS.danger,
+    fontWeight: "bold",
   },
   commentText: { fontSize: 14, color: COLORS.textMain },
 });
