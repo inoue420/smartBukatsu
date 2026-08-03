@@ -1057,6 +1057,7 @@ const ProjectListScreen = ({
       <ScrollView
         horizontal={!isLandscape}
         showsHorizontalScrollIndicator={false}
+        style={isLandscape ? styles.fsTagScroll : undefined}
       >
         <View
           style={
@@ -1174,7 +1175,7 @@ const ProjectListScreen = ({
   );
 
   const renderPlaylist = () => (
-    <View style={{ flex: 1 }}>
+    <View style={{ flex: 1, minHeight: 0 }}>
       <ScrollView
         style={[styles.playlistScroll, isLandscape && { paddingHorizontal: 0 }]}
         showsVerticalScrollIndicator={false}
@@ -1325,7 +1326,7 @@ const ProjectListScreen = ({
   );
 
   const renderSummaryRightPane = () => (
-    <View style={{ flex: 1, paddingTop: 5 }}>
+    <View style={{ flex: 1, minHeight: 0, paddingTop: 5 }}>
       <View
         style={[styles.summaryTabRow, isLandscape && { marginHorizontal: 0 }]}
       >
@@ -2074,6 +2075,7 @@ const styles = StyleSheet.create({
   },
   fsUiCol: {
     flex: 0.4,
+    minHeight: 0,
     backgroundColor: "#1e293b",
     paddingTop: 10,
     paddingHorizontal: 10,
@@ -2087,9 +2089,13 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   fsTagSelectorWrapper: {
+    maxHeight: "45%",
     borderBottomWidth: 0,
     paddingBottom: 10,
     paddingHorizontal: 0,
+  },
+  fsTagScroll: {
+    flexShrink: 1,    
   },
 
   fsSearchModeContainer: {
@@ -2173,7 +2179,11 @@ const styles = StyleSheet.create({
   summaryTabBtnTextActive: { color: "#fff" },
 
   playlistSub: { fontSize: 12, color: "#888", marginBottom: 10 },
-  playlistScroll: { flex: 1, paddingHorizontal: 15 },
+  playlistScroll: {
+    flex: 1,
+    minHeight: 0,
+    paddingHorizontal: 15,
+  },
   clipCard: {
     flexDirection: "row",
     alignItems: "center",
