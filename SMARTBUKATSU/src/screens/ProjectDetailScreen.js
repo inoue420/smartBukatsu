@@ -15,8 +15,10 @@ import {
   useWindowDimensions,
   InputAccessoryView,
   Button,
+  Switch,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { usePreventRemove } from "@react-navigation/native";
 import { Video, ResizeMode } from "expo-av";
 import YoutubePlayer from "react-native-youtube-iframe";
 import * as ScreenOrientation from "expo-screen-orientation";
@@ -26,6 +28,13 @@ import { auth } from "../firebase";
 import { updateProject } from "../services/firestoreService";
 
 const DEFAULT_TAGS = ["得点", "罰則", "2min", "ナイス"];
+const DEFAULT_CLIP_PRE_SECONDS = 5;
+const DEFAULT_CLIP_POST_SECONDS = 3;
+
+const normalizeClipSeconds = (value, fallback = 0) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : fallback;
+};
 
 const splitTagLabel = (label) =>
   String(label || "")
@@ -81,6 +90,14 @@ const ProjectDetailScreen = ({
   const [selectedQuickTags, setSelectedQuickTags] = useState([]);
   const [editingRecordedTag, setEditingRecordedTag] = useState(null);
   const [editingRecordedTags, setEditingRecordedTags] = useState([]);
+  const [editingUseCustomClipDuration, setEditingUseCustomClipDuration] =
+    useState(false);
+  const [editingPreSec, setEditingPreSec] = useState(
+    DEFAULT_CLIP_PRE_SECONDS,
+  );
+  const [editingPostSec, setEditingPostSec] = useState(
+    DEFAULT_CLIP_POST_SECONDS,
+  );
 
   const registeredTagSet = useMemo(() => new Set(quickTags), [quickTags]);
 
@@ -89,8 +106,22 @@ const ProjectDetailScreen = ({
     [registeredTagSet],
   );
 
-  const [preSec, setPreSec] = useState(5);
-  const [postSec, setPostSec] = useState(3);
+  const initialPreSec = normalizeClipSeconds(
+    project.clipPreSeconds,
+    DEFAULT_CLIP_PRE_SECONDS,
+  );
+  const initialPostSec = normalizeClipSeconds(
+    project.clipPostSeconds,
+    DEFAULT_CLIP_POST_SECONDS,
+  );
+  const [preSec, setPreSec] = useState(initialPreSec);
+  const [postSec, setPostSec] = useState(initialPostSec);
+  const [savedClipSettings, setSavedClipSettings] = useState({
+    projectId: project.id,
+    preSeconds: initialPreSec,
+    postSeconds: initialPostSec,
+  });
+  const isSavingClipSettingsRef = useRef(false);
 
   const { width, height } = useWindowDimensions();
   const isLandscape = width > height;
@@ -134,6 +165,67 @@ const ProjectDetailScreen = ({
       setToastMessage(null);
     }, 2000);
   };
+
+  const hasUnsavedClipSettings =
+    savedClipSettings.projectId !== project.id ||
+    savedClipSettings.preSeconds !== preSec ||
+    savedClipSettings.postSeconds !== postSec;
+
+  const saveGlobalClipSettings = useCallback(async () => {
+    if (!project.id || isSavingClipSettingsRef.current) return false;
+
+    const nextPreSec = normalizeClipSeconds(preSec, DEFAULT_CLIP_PRE_SECONDS);
+    const nextPostSec = normalizeClipSeconds(
+      postSec,
+      DEFAULT_CLIP_POST_SECONDS,
+    );
+
+    isSavingClipSettingsRef.current = true;
+    try {
+      const safeTeamId = activeTeamId || "test_team";
+      await updateProject(safeTeamId, project.id, {
+        clipPreSeconds: nextPreSec,
+        clipPostSeconds: nextPostSec,
+      });
+
+      setPreSec(nextPreSec);
+      setPostSec(nextPostSec);
+      setSavedClipSettings({
+        projectId: project.id,
+        preSeconds: nextPreSec,
+        postSeconds: nextPostSec,
+      });
+      setProjects?.((prev) =>
+        prev.map((item) =>
+          item.id === project.id
+            ? {
+                ...item,
+                clipPreSeconds: nextPreSec,
+                clipPostSeconds: nextPostSec,
+              }
+            : item,
+        ),
+      );
+      return true;
+    } catch (error) {
+      Alert.alert(
+        "保存エラー",
+        "全体の切り抜き時間を保存できませんでした。通信状態を確認して、もう一度お試しください。",
+      );
+      return false;
+    } finally {
+      isSavingClipSettingsRef.current = false;
+    }
+  }, [activeTeamId, postSec, preSec, project.id, setProjects]);
+
+  usePreventRemove(hasUnsavedClipSettings, ({ data }) => {
+    if (isSavingClipSettingsRef.current) return;
+
+    saveGlobalClipSettings().then((saved) => {
+      if (!saved) return;
+      setTimeout(() => navigation.dispatch(data.action), 0);
+    });
+  });
 
   const extractYoutubeId = (url) => {
     if (!url) return null;
@@ -310,8 +402,7 @@ const ProjectDetailScreen = ({
       label,
       user: displayUserName,
       status: "private",
-      preSeconds: preSec,
-      postSeconds: postSec,
+      useCustomClipDuration: false,
     };
 
     const newTags = [...localTags, newTag].sort(
@@ -379,11 +470,15 @@ const ProjectDetailScreen = ({
     if (!canEditVideoTags) return;
     setEditingRecordedTag(tag);
     setEditingRecordedTags(splitTagLabel(tag.label));
+    setEditingUseCustomClipDuration(tag.useCustomClipDuration === true);
+    setEditingPreSec(normalizeClipSeconds(tag.preSeconds, preSec));
+    setEditingPostSec(normalizeClipSeconds(tag.postSeconds, postSec));
   };
 
   const handleCloseRecordedTagEditor = () => {
     setEditingRecordedTag(null);
     setEditingRecordedTags([]);
+    setEditingUseCustomClipDuration(false);
   };
 
   const toggleEditingRecordedTag = (label) => {
@@ -403,9 +498,27 @@ const ProjectDetailScreen = ({
     }
 
     const newLabel = editingRecordedTags.join(" + ");
-    const newTags = localTags.map((tag) =>
-      tag.id === editingRecordedTag.id ? { ...tag, label: newLabel } : tag,
-    );
+    const newTags = localTags.map((tag) => {
+      if (tag.id !== editingRecordedTag.id) return tag;
+
+      const updatedTag = {
+        ...tag,
+        label: newLabel,
+        useCustomClipDuration: editingUseCustomClipDuration,
+      };
+
+      if (editingUseCustomClipDuration) {
+        return {
+          ...updatedTag,
+          preSeconds: normalizeClipSeconds(editingPreSec, preSec),
+          postSeconds: normalizeClipSeconds(editingPostSec, postSec),
+        };
+      }
+
+      const { preSeconds: _preSeconds, postSeconds: _postSeconds, ...globalTag } =
+        updatedTag;
+      return globalTag;
+    });
 
     setLocalTags(newTags);
     handleCloseRecordedTagEditor();
@@ -651,27 +764,34 @@ const ProjectDetailScreen = ({
           {canEditVideoTags && (
             <>
               <View style={styles.clipSettingsRow}>
-                <Text style={styles.clipSettingsLabel}>✂️ 切り抜き:</Text>
+                <Text style={styles.clipSettingsLabel}>✂️ 全体切り抜き:</Text>
                 <Text style={styles.clipSettingsText}>前</Text>
                 <TextInput
                   style={styles.clipSettingsInput}
                   keyboardType="number-pad"
                   value={String(preSec)}
-                  onChangeText={(v) => setPreSec(Number(v) || 0)}
+                  onChangeText={(value) =>
+                    setPreSec(normalizeClipSeconds(value))
+                  }
                   selectTextOnFocus
                   inputAccessoryViewID="doneAccessory" // ★ 両方のInputに共通のIDを設定
                 />
-            <Text style={styles.clipSettingsText}>秒 〜 後</Text>
+                <Text style={styles.clipSettingsText}>秒 〜 後</Text>
                 <TextInput
                   style={styles.clipSettingsInput}
                   keyboardType="number-pad"
                   value={String(postSec)}
-                  onChangeText={(v) => setPostSec(Number(v) || 0)}
+                  onChangeText={(value) =>
+                    setPostSec(normalizeClipSeconds(value))
+                  }
                   selectTextOnFocus
                   inputAccessoryViewID="doneAccessory" // ★ 両方のInputに共通のIDを設定
                 />
                 <Text style={styles.clipSettingsText}>秒</Text>
               </View>
+              <Text style={styles.clipSettingsHint}>
+                この動画の全タグに適用され、画面を戻ると保存されます。
+              </Text>
 
               <TouchableOpacity
                 style={[
@@ -750,6 +870,13 @@ const ProjectDetailScreen = ({
                       )}
                       {unregisteredTags.length > 0 && (
                         <Text style={styles.warningBadge}>未登録タグあり</Text>
+                      )}
+                      {tag.useCustomClipDuration === true && (
+                        <Text style={styles.customClipBadge}>
+                          個別 前
+                          {normalizeClipSeconds(tag.preSeconds, preSec)}秒 / 後
+                          {normalizeClipSeconds(tag.postSeconds, postSec)}秒
+                        </Text>
                       )}
                     </View>
                   </View>
@@ -895,6 +1022,49 @@ const ProjectDetailScreen = ({
                     <Text style={styles.warningTagOptionText}>⚠ {tag}</Text>
                   </TouchableOpacity>
                 ))}
+            </View>
+
+            <View style={styles.customClipSection}>
+              <View style={styles.customClipHeader}>
+                <Text style={styles.customClipTitle}>個別の切り抜き時間</Text>
+                <Switch
+                  value={editingUseCustomClipDuration}
+                  onValueChange={setEditingUseCustomClipDuration}
+                  trackColor={{ false: "#ccc", true: "#80bfff" }}
+                  thumbColor={editingUseCustomClipDuration ? "#0077cc" : "#f4f3f4"}
+                />
+              </View>
+              <Text style={styles.customClipDescription}>
+                OFFの場合は全体設定（前{preSec}秒・後{postSec}秒）を使用します。
+              </Text>
+
+              {editingUseCustomClipDuration && (
+                <View style={styles.customClipInputs}>
+                  <Text style={styles.clipSettingsText}>前</Text>
+                  <TextInput
+                    style={styles.clipSettingsInput}
+                    keyboardType="number-pad"
+                    value={String(editingPreSec)}
+                    onChangeText={(value) =>
+                      setEditingPreSec(normalizeClipSeconds(value))
+                    }
+                    selectTextOnFocus
+                    inputAccessoryViewID="doneAccessory"
+                  />
+                  <Text style={styles.clipSettingsText}>秒 〜 後</Text>
+                  <TextInput
+                    style={styles.clipSettingsInput}
+                    keyboardType="number-pad"
+                    value={String(editingPostSec)}
+                    onChangeText={(value) =>
+                      setEditingPostSec(normalizeClipSeconds(value))
+                    }
+                    selectTextOnFocus
+                    inputAccessoryViewID="doneAccessory"
+                  />
+                  <Text style={styles.clipSettingsText}>秒</Text>
+                </View>
+              )}
             </View>
 
             <View style={styles.modalButtonsRow}>
@@ -1230,6 +1400,16 @@ const styles = StyleSheet.create({
     marginLeft: 8,
     fontWeight: "bold",
   },
+  customClipBadge: {
+    fontSize: 10,
+    backgroundColor: "#e6f2ff",
+    color: "#0077cc",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    marginLeft: 8,
+    fontWeight: "bold",
+  },
 
   editRecordedTagAction: { paddingHorizontal: 8, paddingVertical: 10 },
   editRecordedTagActionText: {
@@ -1317,6 +1497,13 @@ const styles = StyleSheet.create({
     color: "#0077cc",
     fontWeight: "bold",
   },
+  clipSettingsHint: {
+    color: "#777",
+    fontSize: 11,
+    textAlign: "center",
+    marginTop: -4,
+    marginBottom: 8,
+  },
 
   recordTagBtn: {
     backgroundColor: "#e74c3c",
@@ -1397,6 +1584,32 @@ const styles = StyleSheet.create({
   editTagOptionTextActive: { color: "#fff" },
   warningTagOption: { backgroundColor: "#fff4d6", borderColor: "#f1c40f" },
   warningTagOptionText: { color: "#9a6700", fontSize: 13, fontWeight: "bold" },
+  customClipSection: {
+    backgroundColor: "#f7f9fb",
+    borderWidth: 1,
+    borderColor: "#d9e2ec",
+    borderRadius: 10,
+    padding: 12,
+    marginTop: 4,
+  },
+  customClipHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  customClipTitle: { fontSize: 14, color: "#333", fontWeight: "bold" },
+  customClipDescription: {
+    color: "#666",
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 6,
+  },
+  customClipInputs: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 12,
+  },
   modalButtonsRow: {
     flexDirection: "row",
     justifyContent: "flex-end",
