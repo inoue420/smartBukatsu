@@ -5,8 +5,8 @@ export const DEFAULT_INTERSTITIAL_SETTINGS = Object.freeze({
 
 export const INTERSTITIAL_NAVIGATION_INTERVAL_MIN = 5;
 export const INTERSTITIAL_NAVIGATION_INTERVAL_MAX = 30;
-export const INTERSTITIAL_DAILY_LIMIT_MIN = 0;
-export const INTERSTITIAL_DAILY_LIMIT_MAX = 3;
+export const INTERSTITIAL_DAILY_LIMIT_MIN = 1;
+export const INTERSTITIAL_DAILY_LIMIT_MAX = 10;
 
 const clampInteger = (value, fallback, min, max) => {
   const parsedValue = Number(value);
