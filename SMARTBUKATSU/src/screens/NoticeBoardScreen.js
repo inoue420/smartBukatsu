@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -58,6 +58,49 @@ const NoticeBoardScreen = ({
   const [editingNoticeId, setEditingNoticeId] = useState(null);
 
   const [isSaving, setIsSaving] = useState(false);
+  const [androidKeyboardInset, setAndroidKeyboardInset] = useState(0);
+  const createScrollRef = useRef(null);
+  const contentInputRef = useRef(null);
+  const scrollTimerRef = useRef(null);
+
+  const scrollCreateFormToEnd = useCallback(() => {
+    if (Platform.OS !== "android") return;
+
+    if (scrollTimerRef.current !== null) {
+      clearTimeout(scrollTimerRef.current);
+    }
+
+    scrollTimerRef.current = setTimeout(() => {
+      createScrollRef.current?.scrollToEnd({ animated: true });
+    }, 300);
+  }, []);
+
+  useEffect(() => {
+    if (Platform.OS !== "android") return undefined;
+
+    const showSubscription = Keyboard.addListener(
+      "keyboardDidShow",
+      (event) => {
+        setAndroidKeyboardInset(
+          Math.max(0, event.endCoordinates?.height || 0),
+        );
+        if (contentInputRef.current?.isFocused()) {
+          scrollCreateFormToEnd();
+        }
+      },
+    );
+    const hideSubscription = Keyboard.addListener("keyboardDidHide", () => {
+      setAndroidKeyboardInset(0);
+    });
+
+    return () => {
+      if (scrollTimerRef.current !== null) {
+        clearTimeout(scrollTimerRef.current);
+      }
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, [scrollCreateFormToEnd]);
 
   const [readByListVisible, setReadByListVisible] = useState(false);
   const [currentReadByList, setCurrentReadByList] = useState([]);
@@ -523,7 +566,16 @@ const NoticeBoardScreen = ({
                 <View style={{ width: 60 }} />
               </View>
 
-              <ScrollView style={styles.createScroll}>
+              <ScrollView
+                ref={createScrollRef}
+                style={styles.createScroll}
+                contentContainerStyle={
+                  Platform.OS === "android" && androidKeyboardInset > 0
+                    ? { paddingBottom: androidKeyboardInset }
+                    : undefined
+                }
+                keyboardShouldPersistTaps="handled"
+              >
                 <Text style={styles.inputLabel}>タイトル</Text>
                 <TextInput
                   style={styles.inputSingle}
@@ -535,12 +587,14 @@ const NoticeBoardScreen = ({
 
                 <Text style={styles.inputLabel}>本文</Text>
                 <TextInput
+                  ref={contentInputRef}
                   style={styles.inputMulti}
                   placeholder="連絡事項を入力してください..."
                   value={newContent}
                   onChangeText={setNewContent}
                   multiline
                   editable={!isSaving}
+                  onFocus={scrollCreateFormToEnd}
                 />
 
                 <TouchableOpacity

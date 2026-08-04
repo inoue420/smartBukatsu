@@ -1,5 +1,13 @@
-import React, { useEffect, useState } from "react";
-import { Keyboard, SafeAreaView, StyleSheet, View } from "react-native";
+import React, { useEffect, useRef, useState } from "react";
+import {
+  Keyboard,
+  KeyboardAvoidingView,
+  Platform,
+  SafeAreaView,
+  StyleSheet,
+  TextInput,
+  View,
+} from "react-native";
 import {
   BannerAd,
   BannerAdSize,
@@ -7,31 +15,79 @@ import {
 
 import { useAds } from "./AdManager";
 
+const BANNER_INPUT_GAP = 16;
+
 const AppBannerAd = () => {
   const { adsInitialized, bannerAdUnitId } = useAds();
-  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  const bannerContainerRef = useRef(null);
+  const [focusedInputOffset, setFocusedInputOffset] = useState(0);
 
   useEffect(() => {
-    const showSubscription = Keyboard.addListener("keyboardDidShow", () => {
-      setKeyboardVisible(true);
-    });
+    let measurementFrame = null;
+
+    const updateFocusedInputOffset = () => {
+      const focusedInput = TextInput.State.currentlyFocusedInput();
+      const bannerContainer = bannerContainerRef.current;
+
+      if (
+        !focusedInput?.measureInWindow ||
+        !bannerContainer?.measureInWindow
+      ) {
+        setFocusedInputOffset(0);
+        return;
+      }
+
+      if (measurementFrame !== null) {
+        cancelAnimationFrame(measurementFrame);
+      }
+
+      measurementFrame = requestAnimationFrame(() => {
+        focusedInput.measureInWindow((_x, inputTop) => {
+          bannerContainer.measureInWindow(
+            (_bannerX, bannerTop, _bannerWidth, bannerHeight) => {
+              const bannerBottom = bannerTop + bannerHeight;
+              const measuredOffset =
+                bannerBottom - inputTop + BANNER_INPUT_GAP;
+
+              setFocusedInputOffset(Math.max(0, measuredOffset));
+            },
+          );
+        });
+      });
+    };
+
+    const showSubscription = Keyboard.addListener(
+      "keyboardDidShow",
+      updateFocusedInputOffset,
+    );
     const hideSubscription = Keyboard.addListener("keyboardDidHide", () => {
-      setKeyboardVisible(false);
+      setFocusedInputOffset(0);
     });
 
     return () => {
+      if (measurementFrame !== null) {
+        cancelAnimationFrame(measurementFrame);
+      }
       showSubscription.remove();
       hideSubscription.remove();
     };
   }, []);
 
-  if (!adsInitialized || !bannerAdUnitId || keyboardVisible) {
+  if (!adsInitialized || !bannerAdUnitId) {
     return null;
   }
 
   return (
+    <KeyboardAvoidingView
+      behavior={Platform.OS === "ios" ? "position" : undefined}
+      style={
+        focusedInputOffset > 0
+          ? { transform: [{ translateY: -focusedInputOffset }] }
+          : undefined
+      }
+    >
     <SafeAreaView style={styles.safeArea}>
-      <View style={styles.container}>
+      <View ref={bannerContainerRef} style={styles.container}>
         <BannerAd
           unitId={bannerAdUnitId}
           size={BannerAdSize.ANCHORED_ADAPTIVE_BANNER}
@@ -43,6 +99,7 @@ const AppBannerAd = () => {
         />
       </View>
     </SafeAreaView>
+    </KeyboardAvoidingView>
   );
 };
 
