@@ -33,14 +33,17 @@ const getLocalDateKey = () => {
 const getProductionUnitId = (androidId, iosId) =>
   Platform.select({ android: androidId, ios: iosId }) || null;
 
-const bannerAdUnitId = __DEV__
+const useTestAds =
+  __DEV__ || process.env.EXPO_PUBLIC_ADMOB_USE_TEST_ADS === "true";
+
+const bannerAdUnitId = useTestAds
   ? TestIds.BANNER
   : getProductionUnitId(
       process.env.EXPO_PUBLIC_ADMOB_ANDROID_BANNER_UNIT_ID,
       process.env.EXPO_PUBLIC_ADMOB_IOS_BANNER_UNIT_ID,
     );
 
-const interstitialAdUnitId = __DEV__
+const interstitialAdUnitId = useTestAds
   ? TestIds.INTERSTITIAL
   : getProductionUnitId(
       process.env.EXPO_PUBLIC_ADMOB_ANDROID_INTERSTITIAL_UNIT_ID,
