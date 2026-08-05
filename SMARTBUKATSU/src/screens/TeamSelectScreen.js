@@ -31,7 +31,7 @@ const roleLabels = {
 };
 
 const TeamSelectScreen = ({ navigation }) => {
-  const { user, userName, activeTeamId, teamIds, selectTeam } = useAuth();
+  const { user, userName, activeTeamId, teamIds, selectTeam, signOut } = useAuth();
   const [teams, setTeams] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [busyTeamId, setBusyTeamId] = useState(null);
@@ -39,6 +39,7 @@ const TeamSelectScreen = ({ navigation }) => {
   const [inviteCode, setInviteCode] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [isJoining, setIsJoining] = useState(false);
+  const [isSigningOut, setIsSigningOut] = useState(false);
   const [shouldReturnHome, setShouldReturnHome] = useState(false);
 
   const canAddTeam = (teamIds?.length || 0) < MAX_TEAMS_PER_USER;
@@ -149,6 +150,27 @@ const TeamSelectScreen = ({ navigation }) => {
     }
   };
 
+  const handleSignOut = () => {
+    Alert.alert("ログアウト", "ログアウトしてよろしいですか？", [
+      { text: "キャンセル", style: "cancel" },
+      {
+        text: "ログアウト",
+        style: "destructive",
+        onPress: async () => {
+          setIsSigningOut(true);
+          try {
+            await signOut();
+          } catch (error) {
+            console.log("ログアウトエラー:", error);
+            Alert.alert("エラー", "ログアウトに失敗しました。");
+          } finally {
+            setIsSigningOut(false);
+          }
+        },
+      },
+    ]);
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <KeyboardAvoidingView
@@ -161,14 +183,31 @@ const TeamSelectScreen = ({ navigation }) => {
               <Text style={styles.title}>チーム管理</Text>
               <Text style={styles.subtitle}>所属 {teams.length} / {MAX_TEAMS_PER_USER}</Text>
             </View>
-            {canGoBack && (
+            <View style={styles.headerActions}>
+              {canGoBack && (
+                <TouchableOpacity
+                  style={styles.closeBtn}
+                  onPress={() => navigation.goBack()}
+                  disabled={isSigningOut}
+                >
+                  <Text style={styles.closeBtnText}>閉じる</Text>
+                </TouchableOpacity>
+              )}
               <TouchableOpacity
-                style={styles.closeBtn}
-                onPress={() => navigation.goBack()}
+                style={[
+                  styles.signOutBtn,
+                  isSigningOut && styles.signOutBtnDisabled,
+                ]}
+                onPress={handleSignOut}
+                disabled={isSigningOut}
               >
-                <Text style={styles.closeBtnText}>閉じる</Text>
+                {isSigningOut ? (
+                  <ActivityIndicator size="small" color="#b42318" />
+                ) : (
+                  <Text style={styles.signOutBtnText}>ログアウト</Text>
+                )}
               </TouchableOpacity>
-            )}
+            </View>
           </View>
 
           {isLoading ? (
@@ -284,6 +323,7 @@ const styles = StyleSheet.create({
   titleBox: { flex: 1, marginRight: 12 },
   title: { fontSize: 24, fontWeight: "bold", color: "#222" },
   subtitle: { fontSize: 13, fontWeight: "bold", color: "#0077cc", marginTop: 3 },
+  headerActions: { flexDirection: "row", alignItems: "center", gap: 8 },
   closeBtn: {
     borderWidth: 1,
     borderColor: "#dce2e8",
@@ -293,6 +333,18 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
   },
   closeBtnText: { color: "#333", fontSize: 13, fontWeight: "bold" },
+  signOutBtn: {
+    minWidth: 86,
+    borderWidth: 1,
+    borderColor: "#f0b4ae",
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    alignItems: "center",
+    backgroundColor: "#fff5f4",
+  },
+  signOutBtnDisabled: { opacity: 0.6 },
+  signOutBtnText: { color: "#b42318", fontSize: 13, fontWeight: "bold" },
   section: {
     backgroundColor: "#fff",
     borderRadius: 8,

@@ -14,7 +14,8 @@ import {
   arrayUnion,
   arrayRemove,
 } from "firebase/firestore";
-import { db } from "../firebase";
+import { httpsCallable } from "firebase/functions";
+import { db, cloudFunctions } from "../firebase";
 export const MAX_TEAMS_PER_USER = 5;
 
 function normalizeTeamIds(data = {}) {
@@ -141,26 +142,14 @@ export async function joinTeamWithInvite(uid, inviteCodeInput, userName = "ゲ�
   const inviteCode = (inviteCodeInput || "").trim().toUpperCase();
   if (!inviteCode) throw new Error("招待コードを入力してください。");
 
-  const inviteSnap = await getDoc(doc(db, "invites", inviteCode));
-  if (!inviteSnap.exists() || !inviteSnap.data().active) {
-    throw new Error("無効な招待コードです。");
+  const joinTeam = httpsCallable(cloudFunctions, "joinTeamWithInvite");
+  const response = await joinTeam({ inviteCode, userName: userName || "ゲスト" });
+  const teamId = response.data?.teamId;
+
+  if (!teamId) {
+    throw new Error("チームへの参加結果を確認できませんでした。");
   }
 
-  const teamId = inviteSnap.data().teamId;
-  await assertCanAddTeam(uid, teamId);
-
-  const memberRef = doc(db, "teams", teamId, "members", uid);
-  const memberSnap = await getDoc(memberRef);
-  if (!memberSnap.exists()) {
-    await setDoc(memberRef, {
-      name: userName || "ゲスト",
-      role: "member",
-      inviteCode: inviteCode,
-      joinedAt: serverTimestamp(),
-    });
-  }
-
-  await rememberTeamMembership(uid, teamId);
   return { teamId, type: "join" };
 }
 
