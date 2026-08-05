@@ -123,11 +123,23 @@ const DEFAULT_MAP_DELTA = {
 };
 
 const isValidCoordinate = (latitude, longitude) => {
+  if (
+    latitude === null ||
+    latitude === undefined ||
+    longitude === null ||
+    longitude === undefined ||
+    String(latitude).trim() === "" ||
+    String(longitude).trim() === ""
+  ) {
+    return false;
+  }
+
   const lat = Number(latitude);
   const lng = Number(longitude);
   return (
     Number.isFinite(lat) &&
     Number.isFinite(lng) &&
+    !(lat === 0 && lng === 0) &&
     lat >= -90 &&
     lat <= 90 &&
     lng >= -180 &&
@@ -138,8 +150,6 @@ const isValidCoordinate = (latitude, longitude) => {
 const buildGoogleMapsUrl = (latitude, longitude) =>
   `https://www.google.com/maps/search/?api=1&query=${latitude},${longitude}`;
 
-const encodeMapQuery = (query) =>
-  `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
 
 const getLocationFromEvent = (event) => {
   if (!event) return null;
@@ -168,15 +178,13 @@ const getLocationFromEvent = (event) => {
 };
 
 const getLocationUrl = (location) => {
-  if (!location) return "";
-  if (isValidCoordinate(location.latitude, location.longitude)) {
-    return buildGoogleMapsUrl(
-      Number(location.latitude),
-      Number(location.longitude),
-    );
+  if (!location || !isValidCoordinate(location.latitude, location.longitude)) {
+    return "";
   }
-  const fallbackQuery = [location.name, location.address].filter(Boolean).join(" ");
-  return fallbackQuery ? encodeMapQuery(fallbackQuery) : location.url || "";
+  return buildGoogleMapsUrl(
+    Number(location.latitude),
+    Number(location.longitude),
+  );
 };
 
 const normalizeDate = (dateStr) => {
@@ -188,6 +196,45 @@ const normalizeDate = (dateStr) => {
     }
   }
   return dateStr;
+};
+
+const getLocalDateStart = (dateStr) => {
+  const normalized = normalizeDate(dateStr);
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(normalized);
+  if (!match) return null;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(year, month - 1, day);
+  if (
+    date.getFullYear() !== year ||
+    date.getMonth() !== month - 1 ||
+    date.getDate() !== day
+  ) {
+    return null;
+  }
+  date.setHours(0, 0, 0, 0);
+  return date;
+};
+
+const isAbsenceDeadlineReached = (dateStr, daysBefore) => {
+  const eventDate = getLocalDateStart(dateStr);
+  if (!eventDate) return false;
+
+  const normalizedDays = Number(daysBefore);
+  const safeDays =
+    Number.isInteger(normalizedDays) &&
+    normalizedDays >= 0 &&
+    normalizedDays <= 365
+      ? normalizedDays
+      : 3;
+  const deadline = new Date(eventDate);
+  deadline.setDate(deadline.getDate() - safeDays);
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return today >= deadline;
 };
 
 const getDatesInRange = (startDate, endDate) => {
@@ -379,6 +426,7 @@ const CalendarScreen = ({
   personalEvents = [],
   userProfiles = {},
   isOffline = false,
+  absenceDeadlineDaysBefore = 3,
 }) => {
   const { activeTeamId, user } = useAuth();
 
@@ -391,6 +439,13 @@ const CalendarScreen = ({
     userRole,
   );
   const isGuardian = userRole === "guardian";
+  const configuredAbsenceDeadlineDays = Number(absenceDeadlineDaysBefore);
+  const safeAbsenceDeadlineDays =
+    Number.isInteger(configuredAbsenceDeadlineDays) &&
+    configuredAbsenceDeadlineDays >= 0 &&
+    configuredAbsenceDeadlineDays <= 365
+      ? configuredAbsenceDeadlineDays
+      : 3;
 
   const [selectedDate, setSelectedDate] = useState(
     new Date().toISOString().split("T")[0],
@@ -632,6 +687,11 @@ const CalendarScreen = ({
 
   const getAbsenceComments = (event) =>
     Array.isArray(event?.absenceComments) ? event.absenceComments : [];
+
+  const isActiveAbsenceDeadlineReached = isAbsenceDeadlineReached(
+    selectedDate,
+    safeAbsenceDeadlineDays,
+  );
 
   const canCancelAbsenceComment = (comment) =>
     !!user?.uid && comment?.uid === user.uid;
@@ -1278,6 +1338,15 @@ const CalendarScreen = ({
     if (isGuardian) return;
     const text = absenceCommentText.trim();
     if (!activeAbsenceEvent || !text) return;
+    if (isActiveAbsenceDeadlineReached) {
+      Alert.alert(
+        "受付期限終了",
+        "この予定の不参加連絡は、予定日の" +
+          safeAbsenceDeadlineDays +
+          "日前に締め切られました。",
+      );
+      return;
+    }
     if (isOffline) {
       Alert.alert("通信エラー", "不参加連絡はオンライン時に送信してください。");
       return;
@@ -1643,6 +1712,10 @@ const CalendarScreen = ({
             dailyClubEvents.map((item) => {
               const isPending = item.status === "pending";
               const itemLocation = getLocationFromEvent(item);
+              const hasItemLocationCoordinate = isValidCoordinate(
+                itemLocation?.latitude,
+                itemLocation?.longitude,
+              );
               return (
                 <View
                   key={item.id}
@@ -1687,14 +1760,16 @@ const CalendarScreen = ({
                             補足：{itemLocation.note}
                           </Text>
                         ) : null}
-                        <View style={styles.locationButtonRow}>
-                          <TouchableOpacity
-                            style={styles.locationMiniBtn}
-                            onPress={() => shareEventLocation(item)}
-                          >
-                            <Text style={styles.locationMiniBtnText}>場所を共有</Text>
-                          </TouchableOpacity>
-                        </View>
+                        {hasItemLocationCoordinate ? (
+                          <View style={styles.locationButtonRow}>
+                            <TouchableOpacity
+                              style={styles.locationMiniBtn}
+                              onPress={() => shareEventLocation(item)}
+                            >
+                              <Text style={styles.locationMiniBtnText}>場所を共有</Text>
+                            </TouchableOpacity>
+                          </View>
+                        ) : null}
                       </View>
                     ) : null}
                     <Text style={styles.eventSub}>
@@ -1984,14 +2059,26 @@ const CalendarScreen = ({
                 ))
               )}
 
-              <Text style={styles.label}>不参加コメント</Text>
-              <TextInput
-                style={[styles.input, styles.textArea]}
-                value={absenceCommentText}
-                onChangeText={setAbsenceCommentText}
-                placeholder="例: 体調不良のため欠席します"
-                multiline
-              />
+              {isActiveAbsenceDeadlineReached ? (
+                <View style={styles.absenceDeadlineNotice}>
+                  <Text style={styles.absenceDeadlineNoticeText}>
+                    この予定の新しい不参加連絡は、予定日の
+                    {safeAbsenceDeadlineDays}
+                    日前に締め切られました。登録済みの連絡は確認・取り消しできます。
+                  </Text>
+                </View>
+              ) : (
+                <>
+                  <Text style={styles.label}>不参加コメント</Text>
+                  <TextInput
+                    style={[styles.input, styles.textArea]}
+                    value={absenceCommentText}
+                    onChangeText={setAbsenceCommentText}
+                    placeholder="例: 体調不良のため欠席します"
+                    multiline
+                  />
+                </>
+              )}
               <View style={styles.modalButtons}>
                 <TouchableOpacity
                   style={styles.cancelBtn}
@@ -1999,12 +2086,14 @@ const CalendarScreen = ({
                 >
                   <Text style={styles.cancelBtnText}>閉じる</Text>
                 </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.submitBtn}
-                  onPress={handleSendAbsenceComment}
-                >
-                  <Text style={styles.submitBtnText}>送信</Text>
-                </TouchableOpacity>
+                {!isActiveAbsenceDeadlineReached && (
+                  <TouchableOpacity
+                    style={styles.submitBtn}
+                    onPress={handleSendAbsenceComment}
+                  >
+                    <Text style={styles.submitBtnText}>送信</Text>
+                  </TouchableOpacity>
+                )}
               </View>
             </ScrollView>
           </KeyboardAvoidingView>
@@ -3132,6 +3221,20 @@ const styles = StyleSheet.create({
   commentHeaderUser: {
     flex: 1,
     marginBottom: 0,
+  },
+  absenceDeadlineNotice: {
+    marginTop: 12,
+    marginBottom: 8,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: "#fff4e5",
+    borderWidth: 1,
+    borderColor: "#f5c16c",
+  },
+  absenceDeadlineNoticeText: {
+    fontSize: 13,
+    color: "#8a5200",
+    lineHeight: 19,
   },
   absenceCancelBtn: {
     borderWidth: 1,

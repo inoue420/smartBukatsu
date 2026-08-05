@@ -43,6 +43,7 @@ import RosterScreen from "./src/screens/RosterScreen";
 
 LogBox.ignoreLogs(["[expo-av]"]);
 const Stack = createNativeStackNavigator();
+const DEFAULT_ABSENCE_DEADLINE_DAYS_BEFORE = 3;
 
 function AppContent() {
   const navigationRef = useNavigationContainerRef();
@@ -82,6 +83,9 @@ function AppContent() {
   const [interstitialSettings, setInterstitialSettings] = useState({
     ...DEFAULT_INTERSTITIAL_SETTINGS,
   });
+  const [absenceDeadlineDaysBefore, setAbsenceDeadlineDaysBefore] = useState(
+    DEFAULT_ABSENCE_DEADLINE_DAYS_BEFORE,
+  );
   const [isOffline, setIsOffline] = useState(false);
   const [posts, setPosts] = useState([]);
 
@@ -105,6 +109,7 @@ function AppContent() {
   useEffect(() => {
     if (user && activeTeamId) {
       setInterstitialSettings({ ...DEFAULT_INTERSTITIAL_SETTINGS });
+      setAbsenceDeadlineDaysBefore(DEFAULT_ABSENCE_DEADLINE_DAYS_BEFORE);
       const unsubProjects = subscribeProjects(activeTeamId, setProjects);
       const unsubHighlightProjects = subscribeHighlightProjects(
         activeTeamId,
@@ -126,6 +131,16 @@ function AppContent() {
           if (data.positions !== undefined) setPositions(data.positions);
           setInterstitialSettings(
             getInterstitialSettingsFromTeamData(data.adSettings),
+          );
+          const configuredAbsenceDeadline = Number(
+            data.absenceDeadlineDaysBefore,
+          );
+          setAbsenceDeadlineDaysBefore(
+            Number.isInteger(configuredAbsenceDeadline) &&
+              configuredAbsenceDeadline >= 0 &&
+              configuredAbsenceDeadline <= 365
+              ? configuredAbsenceDeadline
+              : DEFAULT_ABSENCE_DEADLINE_DAYS_BEFORE,
           );
         }
       });
@@ -170,6 +185,7 @@ function AppContent() {
       setHighlightProjects([]);
       setTagGroups([]);
       setUserProfiles({});
+      setAbsenceDeadlineDaysBefore(DEFAULT_ABSENCE_DEADLINE_DAYS_BEFORE);
     }
   }, [user, activeTeamId]);
 
@@ -320,6 +336,7 @@ function AppContent() {
                   userProfiles={userProfiles}
                   personalEvents={personalEvents}
                   setPersonalEvents={setPersonalEvents}
+                  absenceDeadlineDaysBefore={absenceDeadlineDaysBefore}
                 />
               )}
             </Stack.Screen>
@@ -402,6 +419,8 @@ function AppContent() {
                   userProfiles={userProfiles}
                   interstitialSettings={interstitialSettings}
                   setInterstitialSettings={setInterstitialSettings}
+                  absenceDeadlineDaysBefore={absenceDeadlineDaysBefore}
+                  setAbsenceDeadlineDaysBefore={setAbsenceDeadlineDaysBefore}
                   setUserProfiles={setUserProfiles}
                 />
               )}

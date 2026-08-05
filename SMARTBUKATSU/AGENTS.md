@@ -25,7 +25,6 @@ Codexは、VS Codeで開いているローカルワークスペース内のフ�
 
 ---
 
-
 ## 3. 変更点管理シートと管理番号ベースの標準フロー
 
 ### 3.1 変更点管理シート
@@ -33,13 +32,13 @@ Codexは、VS Codeで開いているローカルワークスペース内のフ�
 SMARTBUKATSUの変更点管理シートは次のファイルです。
 
 ```text
-https://docs.google.com/spreadsheets/d/1u8zlsymafleAy4tRoxsTca3XgpggJWne/edit
+https://docs.google.com/spreadsheets/d/1AqG1eDzzgD6uEy3E_jb06StlTJZszS-jBJj-_s62hz4/edit
 ```
 
 Drive上のファイル名：
 
 ```text
-SmartBukatsu_改訂履歴管理シート.xlsx
+SmartBukatsu_改訂履歴管理シート
 ```
 
 主なシート：
@@ -47,7 +46,7 @@ SmartBukatsu_改訂履歴管理シート.xlsx
 - 改訂履歴
 - 入力候補
 
-管理ファイルはGoogle Sheetsネイティブ形式ではなく、Drive上の`.xlsx`ファイルです。
+管理ファイルはGoogle スプレッドSheetsです。
 
 ユーザーから管理番号が指定された場合は、Google Driveプラグインを使用して対象管理番号の行を参照してください。
 
