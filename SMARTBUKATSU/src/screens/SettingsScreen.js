@@ -115,17 +115,26 @@ const SettingsScreen = ({
   userProfiles,
   interstitialSettings = DEFAULT_INTERSTITIAL_SETTINGS,
   setInterstitialSettings,
+  absenceDeadlineDaysBefore = 3,
+  setAbsenceDeadlineDaysBefore,
   setUserProfiles,
 }) => {
-  const { activeTeamId, logout } = useAuth();
+  const { activeTeamId, logout, user } = useAuth();
   const [inviteCode, setInviteCode] = useState("読み込み中...");
 
-  const currentUserProfile = userProfiles[currentUser] || {};
-  const userRole =
-    global.TEST_ROLE ||
-    (isAdmin ? "owner" : currentUserProfile.role || "member");
+  const currentUserUid = user?.uid || auth.currentUser?.uid || "";
+  const currentUserProfile =
+    userProfiles[currentUser] ||
+    Object.values(userProfiles).find(
+      (profile) => profile?.uid === currentUserUid,
+    ) ||
+    {};
+  const currentMemberRole =
+    currentUserProfile.role || (isAdmin ? "admin" : "member");
+  const userRole = global.TEST_ROLE || currentMemberRole;
+  const isSupervisor = ["owner", "admin"].includes(userRole);
   const isStaffOrAbove = ["owner", "staff", "admin"].includes(userRole);
-  const canManageGuardianPermissions = userRole === "owner";
+  const canManageGuardianPermissions = isStaffOrAbove;
 
   useEffect(() => {
     if (!activeTeamId) return;
@@ -149,6 +158,7 @@ const SettingsScreen = ({
 
   const [expanded, setExpanded] = useState({
     teamInfo: false,
+    absence: false,
     alert: false,
     member: false,
     grade: false,
@@ -164,6 +174,10 @@ const SettingsScreen = ({
     normalizeInterstitialSettings(interstitialSettings),
   );
   const [isSavingAdSettings, setIsSavingAdSettings] = useState(false);
+  const [absenceDeadlineDraft, setAbsenceDeadlineDraft] = useState(
+    String(absenceDeadlineDaysBefore),
+  );
+  const [isSavingAbsenceDeadline, setIsSavingAbsenceDeadline] = useState(false);
 
   useEffect(() => {
     setAdSettingsDraft(normalizeInterstitialSettings(interstitialSettings));
@@ -171,11 +185,17 @@ const SettingsScreen = ({
     interstitialSettings.dailyLimit,
     interstitialSettings.navigationInterval,
   ]);
+
+  useEffect(() => {
+    setAbsenceDeadlineDraft(String(absenceDeadlineDaysBefore));
+  }, [absenceDeadlineDaysBefore]);
+
   useEffect(() => {
     setMyNewName(currentUser);
   }, [currentUser]);
 
   const [inputTeamName, setInputTeamName] = useState("読み込み中...");
+  const [teamCreatedBy, setTeamCreatedBy] = useState("");
   useEffect(() => {
     if (activeTeamId) {
       const fetchTeamName = async () => {
@@ -185,6 +205,7 @@ const SettingsScreen = ({
           if (teamSnap.exists()) {
             const data = teamSnap.data();
             setInputTeamName(data.teamName || data.name || "");
+            setTeamCreatedBy(data.createdBy || "");
           }
         } catch (error) {
           console.log("チーム名取得エラー", error);
@@ -219,6 +240,7 @@ const SettingsScreen = ({
 
   const [isRoleModalVisible, setIsRoleModalVisible] = useState(false);
   const [selectedMemberForRole, setSelectedMemberForRole] = useState(null);
+  const [isChangingMemberRole, setIsChangingMemberRole] = useState(false);
 
   const [isAssignStaffModalVisible, setIsAssignStaffModalVisible] =
     useState(false);
@@ -228,9 +250,21 @@ const SettingsScreen = ({
     useState(false);
   const [selectedStaffForScope, setSelectedStaffForScope] = useState(null);
 
+  const isTeamCreator =
+    !!currentUserUid && !!teamCreatedBy && currentUserUid === teamCreatedBy;
+  const hasSupervisor = Object.values(userProfiles).some((profile) =>
+    ["owner", "admin"].includes(profile?.role),
+  );
+  const selectedMemberUid =
+    userProfiles[selectedMemberForRole]?.uid || "";
+  const canPromoteSelectedMemberToSupervisor =
+    !!selectedMemberUid &&
+    selectedMemberUid === currentUserUid &&
+    (isTeamCreator || (currentMemberRole === "staff" && !hasSupervisor));
+
   const roleConfig = {
     owner: { label: "監督(オーナー)", color: "#e74c3c", bg: "#fceeea" },
-    admin: { label: "管理者", color: "#e74c3c", bg: "#fceeea" },
+    admin: { label: "監督", color: "#e74c3c", bg: "#fceeea" },
     staff: { label: "スタッフ", color: "#9b59b6", bg: "#f5eef8" },
     captain: { label: "キャプテン", color: "#e67e22", bg: "#fdf2e9" },
     guardian: { label: "保護者", color: "#16a085", bg: "#e8f8f5" },
@@ -458,7 +492,7 @@ const SettingsScreen = ({
   };
 
   const handleSaveAdSettings = async () => {
-    if (userRole !== "owner" || !activeTeamId) return;
+    if (!isSupervisor || !activeTeamId) return;
 
     const normalizedSettings = normalizeInterstitialSettings(adSettingsDraft);
     setIsSavingAdSettings(true);
@@ -487,48 +521,84 @@ const SettingsScreen = ({
   };
 
   const handleOpenRoleModal = (memberName) => {
-    if (memberName === "管理者" || memberName === "監督") {
-      Alert.alert("エラー", "デフォルト管理者の権限は変更できません。");
-      return;
-    }
-    const targetRole = userProfiles[memberName]?.role || "member";
-    if (targetRole === "owner") {
-      Alert.alert("操作エラー", "監督(オーナー)の権限は変更できません。");
-      return;
-    }
-
-    if (
-      userRole === "staff" &&
-      targetRole === "staff" &&
-      memberName !== currentUser
-    ) {
-      Alert.alert(
-        "操作制限",
-        "他のスタッフの権限は変更できません。監督に依頼してください。",
-      );
-      return;
-    }
-
     setSelectedMemberForRole(memberName);
     setIsRoleModalVisible(true);
   };
 
-  const handleChangeRole = async (newRole) => {
-    if (!selectedMemberForRole) return;
-    const targetUid = userProfiles[selectedMemberForRole]?.uid;
+  const saveMemberRole = async (memberName, newRole) => {
+    const targetUid = userProfiles[memberName]?.uid;
+    if (!activeTeamId || !targetUid || isChangingMemberRole) return;
 
-    if (activeTeamId && targetUid) {
+    setIsChangingMemberRole(true);
+    try {
       await updateMemberRoleConfig(activeTeamId, targetUid, { role: newRole });
+      setIsRoleModalVisible(false);
+      setSelectedMemberForRole(null);
+      Alert.alert(
+        "設定完了",
+        memberName +
+          " の権限を「" +
+          roleConfig[newRole].label +
+          "」に変更しました。",
+      );
+    } catch (error) {
+      console.log("権限変更エラー:", error);
+      Alert.alert(
+        "エラー",
+        "権限を変更できませんでした。権限と通信状態を確認してください。",
+      );
+    } finally {
+      setIsChangingMemberRole(false);
     }
-
-    setIsRoleModalVisible(false);
-    Alert.alert(
-      "設定完了",
-      `${selectedMemberForRole} の権限を「${roleConfig[newRole].label}」に変更しました。`,
-    );
-    setSelectedMemberForRole(null);
   };
 
+  const handleChangeRole = (newRole) => {
+    if (!selectedMemberForRole) return;
+
+    const memberName = selectedMemberForRole;
+    const previousRole = userProfiles[memberName]?.role || "member";
+    const requiresDowngradeConfirmation =
+      ["owner", "admin", "staff"].includes(previousRole) &&
+      ["member", "captain", "guardian"].includes(newRole);
+
+    if (requiresDowngradeConfirmation) {
+      Alert.alert(
+        "権限変更の確認",
+        "一般部員、キャプテン、または保護者へ変更すると、このメンバーは自力で監督・スタッフ権限へ戻せなくなります。それでも変更しますか？",
+        [
+          { text: "キャンセル", style: "cancel" },
+          {
+            text: "変更する",
+            style: "destructive",
+            onPress: () => saveMemberRole(memberName, newRole),
+          },
+        ],
+      );
+      return;
+    }
+
+    saveMemberRole(memberName, newRole);
+  };
+
+  const handleRestoreSupervisorRole = async () => {
+    if (!isTeamCreator || !activeTeamId || !currentUserUid) return;
+
+    setIsChangingMemberRole(true);
+    try {
+      await updateMemberRoleConfig(activeTeamId, currentUserUid, {
+        role: "admin",
+      });
+      Alert.alert("設定完了", "監督権限へ戻しました。");
+    } catch (error) {
+      console.log("監督権限復旧エラー:", error);
+      Alert.alert(
+        "エラー",
+        "監督権限へ戻せませんでした。権限と通信状態を確認してください。",
+      );
+    } finally {
+      setIsChangingMemberRole(false);
+    }
+  };
   const handleToggleGuardianPermission = async (memberName, field, value) => {
     if (!canManageGuardianPermissions) return;
     const targetUid = userProfiles[memberName]?.uid;
@@ -582,6 +652,45 @@ const SettingsScreen = ({
     }
     setIsStaffScopeModalVisible(false);
     setSelectedStaffForScope(null);
+  };
+
+  const handleSaveAbsenceDeadline = async () => {
+    if (!isStaffOrAbove || !activeTeamId || isSavingAbsenceDeadline) return;
+
+    const trimmedValue = absenceDeadlineDraft.trim();
+    const nextValue = Number(trimmedValue);
+    if (
+      !/^\d+$/.test(trimmedValue) ||
+      !Number.isInteger(nextValue) ||
+      nextValue < 0 ||
+      nextValue > 365
+    ) {
+      Alert.alert("入力エラー", "0～365の整数を入力してください。");
+      return;
+    }
+
+    setIsSavingAbsenceDeadline(true);
+    try {
+      await updateDoc(doc(db, "teams", activeTeamId), {
+        absenceDeadlineDaysBefore: nextValue,
+      });
+      setAbsenceDeadlineDraft(String(nextValue));
+      setAbsenceDeadlineDaysBefore?.(nextValue);
+      Alert.alert(
+        "保存完了",
+        "不参加連絡は予定日の" +
+          nextValue +
+          "日前の午前0時から送信できなくなります。",
+      );
+    } catch (error) {
+      console.log("不参加連絡期限の保存エラー:", error);
+      Alert.alert(
+        "エラー",
+        "不参加連絡期限を保存できませんでした。権限と通信状態を確認してください。",
+      );
+    } finally {
+      setIsSavingAbsenceDeadline(false);
+    }
   };
 
   const copyToClipboard = (text, label) => {
@@ -771,6 +880,32 @@ const SettingsScreen = ({
                   )}
                 </TouchableOpacity>
               </SectionCard>
+
+              {isTeamCreator && !isStaffOrAbove && (
+                <SectionCard
+                  isExp={expanded.teamInfo}
+                  onToggle={() => toggleSection("teamInfo")}
+                  title="🛡️ 監督権限の復旧"
+                >
+                  <Text style={styles.subText}>
+                    このチームの作成者は、自分の役割を監督へ戻すことができます。
+                  </Text>
+                  <TouchableOpacity
+                    style={[
+                      styles.saveBtn,
+                      isChangingMemberRole && { opacity: 0.7 },
+                    ]}
+                    onPress={handleRestoreSupervisorRole}
+                    disabled={isChangingMemberRole}
+                  >
+                    {isChangingMemberRole ? (
+                      <ActivityIndicator color="#fff" />
+                    ) : (
+                      <Text style={styles.saveBtnText}>監督権限へ戻す</Text>
+                    )}
+                  </TouchableOpacity>
+                </SectionCard>
+              )}
             </>
           ) : (
             <>
@@ -950,7 +1085,41 @@ const SettingsScreen = ({
                 </TouchableOpacity>
               </SectionCard>
 
-              {userRole === "owner" && (
+              <SectionCard
+                isExp={expanded.absence}
+                onToggle={() => toggleSection("absence")}
+                title="📅 不参加連絡期限"
+              >
+                <Text style={styles.subText}>
+                  予定日の何日前から不参加連絡を送信できなくするか設定します。0日は予定日当日の午前0時から送信不可です。
+                </Text>
+                <Text style={styles.label}>送信を締め切る日数（0～365日）</Text>
+                <TextInput
+                  style={styles.input}
+                  value={absenceDeadlineDraft}
+                  onChangeText={setAbsenceDeadlineDraft}
+                  keyboardType="number-pad"
+                  inputMode="numeric"
+                  maxLength={3}
+                  placeholder="3"
+                />
+                <TouchableOpacity
+                  style={[
+                    styles.saveBtn,
+                    isSavingAbsenceDeadline && { opacity: 0.7 },
+                  ]}
+                  onPress={handleSaveAbsenceDeadline}
+                  disabled={isSavingAbsenceDeadline}
+                >
+                  {isSavingAbsenceDeadline ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text style={styles.saveBtnText}>不参加連絡期限を保存</Text>
+                  )}
+                </TouchableOpacity>
+              </SectionCard>
+
+              {isSupervisor && (
                 <SectionCard
                   isExp={expanded.ads}
                   onToggle={() => toggleSection("ads")}
@@ -1336,7 +1505,23 @@ const SettingsScreen = ({
               {selectedMemberForRole} の権限を変更
             </Text>
 
-            {userRole === "owner" && (
+            {canPromoteSelectedMemberToSupervisor &&
+              !["owner", "admin"].includes(
+                userProfiles[selectedMemberForRole]?.role,
+              ) && (
+                <TouchableOpacity
+                  style={styles.roleSelectBtn}
+                  onPress={() => handleChangeRole("admin")}
+                  disabled={isChangingMemberRole}
+                >
+                  <Text style={styles.roleSelectTitle}>🛡️ 監督</Text>
+                  <Text style={styles.roleSelectDesc}>
+                    チーム作成者、または他に監督がいないスタッフ本人だけが選択できます。
+                  </Text>
+                </TouchableOpacity>
+              )}
+
+            {isStaffOrAbove && (
               <TouchableOpacity
                 style={[
                   styles.roleSelectBtn,
@@ -1397,7 +1582,11 @@ const SettingsScreen = ({
 
             <TouchableOpacity
               style={styles.cancelBtn}
-              onPress={() => setIsRoleModalVisible(false)}
+              onPress={() => {
+                setIsRoleModalVisible(false);
+                setSelectedMemberForRole(null);
+              }}
+              disabled={isChangingMemberRole}
             >
               <Text style={styles.cancelBtnText}>キャンセル</Text>
             </TouchableOpacity>
