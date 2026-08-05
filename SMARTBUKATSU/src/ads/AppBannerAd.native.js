@@ -1,11 +1,9 @@
-import React, { useEffect, useRef, useState } from "react";
+import React from "react";
 import {
-  Keyboard,
   KeyboardAvoidingView,
   Platform,
   SafeAreaView,
   StyleSheet,
-  TextInput,
   View,
 } from "react-native";
 import {
@@ -15,63 +13,8 @@ import {
 
 import { useAds } from "./AdManager";
 
-const BANNER_INPUT_GAP = 16;
-
 const AppBannerAd = () => {
   const { adsInitialized, bannerAdUnitId } = useAds();
-  const bannerContainerRef = useRef(null);
-  const [focusedInputOffset, setFocusedInputOffset] = useState(0);
-
-  useEffect(() => {
-    let measurementFrame = null;
-
-    const updateFocusedInputOffset = () => {
-      const focusedInput = TextInput.State.currentlyFocusedInput();
-      const bannerContainer = bannerContainerRef.current;
-
-      if (
-        !focusedInput?.measureInWindow ||
-        !bannerContainer?.measureInWindow
-      ) {
-        setFocusedInputOffset(0);
-        return;
-      }
-
-      if (measurementFrame !== null) {
-        cancelAnimationFrame(measurementFrame);
-      }
-
-      measurementFrame = requestAnimationFrame(() => {
-        focusedInput.measureInWindow((_x, inputTop) => {
-          bannerContainer.measureInWindow(
-            (_bannerX, bannerTop, _bannerWidth, bannerHeight) => {
-              const bannerBottom = bannerTop + bannerHeight;
-              const measuredOffset =
-                bannerBottom - inputTop + BANNER_INPUT_GAP;
-
-              setFocusedInputOffset(Math.max(0, measuredOffset));
-            },
-          );
-        });
-      });
-    };
-
-    const showSubscription = Keyboard.addListener(
-      "keyboardDidShow",
-      updateFocusedInputOffset,
-    );
-    const hideSubscription = Keyboard.addListener("keyboardDidHide", () => {
-      setFocusedInputOffset(0);
-    });
-
-    return () => {
-      if (measurementFrame !== null) {
-        cancelAnimationFrame(measurementFrame);
-      }
-      showSubscription.remove();
-      hideSubscription.remove();
-    };
-  }, []);
 
   if (!adsInitialized || !bannerAdUnitId) {
     return null;
@@ -80,14 +23,9 @@ const AppBannerAd = () => {
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === "ios" ? "position" : undefined}
-      style={
-        focusedInputOffset > 0
-          ? { transform: [{ translateY: -focusedInputOffset }] }
-          : undefined
-      }
     >
     <SafeAreaView style={styles.safeArea}>
-      <View ref={bannerContainerRef} style={styles.container}>
+      <View style={styles.container}>
         <BannerAd
           unitId={bannerAdUnitId}
           size={BannerAdSize.ANCHORED_ADAPTIVE_BANNER}
