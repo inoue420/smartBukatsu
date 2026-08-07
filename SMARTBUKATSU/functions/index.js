@@ -8,6 +8,7 @@ initializeApp();
 
 const firestore = getFirestore();
 const MAX_TEAMS_PER_USER = 5;
+const MEMBER_MANAGER_ROLES = new Set(["owner", "admin", "staff"]);
 
 const googleMapsServerApiKey = defineSecret("GOOGLE_MAPS_SERVER_API_KEY");
 
@@ -126,6 +127,91 @@ exports.joinTeamWithInvite = onCall(
       );
 
       return { teamId, type: "join", alreadyMember: memberSnap.exists };
+    });
+  },
+);
+
+exports.removeTeamMember = onCall(
+  {
+    region: "asia-northeast1",
+    timeoutSeconds: 10,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const callerUid = request.auth?.uid;
+    if (!callerUid) {
+      throw new HttpsError("unauthenticated", "Authentication is required.");
+    }
+
+    const teamId = String(request.data?.teamId || "").trim();
+    const targetUid = String(request.data?.targetUid || "").trim();
+    if (!teamId || !targetUid || teamId.length > 128 || targetUid.length > 128) {
+      throw new HttpsError("invalid-argument", "Invalid team or member.");
+    }
+
+    const teamRef = firestore.collection("teams").doc(teamId);
+    const callerMemberRef = teamRef.collection("members").doc(callerUid);
+    const targetMemberRef = teamRef.collection("members").doc(targetUid);
+    const targetUserRef = firestore.collection("users").doc(targetUid);
+
+    return firestore.runTransaction(async (transaction) => {
+      const [teamSnap, callerMemberSnap, targetMemberSnap, targetUserSnap] =
+        await Promise.all([
+          transaction.get(teamRef),
+          transaction.get(callerMemberRef),
+          transaction.get(targetMemberRef),
+          transaction.get(targetUserRef),
+        ]);
+
+      if (!teamSnap.exists || !targetMemberSnap.exists) {
+        throw new HttpsError("not-found", "The member was not found.");
+      }
+      if (!callerMemberSnap.exists) {
+        throw new HttpsError(
+          "permission-denied",
+          "You are not a member of this team.",
+        );
+      }
+
+      const isSelfRemoval = callerUid === targetUid;
+      const callerRole = callerMemberSnap.data()?.role || "member";
+      if (!isSelfRemoval && !MEMBER_MANAGER_ROLES.has(callerRole)) {
+        throw new HttpsError(
+          "permission-denied",
+          "You do not have permission to remove this member.",
+        );
+      }
+
+      const targetUserData = targetUserSnap.exists ? targetUserSnap.data() : {};
+      const remainingTeamIds = normalizeTeamIds(targetUserData).filter(
+        (id) => id !== teamId,
+      );
+      const currentActiveTeamId =
+        typeof targetUserData.activeTeamId === "string"
+          ? targetUserData.activeTeamId
+          : "";
+      const nextActiveTeamId =
+        currentActiveTeamId === teamId ||
+        (currentActiveTeamId &&
+          !remainingTeamIds.includes(currentActiveTeamId))
+          ? remainingTeamIds[0] || ""
+          : currentActiveTeamId;
+
+      transaction.set(
+        targetUserRef,
+        {
+          activeTeamId: nextActiveTeamId,
+          teamIds: remainingTeamIds,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+      transaction.delete(targetMemberRef);
+
+      return {
+        activeTeamId: nextActiveTeamId || null,
+        teamIds: remainingTeamIds,
+      };
     });
   },
 );
