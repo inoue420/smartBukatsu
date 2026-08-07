@@ -30,6 +30,7 @@ import {
 
 // 画面
 import LoginScreen from "./src/screens/LoginScreen";
+import EmailVerificationScreen from "./src/screens/EmailVerificationScreen";
 import TeamSelectScreen from "./src/screens/TeamSelectScreen";
 import WorkspaceHomeScreen from "./src/screens/WorkspaceHomeScreen";
 import NoticeBoardScreen from "./src/screens/NoticeBoardScreen";
@@ -54,6 +55,7 @@ function AppContent() {
     user,
     userName,
     activeTeamId,
+    emailVerificationPending,
     teamSelectionRequired,
     isAdmin: authIsAdmin,
     loading: authLoading,
@@ -92,14 +94,14 @@ function AppContent() {
   const [isResolvingTeam, setIsResolvingTeam] = useState(false);
 
   useEffect(() => {
-    if (user && !activeTeamId) {
+    if (user && !emailVerificationPending && !activeTeamId) {
       setIsResolvingTeam(true);
       const timer = setTimeout(() => setIsResolvingTeam(false), 1500);
       return () => clearTimeout(timer);
-    } else if (user && activeTeamId) {
+    } else {
       setIsResolvingTeam(false);
     }
-  }, [user, activeTeamId]);
+  }, [user, activeTeamId, emailVerificationPending]);
 
   useEffect(() => {
     configureInterstitial(interstitialSettings);
@@ -107,7 +109,7 @@ function AppContent() {
 
   // Firestore同期
   useEffect(() => {
-    if (user && activeTeamId) {
+    if (user && activeTeamId && !emailVerificationPending) {
       setInterstitialSettings({ ...DEFAULT_INTERSTITIAL_SETTINGS });
       setAbsenceDeadlineDaysBefore(DEFAULT_ABSENCE_DEADLINE_DAYS_BEFORE);
       const unsubProjects = subscribeProjects(activeTeamId, setProjects);
@@ -187,7 +189,7 @@ function AppContent() {
       setUserProfiles({});
       setAbsenceDeadlineDaysBefore(DEFAULT_ABSENCE_DEADLINE_DAYS_BEFORE);
     }
-  }, [user, activeTeamId]);
+  }, [user, activeTeamId, emailVerificationPending]);
 
   useEffect(() => {
     const unsubscribe = NetInfo.addEventListener((state) => {
@@ -225,7 +227,8 @@ function AppContent() {
       currentRouteName &&
       previousRouteName !== currentRouteName &&
       user &&
-      activeTeamId
+      activeTeamId &&
+      !emailVerificationPending
     ) {
       recordScreenTransition();
     }
@@ -242,6 +245,8 @@ function AppContent() {
         <Stack.Navigator screenOptions={{ headerShown: false }}>
         {!user ? (
           <Stack.Screen name="Login" component={LoginScreen} />
+        ) : emailVerificationPending ? (
+          <Stack.Screen name="EmailVerification" component={EmailVerificationScreen} />
         ) : teamSelectionRequired ? (
           <Stack.Screen name="TeamSelect" component={TeamSelectScreen} />
         ) : !activeTeamId && isResolvingTeam ? (

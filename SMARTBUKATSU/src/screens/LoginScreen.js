@@ -13,16 +13,10 @@ import {
   Modal, // ★ 追加：ポップアップ表示用
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import {
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
-  sendPasswordResetEmail, // ★ 追加：パスワードリセット用
-} from "firebase/auth";
-import { auth } from "../firebase";
-
-import { executeRegistration } from "../services/firestoreService";
+import { useAuth } from "../AuthContext";
 
 const LoginScreen = () => {
+  const { signIn, signUp, resetPassword } = useAuth();
   const [isLogin, setIsLogin] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -65,27 +59,24 @@ const LoginScreen = () => {
     try {
       if (isLogin) {
         // === ログイン処理 ===
-        await signInWithEmailAndPassword(auth, email, password);
+        await signIn(email, password);
       } else {
         // === 新規登録処理（1ページ完結） ===
-        // ① Firebase Auth にユーザーを作成
-        const userCredential = await createUserWithEmailAndPassword(
-          auth,
+        await signUp(
           email,
           password,
-        );
-        const uid = userCredential.user.uid;
-
-        // ② Firestore にユーザー情報とチーム情報（または所属情報）を書き込む
-        await executeRegistration(
-          uid,
-          role,
-          userName.trim(),
-          teamName.trim(),
-          inviteCode.trim(),
+          {
+            role,
+            userName: userName.trim(),
+            teamName: teamName.trim(),
+            inviteCode: inviteCode.trim(),
+          },
         );
 
-        Alert.alert("登録完了", "アカウントの作成と設定が完了しました！");
+        Alert.alert(
+          "確認メールを送信しました",
+          "メール内のリンクを開いてメールアドレスを確認してください。",
+        );
       }
     } catch (error) {
       console.log("認証エラー:", error);
@@ -115,7 +106,7 @@ const LoginScreen = () => {
     }
 
     try {
-      await sendPasswordResetEmail(auth, resetEmail.trim());
+      await resetPassword(resetEmail);
       Alert.alert(
         "メール送信完了",
         "パスワード再設定用のメールを送信しました。\nメール内のリンクから新しいパスワードを設定してください。",
@@ -265,6 +256,10 @@ const LoginScreen = () => {
               onChangeText={setEmail}
               keyboardType="email-address"
               autoCapitalize="none"
+              autoCorrect={false}
+              autoComplete={isLogin ? "username" : "email"}
+              textContentType={isLogin ? "username" : "emailAddress"}
+              importantForAutofill="yes"
             />
 
             <Text style={styles.label}>
@@ -276,6 +271,10 @@ const LoginScreen = () => {
               value={password}
               onChangeText={setPassword}
               secureTextEntry
+              autoComplete={isLogin ? "current-password" : "new-password"}
+              textContentType={isLogin ? "password" : "newPassword"}
+              passwordRules={isLogin ? undefined : "minlength: 6;"}
+              importantForAutofill="yes"
             />
 
             {isLoading ? (
@@ -334,6 +333,10 @@ const LoginScreen = () => {
               onChangeText={setResetEmail}
               keyboardType="email-address"
               autoCapitalize="none"
+              autoCorrect={false}
+              autoComplete="email"
+              textContentType="emailAddress"
+              importantForAutofill="yes"
             />
             <View style={styles.modalButtons}>
               <TouchableOpacity
