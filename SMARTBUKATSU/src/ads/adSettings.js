@@ -1,6 +1,8 @@
+export const INTERSTITIAL_ADS_ENABLED = false;
+
 export const DEFAULT_INTERSTITIAL_SETTINGS = Object.freeze({
-  navigationInterval: 10,
-  dailyLimit: 2,
+  navigationInterval: 30,
+  dailyLimit: 1,
 });
 
 export const INTERSTITIAL_NAVIGATION_INTERVAL_MIN = 5;
