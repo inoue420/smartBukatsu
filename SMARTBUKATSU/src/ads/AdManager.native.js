@@ -17,6 +17,7 @@ import mobileAds, {
 
 import {
   DEFAULT_INTERSTITIAL_SETTINGS,
+  INTERSTITIAL_ADS_ENABLED,
   normalizeInterstitialSettings,
 } from "./adSettings";
 const DAILY_COUNT_STORAGE_KEY = "admob_interstitial_daily_count_v1";
@@ -43,12 +44,14 @@ const bannerAdUnitId = useTestAds
       process.env.EXPO_PUBLIC_ADMOB_IOS_BANNER_UNIT_ID,
     );
 
-const interstitialAdUnitId = useTestAds
-  ? TestIds.INTERSTITIAL
-  : getProductionUnitId(
-      process.env.EXPO_PUBLIC_ADMOB_ANDROID_INTERSTITIAL_UNIT_ID,
-      process.env.EXPO_PUBLIC_ADMOB_IOS_INTERSTITIAL_UNIT_ID,
-    );
+const interstitialAdUnitId = INTERSTITIAL_ADS_ENABLED
+  ? useTestAds
+    ? TestIds.INTERSTITIAL
+    : getProductionUnitId(
+        process.env.EXPO_PUBLIC_ADMOB_ANDROID_INTERSTITIAL_UNIT_ID,
+        process.env.EXPO_PUBLIC_ADMOB_IOS_INTERSTITIAL_UNIT_ID,
+      )
+  : null;
 
 const defaultAdsContext = {
   adsInitialized: false,
@@ -100,7 +103,11 @@ export const AdsProvider = ({ children }) => {
   }, [persistDailyState]);
 
   const tryShowInterstitial = useCallback(async () => {
-    if (!dailyStateLoadedRef.current || interstitialShowingRef.current) {
+    if (
+      !INTERSTITIAL_ADS_ENABLED ||
+      !dailyStateLoadedRef.current ||
+      interstitialShowingRef.current
+    ) {
       return false;
     }
 
@@ -148,7 +155,10 @@ export const AdsProvider = ({ children }) => {
   }, []);
 
   const recordScreenTransition = useCallback(() => {
-    if (interstitialSettingsRef.current.dailyLimit === 0) {
+    if (
+      !INTERSTITIAL_ADS_ENABLED ||
+      interstitialSettingsRef.current.dailyLimit === 0
+    ) {
       navigationCountRef.current = 0;
       return;
     }
@@ -163,6 +173,7 @@ export const AdsProvider = ({ children }) => {
   }, [tryShowInterstitial]);
 
   const showAfterDiarySubmission = useCallback(() => {
+    if (!INTERSTITIAL_ADS_ENABLED) return;
     void tryShowInterstitial();
   }, [tryShowInterstitial]);
 

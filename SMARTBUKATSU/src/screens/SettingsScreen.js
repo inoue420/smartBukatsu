@@ -37,6 +37,7 @@ import {
 } from "../services/firestoreService";
 import {
   DEFAULT_INTERSTITIAL_SETTINGS,
+  INTERSTITIAL_ADS_ENABLED,
   INTERSTITIAL_DAILY_LIMIT_MAX,
   INTERSTITIAL_DAILY_LIMIT_MIN,
   INTERSTITIAL_NAVIGATION_INTERVAL_MAX,
@@ -1119,7 +1120,7 @@ const SettingsScreen = ({
                 </TouchableOpacity>
               </SectionCard>
 
-              {isSupervisor && (
+              {INTERSTITIAL_ADS_ENABLED && isSupervisor && (
                 <SectionCard
                   isExp={expanded.ads}
                   onToggle={() => toggleSection("ads")}
