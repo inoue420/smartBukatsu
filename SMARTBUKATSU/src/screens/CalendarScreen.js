@@ -1306,7 +1306,7 @@ const CalendarScreen = ({
     setIsClubModalVisible(true);
   };
 
-  const handleDeleteClubEvent = (id) => {
+  const handleDeleteClubEvent = (event, targetDate) => {
     Alert.alert("削除", "部活の予定を削除しますか？", [
       { text: "キャンセル" },
       {
@@ -1315,7 +1315,21 @@ const CalendarScreen = ({
         onPress: async () => {
           setIsLoading(true);
           try {
-            if (!isOffline) await deleteClubEvent(activeTeamId, id);
+            if (!isOffline) {
+              const remainingEventData = buildRemainingClubEventData(
+                event,
+                targetDate,
+              );
+              if (remainingEventData) {
+                await updateClubEvent(
+                  activeTeamId,
+                  event.id,
+                  remainingEventData,
+                );
+              } else {
+                await deleteClubEvent(activeTeamId, event.id);
+              }
+            }
           } finally {
             setIsLoading(false);
           }
@@ -1798,7 +1812,9 @@ const CalendarScreen = ({
                         <Text>✏️</Text>
                       </TouchableOpacity>
                       <TouchableOpacity
-                        onPress={() => handleDeleteClubEvent(item.id)}
+                        onPress={() =>
+                          handleDeleteClubEvent(item, selectedDate)
+                        }
                         style={styles.iconBtn}
                       >
                         <Text>🗑️</Text>
