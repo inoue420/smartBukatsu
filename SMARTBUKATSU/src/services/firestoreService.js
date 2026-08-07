@@ -541,11 +541,16 @@ export async function executeRegistration(
   userName,
   teamName,
   inviteCodeInput,
+  { emailVerificationRequired = false } = {},
 ) {
   const userRef = doc(db, "users", uid);
   await setDoc(
     userRef,
-    { name: userName, createdAt: serverTimestamp() },
+    {
+      name: userName,
+      createdAt: serverTimestamp(),
+      emailVerificationRequired: emailVerificationRequired === true,
+    },
     { merge: true },
   );
 

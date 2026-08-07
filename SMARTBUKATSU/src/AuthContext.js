@@ -3,12 +3,15 @@ import React, {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import {
   onAuthStateChanged,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
+  reload,
+  sendEmailVerification,
   sendPasswordResetEmail,
   signOut as fbSignOut,
 } from "firebase/auth";
@@ -20,7 +23,10 @@ import {
   setDoc,
 } from "firebase/firestore";
 import { auth, db } from "./firebase";
-import { switchActiveTeam } from "./services/firestoreService";
+import {
+  executeRegistration,
+  switchActiveTeam,
+} from "./services/firestoreService";
 
 const AuthContext = createContext(null);
 
@@ -32,28 +38,59 @@ export function AuthProvider({ children }) {
   const [teamIds, setTeamIds] = useState([]);
   const [role, setRole] = useState(null);
   const [hasSelectedTeam, setHasSelectedTeam] = useState(false);
+  const [emailVerificationRequired, setEmailVerificationRequired] =
+    useState(false);
+  const [isEmailVerified, setIsEmailVerified] = useState(false);
+  const authFlowRef = useRef(null);
 
   // Firebaseの認証状態を監視
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       setUser(u || null);
+      setIsEmailVerified(Boolean(u?.emailVerified));
       setRole(null);
       setActiveTeamId(null);
       setTeamIds([]);
       setUserName(""); // リセット
       setHasSelectedTeam(false);
-      setLoading(false);
 
-      if (u?.uid) {
+      if (!u?.uid) {
+        setEmailVerificationRequired(false);
+        setLoading(false);
+        return;
+      }
+
+      const isSigningUp = authFlowRef.current === "signup";
+      setLoading(true);
+      try {
         const ref = doc(db, "users", u.uid);
         const snap = await getDoc(ref);
         if (!snap.exists()) {
-          await setDoc(
-            ref,
-            { activeTeamId: "", teamIds: [], createdAt: serverTimestamp() },
-            { merge: true },
+          if (isSigningUp) {
+            setEmailVerificationRequired(true);
+          } else {
+            await setDoc(
+              ref,
+              {
+                activeTeamId: "",
+                teamIds: [],
+                createdAt: serverTimestamp(),
+                emailVerificationRequired: false,
+              },
+              { merge: true },
+            );
+            setEmailVerificationRequired(false);
+          }
+        } else {
+          setEmailVerificationRequired(
+            snap.data()?.emailVerificationRequired === true,
           );
         }
+      } catch (error) {
+        console.log("ユーザー情報の取得エラー:", error);
+        setEmailVerificationRequired(isSigningUp);
+      } finally {
+        setLoading(false);
       }
     });
     return () => unsub();
@@ -65,6 +102,11 @@ export function AuthProvider({ children }) {
     const ref = doc(db, "users", user.uid);
     const unsub = onSnapshot(ref, (snap) => {
       const data = snap.data() || {};
+      if (snap.exists()) {
+        setEmailVerificationRequired(
+          data.emailVerificationRequired === true,
+        );
+      }
       const t = typeof data.activeTeamId === "string" ? data.activeTeamId : "";
       const ids = Array.isArray(data.teamIds)
         ? data.teamIds.filter((id) => typeof id === "string" && id)
@@ -101,14 +143,68 @@ export function AuthProvider({ children }) {
     const signIn = async (email, password) => {
       await signInWithEmailAndPassword(auth, email.trim(), password);
     };
-    const signUp = async (email, password) => {
-      await createUserWithEmailAndPassword(auth, email.trim(), password);
+    const signUp = async (
+      email,
+      password,
+      {
+        role: registrationRole,
+        userName: registrationUserName,
+        teamName,
+        inviteCode,
+      },
+    ) => {
+      authFlowRef.current = "signup";
+      setEmailVerificationRequired(true);
+      setIsEmailVerified(false);
+      setLoading(true);
+
+      try {
+        const userCredential = await createUserWithEmailAndPassword(
+          auth,
+          email.trim(),
+          password,
+        );
+        await executeRegistration(
+          userCredential.user.uid,
+          registrationRole,
+          registrationUserName,
+          teamName,
+          inviteCode,
+          { emailVerificationRequired: true },
+        );
+        await sendEmailVerification(userCredential.user);
+        return userCredential;
+      } catch (error) {
+        if (!auth.currentUser) {
+          setEmailVerificationRequired(false);
+          setLoading(false);
+        }
+        throw error;
+      } finally {
+        authFlowRef.current = null;
+        setLoading(false);
+      }
     };
     const resetPassword = async (email) => {
       await sendPasswordResetEmail(auth, email.trim());
     };
     const signOut = async () => {
       await fbSignOut(auth);
+    };
+    const resendVerificationEmail = async () => {
+      if (!auth.currentUser) {
+        throw new Error("ログイン中のユーザーを確認できませんでした。");
+      }
+      await sendEmailVerification(auth.currentUser);
+    };
+    const refreshEmailVerification = async () => {
+      if (!auth.currentUser) {
+        throw new Error("ログイン中のユーザーを確認できませんでした。");
+      }
+      await reload(auth.currentUser);
+      const verified = Boolean(auth.currentUser.emailVerified);
+      setIsEmailVerified(verified);
+      return verified;
     };
     const selectTeam = async (teamId) => {
       if (!user?.uid) throw new Error("ユーザー情報を確認できませんでした。");
@@ -124,13 +220,29 @@ export function AuthProvider({ children }) {
       role,
       isAdmin: role === "admin" || role === "owner", // ownerも管理者として扱うように強化
       teamSelectionRequired: teamIds.length > 1 && !hasSelectedTeam,
+      emailVerificationRequired,
+      isEmailVerified,
+      emailVerificationPending:
+        Boolean(user) && emailVerificationRequired && !isEmailVerified,
       selectTeam,
       signIn,
       signUp,
       resetPassword,
       signOut,
+      resendVerificationEmail,
+      refreshEmailVerification,
     };
-  }, [user, userName, loading, activeTeamId, teamIds, role, hasSelectedTeam]);
+  }, [
+    user,
+    userName,
+    loading,
+    activeTeamId,
+    teamIds,
+    role,
+    hasSelectedTeam,
+    emailVerificationRequired,
+    isEmailVerified,
+  ]);
 
   return <AuthContext.Provider value={api}>{children}</AuthContext.Provider>;
 }
