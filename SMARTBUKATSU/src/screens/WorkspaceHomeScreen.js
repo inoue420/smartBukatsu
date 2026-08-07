@@ -171,6 +171,10 @@ const WorkspaceHomeScreen = ({
           setChannels(defaultChannels);
         }
       }
+    }, (error) => {
+      if (error?.code !== "permission-denied") {
+        console.log("Workspace team subscription error:", error);
+      }
     });
 
     return () => unsubscribe();

@@ -38,6 +38,7 @@ export function AuthProvider({ children }) {
   const [teamIds, setTeamIds] = useState([]);
   const [role, setRole] = useState(null);
   const [hasSelectedTeam, setHasSelectedTeam] = useState(false);
+  const [teamAccessRevoked, setTeamAccessRevoked] = useState(false);
   const [emailVerificationRequired, setEmailVerificationRequired] =
     useState(false);
   const [isEmailVerified, setIsEmailVerified] = useState(false);
@@ -53,6 +54,7 @@ export function AuthProvider({ children }) {
       setTeamIds([]);
       setUserName(""); // リセット
       setHasSelectedTeam(false);
+      setTeamAccessRevoked(false);
 
       if (!u?.uid) {
         setEmailVerificationRequired(false);
@@ -132,10 +134,30 @@ export function AuthProvider({ children }) {
       return;
     }
     const ref = doc(db, "teams", activeTeamId, "members", user.uid);
-    const unsub = onSnapshot(ref, (snap) => {
-      const data = snap.data() || {};
-      setRole(data.role || null);
-    });
+    const handleAccessRevoked = () => {
+      setRole(null);
+      setActiveTeamId(null);
+      setHasSelectedTeam(false);
+      setTeamAccessRevoked(true);
+    };
+    const unsub = onSnapshot(
+      ref,
+      (snap) => {
+        if (!snap.exists()) {
+          handleAccessRevoked();
+          return;
+        }
+        const data = snap.data() || {};
+        setRole(data.role || null);
+      },
+      (error) => {
+        if (error?.code === "permission-denied") {
+          handleAccessRevoked();
+          return;
+        }
+        console.log("Team role subscription error:", error);
+      },
+    );
     return () => unsub();
   }, [user?.uid, activeTeamId]);
 
@@ -210,6 +232,7 @@ export function AuthProvider({ children }) {
       if (!user?.uid) throw new Error("ユーザー情報を確認できませんでした。");
       await switchActiveTeam(user.uid, teamId);
       setHasSelectedTeam(true);
+      setTeamAccessRevoked(false);
     };
     return {
       user,
@@ -219,7 +242,8 @@ export function AuthProvider({ children }) {
       teamIds,
       role,
       isAdmin: role === "admin" || role === "owner", // ownerも管理者として扱うように強化
-      teamSelectionRequired: teamIds.length > 1 && !hasSelectedTeam,
+      teamSelectionRequired:
+        teamAccessRevoked || (teamIds.length > 1 && !hasSelectedTeam),
       emailVerificationRequired,
       isEmailVerified,
       emailVerificationPending:
@@ -242,6 +266,7 @@ export function AuthProvider({ children }) {
     hasSelectedTeam,
     emailVerificationRequired,
     isEmailVerified,
+    teamAccessRevoked,
   ]);
 
   return <AuthContext.Provider value={api}>{children}</AuthContext.Provider>;

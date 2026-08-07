@@ -14,8 +14,17 @@ import {
   arrayRemove,
 } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
-import { db, cloudFunctions } from "../firebase";
+import { auth, db, cloudFunctions } from "../firebase";
 export const MAX_TEAMS_PER_USER = 5;
+
+function subscribeToTeamData(reference, callback) {
+  return onSnapshot(reference, callback, (error) => {
+    if (error?.code === "permission-denied") {
+      return;
+    }
+    console.log("Team snapshot listener error:", error);
+  });
+}
 
 function normalizeTeamIds(data = {}) {
   const ids = Array.isArray(data.teamIds)
@@ -159,7 +168,7 @@ export function subscribeProjects(teamId, callback) {
   if (!teamId) return () => {};
   const projectsRef = collection(db, "teams", teamId, "projects");
   const q = query(projectsRef, orderBy("createdAt", "desc"));
-  return onSnapshot(q, (snapshot) => {
+  return subscribeToTeamData(q, (snapshot) => {
     const projectsData = snapshot.docs.map((doc) => ({
       id: doc.id,
       ...doc.data(),
@@ -214,7 +223,7 @@ export function subscribeTagGroups(teamId, callback) {
   if (!teamId) return () => {};
   const ref = collection(db, "teams", teamId, "tagGroups");
   const q = query(ref, orderBy("createdAt", "asc"));
-  return onSnapshot(q, (snapshot) => {
+  return subscribeToTeamData(q, (snapshot) => {
     const data = snapshot.docs.map((doc) => ({
       id: doc.id,
       ...doc.data(),
@@ -261,7 +270,7 @@ export function subscribeHighlightProjects(teamId, callback) {
   if (!teamId) return () => {};
   const ref = collection(db, "teams", teamId, "highlightProjects");
   const q = query(ref, orderBy("createdAt", "desc"));
-  return onSnapshot(q, (snapshot) => {
+  return subscribeToTeamData(q, (snapshot) => {
     const data = snapshot.docs.map((doc) => ({
       id: doc.id,
       ...doc.data(),
@@ -307,7 +316,7 @@ export function subscribeClubEvents(teamId, callback) {
   if (!teamId) return () => {};
   const ref = collection(db, "teams", teamId, "clubEvents");
   const q = query(ref, orderBy("createdAt", "desc"));
-  return onSnapshot(q, (snapshot) => {
+  return subscribeToTeamData(q, (snapshot) => {
     const data = snapshot.docs.map((doc) => ({
       id: doc.id,
       ...doc.data(),
@@ -402,7 +411,7 @@ export async function deletePersonalEvent(uid, eventId) {
 export function subscribeTeamMembers(teamId, callback) {
   if (!teamId) return () => {};
   const membersRef = collection(db, "teams", teamId, "members");
-  return onSnapshot(membersRef, async (snapshot) => {
+  return subscribeToTeamData(membersRef, async (snapshot) => {
     const promises = snapshot.docs.map(async (docSnap) => {
       const uid = docSnap.id;
       const data = docSnap.data();
@@ -453,6 +462,13 @@ export async function updateMemberRoleConfig(teamId, uid, updateData) {
 export async function removeTeamMember(teamId, targetUid) {
   if (!teamId || !targetUid) return;
 
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error("Authentication is required. Please sign in again.");
+  }
+
+  await currentUser.getIdToken(true);
+
   const removeMember = httpsCallable(cloudFunctions, "removeTeamMember");
   const response = await removeMember({ teamId, targetUid });
   return response.data;
@@ -475,7 +491,7 @@ export async function getTeamInviteCode(teamId) {
 
 export function subscribeTeamData(teamId, callback) {
   if (!teamId) return () => {};
-  return onSnapshot(doc(db, "teams", teamId), (docSnap) => {
+  return subscribeToTeamData(doc(db, "teams", teamId), (docSnap) => {
     if (docSnap.exists()) callback(docSnap.data());
   });
 }
@@ -571,7 +587,7 @@ export function subscribeNotices(teamId, callback) {
     collection(db, "teams", teamId, "notices"),
     orderBy("createdAt", "desc"),
   );
-  return onSnapshot(q, (snapshot) => {
+  return subscribeToTeamData(q, (snapshot) => {
     callback(
       snapshot.docs.map((doc) => ({
         id: doc.id,
@@ -591,7 +607,7 @@ export function subscribeDailyReports(teamId, callback) {
     collection(db, "teams", teamId, "dailyReports"),
     orderBy("createdAt", "desc"),
   );
-  return onSnapshot(q, (snapshot) => {
+  return subscribeToTeamData(q, (snapshot) => {
     callback(
       snapshot.docs.map((doc) => ({
         id: doc.id,

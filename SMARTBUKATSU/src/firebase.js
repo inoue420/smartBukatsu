@@ -27,8 +27,6 @@ const firebaseConfig = {
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 
 // 各サービスをエクスポート
-export const db = getFirestore(app);
-export const cloudFunctions = getFunctions(app, "asia-northeast1");
 
 let auth;
 
@@ -41,3 +39,6 @@ try {
 }
 
 export { auth };
+
+export const db = getFirestore(app);
+export const cloudFunctions = getFunctions(app, "asia-northeast1");
