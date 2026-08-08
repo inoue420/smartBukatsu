@@ -13,6 +13,7 @@ import {
   Keyboard,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { useAuth } from "../AuthContext";
 
 const OptionGroup = ({ options, selected, onSelect, color = "#0077cc" }) => (
   <View style={styles.optionGroup}>
@@ -71,7 +72,11 @@ const MedicalScreen = ({
   alertThresholds,
   userProfiles = {},
 }) => {
-  const currentUserProfile = userProfiles[currentUser] || {};
+  const { user } = useAuth();
+  const currentUserProfile =
+    Object.values(userProfiles).find(
+      (profile) => profile?.uid === user?.uid,
+    ) || {};
   const userRole = isAdmin ? "owner" : currentUserProfile.role || "member";
   const isStaffOrAbove = ["owner", "staff"].includes(userRole);
 

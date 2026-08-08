@@ -68,6 +68,7 @@ const WorkspaceHomeScreen = ({
   navigation,
   isAdmin,
   currentUser,
+  currentUserUid = "",
   teamName,
   notices,
   setNotices,
@@ -80,7 +81,10 @@ const WorkspaceHomeScreen = ({
   userProfiles = {},
 }) => {
   const { activeTeamId } = useAuth();
-  const currentUserProfile = userProfiles[currentUser] || {};
+  const currentUserProfile =
+    Object.values(userProfiles).find(
+      (profile) => profile?.uid === currentUserUid,
+    ) || {};
 
   const userRole =
     global.TEST_ROLE ||

@@ -421,6 +421,7 @@ const CalendarScreen = ({
   navigation,
   isAdmin,
   currentUser,
+  currentUserUid = "",
   clubEvents = [],
   dailyReports = [],
   personalEvents = [],
@@ -430,7 +431,10 @@ const CalendarScreen = ({
 }) => {
   const { activeTeamId, user } = useAuth();
 
-  const currentUserProfile = userProfiles[currentUser] || {};
+  const currentUserProfile =
+    Object.values(userProfiles).find(
+      (profile) => profile?.uid === currentUserUid,
+    ) || {};
   const userRole =
     global.TEST_ROLE ||
     (isAdmin ? "owner" : currentUserProfile.role || "member");

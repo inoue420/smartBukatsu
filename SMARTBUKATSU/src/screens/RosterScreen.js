@@ -30,6 +30,7 @@ const RosterScreen = ({
   navigation,
   isAdmin,
   currentUser,
+  currentUserUid = "",
   activeTeamId,
   clubMembers = [],
   userProfiles = {},
@@ -38,7 +39,10 @@ const RosterScreen = ({
   positions = [],
 }) => {
   // --- 権限の確認 ---
-  const currentUserProfile = userProfiles[currentUser] || {};
+  const currentUserProfile =
+    Object.values(userProfiles).find(
+      (profile) => profile?.uid === currentUserUid,
+    ) || {};
   const userRole =
     global.TEST_ROLE ||
     (isAdmin ? "owner" : currentUserProfile.role || "member");

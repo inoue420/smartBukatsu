@@ -151,13 +151,15 @@ function AppContent() {
         const names = [];
         const profiles = {};
         membersData.forEach((m) => {
-          let mName = m.name || "名称未設定";
-          if (profiles[mName]) {
-            mName = `${mName}_${m.uid.substring(0, 4)}`;
+          const displayName = m.name || "名称未設定";
+          let profileKey = displayName;
+          if (profiles[profileKey]) {
+            profileKey = `${displayName}_${m.uid.substring(0, 4)}`;
           }
-          names.push(mName);
-          profiles[mName] = {
+          names.push(profileKey);
+          profiles[profileKey] = {
             uid: m.uid,
+            name: displayName,
             role: m.role || "member",
             assignedStaff: m.assignedStaff || null,
             staffScope: m.staffScope || "all",
@@ -213,6 +215,7 @@ function AppContent() {
   }
 
   const safeUserName = userName || user?.email || "ユーザー";
+  const currentUserUid = user?.uid || "";
 
   const handleNavigationReady = () => {
     currentRouteNameRef.current = navigationRef.getCurrentRoute()?.name;
@@ -279,6 +282,7 @@ function AppContent() {
                   {...props}
                   isAdmin={authIsAdmin}
                   currentUser={safeUserName}
+                  currentUserUid={currentUserUid}
                   teamName={teamName}
                   notices={notices}
                   setNotices={setNotices}
@@ -301,6 +305,7 @@ function AppContent() {
                   {...props}
                   isAdmin={authIsAdmin}
                   currentUser={safeUserName}
+                  currentUserUid={currentUserUid}
                   notices={notices}
                   setNotices={setNotices}
                   isOffline={isOffline}
@@ -315,6 +320,7 @@ function AppContent() {
                   {...props}
                   isAdmin={authIsAdmin}
                   currentUser={safeUserName}
+                  currentUserUid={currentUserUid}
                   isOffline={isOffline}
                   grades={grades}
                   positions={positions}
@@ -336,6 +342,7 @@ function AppContent() {
                   {...props}
                   isAdmin={authIsAdmin}
                   currentUser={safeUserName}
+                  currentUserUid={currentUserUid}
                   clubEvents={clubEvents} // ★ 修正：projects ではなく clubEvents を渡す
                   dailyReports={dailyReports}
                   userProfiles={userProfiles}
@@ -352,6 +359,7 @@ function AppContent() {
                   {...props}
                   isAdmin={authIsAdmin}
                   currentUser={safeUserName}
+                  currentUserUid={currentUserUid}
                   projects={projects}
                   setProjects={setProjects}
                   highlightProjects={highlightProjects}
@@ -384,6 +392,7 @@ function AppContent() {
                   {...props}
                   isAdmin={authIsAdmin}
                   currentUser={safeUserName}
+                  currentUserUid={currentUserUid}
                   userProfiles={userProfiles}
                   tagGroups={tagGroups}
                   setTagGroups={setTagGroups}
@@ -397,6 +406,7 @@ function AppContent() {
                   {...props}
                   isAdmin={authIsAdmin}
                   currentUser={safeUserName}
+                  currentUserUid={currentUserUid}
                   activeTeamId={activeTeamId}
                   clubMembers={clubMembers}
                   userProfiles={userProfiles}
@@ -413,6 +423,7 @@ function AppContent() {
                   {...props}
                   isAdmin={authIsAdmin}
                   currentUser={safeUserName}
+                  currentUserUid={currentUserUid}
                   clubMembers={clubMembers}
                   setClubMembers={setClubMembers}
                   grades={grades}
