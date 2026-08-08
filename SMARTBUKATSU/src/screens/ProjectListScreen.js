@@ -30,7 +30,9 @@ import { useAuth } from "../AuthContext";
 import {
   createProject,
   createHighlightProject,
+  deleteHighlightProject,
   deleteProject,
+  updateHighlightProject,
   updateProject,
 } from "../services/firestoreService";
 
@@ -56,6 +58,138 @@ const DEFAULT_TAG_GROUP = {
 };
 const DEFAULT_CLIP_PRE_SECONDS = 5;
 const DEFAULT_CLIP_POST_SECONDS = 3;
+const PROJECT_TYPE_ORDER = ["試合", "練習", "その他"];
+
+const normalizeProjectType = (project) =>
+  PROJECT_TYPE_ORDER.includes(project?.type) ? project.type : "その他";
+
+const getProjectCreatedAtMillis = (project) => {
+  const createdAt = project?.createdAt;
+
+  if (typeof createdAt?.toMillis === "function") return createdAt.toMillis();
+  if (typeof createdAt?.toDate === "function") return createdAt.toDate().getTime();
+  if (createdAt instanceof Date) return createdAt.getTime();
+  if (typeof createdAt?.seconds === "number") return createdAt.seconds * 1000;
+  if (typeof createdAt === "number") {
+    return createdAt < 1000000000000 ? createdAt * 1000 : createdAt;
+  }
+  if (typeof createdAt === "string") {
+    const parsedCreatedAt = new Date(createdAt).getTime();
+    if (Number.isFinite(parsedCreatedAt)) return parsedCreatedAt;
+  }
+
+  const dateMatch = String(project?.date || "").match(
+    /^(\d{4})[/.\-](\d{1,2})(?:[/.\-](\d{1,2}))?/,
+  );
+  if (!dateMatch) return 0;
+
+  const [, year, month, day = "1"] = dateMatch;
+  return new Date(Number(year), Number(month) - 1, Number(day)).getTime();
+};
+
+const getProjectMonth = (project) => {
+  const createdAtMillis = getProjectCreatedAtMillis(project);
+  if (!createdAtMillis) {
+    return {
+      key: "unknown",
+      label: "作成月不明",
+      sortValue: Number.MIN_SAFE_INTEGER,
+    };
+  }
+
+  const createdAt = new Date(createdAtMillis);
+  const year = createdAt.getFullYear();
+  const month = createdAt.getMonth() + 1;
+  return {
+    key: `${year}-${String(month).padStart(2, "0")}`,
+    label: `${year}年${month}月`,
+    sortValue: year * 100 + month,
+  };
+};
+
+const groupProjectsByTypeAndMonth = (projects) =>
+  PROJECT_TYPE_ORDER.map((type) => {
+    const monthMap = new Map();
+
+    projects.forEach((project) => {
+      if (normalizeProjectType(project) !== type) return;
+      const month = getProjectMonth(project);
+      if (!monthMap.has(month.key)) {
+        monthMap.set(month.key, { ...month, projects: [] });
+      }
+      monthMap.get(month.key).projects.push(project);
+    });
+
+    const months = Array.from(monthMap.values())
+      .sort((a, b) => b.sortValue - a.sortValue)
+      .map((month) => ({
+        ...month,
+        projects: [...month.projects].sort(
+          (a, b) => getProjectCreatedAtMillis(b) - getProjectCreatedAtMillis(a),
+        ),
+      }));
+
+    return {
+      type,
+      projectCount: months.reduce(
+        (count, month) => count + month.projects.length,
+        0,
+      ),
+      months,
+    };
+  }).filter((group) => group.projectCount > 0);
+
+const buildProjectHierarchyRows = (
+  groups,
+  expandedMonths,
+  expandedTypes,
+) => {
+  const rows = [];
+  groups.forEach((group) => {
+    const typeExpanded =
+      expandedTypes[group.type] !== undefined
+        ? expandedTypes[group.type]
+        : true;
+    rows.push({
+      kind: "type",
+      key: `type:${group.type}`,
+      type: group.type,
+      label: group.type,
+      projectCount: group.projectCount,
+      expanded: typeExpanded,
+    });
+
+    if (!typeExpanded) return;
+
+    group.months.forEach((month, monthIndex) => {
+      const expansionKey = `${group.type}:${month.key}`;
+      const expanded =
+        expandedMonths[expansionKey] !== undefined
+          ? expandedMonths[expansionKey]
+          : monthIndex === 0;
+      rows.push({
+        kind: "month",
+        key: `month:${expansionKey}`,
+        type: group.type,
+        monthKey: month.key,
+        monthIndex,
+        label: month.label,
+        projectCount: month.projects.length,
+        expanded,
+      });
+      if (expanded) {
+        month.projects.forEach((project) => {
+          rows.push({
+            kind: "project",
+            key: `project:${group.type}:${month.key}:${project.id}`,
+            project,
+          });
+        });
+      }
+    });
+  });
+  return rows;
+};
 
 const normalizeClipSeconds = (value, fallback) => {
   const parsed = Number(value);
@@ -119,6 +253,72 @@ const ProjectListScreen = ({
   const activeProjects = useMemo(() => {
     return projects.filter((p) => p.status !== "deleted");
   }, [projects]);
+
+  const [expandedProjectTypes, setExpandedProjectTypes] = useState({});
+  const [expandedProjectMonths, setExpandedProjectMonths] = useState({});
+  const [expandedHighlightTypes, setExpandedHighlightTypes] = useState({});
+  const [expandedHighlightMonths, setExpandedHighlightMonths] = useState({});
+  const [expandedHighlightEditTypes, setExpandedHighlightEditTypes] =
+    useState({});
+  const [expandedHighlightEditMonths, setExpandedHighlightEditMonths] =
+    useState({});
+  const [isHighlightProjectEditModalVisible, setIsHighlightProjectEditModalVisible] =
+    useState(false);
+  const [editingHighlightProject, setEditingHighlightProject] = useState(null);
+  const [editHighlightProjectTitle, setEditHighlightProjectTitle] = useState("");
+  const [editHighlightVideoIds, setEditHighlightVideoIds] = useState([]);
+  const [isSavingHighlightProjectEdit, setIsSavingHighlightProjectEdit] =
+    useState(false);
+
+  const visibleProjects = useMemo(() => {
+    return activeProjects.filter(
+      (project) =>
+        !(
+          ["member", "captain"].includes(userRole) &&
+          project.participants === "coach"
+        ),
+    );
+  }, [activeProjects, userRole]);
+
+  const projectGroups = useMemo(
+    () => groupProjectsByTypeAndMonth(visibleProjects),
+    [visibleProjects],
+  );
+  const highlightVideoGroups = useMemo(
+    () => groupProjectsByTypeAndMonth(activeProjects),
+    [activeProjects],
+  );
+  const projectHierarchyRows = useMemo(
+    () =>
+      buildProjectHierarchyRows(
+        projectGroups,
+        expandedProjectMonths,
+        expandedProjectTypes,
+      ),
+    [projectGroups, expandedProjectMonths, expandedProjectTypes],
+  );
+  const highlightVideoHierarchyRows = useMemo(
+    () =>
+      buildProjectHierarchyRows(
+        highlightVideoGroups,
+        expandedHighlightMonths,
+        expandedHighlightTypes,
+      ),
+    [highlightVideoGroups, expandedHighlightMonths, expandedHighlightTypes],
+  );
+  const highlightEditVideoHierarchyRows = useMemo(
+    () =>
+      buildProjectHierarchyRows(
+        highlightVideoGroups,
+        expandedHighlightEditMonths,
+        expandedHighlightEditTypes,
+      ),
+    [
+      highlightVideoGroups,
+      expandedHighlightEditMonths,
+      expandedHighlightEditTypes,
+    ],
+  );
 
   const activeHighlightProjects = useMemo(() => {
     return highlightProjects.filter((p) => p.status !== "deleted");
@@ -755,6 +955,89 @@ const ProjectListScreen = ({
     }
   };
 
+  const handleOpenEditHighlightProject = (item) => {
+    const activeVideoIds = new Set(activeProjects.map((project) => project.id));
+    setEditingHighlightProject(item);
+    setEditHighlightProjectTitle(item.title || "");
+    setEditHighlightVideoIds(
+      (item.videoIds || []).filter((videoId) => activeVideoIds.has(videoId)),
+    );
+    setExpandedHighlightEditTypes({});
+    setExpandedHighlightEditMonths({});
+    setIsHighlightProjectEditModalVisible(true);
+  };
+
+  const handleToggleEditHighlightVideo = (videoId) => {
+    setEditHighlightVideoIds((previous) =>
+      previous.includes(videoId)
+        ? previous.filter((id) => id !== videoId)
+        : [...previous, videoId],
+    );
+  };
+
+  const handleSaveHighlightProjectEdit = async () => {
+    const trimmedTitle = editHighlightProjectTitle.trim();
+    if (!trimmedTitle) {
+      return Alert.alert("エラー", "プロジェクト名を入力してください。");
+    }
+    if (editHighlightVideoIds.length === 0) {
+      return Alert.alert("エラー", "動画を1件以上選択してください。");
+    }
+    if (!activeTeamId || !editingHighlightProject) return;
+
+    setIsSavingHighlightProjectEdit(true);
+    try {
+      await updateHighlightProject(activeTeamId, editingHighlightProject.id, {
+        title: trimmedTitle,
+        videoIds: editHighlightVideoIds,
+      });
+      setIsHighlightProjectEditModalVisible(false);
+      setEditingHighlightProject(null);
+      Alert.alert("成功", "プロジェクトを更新しました。");
+    } catch (error) {
+      Alert.alert("エラー", "プロジェクトの更新に失敗しました。");
+    } finally {
+      setIsSavingHighlightProjectEdit(false);
+    }
+  };
+
+  const handleDeleteHighlightProjectFromEdit = () => {
+    if (!editingHighlightProject) return;
+
+    Alert.alert(
+      "削除の確認",
+      `「${editingHighlightProject.title}」を削除しますか？`,
+      [
+        { text: "キャンセル", style: "cancel" },
+        {
+          text: "削除する",
+          style: "destructive",
+          onPress: async () => {
+            setIsSavingHighlightProjectEdit(true);
+            try {
+              if (activeTeamId) {
+                await deleteHighlightProject(
+                  activeTeamId,
+                  editingHighlightProject.id,
+                );
+              }
+              if (selectedHighlightProjectId === editingHighlightProject.id) {
+                setSelectedHighlightProjectId(null);
+              }
+              setIsHighlightProjectEditModalVisible(false);
+              setEditingHighlightProject(null);
+              Alert.alert("成功", "プロジェクトを削除しました。");
+            } catch (error) {
+              Alert.alert("エラー", "プロジェクトの削除に失敗しました。");
+            } finally {
+              setIsSavingHighlightProjectEdit(false);
+            }
+          },
+        },
+      ],
+    );
+  };
+
   const handleOpenEditProject = (item) => {
     setEditingProject(item);
     setEditTitle(item.title);
@@ -851,11 +1134,7 @@ const ProjectListScreen = ({
   };
 
   const renderProjectItem = ({ item }) => {
-    if (
-      ["member", "captain"].includes(userRole) &&
-      item.participants === "coach"
-    )
-      return null;
+    const normalizedType = normalizeProjectType(item);
 
     return (
       <TouchableOpacity
@@ -872,14 +1151,14 @@ const ProjectListScreen = ({
           <View
             style={[
               styles.badge,
-              item.type === "試合"
+              normalizedType === "試合"
                 ? styles.badgeMatch
-                : item.type === "練習"
+                : normalizedType === "練習"
                   ? styles.badgePractice
                   : styles.badgeOther,
             ]}
           >
-            <Text style={styles.badgeText}>{item.type}</Text>
+            <Text style={styles.badgeText}>{normalizedType}</Text>
           </View>
           <Text style={styles.cardTitle} numberOfLines={1}>
             {item.title}
@@ -907,6 +1186,136 @@ const ProjectListScreen = ({
     );
   };
 
+  const toggleExpandedType = (setExpandedTypes, item) => {
+    setExpandedTypes((previous) => {
+      const current =
+        previous[item.type] !== undefined ? previous[item.type] : true;
+      return { ...previous, [item.type]: !current };
+    });
+  };
+
+  const toggleExpandedMonth = (setExpandedMonths, item) => {
+    const expansionKey = `${item.type}:${item.monthKey}`;
+    setExpandedMonths((previous) => {
+      const current =
+        previous[expansionKey] !== undefined
+          ? previous[expansionKey]
+          : item.monthIndex === 0;
+      return { ...previous, [expansionKey]: !current };
+    });
+  };
+
+  const renderHierarchyHeader = (
+    item,
+    setExpandedMonths,
+    setExpandedTypes,
+    compact = false,
+  ) => {
+    if (item.kind === "type") {
+      const isPractice = item.type === "練習";
+      const isOther = item.type === "その他";
+      return (
+        <TouchableOpacity
+          key={item.key}
+          style={[
+            styles.projectTypeHeader,
+            isPractice && styles.projectTypeHeaderPractice,
+            isOther && styles.projectTypeHeaderOther,
+            compact && styles.videoSelectTypeHeader,
+          ]}
+          onPress={() => toggleExpandedType(setExpandedTypes, item)}
+          accessibilityRole="button"
+          accessibilityState={{ expanded: item.expanded }}
+        >
+          <Text
+            style={[
+              styles.projectTypeHeaderText,
+              isPractice && styles.projectTypeHeaderTextPractice,
+              isOther && styles.projectTypeHeaderTextOther,
+            ]}
+          >
+            {item.expanded ? "▼" : "▶"} {item.label}
+          </Text>
+          <Text style={styles.projectTypeCount}>{item.projectCount}件</Text>
+        </TouchableOpacity>
+      );
+    }
+    if (item.kind === "month") {
+      return (
+        <TouchableOpacity
+          key={item.key}
+          style={[
+            styles.projectMonthHeader,
+            compact && styles.videoSelectMonthHeader,
+          ]}
+          onPress={() => toggleExpandedMonth(setExpandedMonths, item)}
+          accessibilityRole="button"
+          accessibilityState={{ expanded: item.expanded }}
+        >
+          <Text style={styles.projectMonthHeaderText}>
+            {item.expanded ? "▼" : "▶"} {item.label}
+          </Text>
+          <Text style={styles.projectMonthCount}>{item.projectCount}件</Text>
+        </TouchableOpacity>
+      );
+    }
+    return null;
+  };
+
+  const renderProjectHierarchyItem = ({ item }) => {
+    if (item.kind !== "project") {
+      return renderHierarchyHeader(
+        item,
+        setExpandedProjectMonths,
+        setExpandedProjectTypes,
+      );
+    }
+    return renderProjectItem({ item: item.project });
+  };
+
+  const renderHighlightVideoSelectionRow = (
+    item,
+    selectedVideoIds,
+    onToggle,
+    setExpandedMonths,
+    setExpandedTypes,
+  ) => {
+    if (item.kind !== "project") {
+      return renderHierarchyHeader(
+        item,
+        setExpandedMonths,
+        setExpandedTypes,
+        true,
+      );
+    }
+
+    const project = item.project;
+    const isSelected = selectedVideoIds.includes(project.id);
+    return (
+      <TouchableOpacity
+        key={item.key}
+        style={[
+          styles.videoSelectItem,
+          styles.videoSelectProjectItem,
+          isSelected && styles.videoSelectItemActive,
+        ]}
+        onPress={() => onToggle(project.id)}
+      >
+        <View style={[styles.checkbox, isSelected && styles.checkboxActive]}>
+          <Text style={styles.checkboxText}>{isSelected ? "✓" : ""}</Text>
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.videoSelectTitle} numberOfLines={1}>
+            {project.title}
+          </Text>
+          <Text style={styles.videoSelectSub} numberOfLines={1}>
+            {project.videoUrl ? "動画リンクあり" : "動画未設定"}
+          </Text>
+        </View>
+      </TouchableOpacity>
+    );
+  };
+
   const renderHighlightProjectItem = ({ item }) => {
     const videoIdSet = new Set(item.videoIds || []);
     const selectedVideos = activeProjects.filter((p) => videoIdSet.has(p.id));
@@ -921,6 +1330,14 @@ const ProjectListScreen = ({
           <Text style={styles.cardTitle} numberOfLines={1}>
             {item.title}
           </Text>
+          {canManageProject && (
+            <TouchableOpacity
+              style={styles.editIconBtn}
+              onPress={() => handleOpenEditHighlightProject(item)}
+            >
+              <Text style={styles.editIconText}>⚙️</Text>
+            </TouchableOpacity>
+          )}
         </View>
         <Text style={styles.highlightProjectMeta}>
           動画 {selectedVideos.length} 件
@@ -1511,9 +1928,9 @@ const ProjectListScreen = ({
             </View>
 
             <FlatList
-              data={activeProjects}
-              keyExtractor={(item) => item.id}
-              renderItem={renderProjectItem}
+              data={projectHierarchyRows}
+              keyExtractor={(item) => item.key}
+              renderItem={renderProjectHierarchyItem}
               ListEmptyComponent={
                 <Text style={styles.emptyText}>動画がありません。</Text>
               }
@@ -1689,43 +2106,20 @@ const ProjectListScreen = ({
                 nestedScrollEnabled={true}
                 keyboardShouldPersistTaps="handled"
               >
-                {activeProjects.length === 0 ? (
+                {highlightVideoHierarchyRows.length === 0 ? (
                   <Text style={styles.videoSelectEmptyText}>
                     選択できる動画がありません。
                   </Text>
                 ) : (
-                  activeProjects.map((item) => {
-                    const isSelected = draftHighlightVideoIds.includes(item.id);
-                    return (
-                      <TouchableOpacity
-                        key={item.id}
-                        style={[
-                          styles.videoSelectItem,
-                          isSelected && styles.videoSelectItemActive,
-                        ]}
-                        onPress={() => handleToggleDraftHighlightVideo(item.id)}
-                      >
-                        <View
-                          style={[
-                            styles.checkbox,
-                            isSelected && styles.checkboxActive,
-                          ]}
-                        >
-                          <Text style={styles.checkboxText}>
-                            {isSelected ? "✓" : ""}
-                          </Text>
-                        </View>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.videoSelectTitle} numberOfLines={1}>
-                            {item.title}
-                          </Text>
-                          <Text style={styles.videoSelectSub} numberOfLines={1}>
-                            {item.videoUrl ? "動画リンクあり" : "動画未設定"}
-                          </Text>
-                        </View>
-                      </TouchableOpacity>
-                    );
-                  })
+                  highlightVideoHierarchyRows.map((item) =>
+                    renderHighlightVideoSelectionRow(
+                      item,
+                      draftHighlightVideoIds,
+                      handleToggleDraftHighlightVideo,
+                      setExpandedHighlightMonths,
+                      setExpandedHighlightTypes,
+                    ),
+                  )
                 )}
               </ScrollView>
             </View>
@@ -1748,6 +2142,93 @@ const ProjectListScreen = ({
               >
                 <Text style={styles.submitBtnText}>
                   {isSavingHighlightProject ? "保存中..." : "作成する"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
+
+      {/* Highlight project edit modal */}
+      <Modal
+        visible={isHighlightProjectEditModalVisible}
+        transparent={true}
+        animationType="fade"
+      >
+        <View style={styles.modalOverlay}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            style={styles.highlightProjectModalContent}
+          >
+            <Text style={styles.modalTitle}>プロジェクトの編集</Text>
+
+            <View style={styles.highlightProjectModalBody}>
+              <Text style={styles.label}>プロジェクト名</Text>
+              <TextInput
+                style={styles.input}
+                value={editHighlightProjectTitle}
+                onChangeText={setEditHighlightProjectTitle}
+                placeholder="プロジェクト名"
+                editable={!isSavingHighlightProjectEdit}
+              />
+
+              <Text style={styles.label}>格納する動画</Text>
+              <ScrollView
+                style={styles.videoSelectList}
+                contentContainerStyle={styles.videoSelectListContent}
+                showsVerticalScrollIndicator={true}
+                nestedScrollEnabled={true}
+                keyboardShouldPersistTaps="handled"
+              >
+                {highlightEditVideoHierarchyRows.length === 0 ? (
+                  <Text style={styles.videoSelectEmptyText}>
+                    選択できる動画がありません。
+                  </Text>
+                ) : (
+                  highlightEditVideoHierarchyRows.map((item) =>
+                    renderHighlightVideoSelectionRow(
+                      item,
+                      editHighlightVideoIds,
+                      handleToggleEditHighlightVideo,
+                      setExpandedHighlightEditMonths,
+                      setExpandedHighlightEditTypes,
+                    ),
+                  )
+                )}
+              </ScrollView>
+
+              <TouchableOpacity
+                style={[
+                  styles.editProjectDeleteBtn,
+                  isSavingHighlightProjectEdit && { opacity: 0.7 },
+                ]}
+                onPress={handleDeleteHighlightProjectFromEdit}
+                disabled={isSavingHighlightProjectEdit}
+              >
+                <Text style={styles.editProjectDeleteBtnText}>
+                  🗑️ このプロジェクトを削除する
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.highlightProjectFooter}>
+              <TouchableOpacity
+                style={styles.cancelBtn}
+                onPress={() => setIsHighlightProjectEditModalVisible(false)}
+                disabled={isSavingHighlightProjectEdit}
+              >
+                <Text style={styles.cancelBtnText}>キャンセル</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.submitBtn,
+                  isSavingHighlightProjectEdit && { opacity: 0.7 },
+                ]}
+                onPress={handleSaveHighlightProjectEdit}
+                disabled={isSavingHighlightProjectEdit}
+              >
+                <Text style={styles.submitBtnText}>
+                  {isSavingHighlightProjectEdit ? "保存中..." : "変更を保存"}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -1895,6 +2376,42 @@ const styles = StyleSheet.create({
   },
   tagEditBtnText: { color: "#0077cc", fontWeight: "bold", fontSize: 13 },
   emptyText: { textAlign: "center", color: "#888", marginTop: 30 },
+  projectTypeHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#dceeff",
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginTop: 4,
+    marginBottom: 8,
+  },
+  projectTypeHeaderPractice: { backgroundColor: "#fff1a8" },
+  projectTypeHeaderOther: { backgroundColor: "#d8f3dc" },
+  projectTypeHeaderText: {
+    color: "#005a9c",
+    fontSize: 16,
+    fontWeight: "bold",
+  },
+  projectTypeHeaderTextPractice: { color: "#7a5200" },
+  projectTypeHeaderTextOther: { color: "#1d6b3a" },
+  projectTypeCount: { color: "#52616b", fontSize: 12, fontWeight: "bold" },
+  projectMonthHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: "#d9e2ec",
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginLeft: 8,
+    marginBottom: 8,
+  },
+  projectMonthHeaderText: { color: "#334e68", fontSize: 14, fontWeight: "bold" },
+  projectMonthCount: { color: "#7b8794", fontSize: 12 },
   card: {
     backgroundColor: "#fff",
     padding: 15,
@@ -2498,6 +3015,9 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "#f2f2f2",
   },
+  videoSelectTypeHeader: { marginHorizontal: 8, marginTop: 8 },
+  videoSelectMonthHeader: { marginHorizontal: 8, marginLeft: 16 },
+  videoSelectProjectItem: { paddingLeft: 24 },
   videoSelectItemActive: {
     backgroundColor: "#eef7ff",
   },
