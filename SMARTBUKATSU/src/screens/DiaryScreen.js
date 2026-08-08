@@ -80,6 +80,7 @@ const DiaryScreen = ({
   navigation,
   isAdmin,
   currentUser,
+  currentUserUid = "",
   isOffline,
   grades,
   positions,
@@ -99,7 +100,10 @@ const DiaryScreen = ({
 }) => {
   const { activeTeamId } = useAuth();
 
-  const currentUserProfile = userProfiles[currentUser] || {};
+  const currentUserProfile =
+    Object.values(userProfiles).find(
+      (profile) => profile?.uid === currentUserUid,
+    ) || {};
   const userRole =
     global.TEST_ROLE ||
     (isAdmin ? "owner" : currentUserProfile.role || "member");

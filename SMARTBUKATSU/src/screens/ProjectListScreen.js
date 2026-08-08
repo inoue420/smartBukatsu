@@ -66,13 +66,17 @@ const ProjectListScreen = ({
   navigation,
   isAdmin,
   currentUser,
+  currentUserUid = "",
   projects,
   setProjects,
   highlightProjects = [],
   tagGroups = [],
   userProfiles,
 }) => {
-  const currentUserProfile = userProfiles[currentUser] || {};
+  const currentUserProfile =
+    Object.values(userProfiles).find(
+      (profile) => profile?.uid === currentUserUid,
+    ) || {};
 
   const userRole =
     global.TEST_ROLE ||

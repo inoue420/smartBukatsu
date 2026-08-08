@@ -107,13 +107,14 @@ const SettingsScreen = ({
   navigation,
   isAdmin,
   currentUser,
+  currentUserUid: currentUserUidProp = "",
   setCurrentUser,
-  clubMembers,
+  clubMembers = [],
   grades,
   positions,
   alertThresholds,
   setAlertThresholds,
-  userProfiles,
+  userProfiles = {},
   interstitialSettings = DEFAULT_INTERSTITIAL_SETTINGS,
   setInterstitialSettings,
   absenceDeadlineDaysBefore = 3,
@@ -123,13 +124,11 @@ const SettingsScreen = ({
   const { activeTeamId, logout, user } = useAuth();
   const [inviteCode, setInviteCode] = useState("読み込み中...");
 
-  const currentUserUid = user?.uid || auth.currentUser?.uid || "";
-  const currentUserProfile =
-    userProfiles[currentUser] ||
-    Object.values(userProfiles).find(
-      (profile) => profile?.uid === currentUserUid,
-    ) ||
-    {};
+  const currentUserUid =
+    currentUserUidProp || user?.uid || auth.currentUser?.uid || "";
+  const getMemberProfileByUid = (uid) =>
+    Object.values(userProfiles).find((profile) => profile?.uid === uid) || {};
+  const currentUserProfile = getMemberProfileByUid(currentUserUid);
   const currentMemberRole =
     currentUserProfile.role || (isAdmin ? "admin" : "member");
   const userRole = global.TEST_ROLE || currentMemberRole;
@@ -218,18 +217,16 @@ const SettingsScreen = ({
   }, [activeTeamId]);
 
   const [myGrade, setMyGrade] = useState(
-    userProfiles[currentUser]?.grade || "",
+    currentUserProfile.grade || "",
   );
   const [myPosition, setMyPosition] = useState(
-    userProfiles[currentUser]?.position || "",
+    currentUserProfile.position || "",
   );
 
   useEffect(() => {
-    if (userProfiles[currentUser]) {
-      setMyGrade(userProfiles[currentUser].grade || "");
-      setMyPosition(userProfiles[currentUser].position || "");
-    }
-  }, [userProfiles, currentUser]);
+    setMyGrade(currentUserProfile.grade || "");
+    setMyPosition(currentUserProfile.position || "");
+  }, [currentUserProfile.grade, currentUserProfile.position]);
 
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -256,11 +253,18 @@ const SettingsScreen = ({
   const hasSupervisor = Object.values(userProfiles).some((profile) =>
     ["owner", "admin"].includes(profile?.role),
   );
-  const selectedMemberUid =
-    userProfiles[selectedMemberForRole]?.uid || "";
+  const selectedMemberProfile = getMemberProfileByUid(selectedMemberForRole);
+  const selectedMemberName =
+    selectedMemberProfile.name || "対象メンバー";
+  const selectedMemberForAssignProfile = getMemberProfileByUid(
+    selectedMemberForAssign,
+  );
+  const selectedStaffForScopeProfile = getMemberProfileByUid(
+    selectedStaffForScope,
+  );
   const canPromoteSelectedMemberToSupervisor =
-    !!selectedMemberUid &&
-    selectedMemberUid === currentUserUid &&
+    !!selectedMemberForRole &&
+    selectedMemberForRole === currentUserUid &&
     (isTeamCreator || (currentMemberRole === "staff" && !hasSupervisor));
 
   const roleConfig = {
@@ -301,7 +305,9 @@ const SettingsScreen = ({
       }
 
       // 役職が同じ場合は名前で五十音順（日本語ソート）
-      return a.localeCompare(b, "ja");
+      const nameA = userProfiles[a]?.name || a;
+      const nameB = userProfiles[b]?.name || b;
+      return nameA.localeCompare(nameB, "ja");
     });
   }, [clubMembers, userProfiles]);
 
@@ -309,10 +315,11 @@ const SettingsScreen = ({
     setExpanded((prev) => ({ ...prev, [sectionKey]: !prev[sectionKey] }));
   };
 
-  const handleDeleteMember = (memberName) => {
-    const targetUid = userProfiles[memberName]?.uid;
+  const handleDeleteMember = (targetUid) => {
+    const targetProfile = getMemberProfileByUid(targetUid);
+    const memberName = targetProfile.name || "対象ユーザー";
     const isSelf = targetUid && targetUid === auth.currentUser?.uid;
-    const targetRole = userProfiles[memberName]?.role || "member";
+    const targetRole = targetProfile.role || "member";
     const title = isSelf ? "チームから退会" : "メンバーの除外";
     const message = isSelf
       ? `${memberName} としてこのチームから退会しますか？\nチームの情報は削除されず、招待コードまたはFirestore上のチーム情報から確認できます。`
@@ -521,15 +528,15 @@ const SettingsScreen = ({
     }
   };
 
-  const handleOpenRoleModal = (memberName) => {
-    setSelectedMemberForRole(memberName);
+  const handleOpenRoleModal = (memberUid) => {
+    setSelectedMemberForRole(memberUid);
     setIsRoleModalVisible(true);
   };
 
-  const saveMemberRole = async (memberName, newRole) => {
-    const targetUid = userProfiles[memberName]?.uid;
+  const saveMemberRole = async (targetUid, newRole) => {
     if (!activeTeamId || !targetUid || isChangingMemberRole) return;
 
+    const memberName = getMemberProfileByUid(targetUid).name || "対象メンバー";
     setIsChangingMemberRole(true);
     try {
       await updateMemberRoleConfig(activeTeamId, targetUid, { role: newRole });
@@ -556,8 +563,7 @@ const SettingsScreen = ({
   const handleChangeRole = (newRole) => {
     if (!selectedMemberForRole) return;
 
-    const memberName = selectedMemberForRole;
-    const previousRole = userProfiles[memberName]?.role || "member";
+    const previousRole = selectedMemberProfile.role || "member";
     const requiresDowngradeConfirmation =
       ["owner", "admin", "staff"].includes(previousRole) &&
       ["member", "captain", "guardian"].includes(newRole);
@@ -571,14 +577,14 @@ const SettingsScreen = ({
           {
             text: "変更する",
             style: "destructive",
-            onPress: () => saveMemberRole(memberName, newRole),
+            onPress: () => saveMemberRole(selectedMemberForRole, newRole),
           },
         ],
       );
       return;
     }
 
-    saveMemberRole(memberName, newRole);
+    saveMemberRole(selectedMemberForRole, newRole);
   };
 
   const handleRestoreSupervisorRole = async () => {
@@ -600,54 +606,57 @@ const SettingsScreen = ({
       setIsChangingMemberRole(false);
     }
   };
-  const handleToggleGuardianPermission = async (memberName, field, value) => {
-    if (!canManageGuardianPermissions) return;
-    const targetUid = userProfiles[memberName]?.uid;
-    if (!activeTeamId || !targetUid) return;
+
+  const handleToggleGuardianPermission = async (targetUid, field, value) => {
+    if (!canManageGuardianPermissions || !activeTeamId || !targetUid) return;
 
     try {
       await updateMemberRoleConfig(activeTeamId, targetUid, { [field]: value });
-      setUserProfiles((prev) => ({
-        ...prev,
-        [memberName]: {
-          ...(prev[memberName] || {}),
-          [field]: value,
-        },
-      }));
+      setUserProfiles((prev) =>
+        Object.fromEntries(
+          Object.entries(prev).map(([profileKey, profile]) => [
+            profileKey,
+            profile?.uid === targetUid
+              ? { ...profile, [field]: value }
+              : profile,
+          ]),
+        ),
+      );
     } catch (error) {
       Alert.alert("エラー", "保護者権限の更新に失敗しました。");
     }
   };
 
-  const handleOpenAssignStaffModal = (memberName) => {
-    setSelectedMemberForAssign(memberName);
+  const handleOpenAssignStaffModal = (memberUid) => {
+    setSelectedMemberForAssign(memberUid);
     setIsAssignStaffModalVisible(true);
   };
 
-  const handleAssignStaff = async (staffName) => {
+  const handleAssignStaff = async (staffUid) => {
     if (!selectedMemberForAssign) return;
-    const targetUid = userProfiles[selectedMemberForAssign]?.uid;
+    const staffName = staffUid
+      ? getMemberProfileByUid(staffUid).name || null
+      : null;
 
-    if (activeTeamId && targetUid) {
-      await updateMemberRoleConfig(activeTeamId, targetUid, {
-        assignedStaff: staffName === "未設定" ? null : staffName,
+    if (activeTeamId) {
+      await updateMemberRoleConfig(activeTeamId, selectedMemberForAssign, {
+        assignedStaff: staffName,
       });
     }
     setIsAssignStaffModalVisible(false);
     setSelectedMemberForAssign(null);
   };
 
-  const handleOpenStaffScopeModal = (staffName) => {
-    setSelectedStaffForScope(staffName);
+  const handleOpenStaffScopeModal = (staffUid) => {
+    setSelectedStaffForScope(staffUid);
     setIsStaffScopeModalVisible(true);
   };
 
   const handleStaffScope = async (scope) => {
     if (!selectedStaffForScope) return;
-    const targetUid = userProfiles[selectedStaffForScope]?.uid;
 
-    if (activeTeamId && targetUid) {
-      await updateMemberRoleConfig(activeTeamId, targetUid, {
+    if (activeTeamId) {
+      await updateMemberRoleConfig(activeTeamId, selectedStaffForScope, {
         staffScope: scope,
       });
     }
@@ -1251,6 +1260,7 @@ const SettingsScreen = ({
                   {/* ★ 修正：並び替えた sortedMembers を使って表示する */}
                   {sortedMembers.map((name) => {
                     const profile = userProfiles[name] || {};
+                    const displayName = profile.name || name;
                     const memberRole = profile.role || "member";
                     const roleData =
                       roleConfig[memberRole] || roleConfig.member;
@@ -1260,11 +1270,11 @@ const SettingsScreen = ({
                     const canEditTags = Boolean(profile.canEditTags);
 
                     return (
-                      <View key={name} style={styles.memberItem}>
+                      <View key={profile.uid || name} style={styles.memberItem}>
                         <View style={{ flex: 1 }}>
-                          <Text style={styles.memberName}>{name}</Text>
+                          <Text style={styles.memberName}>{displayName}</Text>
                           <TouchableOpacity
-                            onPress={() => handleDeleteMember(name)}
+                            onPress={() => handleDeleteMember(profile.uid)}
                           >
                             <Text style={styles.deleteText}>
                               {profile.uid === auth.currentUser?.uid ? "退会" : "除外"}
@@ -1282,7 +1292,7 @@ const SettingsScreen = ({
                                 marginBottom: 6,
                               },
                             ]}
-                            onPress={() => handleOpenRoleModal(name)}
+                            onPress={() => handleOpenRoleModal(profile.uid)}
                           >
                             <Text
                               style={[
@@ -1298,7 +1308,7 @@ const SettingsScreen = ({
                             memberRole === "captain") && (
                             <TouchableOpacity
                               style={styles.subSettingBadge}
-                              onPress={() => handleOpenAssignStaffModal(name)}
+                              onPress={() => handleOpenAssignStaffModal(profile.uid)}
                             >
                               <Text style={styles.subSettingText}>
                                 担当: {assignedStaff} ▾
@@ -1309,7 +1319,7 @@ const SettingsScreen = ({
                           {memberRole === "staff" && (
                             <TouchableOpacity
                               style={styles.subSettingBadge}
-                              onPress={() => handleOpenStaffScopeModal(name)}
+                              onPress={() => handleOpenStaffScopeModal(profile.uid)}
                             >
                               <Text style={styles.subSettingText}>
                                 閲覧:{" "}
@@ -1329,7 +1339,7 @@ const SettingsScreen = ({
                                 disabled={!canManageGuardianPermissions}
                                 onPress={() =>
                                   handleToggleGuardianPermission(
-                                    name,
+                                    profile.uid,
                                     "canUploadVideos",
                                     !canUploadVideos,
                                   )
@@ -1353,7 +1363,7 @@ const SettingsScreen = ({
                                 disabled={!canManageGuardianPermissions}
                                 onPress={() =>
                                   handleToggleGuardianPermission(
-                                    name,
+                                    profile.uid,
                                     "canEditTags",
                                     !canEditTags,
                                   )
@@ -1503,12 +1513,12 @@ const SettingsScreen = ({
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>
-              {selectedMemberForRole} の権限を変更
+              {selectedMemberName} の権限を変更
             </Text>
 
             {canPromoteSelectedMemberToSupervisor &&
               !["owner", "admin"].includes(
-                userProfiles[selectedMemberForRole]?.role,
+                selectedMemberProfile.role,
               ) && (
                 <TouchableOpacity
                   style={styles.roleSelectBtn}
@@ -1526,7 +1536,7 @@ const SettingsScreen = ({
               <TouchableOpacity
                 style={[
                   styles.roleSelectBtn,
-                  userProfiles[selectedMemberForRole]?.role === "staff" &&
+                  selectedMemberProfile.role === "staff" &&
                     styles.roleSelectBtnActive,
                 ]}
                 onPress={() => handleChangeRole("staff")}
@@ -1541,7 +1551,7 @@ const SettingsScreen = ({
             <TouchableOpacity
               style={[
                 styles.roleSelectBtn,
-                userProfiles[selectedMemberForRole]?.role === "captain" &&
+                selectedMemberProfile.role === "captain" &&
                   styles.roleSelectBtnActive,
               ]}
               onPress={() => handleChangeRole("captain")}
@@ -1555,7 +1565,7 @@ const SettingsScreen = ({
             <TouchableOpacity
               style={[
                 styles.roleSelectBtn,
-                userProfiles[selectedMemberForRole]?.role === "guardian" &&
+                selectedMemberProfile.role === "guardian" &&
                   styles.roleSelectBtnActive,
               ]}
               onPress={() => handleChangeRole("guardian")}
@@ -1569,8 +1579,8 @@ const SettingsScreen = ({
             <TouchableOpacity
               style={[
                 styles.roleSelectBtn,
-                (userProfiles[selectedMemberForRole]?.role === "member" ||
-                  !userProfiles[selectedMemberForRole]?.role) &&
+                (selectedMemberProfile.role === "member" ||
+                  !selectedMemberProfile.role) &&
                   styles.roleSelectBtnActive,
               ]}
               onPress={() => handleChangeRole("member")}
@@ -1603,12 +1613,12 @@ const SettingsScreen = ({
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>
-              {selectedMemberForAssign} の担当スタッフを設定
+              {selectedMemberForAssignProfile.name || "対象メンバー"} の担当スタッフを設定
             </Text>
             <ScrollView style={{ maxHeight: 200, marginBottom: 15 }}>
               <TouchableOpacity
                 style={styles.optionBtnFull}
-                onPress={() => handleAssignStaff("未設定")}
+                onPress={() => handleAssignStaff(null)}
               >
                 <Text style={styles.optionTextFull}>未設定にする</Text>
               </TouchableOpacity>
@@ -1619,11 +1629,13 @@ const SettingsScreen = ({
               ) : (
                 staffList.map((staff) => (
                   <TouchableOpacity
-                    key={staff}
+                    key={userProfiles[staff]?.uid || staff}
                     style={styles.optionBtnFull}
-                    onPress={() => handleAssignStaff(staff)}
+                    onPress={() => handleAssignStaff(userProfiles[staff]?.uid)}
                   >
-                    <Text style={styles.optionTextFull}>{staff}</Text>
+                    <Text style={styles.optionTextFull}>
+                      {userProfiles[staff]?.name || staff}
+                    </Text>
                   </TouchableOpacity>
                 ))
               )}
@@ -1646,7 +1658,7 @@ const SettingsScreen = ({
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>
-              {selectedStaffForScope} の閲覧範囲を設定
+              {selectedStaffForScopeProfile.name || "対象スタッフ"} の閲覧範囲を設定
             </Text>
             <Text style={styles.settingHint}>
               日記やメディカル情報をどこまで閲覧できるか設定します。
@@ -1655,8 +1667,8 @@ const SettingsScreen = ({
             <TouchableOpacity
               style={[
                 styles.roleSelectBtn,
-                (userProfiles[selectedStaffForScope]?.staffScope === "all" ||
-                  !userProfiles[selectedStaffForScope]?.staffScope) &&
+                (selectedStaffForScopeProfile.staffScope === "all" ||
+                  !selectedStaffForScopeProfile.staffScope) &&
                   styles.roleSelectBtnActive,
               ]}
               onPress={() => handleStaffScope("all")}
@@ -1672,7 +1684,7 @@ const SettingsScreen = ({
             <TouchableOpacity
               style={[
                 styles.roleSelectBtn,
-                userProfiles[selectedStaffForScope]?.staffScope ===
+                selectedStaffForScopeProfile.staffScope ===
                   "assigned" && styles.roleSelectBtnActive,
               ]}
               onPress={() => handleStaffScope("assigned")}
