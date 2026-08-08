@@ -667,7 +667,7 @@ const CalendarScreen = ({
     const eventDates = getEventDates(event);
     if (!event.isMultiDay || eventDates.length <= 1) return "";
     if (Array.isArray(event.selectedDates) && event.selectedDates.length > 0) {
-      return `(日付: ${eventDates.map((date) => date.replace(/-/g, "/")).join("、")})`;
+      return "";
     }
     return `(期間: ${event.date.replace(/-/g, "/")} 〜 ${event.endDate.replace(/-/g, "/")})`;
   };
