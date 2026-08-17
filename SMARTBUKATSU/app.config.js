@@ -36,8 +36,9 @@ module.exports = ({ config }) => {
   const locationPermissionMessage =
     "場所検索とピン調整のために位置情報の利用を許可してください。";
   const expoPlugins = [...(appJson.expo.plugins || [])];
-  const easBuildProfile = process.env.EAS_BUILD_PROFILE || "development";
-  const isProductionBuild = easBuildProfile === "production";
+  const appVariant = process.env.APP_VARIANT || "production";
+  const isDevelopmentBuild = appVariant === "development";
+  const isProductionBuild = appVariant === "production";
   const androidAdMobAppId =
     process.env.EXPO_PUBLIC_ADMOB_ANDROID_APP_ID ||
     (!isProductionBuild ? ADMOB_SAMPLE_ANDROID_APP_ID : null);
@@ -98,11 +99,14 @@ module.exports = ({ config }) => {
     ...config,
     ...appJson.expo,
 
-    // 明示しておくと development build のURL scheme事故を減らせます
-    scheme: "smartbukatsu",
+    name: isDevelopmentBuild ? "SMARTBUKATSU Dev" : appJson.expo.name,
+    scheme: isDevelopmentBuild ? "smartbukatsu-dev" : appJson.expo.scheme,
     plugins: expoPlugins,
     ios: {
       ...(appJson.expo.ios || {}),
+      bundleIdentifier: isDevelopmentBuild
+        ? "com.sharprise.smartbukatsu.dev"
+        : appJson.expo.ios?.bundleIdentifier,
       config: iosConfig,
       infoPlist: {
         ...(appJson.expo.ios?.infoPlist || {}),
@@ -111,6 +115,9 @@ module.exports = ({ config }) => {
     },
     android: {
       ...(appJson.expo.android || {}),
+      package: isDevelopmentBuild
+        ? "com.sharprise.smartbukatsu.dev"
+        : appJson.expo.android?.package,
       config: androidConfig,
     },
 
