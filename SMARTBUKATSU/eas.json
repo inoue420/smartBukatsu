@@ -10,6 +10,9 @@
       "environment": "development",
       "developmentClient": true,
       "distribution": "internal",
+      "env": {
+        "APP_VARIANT": "development"
+      },
       "cache": {
         "disabled": true
       }
@@ -19,6 +22,9 @@
       "environment": "preview",
       "distribution": "internal",
       "ios": {},
+      "env": {
+        "APP_VARIANT": "preview"
+      },
       "cache": {
         "disabled": true
       }
@@ -27,6 +33,9 @@
       "node": "20.20.0",
       "environment": "production",
       "ios": {},
+      "env": {
+        "APP_VARIANT": "production"
+      },
       "cache": {
         "disabled": true
       }
