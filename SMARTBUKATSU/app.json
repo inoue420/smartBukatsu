@@ -14,6 +14,7 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
+      "icon": "./assets/icon_ios.png",
       "supportsTablet": true,
       "bundleIdentifier": "com.sharprise.smartbukatsu",
       "config": {
@@ -24,9 +25,10 @@
       }
     },
     "android": {
+      "icon": "./assets/icon_android.png",
       "package": "com.sharprise.smartbukatsu",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
+        "foregroundImage": "./assets/icon_android.png",
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true
