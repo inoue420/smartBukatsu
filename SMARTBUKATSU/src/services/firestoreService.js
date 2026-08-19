@@ -599,6 +599,75 @@ export function subscribeNotices(teamId, callback) {
 }
 
 // ==========================================
+// 💬 ワークスペース掲示板（Workspace Posts）関連
+// ==========================================
+export async function createWorkspacePost(teamId, postData) {
+  if (!teamId) throw new Error("チームIDがありません");
+
+  if (postData.id) {
+    await setDoc(doc(db, "teams", teamId, "workspacePosts", postData.id), {
+      ...postData,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    return postData.id;
+  }
+
+  const created = await addDoc(
+    collection(db, "teams", teamId, "workspacePosts"),
+    {
+      ...postData,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    },
+  );
+  return created.id;
+}
+
+export async function updateWorkspacePost(teamId, postId, updateData) {
+  if (!teamId || !postId) throw new Error("IDが不足しています");
+  await setDoc(
+    doc(db, "teams", teamId, "workspacePosts", postId),
+    { ...updateData, updatedAt: serverTimestamp() },
+    { merge: true },
+  );
+}
+
+export async function markWorkspacePostRead(
+  teamId,
+  postId,
+  userUid,
+  userName,
+) {
+  if (!teamId || !postId) throw new Error("IDが不足しています");
+
+  const updateData = { updatedAt: serverTimestamp() };
+  if (userUid) updateData.readByUids = arrayUnion(userUid);
+  if (userName) updateData.readBy = arrayUnion(userName);
+  await updateDoc(
+    doc(db, "teams", teamId, "workspacePosts", postId),
+    updateData,
+  );
+}
+
+export function subscribeWorkspacePosts(teamId, callback) {
+  if (!teamId) return () => {};
+  const q = query(
+    collection(db, "teams", teamId, "workspacePosts"),
+    orderBy("createdAt", "desc"),
+  );
+  return subscribeToTeamData(q, (snapshot) => {
+    callback(
+      snapshot.docs.map((postDoc) => ({
+        id: postDoc.id,
+        ...postDoc.data(),
+        createdAt: postDoc.data().createdAt?.toMillis() || Date.now(),
+      })),
+    );
+  });
+}
+
+// ==========================================
 // 📝 振り返り（Daily Reports）関連
 // ==========================================
 export function subscribeDailyReports(teamId, callback) {
