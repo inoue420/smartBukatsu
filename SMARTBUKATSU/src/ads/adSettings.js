@@ -1,5 +1,14 @@
 export const INTERSTITIAL_ADS_ENABLED = false;
 
+export const ADS_REQUEST_CONFIGURATION = Object.freeze({
+  tagForChildDirectedTreatment: true,
+  tagForUnderAgeOfConsent: true,
+});
+
+export const NON_PERSONALIZED_AD_REQUEST_OPTIONS = Object.freeze({
+  requestNonPersonalizedAdsOnly: true,
+});
+
 export const DEFAULT_INTERSTITIAL_SETTINGS = Object.freeze({
   navigationInterval: 30,
   dailyLimit: 1,

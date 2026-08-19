@@ -13,6 +13,7 @@ import {
 } from "react-native-google-mobile-ads";
 
 import { useAds } from "./AdManager";
+import { NON_PERSONALIZED_AD_REQUEST_OPTIONS } from "./adSettings";
 
 const AppBannerAd = () => {
   const { adsInitialized, bannerAdUnitId } = useAds();
@@ -49,6 +50,7 @@ const AppBannerAd = () => {
         <BannerAd
           unitId={bannerAdUnitId}
           size={BannerAdSize.ANCHORED_ADAPTIVE_BANNER}
+          requestOptions={NON_PERSONALIZED_AD_REQUEST_OPTIONS}
           onAdFailedToLoad={(error) => {
             if (__DEV__) {
               console.warn("バナー広告を読み込めませんでした。", error);
