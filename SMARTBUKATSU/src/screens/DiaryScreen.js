@@ -24,6 +24,16 @@ import {
   updateDailyReport,
   deleteDailyReport,
 } from "../services/firestoreService";
+import {
+  DEFAULT_ALERT_THRESHOLDS,
+  getFatigueScore,
+  getPainScore,
+  MEDICAL_SCALE_DEFAULT,
+  MEDICAL_SCALE_MAX,
+  MEDICAL_SCALE_VALUES,
+  MEDICAL_SCALE_VERSION,
+  normalizeMedicalScaleValue,
+} from "../utils/medicalScale";
 
 const OptionGroup = ({ options, selected, onSelect, color = "#0077cc" }) => (
   <View style={styles.optionGroup}>
@@ -52,7 +62,7 @@ const ScaleSelector = ({ selected, onSelect, color }) => (
     showsHorizontalScrollIndicator={false}
     style={styles.scaleScroll}
   >
-    {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((num) => (
+    {MEDICAL_SCALE_VALUES.map((num) => (
       <TouchableOpacity
         key={num}
         style={[
@@ -91,12 +101,7 @@ const DiaryScreen = ({
   setDailyReports,
   clubMembers = [],
   onDiarySubmitted,
-  alertThresholds = {
-    fatigueWarning: 7,
-    fatigueDanger: 9,
-    painDanger: 7,
-    autoEscalate: true,
-  },
+  alertThresholds = DEFAULT_ALERT_THRESHOLDS,
 }) => {
   const { activeTeamId } = useAuth();
 
@@ -129,11 +134,11 @@ const DiaryScreen = ({
   const [isDatePickerVisible, setIsDatePickerVisible] = useState(false);
 
   const [condition, setCondition] = useState("良い");
-  const [fatigue, setFatigue] = useState(5);
+  const [fatigue, setFatigue] = useState(MEDICAL_SCALE_DEFAULT);
   const [isParticipating, setIsParticipating] = useState("通常");
   const [hasPain, setHasPain] = useState(false);
   const [painPart, setPainPart] = useState("");
-  const [painLevel, setPainLevel] = useState(5);
+  const [painLevel, setPainLevel] = useState(MEDICAL_SCALE_DEFAULT);
   const [sinceWhen, setSinceWhen] = useState("");
   const [treatment, setTreatment] = useState("");
 
@@ -161,11 +166,21 @@ const DiaryScreen = ({
           const draft = JSON.parse(draftStr);
           setReportDate(draft.reportDate || getTodayString());
           setCondition(draft.condition || "良い");
-          setFatigue(draft.fatigue !== undefined ? draft.fatigue : 5);
+          setFatigue(
+            normalizeMedicalScaleValue(
+              draft.fatigue,
+              draft.medicalScaleVersion,
+            ),
+          );
           setIsParticipating(draft.isParticipating || "通常");
           setHasPain(draft.hasPain || false);
           setPainPart(draft.painPart || "");
-          setPainLevel(draft.painLevel !== undefined ? draft.painLevel : 5);
+          setPainLevel(
+            normalizeMedicalScaleValue(
+              draft.painLevel,
+              draft.medicalScaleVersion,
+            ),
+          );
           setSinceWhen(draft.sinceWhen || "");
           setTreatment(draft.treatment || "");
           setReflection(draft.reflection || "");
@@ -190,6 +205,7 @@ const DiaryScreen = ({
         reportDate,
         condition,
         fatigue,
+        medicalScaleVersion: MEDICAL_SCALE_VERSION,
         isParticipating,
         hasPain,
         painPart,
@@ -260,13 +276,13 @@ const DiaryScreen = ({
     if (
       record.condition === "不良" ||
       record.isParticipating === "不可" ||
-      record.fatigue >= alertThresholds.fatigueDanger ||
+      getFatigueScore(record) >= alertThresholds.fatigueDanger ||
       (record.hasPain &&
-        record.painDetails?.level >= alertThresholds.painDanger)
+        getPainScore(record) >= alertThresholds.painDanger)
     )
       return "danger";
     if (
-      record.fatigue >= alertThresholds.fatigueWarning ||
+      getFatigueScore(record) >= alertThresholds.fatigueWarning ||
       record.isParticipating === "制限" ||
       record.hasPain
     )
@@ -478,11 +494,11 @@ const DiaryScreen = ({
     setEditingReportId(null);
     setReportDate(getTodayString());
     setCondition("良い");
-    setFatigue(5);
+    setFatigue(MEDICAL_SCALE_DEFAULT);
     setIsParticipating("通常");
     setHasPain(false);
     setPainPart("");
-    setPainLevel(5);
+    setPainLevel(MEDICAL_SCALE_DEFAULT);
     setSinceWhen("");
     setTreatment("");
     setReflection("");
@@ -515,6 +531,7 @@ const DiaryScreen = ({
           date: reportDate,
           condition,
           fatigue,
+          medicalScaleVersion: MEDICAL_SCALE_VERSION,
           isParticipating,
           hasPain,
           painDetails: painDetailsData,
@@ -543,6 +560,7 @@ const DiaryScreen = ({
           author: currentUser,
           condition,
           fatigue,
+          medicalScaleVersion: MEDICAL_SCALE_VERSION,
           isParticipating,
           hasPain,
           painDetails: painDetailsData,
@@ -594,14 +612,12 @@ const DiaryScreen = ({
 
     setReportDate(selectedReport.date || getTodayString());
     setCondition(selectedReport.condition || "良い");
-    setFatigue(
-      selectedReport.fatigue !== undefined ? selectedReport.fatigue : 5,
-    );
+    setFatigue(getFatigueScore(selectedReport));
     setIsParticipating(selectedReport.isParticipating || "通常");
     setHasPain(selectedReport.hasPain || false);
     if (selectedReport.painDetails) {
       setPainPart(selectedReport.painDetails.part || "");
-      setPainLevel(selectedReport.painDetails.level || 5);
+      setPainLevel(getPainScore(selectedReport));
       setSinceWhen(selectedReport.painDetails.sinceWhen || "");
       setTreatment(selectedReport.painDetails.treatment || "");
     }
@@ -1090,7 +1106,8 @@ const DiaryScreen = ({
                                   体調: {report.condition}
                                 </Text>
                                 <Text style={styles.miniMedicalText}>
-                                  疲労: {report.fatigue}/10
+                                  疲労: {getFatigueScore(report)}/
+                                  {MEDICAL_SCALE_MAX}
                                 </Text>
                                 <Text
                                   style={[
@@ -1328,7 +1345,7 @@ const DiaryScreen = ({
                               <View style={styles.gridItem}>
                                 <Text style={styles.gridTitle}>疲労度</Text>
                                 <Text style={styles.gridValue}>
-                                  {selectedReport.fatigue} / 10
+                                  {getFatigueScore(selectedReport)} / {MEDICAL_SCALE_MAX}
                                 </Text>
                               </View>
                               <View style={styles.gridItem}>
@@ -1354,8 +1371,8 @@ const DiaryScreen = ({
                                   </Text>
                                   <Text style={styles.painDetailText}>
                                     部位：{selectedReport.painDetails.part}{" "}
-                                    (痛さ: {selectedReport.painDetails.level}
-                                    /10)
+                                    (痛さ: {getPainScore(selectedReport)}/
+                                    {MEDICAL_SCALE_MAX})
                                   </Text>
                                   <Text style={styles.painDetailText}>
                                     いつから：
@@ -1593,7 +1610,7 @@ const DiaryScreen = ({
                   />
 
                   <Text style={styles.inputLabel}>
-                    🔋 疲労度 (0:なし 〜 10:限界)
+                    🔋 疲労度 (1:なし 〜 5:限界)
                   </Text>
                   <ScaleSelector
                     selected={fatigue}
@@ -1661,7 +1678,7 @@ const DiaryScreen = ({
                         value={painPart}
                         onChangeText={setPainPart}
                       />
-                      <Text style={styles.subLabel}>痛みの強さ (0〜10)</Text>
+                      <Text style={styles.subLabel}>痛みの強さ (1〜5)</Text>
                       <ScaleSelector
                         selected={painLevel}
                         onSelect={setPainLevel}

@@ -28,6 +28,7 @@ import {
   updateWorkspacePostAudiences,
   updateWorkspacePostReply,
 } from "../services/firestoreService";
+import { getFatigueScore, getPainScore } from "../utils/medicalScale";
 
 // ★ 追加：Firestoreの直接操作用
 import { db } from "../firebase";
@@ -269,13 +270,13 @@ const WorkspaceHomeScreen = ({
     if (
       record.condition === "不良" ||
       record.isParticipating === "不可" ||
-      record.fatigue >= alertThresholds.fatigueDanger ||
+      getFatigueScore(record) >= alertThresholds.fatigueDanger ||
       (record.hasPain &&
-        record.painDetails?.level >= alertThresholds.painDanger)
+        getPainScore(record) >= alertThresholds.painDanger)
     )
       return "danger";
     if (
-      record.fatigue >= alertThresholds.fatigueWarning ||
+      getFatigueScore(record) >= alertThresholds.fatigueWarning ||
       record.isParticipating === "制限" ||
       record.hasPain
     )

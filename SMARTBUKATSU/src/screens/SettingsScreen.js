@@ -45,6 +45,7 @@ import {
   getTeamAdSettingsForSave,
   normalizeInterstitialSettings,
 } from "../ads/adSettings";
+import { MEDICAL_SCALE_MAX } from "../utils/medicalScale";
 
 
 const ThresholdSelector = ({ label, value, min, max, onChange }) => (
@@ -1191,7 +1192,7 @@ const SettingsScreen = ({
                   コンディション一覧で「注意(黄)」「危険(赤)」になる数値を設定します。
                 </Text>
                 <ThresholdSelector
-                  label="疲労度「注意」の基準 (10段階中)"
+                  label="疲労度「注意」の基準 (5段階中)"
                   value={alertThresholds.fatigueWarning}
                   min={1}
                   max={alertThresholds.fatigueDanger - 1}
@@ -1203,19 +1204,19 @@ const SettingsScreen = ({
                   }
                 />
                 <ThresholdSelector
-                  label="疲労度「危険」の基準 (10段階中)"
+                  label="疲労度「危険」の基準 (5段階中)"
                   value={alertThresholds.fatigueDanger}
                   min={alertThresholds.fatigueWarning + 1}
-                  max={10}
+                  max={MEDICAL_SCALE_MAX}
                   onChange={(v) =>
                     setAlertThresholds({ ...alertThresholds, fatigueDanger: v })
                   }
                 />
                 <ThresholdSelector
-                  label="痛み「危険」の基準 (10段階中)"
+                  label="痛み「危険」の基準 (5段階中)"
                   value={alertThresholds.painDanger}
                   min={1}
-                  max={10}
+                  max={MEDICAL_SCALE_MAX}
                   onChange={(v) =>
                     setAlertThresholds({ ...alertThresholds, painDanger: v })
                   }

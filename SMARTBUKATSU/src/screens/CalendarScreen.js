@@ -30,6 +30,11 @@ import {
   updatePersonalEvent,
   deletePersonalEvent,
 } from "../services/firestoreService";
+import {
+  getFatigueScore,
+  getPainScore,
+  MEDICAL_SCALE_MAX,
+} from "../utils/medicalScale";
 
 const NativeMaps =
   Platform.OS === "web"
@@ -2032,7 +2037,7 @@ const CalendarScreen = ({
                   <Text style={styles.label}>🏥 コンディション</Text>
                   <Text style={styles.viewingText}>
                     体調: {viewingReport.condition} / 疲労度:{" "}
-                    {viewingReport.fatigue} / 練習:{" "}
+                    {getFatigueScore(viewingReport)}/{MEDICAL_SCALE_MAX} / 練習:{" "}
                     {viewingReport.isParticipating}
                   </Text>
 
@@ -2044,7 +2049,7 @@ const CalendarScreen = ({
                       ]}
                     >
                       🤕 ケガ・痛み: {viewingReport.painDetails.part} (レベル:{" "}
-                      {viewingReport.painDetails.level})
+                      {getPainScore(viewingReport)}/{MEDICAL_SCALE_MAX})
                     </Text>
                   )}
 

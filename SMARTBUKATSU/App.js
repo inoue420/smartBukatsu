@@ -13,6 +13,7 @@ import {
   DEFAULT_INTERSTITIAL_SETTINGS,
   getInterstitialSettingsFromTeamData,
 } from "./src/ads/adSettings";
+import { DEFAULT_ALERT_THRESHOLDS } from "./src/utils/medicalScale";
 
 // コンテキストとサービス
 import { AuthProvider, useAuth } from "./src/AuthContext";
@@ -78,10 +79,7 @@ function AppContent() {
   const [positions, setPositions] = useState(["GK", "CP", "マネージャー"]);
 
   const [alertThresholds, setAlertThresholds] = useState({
-    fatigueWarning: 7,
-    fatigueDanger: 9,
-    painDanger: 7,
-    autoEscalate: true,
+    ...DEFAULT_ALERT_THRESHOLDS,
   });
   const [interstitialSettings, setInterstitialSettings] = useState({
     ...DEFAULT_INTERSTITIAL_SETTINGS,
@@ -422,6 +420,7 @@ function AppContent() {
                   dailyReports={dailyReports}
                   grades={grades}
                   positions={positions}
+                  alertThresholds={alertThresholds}
                 />
               )}
             </Stack.Screen>
