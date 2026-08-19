@@ -11,13 +11,17 @@ import React, {
 import { Platform, StatusBar } from "react-native";
 import mobileAds, {
   AdEventType,
+  AdsConsent,
   InterstitialAd,
+  MaxAdContentRating,
   TestIds,
 } from "react-native-google-mobile-ads";
 
 import {
+  ADS_REQUEST_CONFIGURATION,
   DEFAULT_INTERSTITIAL_SETTINGS,
   INTERSTITIAL_ADS_ENABLED,
+  NON_PERSONALIZED_AD_REQUEST_OPTIONS,
   normalizeInterstitialSettings,
 } from "./adSettings";
 const DAILY_COUNT_STORAGE_KEY = "admob_interstitial_daily_count_v1";
@@ -221,6 +225,7 @@ export const AdsProvider = ({ children }) => {
     if (interstitialAdUnitId) {
       const interstitial = InterstitialAd.createForAdRequest(
         interstitialAdUnitId,
+        NON_PERSONALIZED_AD_REQUEST_OPTIONS,
       );
       interstitialRef.current = interstitial;
 
@@ -269,19 +274,67 @@ export const AdsProvider = ({ children }) => {
     }
 
     void loadDailyState();
-    mobileAds()
-      .initialize()
-      .then(() => {
+
+    const getConsentInfo = async () => {
+      try {
+        return await AdsConsent.gatherConsent({
+          tagForUnderAgeOfConsent:
+            ADS_REQUEST_CONFIGURATION.tagForUnderAgeOfConsent,
+        });
+      } catch (error) {
+        if (__DEV__) {
+          console.warn(
+            "Google UMPの同意状態を更新できませんでした。保存済み状態を確認します。",
+            error,
+          );
+        }
+
+        try {
+          return await AdsConsent.getConsentInfo();
+        } catch (fallbackError) {
+          if (__DEV__) {
+            console.warn(
+              "Google UMPの保存済み同意状態を確認できませんでした。",
+              fallbackError,
+            );
+          }
+          return null;
+        }
+      }
+    };
+
+    const initializeAds = async () => {
+      const consentInfo = await getConsentInfo();
+      if (!active || !consentInfo?.canRequestAds) {
+        if (__DEV__ && active) {
+          console.warn(
+            "Google UMPで広告リクエストが許可されていないため、AdMobを初期化しません。",
+          );
+        }
+        return;
+      }
+
+      try {
+        await mobileAds().setRequestConfiguration({
+          ...ADS_REQUEST_CONFIGURATION,
+          maxAdContentRating: MaxAdContentRating.G,
+        });
         if (!active) return;
+
+        await mobileAds().initialize();
+        if (!active) return;
+
         adsInitializedRef.current = true;
         setAdsInitialized(true);
         loadInterstitialRef.current();
-      })
-      .catch((error) => {
+      } catch (error) {
         if (__DEV__) {
           console.warn("Google Mobile Ads SDKを初期化できませんでした。", error);
         }
-      });
+      }
+    };
+
+    void initializeAds();
 
     return () => {
       active = false;
