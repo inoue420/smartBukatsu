@@ -198,6 +198,29 @@ const normalizeDate = (dateStr) => {
   return dateStr;
 };
 
+const normalizeAbsenceCommentDate = (dateValue) => {
+  if (!dateValue) return "";
+
+  if (typeof dateValue === "string") {
+    const normalized = normalizeDate(dateValue.trim());
+    const datePrefix = /^(\d{4}-\d{2}-\d{2})/.exec(normalized);
+    return datePrefix ? datePrefix[1] : normalized;
+  }
+
+  const date =
+    dateValue instanceof Date
+      ? dateValue
+      : typeof dateValue?.toDate === "function"
+        ? dateValue.toDate()
+        : null;
+  if (!date || Number.isNaN(date.getTime())) return "";
+
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
 const getLocalDateStart = (dateStr) => {
   const normalized = normalizeDate(dateStr);
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(normalized);
@@ -429,20 +452,24 @@ const CalendarScreen = ({
   isOffline = false,
   absenceDeadlineDaysBefore = 3,
 }) => {
-  const { activeTeamId, user } = useAuth();
+  const { activeTeamId, user, role: authUserRole } = useAuth();
 
   const currentUserProfile =
     Object.values(userProfiles).find(
       (profile) => profile?.uid === currentUserUid,
     ) || {};
-  const userRole =
+  const resolvedUserRole =
     global.TEST_ROLE ||
-    (isAdmin ? "owner" : currentUserProfile.role || "member");
+    authUserRole ||
+    currentUserProfile.role ||
+    (isAdmin ? "owner" : "");
+  const userRole = resolvedUserRole || "member";
 
   const canManageClubEvents = ["owner", "admin", "staff", "captain"].includes(
     userRole,
   );
-  const isGuardian = userRole === "guardian";
+  const canSubmitAbsence =
+    Boolean(resolvedUserRole) && userRole !== "guardian";
   const configuredAbsenceDeadlineDays = Number(absenceDeadlineDaysBefore);
   const safeAbsenceDeadlineDays =
     Number.isInteger(configuredAbsenceDeadlineDays) &&
@@ -490,6 +517,7 @@ const CalendarScreen = ({
     DEFAULT_LOCATION_COORDINATE,
   );
   const [selectedAbsenceEvent, setSelectedAbsenceEvent] = useState(null);
+  const [absenceModalMode, setAbsenceModalMode] = useState(null);
   const [absenceCommentText, setAbsenceCommentText] = useState("");
 
   // === 個人の予定ステート ===
@@ -700,15 +728,32 @@ const CalendarScreen = ({
   const canCancelAbsenceComment = (comment) =>
     !!user?.uid && comment?.uid === user.uid;
 
-  const getAbsenceCommentsOutsideDate = (event, date) =>
-    getAbsenceComments(event).filter(
-      (comment) => normalizeDate(comment?.date) !== date,
+  const getAbsenceCommentsOutsideDate = (event, date) => {
+    const normalizedDate = normalizeAbsenceCommentDate(date);
+    return getAbsenceComments(event).filter(
+      (comment) =>
+        normalizeAbsenceCommentDate(comment?.date) !== normalizedDate,
     );
+  };
 
-  const getAbsenceCommentsForDate = (event, date) =>
-    getAbsenceComments(event).filter(
-      (comment) => normalizeDate(comment?.date) === date,
+  const getAbsenceCommentsForDate = (event, date) => {
+    const comments = getAbsenceComments(event);
+    if (getEventDates(event).length <= 1) return comments;
+
+    const normalizedDate = normalizeAbsenceCommentDate(date);
+    return comments.filter(
+      (comment) =>
+        normalizeAbsenceCommentDate(comment?.date) === normalizedDate,
     );
+  };
+
+  const activeAbsenceComments = getAbsenceCommentsForDate(
+    activeAbsenceEvent,
+    selectedDate,
+  );
+  const activeOwnAbsenceComments = activeAbsenceComments.filter(
+    canCancelAbsenceComment,
+  );
 
   const buildRemainingClubEventData = (event, removedDate) => {
     const remainingDates = getEventDates(event).filter(
@@ -1342,18 +1387,26 @@ const CalendarScreen = ({
     ]);
   };
 
-  const openAbsenceModal = (event) => {
+  const openAbsenceListModal = (event) => {
     setSelectedAbsenceEvent(event);
+    setAbsenceModalMode("list");
+    setAbsenceCommentText("");
+  };
+
+  const openAbsenceReportModal = (event) => {
+    setSelectedAbsenceEvent(event);
+    setAbsenceModalMode("report");
     setAbsenceCommentText("");
   };
 
   const closeAbsenceModal = () => {
     setSelectedAbsenceEvent(null);
+    setAbsenceModalMode(null);
     setAbsenceCommentText("");
   };
 
   const handleSendAbsenceComment = async () => {
-    if (isGuardian) return;
+    if (!canSubmitAbsence) return;
     const text = absenceCommentText.trim();
     if (!activeAbsenceEvent || !text) return;
     if (isActiveAbsenceDeadlineReached) {
@@ -1734,6 +1787,10 @@ const CalendarScreen = ({
                 itemLocation?.latitude,
                 itemLocation?.longitude,
               );
+              const absenceCount = getAbsenceCommentsForDate(
+                item,
+                selectedDate,
+              ).length;
               return (
                 <View
                   key={item.id}
@@ -1753,9 +1810,29 @@ const CalendarScreen = ({
                     <Text style={styles.eventTitle}>
                       {item.type || item.title || item.name}
                     </Text>
-                    <Text style={styles.timeRangeText}>
-                      {getDisplayTime(item, selectedDate)}
-                    </Text>
+                    <View style={styles.timeSummaryRow}>
+                      <Text style={styles.timeRangeText}>
+                        {getDisplayTime(item, selectedDate)}
+                      </Text>
+                      <TouchableOpacity
+                        onPress={() => openAbsenceListModal(item)}
+                        style={styles.absenceCountBtn}
+                        accessibilityRole="button"
+                        accessibilityLabel={`不参加 ${absenceCount}件の一覧を確認`}
+                      >
+                        <Text style={styles.absenceCountBtnText}>
+                          不参加 {absenceCount}件
+                        </Text>
+                      </TouchableOpacity>
+                      {canSubmitAbsence && !isPending && (
+                        <TouchableOpacity
+                          onPress={() => openAbsenceReportModal(item)}
+                          style={styles.absenceBtn}
+                        >
+                          <Text style={styles.absenceBtnText}>不参加連絡</Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
                     {item.description ? (
                       <Text style={styles.eventDescription} numberOfLines={2}>
                         {item.description}
@@ -1793,19 +1870,6 @@ const CalendarScreen = ({
                     <Text style={styles.eventSub}>
                       {item.type} {getClubEventDateSummary(item)}
                     </Text>
-                    <View style={styles.absenceSummaryRow}>
-                      <Text style={styles.absenceSummaryText}>
-                        不参加連絡 {getAbsenceComments(item).length}件
-                      </Text>
-                      {!isGuardian && !isPending && (
-                        <TouchableOpacity
-                          onPress={() => openAbsenceModal(item)}
-                          style={styles.absenceBtn}
-                        >
-                          <Text style={styles.absenceBtnText}>不参加連絡</Text>
-                        </TouchableOpacity>
-                      )}
-                    </View>
                   </View>
                   {canManageClubEvents && !isPending && (
                     <View style={styles.actionRow}>
@@ -2030,7 +2094,7 @@ const CalendarScreen = ({
         </View>
       </Modal>
 
-      {/* 不参加連絡モーダル */}
+      {/* 不参加者一覧・不参加連絡モーダル */}
       <Modal visible={activeAbsenceEvent !== null} transparent animationType="slide">
         <View style={styles.modalOverlay}>
           <KeyboardAvoidingView
@@ -2038,10 +2102,13 @@ const CalendarScreen = ({
             style={styles.modalContent}
           >
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>不参加連絡</Text>
+              <Text style={styles.modalTitle}>
+                {absenceModalMode === "list" ? "不参加者一覧" : "不参加連絡"}
+              </Text>
               {activeAbsenceEvent && (
                 <Text style={styles.modalSubTitle}>
-                  {activeAbsenceEvent.title || activeAbsenceEvent.name}
+                  {activeAbsenceEvent.title || activeAbsenceEvent.name}・
+                  {selectedDate.replace(/-/g, "/")}
                 </Text>
               )}
             </View>
@@ -2049,54 +2116,70 @@ const CalendarScreen = ({
               showsVerticalScrollIndicator={false}
               contentContainerStyle={{ paddingBottom: 30 }}
             >
-              <Text style={styles.label}>連絡一覧</Text>
-              {getAbsenceComments(activeAbsenceEvent).length === 0 ? (
-                <Text style={styles.emptyText}>不参加連絡はありません</Text>
-              ) : (
-                getAbsenceComments(activeAbsenceEvent).map((comment) => (
-                  <View key={comment.id} style={styles.commentBox}>
-                    <View style={styles.commentHeaderRow}>
-                      <Text
-                        style={[styles.commentUser, styles.commentHeaderUser]}
-                      >
-                        {comment.user}
-                      </Text>
-                      {canCancelAbsenceComment(comment) && (
-                        <TouchableOpacity
-                          style={[
-                            styles.absenceCancelBtn,
-                            isLoading && styles.absenceCancelBtnDisabled,
-                          ]}
-                          onPress={() => handleCancelAbsenceComment(comment)}
-                          disabled={isLoading}
-                        >
-                          <Text style={styles.absenceCancelBtnText}>取り消す</Text>
-                        </TouchableOpacity>
-                      )}
-                    </View>
-                    <Text style={styles.commentText}>{comment.text}</Text>
-                  </View>
-                ))
-              )}
-
-              {isActiveAbsenceDeadlineReached ? (
-                <View style={styles.absenceDeadlineNotice}>
-                  <Text style={styles.absenceDeadlineNoticeText}>
-                    この予定の新しい不参加連絡は、予定日の
-                    {safeAbsenceDeadlineDays}
-                    日前に締め切られました。登録済みの連絡は確認・取り消しできます。
-                  </Text>
-                </View>
+              {absenceModalMode === "list" ? (
+                <>
+                  <Text style={styles.label}>不参加者一覧</Text>
+                  {activeAbsenceComments.length === 0 ? (
+                    <Text style={styles.emptyText}>不参加者はいません</Text>
+                  ) : (
+                    activeAbsenceComments.map((comment) => (
+                      <View key={comment.id} style={styles.commentBox}>
+                        <Text style={styles.commentUser}>{comment.user}</Text>
+                        <Text style={styles.commentText}>{comment.text}</Text>
+                      </View>
+                    ))
+                  )}
+                </>
               ) : (
                 <>
-                  <Text style={styles.label}>不参加コメント</Text>
-                  <TextInput
-                    style={[styles.input, styles.textArea]}
-                    value={absenceCommentText}
-                    onChangeText={setAbsenceCommentText}
-                    placeholder="例: 体調不良のため欠席します"
-                    multiline
-                  />
+                  <Text style={styles.label}>自分の不参加連絡</Text>
+                  {activeOwnAbsenceComments.length === 0 ? (
+                    <Text style={styles.emptyText}>自分の不参加連絡はありません</Text>
+                  ) : (
+                    activeOwnAbsenceComments.map((comment) => (
+                      <View key={comment.id} style={styles.commentBox}>
+                        <View style={styles.commentHeaderRow}>
+                          <Text
+                            style={[styles.commentUser, styles.commentHeaderUser]}
+                          >
+                            {comment.user}
+                          </Text>
+                          <TouchableOpacity
+                            style={[
+                              styles.absenceCancelBtn,
+                              isLoading && styles.absenceCancelBtnDisabled,
+                            ]}
+                            onPress={() => handleCancelAbsenceComment(comment)}
+                            disabled={isLoading}
+                          >
+                            <Text style={styles.absenceCancelBtnText}>取り消す</Text>
+                          </TouchableOpacity>
+                        </View>
+                        <Text style={styles.commentText}>{comment.text}</Text>
+                      </View>
+                    ))
+                  )}
+
+                  {isActiveAbsenceDeadlineReached ? (
+                    <View style={styles.absenceDeadlineNotice}>
+                      <Text style={styles.absenceDeadlineNoticeText}>
+                        この予定の新しい不参加連絡は、予定日の
+                        {safeAbsenceDeadlineDays}
+                        日前に締め切られました。登録済みの連絡は確認・取り消しできます。
+                      </Text>
+                    </View>
+                  ) : (
+                    <>
+                      <Text style={styles.label}>不参加コメント</Text>
+                      <TextInput
+                        style={[styles.input, styles.textArea]}
+                        value={absenceCommentText}
+                        onChangeText={setAbsenceCommentText}
+                        placeholder="例: 体調不良のため欠席します"
+                        multiline
+                      />
+                    </>
+                  )}
                 </>
               )}
               <View style={styles.modalButtons}>
@@ -2106,14 +2189,15 @@ const CalendarScreen = ({
                 >
                   <Text style={styles.cancelBtnText}>閉じる</Text>
                 </TouchableOpacity>
-                {!isActiveAbsenceDeadlineReached && (
-                  <TouchableOpacity
-                    style={styles.submitBtn}
-                    onPress={handleSendAbsenceComment}
-                  >
-                    <Text style={styles.submitBtnText}>送信</Text>
-                  </TouchableOpacity>
-                )}
+                {absenceModalMode === "report" &&
+                  !isActiveAbsenceDeadlineReached && (
+                    <TouchableOpacity
+                      style={styles.submitBtn}
+                      onPress={handleSendAbsenceComment}
+                    >
+                      <Text style={styles.submitBtnText}>送信</Text>
+                    </TouchableOpacity>
+                  )}
               </View>
             </ScrollView>
           </KeyboardAvoidingView>
@@ -2738,6 +2822,11 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
   },
   eventTitle: { fontSize: 15, fontWeight: "bold", color: COLORS.textMain },
+  timeSummaryRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+  },
   timeRangeText: {
     fontSize: 13,
     color: COLORS.primary,
@@ -2751,24 +2840,27 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   eventSub: { fontSize: 11, color: "#aaa", marginTop: 4 },
-  absenceSummaryRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    flexWrap: "wrap",
-    marginTop: 8,
+  absenceCountBtn: {
+    borderWidth: 1,
+    borderColor: COLORS.danger,
+    borderRadius: 12,
+    paddingVertical: 3,
+    paddingHorizontal: 8,
+    marginLeft: 8,
+    backgroundColor: "#fff5f5",
   },
-  absenceSummaryText: {
+  absenceCountBtnText: {
     fontSize: 12,
     color: COLORS.danger,
     fontWeight: "bold",
-    marginRight: 8,
   },
   absenceBtn: {
     borderWidth: 1,
     borderColor: COLORS.danger,
     borderRadius: 8,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
+    paddingVertical: 3,
+    paddingHorizontal: 8,
+    marginLeft: 8,
     backgroundColor: "#fff5f5",
   },
   absenceBtnText: {
