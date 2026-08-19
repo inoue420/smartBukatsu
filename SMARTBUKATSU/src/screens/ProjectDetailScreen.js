@@ -88,6 +88,8 @@ const ProjectDetailScreen = ({
     selectedTagGroup?.name || project.tagGroupName || "基本タグ";
 
   const [selectedQuickTags, setSelectedQuickTags] = useState([]);
+  const [isRecordingTag, setIsRecordingTag] = useState(false);
+  const isRecordingTagRef = useRef(false);
   const [editingRecordedTag, setEditingRecordedTag] = useState(null);
   const [editingRecordedTags, setEditingRecordedTags] = useState([]);
   const [editingUseCustomClipDuration, setEditingUseCustomClipDuration] =
@@ -394,6 +396,7 @@ const ProjectDetailScreen = ({
   const executeAddTag = async () => {
     if (!canEditVideoTags) return;
     if (selectedQuickTags.length === 0) return;
+    if (isRecordingTagRef.current) return;
     const label = selectedQuickTags.join(" + ");
 
     const newTag = {
@@ -408,21 +411,34 @@ const ProjectDetailScreen = ({
     const newTags = [...localTags, newTag].sort(
       (a, b) => a.videoTime - b.videoTime,
     );
-    setLocalTags(newTags);
-    setSelectedQuickTags([]);
 
-    if (setProjects) {
-      setProjects((prev) =>
-        prev.map((p) => (p.id === project.id ? { ...p, tags: newTags } : p)),
-      );
-    }
-
-    showToast(`✅ タグを記録しました（未公開）`);
-
+    isRecordingTagRef.current = true;
+    setIsRecordingTag(true);
     try {
       const safeTeamId = activeTeamId || "test_team";
       await updateProject(safeTeamId, project.id, { tags: newTags });
-    } catch (error) {}
+
+      setLocalTags(newTags);
+      setSelectedQuickTags([]);
+
+      if (setProjects) {
+        setProjects((prev) =>
+          prev.map((p) =>
+            p.id === project.id ? { ...p, tags: newTags } : p,
+          ),
+        );
+      }
+
+      showToast(`✅ タグを記録しました（未公開）`);
+    } catch (error) {
+      Alert.alert(
+        "記録エラー",
+        "タグを記録できませんでした。通信状態を確認して、もう一度お試しください。",
+      );
+    } finally {
+      isRecordingTagRef.current = false;
+      setIsRecordingTag(false);
+    }
   };
 
   const handleBulkShareTags = async () => {
@@ -702,9 +718,20 @@ const ProjectDetailScreen = ({
     const privateTagsCount = localTags.filter(
       (t) => t.status === "private" && t.user === displayUserName,
     ).length;
+    const TaggingContainer = isLandscape ? ScrollView : View;
+    const RecordedTagsContainer = isLandscape ? View : ScrollView;
 
     return (
-      <View style={{ flex: 1 }}>
+      <TaggingContainer
+        style={isLandscape ? styles.fsTagScroll : styles.taggingRoot}
+        {...(isLandscape
+          ? {
+              contentContainerStyle: styles.fsTagScrollContent,
+              keyboardShouldPersistTaps: "handled",
+              showsVerticalScrollIndicator: false,
+            }
+          : {})}
+      >
         <View style={isLandscape ? styles.fsTagArea : styles.quickTagArea}>
           <Text style={isLandscape ? styles.fsTagTitle : styles.quickTagTitle}>
             タグリスト: {activeTagGroupName} / 複数選択してから「記録」をタップ
@@ -765,29 +792,36 @@ const ProjectDetailScreen = ({
             <>
               <View style={styles.clipSettingsRow}>
                 <Text style={styles.clipSettingsLabel}>✂️ 全体切り抜き:</Text>
-                <Text style={styles.clipSettingsText}>前</Text>
-                <TextInput
-                  style={styles.clipSettingsInput}
-                  keyboardType="number-pad"
-                  value={String(preSec)}
-                  onChangeText={(value) =>
-                    setPreSec(normalizeClipSeconds(value))
-                  }
-                  selectTextOnFocus
-                  inputAccessoryViewID="doneAccessory" // ★ 両方のInputに共通のIDを設定
-                />
-                <Text style={styles.clipSettingsText}>秒 〜 後</Text>
-                <TextInput
-                  style={styles.clipSettingsInput}
-                  keyboardType="number-pad"
-                  value={String(postSec)}
-                  onChangeText={(value) =>
-                    setPostSec(normalizeClipSeconds(value))
-                  }
-                  selectTextOnFocus
-                  inputAccessoryViewID="doneAccessory" // ★ 両方のInputに共通のIDを設定
-                />
-                <Text style={styles.clipSettingsText}>秒</Text>
+                <View style={styles.clipSettingsInputsRow}>
+                  <View style={styles.clipSettingField}>
+                    <Text style={styles.clipSettingsText}>前</Text>
+                    <TextInput
+                      style={styles.clipSettingsInput}
+                      keyboardType="number-pad"
+                      value={String(preSec)}
+                      onChangeText={(value) =>
+                        setPreSec(normalizeClipSeconds(value))
+                      }
+                      selectTextOnFocus
+                      inputAccessoryViewID="doneAccessory"
+                    />
+                    <Text style={styles.clipSettingsText}>秒</Text>
+                  </View>
+                  <View style={styles.clipSettingField}>
+                    <Text style={styles.clipSettingsText}>後</Text>
+                    <TextInput
+                      style={styles.clipSettingsInput}
+                      keyboardType="number-pad"
+                      value={String(postSec)}
+                      onChangeText={(value) =>
+                        setPostSec(normalizeClipSeconds(value))
+                      }
+                      selectTextOnFocus
+                      inputAccessoryViewID="doneAccessory"
+                    />
+                    <Text style={styles.clipSettingsText}>秒</Text>
+                  </View>
+                </View>
               </View>
               <Text style={styles.clipSettingsHint}>
                 この動画の全タグに適用され、画面を戻ると保存されます。
@@ -795,16 +829,19 @@ const ProjectDetailScreen = ({
 
               <TouchableOpacity
                 style={[
-              styles.recordTagBtn,
-              selectedQuickTags.length === 0 && styles.recordTagBtnDisabled,
-            ]}
+                  styles.recordTagBtn,
+                  (selectedQuickTags.length === 0 || isRecordingTag) &&
+                    styles.recordTagBtnDisabled,
+                ]}
                 onPress={executeAddTag}
-                disabled={selectedQuickTags.length === 0}
+                disabled={selectedQuickTags.length === 0 || isRecordingTag}
               >
                 <Text style={styles.recordTagBtnText}>
-              {selectedQuickTags.length > 0
-                ? `「${selectedQuickTags.join(" + ")}」で記録する`
-                : "タグを選択してください"}
+                  {isRecordingTag
+                    ? "記録中..."
+                    : selectedQuickTags.length > 0
+                      ? `「${selectedQuickTags.join(" + ")}」で記録する`
+                      : "タグを選択してください"}
                 </Text>
               </TouchableOpacity>
             </>
@@ -822,9 +859,14 @@ const ProjectDetailScreen = ({
           </TouchableOpacity>
         )}
 
-        <ScrollView
-          style={styles.listScroll}
-          showsVerticalScrollIndicator={false}
+        <RecordedTagsContainer
+          style={isLandscape ? styles.fsRecordedTags : styles.listScroll}
+          {...(!isLandscape
+            ? {
+                keyboardShouldPersistTaps: "handled",
+                showsVerticalScrollIndicator: false,
+              }
+            : {})}
         >
           {visibleTags.length === 0 ? (
             <Text style={styles.emptyText}>タグがありません。</Text>
@@ -893,8 +935,8 @@ const ProjectDetailScreen = ({
               );
             })
           )}
-        </ScrollView>
-      </View>
+        </RecordedTagsContainer>
+      </TaggingContainer>
     );
   };
 
@@ -1040,29 +1082,34 @@ const ProjectDetailScreen = ({
 
               {editingUseCustomClipDuration && (
                 <View style={styles.customClipInputs}>
-                  <Text style={styles.clipSettingsText}>前</Text>
-                  <TextInput
-                    style={styles.clipSettingsInput}
-                    keyboardType="number-pad"
-                    value={String(editingPreSec)}
-                    onChangeText={(value) =>
-                      setEditingPreSec(normalizeClipSeconds(value))
-                    }
-                    selectTextOnFocus
-                    inputAccessoryViewID="doneAccessory"
-                  />
-                  <Text style={styles.clipSettingsText}>秒 〜 後</Text>
-                  <TextInput
-                    style={styles.clipSettingsInput}
-                    keyboardType="number-pad"
-                    value={String(editingPostSec)}
-                    onChangeText={(value) =>
-                      setEditingPostSec(normalizeClipSeconds(value))
-                    }
-                    selectTextOnFocus
-                    inputAccessoryViewID="doneAccessory"
-                  />
-                  <Text style={styles.clipSettingsText}>秒</Text>
+                  <View style={styles.clipSettingField}>
+                    <Text style={styles.clipSettingsText}>前</Text>
+                    <TextInput
+                      style={styles.clipSettingsInput}
+                      keyboardType="number-pad"
+                      value={String(editingPreSec)}
+                      onChangeText={(value) =>
+                        setEditingPreSec(normalizeClipSeconds(value))
+                      }
+                      selectTextOnFocus
+                      inputAccessoryViewID="doneAccessory"
+                    />
+                    <Text style={styles.clipSettingsText}>秒</Text>
+                  </View>
+                  <View style={styles.clipSettingField}>
+                    <Text style={styles.clipSettingsText}>後</Text>
+                    <TextInput
+                      style={styles.clipSettingsInput}
+                      keyboardType="number-pad"
+                      value={String(editingPostSec)}
+                      onChangeText={(value) =>
+                        setEditingPostSec(normalizeClipSeconds(value))
+                      }
+                      selectTextOnFocus
+                      inputAccessoryViewID="doneAccessory"
+                    />
+                    <Text style={styles.clipSettingsText}>秒</Text>
+                  </View>
                 </View>
               )}
             </View>
@@ -1221,6 +1268,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingTop: 10,
   },
+  taggingRoot: { flex: 1 },
+  fsTagScroll: { flex: 1 },
+  fsTagScrollContent: { paddingBottom: 20 },
+  fsRecordedTags: { padding: 15 },
   fsVideoPlayerArea: { flex: 1, width: "100%", height: "100%" },
   fsYoutubeContainer: { flex: 1, width: "100%", justifyContent: "center" },
 
@@ -1468,9 +1519,7 @@ const styles = StyleSheet.create({
   },
 
   clipSettingsRow: {
-    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
     marginVertical: 10,
     paddingHorizontal: 5,
   },
@@ -1478,12 +1527,24 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "bold",
     color: "#555",
-    marginRight: 8,
+    marginBottom: 8,
+  },
+  clipSettingsInputsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  clipSettingField: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginHorizontal: 6,
+    marginBottom: 4,
   },
   clipSettingsText: {
     fontSize: 13,
     color: "#555",
-    marginHorizontal: 5,
+    marginHorizontal: 4,
   },
   clipSettingsInput: {
     backgroundColor: "#f9f9f9",
@@ -1606,6 +1667,7 @@ const styles = StyleSheet.create({
   },
   customClipInputs: {
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "center",
     justifyContent: "center",
     marginTop: 12,
