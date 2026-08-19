@@ -17,7 +17,12 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { useAuth } from "../AuthContext";
-import { createNotice } from "../services/firestoreService";
+import {
+  createNotice,
+  createWorkspacePost,
+  markWorkspacePostRead,
+  updateWorkspacePost,
+} from "../services/firestoreService";
 
 // ★ 追加：Firestoreの直接操作用
 import { db } from "../firebase";
@@ -109,6 +114,28 @@ const WorkspaceHomeScreen = ({
   const canPostToReadOnly = ["owner", "staff", "admin", "captain"].includes(
     userRole,
   );
+  const isReadEligible = userRole !== "guardian";
+  const readEligibleProfiles = useMemo(
+    () =>
+      Object.values(userProfiles).filter(
+        (profile) => profile?.uid && profile.role !== "guardian",
+      ),
+    [userProfiles],
+  );
+
+  const isPostReadByProfile = (post, profile) =>
+    (post.readByUids || []).includes(profile.uid) ||
+    (post.readBy || []).includes(profile.name);
+
+  const isPostReadByCurrentUser = (post) =>
+    !isReadEligible ||
+    (currentUserUid && (post.readByUids || []).includes(currentUserUid)) ||
+    (post.readBy || []).includes(currentUser);
+
+  const getUnreadPostProfiles = (post) =>
+    readEligibleProfiles.filter(
+      (profile) => !isPostReadByProfile(post, profile),
+    );
 
   const unreadNoticeCount = notices.filter(
     (n) => n.status !== "deleted" && !(n.readBy || []).includes(currentUser),
@@ -216,9 +243,17 @@ const WorkspaceHomeScreen = ({
   const [isReportModalVisible, setIsReportModalVisible] = useState(false);
   const [reportingTarget, setReportingTarget] = useState(null);
   const [isDashboardVisible, setIsDashboardVisible] = useState(false);
+  const [selectedUnreadPost, setSelectedUnreadPost] = useState(null);
 
   const mainInputRef = useRef(null);
   const replyInputRef = useRef(null);
+
+  const persistPostUpdate = (postId, updateData) => {
+    if (!activeTeamId) return;
+    updateWorkspacePost(activeTeamId, postId, updateData).catch((error) => {
+      console.log("掲示板更新エラー:", error);
+    });
+  };
 
   const notifications = useMemo(() => {
     const notifs = [];
@@ -292,6 +327,9 @@ const WorkspaceHomeScreen = ({
               p.status === "pending" ? { ...p, status: "sent" } : p,
             ),
           );
+          pendingPosts.forEach((post) => {
+            persistPostUpdate(post.id, { status: "sent" });
+          });
           setIsLoading(false);
           Alert.alert(
             "📶 通信復旧",
@@ -419,28 +457,37 @@ const WorkspaceHomeScreen = ({
     Keyboard.dismiss();
     setIsLoading(true);
 
-    setTimeout(
-      () => {
-        const newPost = {
-          id: Date.now().toString(),
-          channel: activeChannelObj.name,
-          user: displayUserName,
-          content: contentToPost,
-          time: "たった今",
-          replyTo: currentReplyTo,
-          reactions: {},
-          attachments: [],
-          replies: [],
-          reported: [],
-          readBy: [currentUser],
-          isPinned: false,
-          status: isOffline ? "pending" : "sent",
-        };
-        setPosts((prevPosts) => [newPost, ...prevPosts]);
-        setIsLoading(false);
-      },
-      isOffline ? 300 : 600,
-    );
+    const newPost = {
+      id: Date.now().toString(),
+      channelId: activeChannelObj.id,
+      channel: activeChannelObj.name,
+      user: displayUserName,
+      authorUid: currentUserUid,
+      content: contentToPost,
+      time: "たった今",
+      replyTo: currentReplyTo,
+      reactions: {},
+      attachments: [],
+      replies: [],
+      reported: [],
+      readBy: isReadEligible ? [currentUser] : [],
+      readByUids: isReadEligible && currentUserUid ? [currentUserUid] : [],
+      isPinned: false,
+      status: isOffline ? "pending" : "sent",
+      createdAt: Date.now(),
+    };
+    setPosts((prevPosts) => [newPost, ...prevPosts]);
+
+    if (activeTeamId) {
+      createWorkspacePost(activeTeamId, newPost).catch((error) => {
+        console.log("掲示板投稿エラー:", error);
+        Alert.alert(
+          "投稿エラー",
+          "投稿を共有できませんでした。通信状態を確認してください。",
+        );
+      });
+    }
+    setIsLoading(false);
   };
 
   const handleSendReply = (postId) => {
@@ -456,30 +503,32 @@ const WorkspaceHomeScreen = ({
     setIsReplyFocused(false);
     setIsLoading(true);
 
-    setTimeout(() => {
-      setPosts((prevPosts) =>
-        prevPosts.map((post) => {
-          if (post.id === postId) {
-            return {
-              ...post,
-              replies: [
-                ...(post.replies || []),
-                {
-                  id: Date.now().toString(),
-                  user: displayUserName,
-                  content: currentReplyText,
-                  time: "たった今",
-                  reported: [],
-                  status: isOffline ? "pending" : "sent",
-                },
-              ],
-            };
-          }
-          return post;
-        }),
-      );
+    const targetPost = posts.find((post) => post.id === postId);
+    if (!targetPost) {
       setIsLoading(false);
-    }, 400);
+      return;
+    }
+
+    const nextReplies = [
+      ...(targetPost.replies || []),
+      {
+        id: Date.now().toString(),
+        user: displayUserName,
+        authorUid: currentUserUid,
+        content: currentReplyText,
+        time: "たった今",
+        createdAt: Date.now(),
+        reported: [],
+        status: isOffline ? "pending" : "sent",
+      },
+    ];
+    setPosts((prevPosts) =>
+      prevPosts.map((post) =>
+        post.id === postId ? { ...post, replies: nextReplies } : post,
+      ),
+    );
+    persistPostUpdate(postId, { replies: nextReplies });
+    setIsLoading(false);
   };
 
   const openReportModal = (type, postId, replyId = null) => {
@@ -495,125 +544,129 @@ const WorkspaceHomeScreen = ({
       setIsReportModalVisible(false);
       return;
     }
-    setPosts((prevPosts) =>
-      prevPosts.map((post) => {
-        if (
-          reportingTarget.type === "post" &&
-          post.id === reportingTarget.postId
-        )
-          return {
-            ...post,
-            reported: [
-              ...(post.reported || []),
-              { by: displayUserName, reason },
-            ],
-          };
-        if (
-          reportingTarget.type === "reply" &&
-          post.id === reportingTarget.postId
-        )
-          return {
-            ...post,
-            replies: post.replies.map((r) =>
-              r.id === reportingTarget.replyId
-                ? {
-                    ...r,
-                    reported: [
-                      ...(r.reported || []),
-                      { by: displayUserName, reason },
-                    ],
-                  }
-                : r,
-            ),
-          };
-        return post;
-      }),
-    );
+    const targetPost = posts.find((post) => post.id === reportingTarget.postId);
+    if (targetPost) {
+      if (reportingTarget.type === "post") {
+        const reported = [
+          ...(targetPost.reported || []),
+          { by: displayUserName, reason },
+        ];
+        setPosts((prevPosts) =>
+          prevPosts.map((post) =>
+            post.id === targetPost.id ? { ...post, reported } : post,
+          ),
+        );
+        persistPostUpdate(targetPost.id, { reported });
+      } else {
+        const replies = (targetPost.replies || []).map((reply) =>
+          reply.id === reportingTarget.replyId
+            ? {
+                ...reply,
+                reported: [
+                  ...(reply.reported || []),
+                  { by: displayUserName, reason },
+                ],
+              }
+            : reply,
+        );
+        setPosts((prevPosts) =>
+          prevPosts.map((post) =>
+            post.id === targetPost.id ? { ...post, replies } : post,
+          ),
+        );
+        persistPostUpdate(targetPost.id, { replies });
+      }
+    }
     setIsReportModalVisible(false);
     setReportingTarget(null);
     Alert.alert("報告完了", "管理者に報告しました。");
   };
 
   const handleResolveReport = (type, postId, replyId, action) => {
+    const targetPost = posts.find((post) => post.id === postId);
+    if (!targetPost) return;
+
     if (action === "delete") {
       if (type === "post") {
+        const patch = {
+          status: "deleted",
+          deletedBy: displayUserName,
+          deletedAt: new Date().toISOString(),
+        };
         setPosts((prevPosts) =>
-          prevPosts.map((p) =>
-            p.id === postId
-              ? {
-                  ...p,
-                  status: "deleted",
-                  deletedBy: displayUserName,
-                  deletedAt: new Date().toISOString(),
-                }
-              : p,
+          prevPosts.map((post) =>
+            post.id === postId ? { ...post, ...patch } : post,
           ),
         );
+        persistPostUpdate(postId, patch);
       } else {
+        const replies = (targetPost.replies || []).map((reply) =>
+          reply.id === replyId
+            ? {
+                ...reply,
+                status: "deleted",
+                deletedBy: displayUserName,
+                deletedAt: new Date().toISOString(),
+              }
+            : reply,
+        );
         setPosts((prevPosts) =>
-          prevPosts.map((p) =>
-            p.id === postId
-              ? {
-                  ...p,
-                  replies: p.replies.map((r) =>
-                    r.id === replyId
-                      ? {
-                          ...r,
-                          status: "deleted",
-                          deletedBy: displayUserName,
-                          deletedAt: new Date().toISOString(),
-                        }
-                      : r,
-                  ),
-                }
-              : p,
+          prevPosts.map((post) =>
+            post.id === postId ? { ...post, replies } : post,
           ),
         );
+        persistPostUpdate(postId, { replies });
       }
     } else if (action === "ignore") {
-      if (type === "post")
+      if (type === "post") {
         setPosts((prevPosts) =>
-          prevPosts.map((p) => (p.id === postId ? { ...p, reported: [] } : p)),
-        );
-      else
-        setPosts((prevPosts) =>
-          prevPosts.map((p) =>
-            p.id === postId
-              ? {
-                  ...p,
-                  replies: p.replies.map((r) =>
-                    r.id === replyId ? { ...r, reported: [] } : r,
-                  ),
-                }
-              : p,
+          prevPosts.map((post) =>
+            post.id === postId ? { ...post, reported: [] } : post,
           ),
         );
+        persistPostUpdate(postId, { reported: [] });
+      } else {
+        const replies = (targetPost.replies || []).map((reply) =>
+          reply.id === replyId ? { ...reply, reported: [] } : reply,
+        );
+        setPosts((prevPosts) =>
+          prevPosts.map((post) =>
+            post.id === postId ? { ...post, replies } : post,
+          ),
+        );
+        persistPostUpdate(postId, { replies });
+      }
     }
   };
 
   const handleReaction = (postId, emoji) => {
     if (isOffline) return;
+    const targetPost = posts.find((post) => post.id === postId);
+    if (!targetPost) return;
+    const currentCount = targetPost.reactions?.[emoji] || 0;
+    const reactions = {
+      ...(targetPost.reactions || {}),
+      [emoji]: currentCount + 1,
+    };
     setPosts((prevPosts) =>
-      prevPosts.map((post) => {
-        if (post.id === postId) {
-          const currentCount = post.reactions[emoji] || 0;
-          return {
-            ...post,
-            reactions: { ...post.reactions, [emoji]: currentCount + 1 },
-          };
-        }
-        return post;
-      }),
+      prevPosts.map((post) =>
+        post.id === postId ? { ...post, reactions } : post,
+      ),
     );
+    persistPostUpdate(postId, { reactions });
     setActiveReactionPostId(null);
   };
 
   const togglePin = (postId) => {
+    const targetPost = posts.find((post) => post.id === postId);
+    if (!targetPost) return;
+    const isPinned = !targetPost.isPinned;
     setPosts((prevPosts) =>
       prevPosts.map((post) =>
-        post.id === postId ? { ...post, isPinned: !post.isPinned } : post,
+        post.id === postId ? { ...post, isPinned } : post,
       ),
     );
+    persistPostUpdate(postId, { isPinned });
     setActiveLongPressPostId(null);
   };
 
@@ -624,18 +677,17 @@ const WorkspaceHomeScreen = ({
         text: "削除",
         style: "destructive",
         onPress: () => {
+          const patch = {
+            status: "deleted",
+            deletedBy: displayUserName,
+            deletedAt: new Date().toISOString(),
+          };
           setPosts((prevPosts) =>
-            prevPosts.map((p) =>
-              p.id === postId
-                ? {
-                    ...p,
-                    status: "deleted",
-                    deletedBy: displayUserName,
-                    deletedAt: new Date().toISOString(),
-                  }
-                : p,
+            prevPosts.map((post) =>
+              post.id === postId ? { ...post, ...patch } : post,
             ),
           );
+          persistPostUpdate(postId, patch);
           setActiveLongPressPostId(null);
         },
       },
@@ -690,54 +742,58 @@ const WorkspaceHomeScreen = ({
   };
 
   const handleManageNotification = (notif, action) => {
-    setPosts((prevPosts) =>
-      prevPosts.map((p) => {
-        if (p.id === notif.postId) {
-          if (notif.replyId) {
-            return {
-              ...p,
-              replies: p.replies.map((r) => {
-                if (r.id === notif.replyId) {
-                  if (action === "read") {
-                    return {
-                      ...r,
-                      readNotifs: [
-                        ...new Set([...(r.readNotifs || []), currentUser]),
-                      ],
-                    };
-                  } else {
-                    return {
-                      ...r,
-                      dismissedNotifs: [
-                        ...new Set([...(r.dismissedNotifs || []), currentUser]),
-                      ],
-                    };
-                  }
-                }
-                return r;
-              }),
-            };
-          } else {
-            if (action === "read") {
-              return {
-                ...p,
-                readNotifs: [
-                  ...new Set([...(p.readNotifs || []), currentUser]),
-                ],
-              };
-            } else {
-              return {
-                ...p,
-                dismissedNotifs: [
-                  ...new Set([...(p.dismissedNotifs || []), currentUser]),
-                ],
-              };
-            }
-          }
+    const targetPost = posts.find((post) => post.id === notif.postId);
+    if (!targetPost) return;
+
+    if (notif.replyId) {
+      const replies = (targetPost.replies || []).map((reply) => {
+        if (reply.id !== notif.replyId) return reply;
+        if (action === "read") {
+          return {
+            ...reply,
+            readNotifs: [
+              ...new Set([...(reply.readNotifs || []), currentUser]),
+            ],
+          };
         }
-        return p;
-      }),
+        return {
+          ...reply,
+          dismissedNotifs: [
+            ...new Set([...(reply.dismissedNotifs || []), currentUser]),
+          ],
+        };
+      });
+
+      setPosts((prevPosts) =>
+        prevPosts.map((post) =>
+          post.id === targetPost.id ? { ...post, replies } : post,
+        ),
+      );
+      persistPostUpdate(targetPost.id, { replies });
+      return;
+    }
+
+    const patch =
+      action === "read"
+        ? {
+            readNotifs: [
+              ...new Set([...(targetPost.readNotifs || []), currentUser]),
+            ],
+          }
+        : {
+            dismissedNotifs: [
+              ...new Set([
+                ...(targetPost.dismissedNotifs || []),
+                currentUser,
+              ]),
+            ],
+          };
+    setPosts((prevPosts) =>
+      prevPosts.map((post) =>
+        post.id === targetPost.id ? { ...post, ...patch } : post,
+      ),
     );
+    persistPostUpdate(targetPost.id, patch);
   };
 
   const renderContentWithMentions = (text) => {
@@ -802,9 +858,13 @@ const WorkspaceHomeScreen = ({
       : [];
 
     const isExpanded = expandedPostId === post.id;
+    const unreadProfiles = getUnreadPostProfiles(post);
+    const readTargetCount = readEligibleProfiles.length;
+    const readCount = Math.max(0, readTargetCount - unreadProfiles.length);
     const isUnread =
+      isReadEligible &&
       post.user !== displayUserName &&
-      !(post.readBy || []).includes(currentUser);
+      !isPostReadByCurrentUser(post);
 
     return (
       <TouchableOpacity
@@ -831,10 +891,31 @@ const WorkspaceHomeScreen = ({
               setPosts((prevPosts) =>
                 prevPosts.map((p) =>
                   p.id === post.id
-                    ? { ...p, readBy: [...(p.readBy || []), currentUser] }
+                    ? {
+                        ...p,
+                        readBy: [...new Set([...(p.readBy || []), currentUser])],
+                        readByUids: currentUserUid
+                          ? [
+                              ...new Set([
+                                ...(p.readByUids || []),
+                                currentUserUid,
+                              ]),
+                            ]
+                          : p.readByUids || [],
+                      }
                     : p,
                 ),
               );
+              if (activeTeamId) {
+                markWorkspacePostRead(
+                  activeTeamId,
+                  post.id,
+                  currentUserUid,
+                  currentUser,
+                ).catch((error) => {
+                  console.log("掲示板既読更新エラー:", error);
+                });
+              }
             }
           }
         }}
@@ -875,7 +956,7 @@ const WorkspaceHomeScreen = ({
           >
             {post.user}
           </Text>
-          {isUnread && <View style={styles.unreadDot} />}
+          {isUnread && <Text style={styles.newPostBadge}>NEW</Text>}
           <Text style={styles.postTime}>
             {isPending ? "送信待機中..." : post.time}
           </Text>
@@ -927,9 +1008,21 @@ const WorkspaceHomeScreen = ({
               </Text>
             </View>
             <View style={styles.actionRight}>
-              <Text style={styles.readCountText}>
-                既読 {post.readBy?.length || 0}
-              </Text>
+              <TouchableOpacity
+                disabled={!isStaffOrAbove}
+                onPress={() => setSelectedUnreadPost(post)}
+                style={styles.readCountButton}
+              >
+                <Text
+                  style={[
+                    styles.readCountText,
+                    isStaffOrAbove && styles.readCountTextClickable,
+                  ]}
+                >
+                  既読 {readCount}/{readTargetCount}
+                  {isStaffOrAbove ? " ›" : ""}
+                </Text>
+              </TouchableOpacity>
               <View style={styles.reactionsContainer}>
                 {Object.entries(post.reactions || {}).map(([emoji, count]) => (
                   <TouchableOpacity
@@ -1123,26 +1216,24 @@ const WorkspaceHomeScreen = ({
                           <TouchableOpacity
                             style={styles.longPressMenuItem}
                             onPress={() => {
+                              const replies = (post.replies || []).map((item) =>
+                                item.id === reply.id
+                                  ? {
+                                      ...item,
+                                      status: "deleted",
+                                      deletedBy: displayUserName,
+                                      deletedAt: new Date().toISOString(),
+                                    }
+                                  : item,
+                              );
                               setPosts((prevPosts) =>
                                 prevPosts.map((p) =>
                                   p.id === post.id
-                                    ? {
-                                        ...p,
-                                        replies: p.replies.map((r) =>
-                                          r.id === reply.id
-                                            ? {
-                                                ...r,
-                                                status: "deleted",
-                                                deletedBy: displayUserName,
-                                                deletedAt:
-                                                  new Date().toISOString(),
-                                              }
-                                            : r,
-                                        ),
-                                      }
+                                    ? { ...p, replies }
                                     : p,
                                 ),
                               );
+                              persistPostUpdate(post.id, { replies });
                               setActiveLongPressReply(null);
                             }}
                           >
@@ -1199,7 +1290,13 @@ const WorkspaceHomeScreen = ({
     <SafeAreaView style={styles.container}>
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior={
+          Platform.OS === "ios"
+            ? "padding"
+            : Platform.OS === "android"
+              ? "height"
+              : undefined
+        }
       >
         <View
           style={[
@@ -1626,6 +1723,68 @@ const WorkspaceHomeScreen = ({
             )}
           </ScrollView>
         </SafeAreaView>
+      </Modal>
+
+      <Modal
+        visible={selectedUnreadPost !== null}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setSelectedUnreadPost(null)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, styles.unreadMembersModal]}>
+            <Text style={styles.modalTitle}>未読者</Text>
+            {(() => {
+              const currentPost =
+                posts.find((post) => post.id === selectedUnreadPost?.id) ||
+                selectedUnreadPost;
+              const unreadProfiles = currentPost
+                ? getUnreadPostProfiles(currentPost)
+                : [];
+
+              return (
+                <>
+                  <Text style={styles.unreadMembersSummary}>
+                    既読対象 {readEligibleProfiles.length}人のうち、未読は
+                    {unreadProfiles.length}人です。
+                  </Text>
+                  <ScrollView style={styles.unreadMembersList}>
+                    {unreadProfiles.length === 0 ? (
+                      <Text style={styles.unreadMembersEmpty}>
+                        全員が確認済みです。
+                      </Text>
+                    ) : (
+                      unreadProfiles.map((profile) => (
+                        <View key={profile.uid} style={styles.unreadMemberRow}>
+                          <Text style={styles.unreadMemberName}>
+                            {profile.name || "名称未設定"}
+                          </Text>
+                          <Text style={styles.unreadMemberRole}>
+                            {profile.role === "owner"
+                              ? "監督"
+                              : profile.role === "admin"
+                                ? "管理者"
+                                : profile.role === "staff"
+                                  ? "スタッフ"
+                                  : profile.role === "captain"
+                                    ? "キャプテン"
+                                    : "部員"}
+                          </Text>
+                        </View>
+                      ))
+                    )}
+                  </ScrollView>
+                </>
+              );
+            })()}
+            <TouchableOpacity
+              style={[styles.modalSubmitBtn, styles.unreadMembersCloseButton]}
+              onPress={() => setSelectedUnreadPost(null)}
+            >
+              <Text style={styles.modalSubmitText}>閉じる</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
       </Modal>
 
       <Modal
@@ -2142,13 +2301,16 @@ const styles = StyleSheet.create({
     marginBottom: 5,
   },
   mentionText: { color: COLORS.primary, fontWeight: "bold" },
-  unreadDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+  newPostBadge: {
+    color: "#fff",
     backgroundColor: COLORS.danger,
+    borderRadius: 10,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
     marginRight: 8,
-    marginLeft: 5,
+    fontSize: 10,
+    fontWeight: "900",
+    overflow: "hidden",
   },
 
   compactFooter: {
@@ -2185,7 +2347,9 @@ const styles = StyleSheet.create({
   actionLeft: { flex: 1 },
   replyCountText: { color: "#555", fontSize: 13, fontWeight: "bold" },
   actionRight: { flexDirection: "row", alignItems: "center" },
-  readCountText: { fontSize: 12, color: "#888", marginRight: 10 },
+  readCountButton: { marginRight: 10, paddingVertical: 6 },
+  readCountText: { fontSize: 12, color: "#888" },
+  readCountTextClickable: { color: COLORS.primary, fontWeight: "bold" },
   reactionsContainer: {
     flexDirection: "row",
     position: "relative",
@@ -2385,6 +2549,42 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   modalSubmitText: { color: "#fff", fontWeight: "bold", fontSize: 15 },
+  unreadMembersModal: { maxHeight: "70%" },
+  unreadMembersSummary: {
+    color: COLORS.textSub,
+    fontSize: 13,
+    marginBottom: 12,
+  },
+  unreadMembersList: { maxHeight: 320 },
+  unreadMembersEmpty: {
+    color: COLORS.success,
+    fontWeight: "bold",
+    textAlign: "center",
+    paddingVertical: 24,
+  },
+  unreadMemberRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  unreadMemberName: {
+    flex: 1,
+    color: COLORS.textMain,
+    fontSize: 15,
+    fontWeight: "bold",
+  },
+  unreadMemberRole: {
+    color: COLORS.textSub,
+    fontSize: 12,
+    backgroundColor: "#f0f0f0",
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  unreadMembersCloseButton: { alignSelf: "flex-end", marginTop: 16 },
 
   dashboardContainer: { flex: 1, backgroundColor: "#f9f9f9" },
   dashboardHeader: {

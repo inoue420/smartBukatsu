@@ -21,6 +21,7 @@ import {
   subscribeHighlightProjects,
   subscribeDailyReports,
   subscribeNotices,
+  subscribeWorkspacePosts,
   subscribePersonalEvents,
   subscribeTeamData,
   subscribeTeamMembers,
@@ -110,6 +111,7 @@ function AppContent() {
   // Firestore同期
   useEffect(() => {
     if (user && activeTeamId && !emailVerificationPending) {
+      setPosts([]);
       setInterstitialSettings({ ...DEFAULT_INTERSTITIAL_SETTINGS });
       setAbsenceDeadlineDaysBefore(DEFAULT_ABSENCE_DEADLINE_DAYS_BEFORE);
       const unsubProjects = subscribeProjects(activeTeamId, setProjects);
@@ -119,6 +121,10 @@ function AppContent() {
       );
       const unsubReports = subscribeDailyReports(activeTeamId, setDailyReports);
       const unsubNotices = subscribeNotices(activeTeamId, setNotices);
+      const unsubWorkspacePosts = subscribeWorkspacePosts(
+        activeTeamId,
+        setPosts,
+      );
       const unsubPersonal = subscribePersonalEvents(
         user.uid,
         setPersonalEvents,
@@ -178,6 +184,7 @@ function AppContent() {
         unsubHighlightProjects();
         unsubReports();
         unsubNotices();
+        unsubWorkspacePosts();
         unsubPersonal();
         unsubTeam();
         unsubMembers();
@@ -189,6 +196,7 @@ function AppContent() {
       setHighlightProjects([]);
       setTagGroups([]);
       setUserProfiles({});
+      setPosts([]);
       setAbsenceDeadlineDaysBefore(DEFAULT_ABSENCE_DEADLINE_DAYS_BEFORE);
     }
   }, [user, activeTeamId, emailVerificationPending]);

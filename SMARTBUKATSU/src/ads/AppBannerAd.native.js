@@ -1,5 +1,6 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import {
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   SafeAreaView,
@@ -15,8 +16,27 @@ import { useAds } from "./AdManager";
 
 const AppBannerAd = () => {
   const { adsInitialized, bannerAdUnitId } = useAds();
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
 
-  if (!adsInitialized || !bannerAdUnitId) {
+  useEffect(() => {
+    const showEvent =
+      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvent =
+      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+    const showSubscription = Keyboard.addListener(showEvent, () => {
+      setIsKeyboardVisible(true);
+    });
+    const hideSubscription = Keyboard.addListener(hideEvent, () => {
+      setIsKeyboardVisible(false);
+    });
+
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, []);
+
+  if (!adsInitialized || !bannerAdUnitId || isKeyboardVisible) {
     return null;
   }
 
