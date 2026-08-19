@@ -18,10 +18,15 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { useAuth } from "../AuthContext";
 import {
+  appendWorkspacePostReply,
   createNotice,
   createWorkspacePost,
+  getWorkspacePostsForAudienceSync,
+  incrementWorkspacePostReaction,
   markWorkspacePostRead,
   updateWorkspacePost,
+  updateWorkspacePostAudiences,
+  updateWorkspacePostReply,
 } from "../services/firestoreService";
 
 // ★ 追加：Firestoreの直接操作用
@@ -43,6 +48,36 @@ const COLORS = {
 const REACTION_EMOJIS = ["👍", "❤️", "😂", "🔥", "👀", "🙏"];
 const REPORT_REASONS = ["暴言・誹謗中傷", "スパム・宣伝", "その他"];
 const REPORTING_ENABLED = false;
+const MANAGER_ROLES = ["owner", "admin", "staff"];
+const DEFAULT_ALLOWED_ROLE_GROUPS = ["staff", "captain", "member"];
+const ROLE_GROUP_OPTIONS = [
+  {
+    id: "staff",
+    label: "スタッフ",
+    description: "監督・管理者・コーチ",
+  },
+  { id: "captain", label: "キャプテン", description: "キャプテン権限" },
+  { id: "member", label: "一般部員", description: "一般部員権限" },
+  {
+    id: "guardian",
+    label: "保護者",
+    description: "初期設定では非公開",
+  },
+];
+
+const getRoleGroup = (role) => {
+  if (MANAGER_ROLES.includes(role)) return "staff";
+  if (role === "captain") return "captain";
+  if (role === "guardian") return "guardian";
+  return "member";
+};
+
+const hasSameUids = (first, second) => {
+  if (!Array.isArray(first) || !Array.isArray(second)) return false;
+  if (first.length !== second.length) return false;
+  const secondUids = new Set(second);
+  return first.every((uid) => secondUids.has(uid));
+};
 
 // ★ 初期タブの定義
 const defaultChannels = [
@@ -50,22 +85,22 @@ const defaultChannels = [
     id: "ch_1",
     name: "全体連絡",
     isReadOnly: true,
-    shareScope: "team",
-    allowedMembers: ["all"],
+    shareScope: "roles",
+    allowedRoleGroups: DEFAULT_ALLOWED_ROLE_GROUPS,
   },
   {
     id: "ch_diary",
     name: "共有日記",
     isReadOnly: true,
-    shareScope: "team",
-    allowedMembers: ["all"],
+    shareScope: "roles",
+    allowedRoleGroups: DEFAULT_ALLOWED_ROLE_GROUPS,
   },
   {
     id: "ch_2",
     name: "トレーニング",
     isReadOnly: false,
-    shareScope: "team",
-    allowedMembers: ["all"],
+    shareScope: "roles",
+    allowedRoleGroups: DEFAULT_ALLOWED_ROLE_GROUPS,
   },
 ];
 
@@ -80,7 +115,6 @@ const WorkspaceHomeScreen = ({
   posts,
   setPosts,
   isOffline,
-  clubMembers,
   dailyReports = [],
   alertThresholds,
   userProfiles = {},
@@ -108,20 +142,94 @@ const WorkspaceHomeScreen = ({
   const isStaffOrAbove = ["owner", "staff", "admin"].includes(userRole);
   const isGuardian = userRole === "guardian";
   const canOpenTeamSelect = !isOffline;
-  const canCreateChannel = ["owner", "staff", "admin", "captain"].includes(
-    userRole,
-  );
+  const canCreateChannel = isStaffOrAbove;
   const canPostToReadOnly = ["owner", "staff", "admin", "captain"].includes(
     userRole,
   );
   const isReadEligible = userRole !== "guardian";
-  const readEligibleProfiles = useMemo(
+  const memberEntries = useMemo(
     () =>
-      Object.values(userProfiles).filter(
-        (profile) => profile?.uid && profile.role !== "guardian",
-      ),
+      Object.entries(userProfiles).filter(([, profile]) => profile?.uid),
     [userProfiles],
   );
+  const readEligibleProfiles = useMemo(
+    () =>
+      memberEntries
+        .map(([, profile]) => profile)
+        .filter((profile) => profile.role !== "guardian"),
+    [memberEntries],
+  );
+  const getChannelAllowedRoleGroups = (channel) => {
+    if (
+      Array.isArray(channel?.allowedRoleGroups) &&
+      channel.allowedRoleGroups.length > 0
+    ) {
+      return channel.allowedRoleGroups;
+    }
+
+    if (channel?.shareScope === "coach") return ["staff"];
+    if (channel?.shareScope === "group") {
+      if ((channel.allowedMembers || []).includes("all")) {
+        return DEFAULT_ALLOWED_ROLE_GROUPS;
+      }
+
+      const legacyAllowedUids = new Set(channel.allowedMemberUids || []);
+      const legacyAllowedMembers = new Set(channel.allowedMembers || []);
+      const roleGroups = new Set(["staff"]);
+      memberEntries.forEach(([profileKey, profile]) => {
+        if (
+          legacyAllowedUids.has(profile.uid) ||
+          legacyAllowedMembers.has(profileKey) ||
+          legacyAllowedMembers.has(profile.name)
+        ) {
+          roleGroups.add(getRoleGroup(profile.role));
+        }
+      });
+      return [...roleGroups];
+    }
+
+    return DEFAULT_ALLOWED_ROLE_GROUPS;
+  };
+
+  const getChannelAudience = (channel) => {
+    const allowedRoleGroups = new Set(getChannelAllowedRoleGroups(channel));
+    const visibleProfiles = memberEntries.filter(([, profile]) =>
+      allowedRoleGroups.has(getRoleGroup(profile.role)),
+    );
+
+    return {
+      visibleToUids: [...new Set(visibleProfiles.map(([, profile]) => profile.uid))],
+      readTargetUids: [
+        ...new Set(
+          visibleProfiles
+            .map(([, profile]) => profile)
+            .filter((profile) => profile.role !== "guardian")
+            .map((profile) => profile.uid),
+        ),
+      ],
+    };
+  };
+
+  const getPostAudience = (channel, authorUid = "") => {
+    const channelAudience = getChannelAudience(channel);
+    const authorProfile = memberEntries.find(
+      ([, profile]) => profile.uid === authorUid,
+    )?.[1];
+    return {
+      visibleToUids: [
+        ...new Set([
+          ...channelAudience.visibleToUids,
+          ...(authorUid ? [authorUid] : []),
+        ]),
+      ],
+      readTargetUids: [
+        ...new Set([
+          ...channelAudience.readTargetUids,
+          ...(authorUid && authorProfile?.role !== "guardian" ? [authorUid] : []),
+        ]),
+      ],
+    };
+  };
 
   const isPostReadByProfile = (post, profile) =>
     (post.readByUids || []).includes(profile.uid) ||
@@ -132,8 +240,23 @@ const WorkspaceHomeScreen = ({
     (currentUserUid && (post.readByUids || []).includes(currentUserUid)) ||
     (post.readBy || []).includes(currentUser);
 
+  const getPostReadTargetProfiles = (post) => {
+    const targetUids = Array.isArray(post.readTargetUids)
+      ? post.readTargetUids
+      : getPostAudience(
+          channels.find(
+            (channel) =>
+              channel.id === post.channelId || channel.name === post.channel,
+          ),
+          post.authorUid,
+        ).readTargetUids;
+    return readEligibleProfiles.filter((profile) =>
+      targetUids.includes(profile.uid),
+    );
+  };
+
   const getUnreadPostProfiles = (post) =>
-    readEligibleProfiles.filter(
+    getPostReadTargetProfiles(post).filter(
       (profile) => !isPostReadByProfile(post, profile),
     );
 
@@ -181,9 +304,18 @@ const WorkspaceHomeScreen = ({
   const [searchQuery, setSearchQuery] = useState("");
 
   const [channels, setChannels] = useState(defaultChannels);
+  const [channelsLoaded, setChannelsLoaded] = useState(false);
   const [activeChannelId, setActiveChannelId] = useState("ch_1");
+  const audienceSyncKeyRef = useRef(null);
 
   const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    setChannels(defaultChannels);
+    setChannelsLoaded(false);
+    setActiveChannelId("ch_1");
+    audienceSyncKeyRef.current = null;
+  }, [activeTeamId]);
 
   useEffect(() => {
     if (!activeTeamId || isOffline) return;
@@ -202,6 +334,7 @@ const WorkspaceHomeScreen = ({
           setChannels(defaultChannels);
         }
       }
+      setChannelsLoaded(true);
     }, (error) => {
       if (error?.code !== "permission-denied") {
         console.log("Workspace team subscription error:", error);
@@ -213,21 +346,89 @@ const WorkspaceHomeScreen = ({
 
   const visibleChannels = channels.filter((ch) => {
     if (isStaffOrAbove) return true;
-    if (ch.shareScope === "coach") return false;
-    if (ch.shareScope === "group")
-      return ch.allowedMembers.includes(currentUser);
-    return true;
+    return getChannelAllowedRoleGroups(ch).includes(getRoleGroup(userRole));
   });
 
   const activeChannelObj =
-    channels.find((c) => c.id === activeChannelId) || visibleChannels[0];
+    visibleChannels.find((c) => c.id === activeChannelId) || visibleChannels[0];
+
+  const audienceSyncKey = useMemo(
+    () =>
+      JSON.stringify({
+        activeTeamId,
+        channels,
+        members: memberEntries.map(([profileKey, profile]) => ({
+          profileKey,
+          uid: profile.uid,
+          name: profile.name,
+          role: profile.role,
+        })),
+      }),
+    [activeTeamId, channels, memberEntries],
+  );
+
+  useEffect(() => {
+    if (
+      !isStaffOrAbove ||
+      !activeTeamId ||
+      !channelsLoaded ||
+      memberEntries.length === 0 ||
+      audienceSyncKeyRef.current === audienceSyncKey
+    ) {
+      return;
+    }
+
+    audienceSyncKeyRef.current = audienceSyncKey;
+    getWorkspacePostsForAudienceSync(activeTeamId)
+      .then((workspacePosts) => {
+        const updates = workspacePosts.flatMap((post) => {
+          const channel =
+            channels.find(
+              (item) =>
+                item.id === post.channelId || item.name === post.channel,
+            ) || defaultChannels[0];
+          const audience = getPostAudience(channel, post.authorUid);
+          if (
+            post.shareScope === "roles" &&
+            hasSameUids(post.visibleToUids, audience.visibleToUids) &&
+            hasSameUids(post.readTargetUids, audience.readTargetUids)
+          ) {
+            return [];
+          }
+          return [
+            {
+              postId: post.id,
+              audience: {
+                shareScope: "roles",
+                visibleToUids: audience.visibleToUids,
+                readTargetUids: audience.readTargetUids,
+              },
+            },
+          ];
+        });
+        return updateWorkspacePostAudiences(activeTeamId, updates);
+      })
+      .catch((error) => {
+        audienceSyncKeyRef.current = null;
+        console.log("掲示板の閲覧対象同期エラー:", error);
+      });
+  }, [
+    activeTeamId,
+    audienceSyncKey,
+    channels,
+    channelsLoaded,
+    isStaffOrAbove,
+    memberEntries,
+  ]);
 
   const [isAddChannelModalVisible, setIsAddChannelModalVisible] =
     useState(false);
+  const [editingChannel, setEditingChannel] = useState(null);
   const [newChannelName, setNewChannelName] = useState("");
   const [newChannelIsReadOnly, setNewChannelIsReadOnly] = useState(false);
-  const [newChannelScope, setNewChannelScope] = useState("team");
-  const [selectedMembers, setSelectedMembers] = useState(["all"]);
+  const [selectedRoleGroups, setSelectedRoleGroups] = useState(
+    DEFAULT_ALLOWED_ROLE_GROUPS,
+  );
 
   const [newPostText, setNewPostText] = useState("");
   const [expandedPostId, setExpandedPostId] = useState(null);
@@ -253,6 +454,15 @@ const WorkspaceHomeScreen = ({
     updateWorkspacePost(activeTeamId, postId, updateData).catch((error) => {
       console.log("掲示板更新エラー:", error);
     });
+  };
+
+  const persistReplyUpdate = (postId, replyId, updater) => {
+    if (!activeTeamId) return;
+    updateWorkspacePostReply(activeTeamId, postId, replyId, updater).catch(
+      (error) => {
+        console.log("掲示板返信更新エラー:", error);
+      },
+    );
   };
 
   const notifications = useMemo(() => {
@@ -359,41 +569,72 @@ const WorkspaceHomeScreen = ({
   });
   const reportCount = reportedItems.length;
 
-  const handleAddChannel = () => {
+  const resetChannelForm = () => {
+    setIsAddChannelModalVisible(false);
+    setEditingChannel(null);
+    setNewChannelName("");
+    setNewChannelIsReadOnly(false);
+    setSelectedRoleGroups(DEFAULT_ALLOWED_ROLE_GROUPS);
+  };
+
+  const openAddChannelModal = () => {
+    setEditingChannel(null);
+    setNewChannelName("");
+    setNewChannelIsReadOnly(false);
+    setSelectedRoleGroups(DEFAULT_ALLOWED_ROLE_GROUPS);
+    setIsAddChannelModalVisible(true);
+  };
+
+  const openEditChannelModal = (channel) => {
+    if (!isStaffOrAbove || isOffline) return;
+    setEditingChannel(channel);
+    setNewChannelName(channel.name);
+    setNewChannelIsReadOnly(Boolean(channel.isReadOnly));
+    setSelectedRoleGroups(getChannelAllowedRoleGroups(channel));
+    setIsAddChannelModalVisible(true);
+  };
+
+  const handleSaveChannel = async () => {
     const trimmedName = newChannelName.trim();
     if (trimmedName === "") return;
+    if (selectedRoleGroups.length === 0) {
+      Alert.alert("共有範囲", "公開する役割を1つ以上選択してください。");
+      return;
+    }
 
     setIsLoading(true);
-    setTimeout(async () => {
-      const newCh = {
-        id: "ch_" + Date.now().toString(),
-        name: trimmedName,
-        isReadOnly: newChannelIsReadOnly,
-        shareScope: newChannelScope,
-        allowedMembers: newChannelScope === "group" ? selectedMembers : ["all"],
-      };
+    const previousActiveChannelId = activeChannelId;
+    const nextChannel = {
+      ...(editingChannel || {}),
+      id: editingChannel?.id || "ch_" + Date.now().toString(),
+      name: editingChannel?.name || trimmedName,
+      isReadOnly: newChannelIsReadOnly,
+      shareScope: "roles",
+      allowedRoleGroups: selectedRoleGroups,
+      allowedMembers: [],
+      allowedMemberUids: [],
+    };
+    const updatedChannels = editingChannel
+      ? channels.map((channel) =>
+          channel.id === editingChannel.id ? nextChannel : channel,
+        )
+      : [...channels, nextChannel];
 
-      const updatedChannels = [...channels, newCh];
-      setChannels(updatedChannels);
-      setActiveChannelId(newCh.id);
-
+    try {
       if (!isOffline && activeTeamId) {
-        try {
-          const teamRef = doc(db, "teams", activeTeamId);
-          await updateDoc(teamRef, { channels: updatedChannels });
-        } catch (error) {
-          console.error("チャンネル保存エラー:", error);
-          Alert.alert("エラー", "チャンネルの保存に失敗しました。");
-        }
+        const teamRef = doc(db, "teams", activeTeamId);
+        await updateDoc(teamRef, { channels: updatedChannels });
       }
-
-      setIsAddChannelModalVisible(false);
-      setNewChannelName("");
-      setNewChannelIsReadOnly(false);
-      setNewChannelScope("team");
-      setSelectedMembers(["all"]);
+      setChannels(updatedChannels);
+      setActiveChannelId(nextChannel.id);
+      resetChannelForm();
+    } catch (error) {
+      setActiveChannelId(previousActiveChannelId);
+      console.error("チャンネル保存エラー:", error);
+      Alert.alert("エラー", "チャンネルの保存に失敗しました。");
+    } finally {
       setIsLoading(false);
-    }, 500);
+    }
   };
 
   const handleDeleteChannel = (channel) => {
@@ -431,23 +672,30 @@ const WorkspaceHomeScreen = ({
     );
   };
 
-  const toggleMemberSelection = (m) => {
-    if (m === "all") setSelectedMembers(["all"]);
-    else {
-      let updated = selectedMembers.filter((item) => item !== "all");
-      if (updated.includes(m)) {
-        updated = updated.filter((item) => item !== m);
-        if (updated.length === 0) updated = ["all"];
-      } else updated.push(m);
-      setSelectedMembers(updated);
-    }
+  const toggleRoleGroupSelection = (roleGroup) => {
+    setSelectedRoleGroups((current) =>
+      current.includes(roleGroup)
+        ? current.filter((item) => item !== roleGroup)
+        : [...current, roleGroup],
+    );
   };
 
   const handleCreatePost = () => {
     if (newPostText.trim() === "") return;
+    if (memberEntries.length === 0) {
+      Alert.alert(
+        "準備中",
+        "メンバー情報を読み込んでいます。少し待ってから再度お試しください。",
+      );
+      return;
+    }
 
     const contentToPost = newPostText.trim();
     const currentReplyTo = replyingTo;
+    const { visibleToUids, readTargetUids } = getPostAudience(
+      activeChannelObj,
+      currentUserUid,
+    );
 
     setNewPostText("");
     if (mainInputRef.current) {
@@ -461,6 +709,9 @@ const WorkspaceHomeScreen = ({
       id: Date.now().toString(),
       channelId: activeChannelObj.id,
       channel: activeChannelObj.name,
+      shareScope: "roles",
+      visibleToUids,
+      readTargetUids,
       user: displayUserName,
       authorUid: currentUserUid,
       content: contentToPost,
@@ -527,7 +778,15 @@ const WorkspaceHomeScreen = ({
         post.id === postId ? { ...post, replies: nextReplies } : post,
       ),
     );
-    persistPostUpdate(postId, { replies: nextReplies });
+    if (activeTeamId) {
+      appendWorkspacePostReply(
+        activeTeamId,
+        postId,
+        nextReplies[nextReplies.length - 1],
+      ).catch((error) => {
+        console.log("掲示板返信エラー:", error);
+      });
+    }
     setIsLoading(false);
   };
 
@@ -574,7 +833,17 @@ const WorkspaceHomeScreen = ({
             post.id === targetPost.id ? { ...post, replies } : post,
           ),
         );
-        persistPostUpdate(targetPost.id, { replies });
+        persistReplyUpdate(
+          targetPost.id,
+          reportingTarget.replyId,
+          (reply) => ({
+            ...reply,
+            reported: [
+              ...(reply.reported || []),
+              { by: displayUserName, reason },
+            ],
+          }),
+        );
       }
     }
     setIsReportModalVisible(false);
@@ -615,7 +884,12 @@ const WorkspaceHomeScreen = ({
             post.id === postId ? { ...post, replies } : post,
           ),
         );
-        persistPostUpdate(postId, { replies });
+        persistReplyUpdate(postId, replyId, (reply) => ({
+          ...reply,
+          status: "deleted",
+          deletedBy: displayUserName,
+          deletedAt: new Date().toISOString(),
+        }));
       }
     } else if (action === "ignore") {
       if (type === "post") {
@@ -634,7 +908,10 @@ const WorkspaceHomeScreen = ({
             post.id === postId ? { ...post, replies } : post,
           ),
         );
-        persistPostUpdate(postId, { replies });
+        persistReplyUpdate(postId, replyId, (reply) => ({
+          ...reply,
+          reported: [],
+        }));
       }
     }
   };
@@ -653,7 +930,13 @@ const WorkspaceHomeScreen = ({
         post.id === postId ? { ...post, reactions } : post,
       ),
     );
-    persistPostUpdate(postId, { reactions });
+    if (activeTeamId) {
+      incrementWorkspacePostReaction(activeTeamId, postId, emoji).catch(
+        (error) => {
+          console.log("掲示板リアクション更新エラー:", error);
+        },
+      );
+    }
     setActiveReactionPostId(null);
   };
 
@@ -769,7 +1052,21 @@ const WorkspaceHomeScreen = ({
           post.id === targetPost.id ? { ...post, replies } : post,
         ),
       );
-      persistPostUpdate(targetPost.id, { replies });
+      persistReplyUpdate(targetPost.id, notif.replyId, (reply) =>
+        action === "read"
+          ? {
+              ...reply,
+              readNotifs: [
+                ...new Set([...(reply.readNotifs || []), currentUser]),
+              ],
+            }
+          : {
+              ...reply,
+              dismissedNotifs: [
+                ...new Set([...(reply.dismissedNotifs || []), currentUser]),
+              ],
+            },
+      );
       return;
     }
 
@@ -858,8 +1155,9 @@ const WorkspaceHomeScreen = ({
       : [];
 
     const isExpanded = expandedPostId === post.id;
+    const readTargetProfiles = getPostReadTargetProfiles(post);
     const unreadProfiles = getUnreadPostProfiles(post);
-    const readTargetCount = readEligibleProfiles.length;
+    const readTargetCount = readTargetProfiles.length;
     const readCount = Math.max(0, readTargetCount - unreadProfiles.length);
     const isUnread =
       isReadEligible &&
@@ -1233,7 +1531,12 @@ const WorkspaceHomeScreen = ({
                                     : p,
                                 ),
                               );
-                              persistPostUpdate(post.id, { replies });
+                              persistReplyUpdate(post.id, reply.id, (item) => ({
+                                ...item,
+                                status: "deleted",
+                                deletedBy: displayUserName,
+                                deletedAt: new Date().toISOString(),
+                              }));
                               setActiveLongPressReply(null);
                             }}
                           >
@@ -1487,7 +1790,12 @@ const WorkspaceHomeScreen = ({
                   setReplyingTo(null);
                 }}
                 onLongPress={() => {
-                  if (canCreateChannel) handleDeleteChannel(channel);
+                  if (!isStaffOrAbove) return;
+                  if (channel.id === "ch_1" || channel.id === "ch_diary") {
+                    openEditChannelModal(channel);
+                  } else {
+                    handleDeleteChannel(channel);
+                  }
                 }}
               >
                 <Text
@@ -1504,7 +1812,7 @@ const WorkspaceHomeScreen = ({
             {canCreateChannel && !isOffline && (
               <TouchableOpacity
                 style={styles.addChannelButton}
-                onPress={() => setIsAddChannelModalVisible(true)}
+                onPress={openAddChannelModal}
               >
                 <Text style={styles.addChannelButtonText}>＋ 追加</Text>
               </TouchableOpacity>
@@ -1741,11 +2049,14 @@ const WorkspaceHomeScreen = ({
               const unreadProfiles = currentPost
                 ? getUnreadPostProfiles(currentPost)
                 : [];
+              const readTargetProfiles = currentPost
+                ? getPostReadTargetProfiles(currentPost)
+                : [];
 
               return (
                 <>
                   <Text style={styles.unreadMembersSummary}>
-                    既読対象 {readEligibleProfiles.length}人のうち、未読は
+                    既読対象 {readTargetProfiles.length}人のうち、未読は
                     {unreadProfiles.length}人です。
                   </Text>
                   <ScrollView style={styles.unreadMembersList}>
@@ -1811,7 +2122,9 @@ const WorkspaceHomeScreen = ({
                 }}
               >
                 <Text style={[styles.modalTitle, { marginBottom: 0 }]}>
-                  新しいタブを作成
+                  {editingChannel
+                    ? `「${editingChannel.name}」の設定`
+                    : "新しいタブを作成"}
                 </Text>
               </View>
 
@@ -1828,7 +2141,13 @@ const WorkspaceHomeScreen = ({
                   placeholder="例: 1年生専用"
                   value={newChannelName}
                   onChangeText={setNewChannelName}
+                  editable={!editingChannel}
                 />
+                {editingChannel && (
+                  <Text style={styles.fixedChannelNameNote}>
+                    初期チャンネルの名前は変更できません。
+                  </Text>
+                )}
 
                 <View style={styles.switchContainer}>
                   <View style={{ flex: 1, paddingRight: 15 }}>
@@ -1849,107 +2168,47 @@ const WorkspaceHomeScreen = ({
                   />
                 </View>
 
-                <Text style={styles.inputLabel}>共有範囲（アクセス権）</Text>
-                <View style={styles.typeContainer}>
-                  <TouchableOpacity
-                    style={[
-                      styles.typeBtn,
-                      newChannelScope === "team" && styles.typeBtnActive,
-                    ]}
-                    onPress={() => setNewChannelScope("team")}
-                  >
-                    <Text
-                      style={[
-                        styles.typeBtnText,
-                        newChannelScope === "team" && styles.typeBtnTextActive,
-                      ]}
-                    >
-                      全体
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[
-                      styles.typeBtn,
-                      newChannelScope === "group" && styles.typeBtnActive,
-                    ]}
-                    onPress={() => setNewChannelScope("group")}
-                  >
-                    <Text
-                      style={[
-                        styles.typeBtnText,
-                        newChannelScope === "group" && styles.typeBtnTextActive,
-                      ]}
-                    >
-                      限定
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[
-                      styles.typeBtn,
-                      newChannelScope === "coach" && styles.typeBtnActive,
-                      { marginRight: 0 },
-                    ]}
-                    onPress={() => setNewChannelScope("coach")}
-                  >
-                    <Text
-                      style={[
-                        styles.typeBtnText,
-                        newChannelScope === "coach" && styles.typeBtnTextActive,
-                      ]}
-                    >
-                      指導者
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-
-                {newChannelScope === "group" && (
-                  <View style={{ marginTop: 10 }}>
-                    <Text style={styles.inputLabel}>参加メンバーを選択</Text>
-                    <View style={styles.memberSelectorWrapper}>
-                      <ScrollView
-                        style={styles.memberSelector}
-                        nestedScrollEnabled={true}
+                <Text style={styles.inputLabel}>共有範囲（複数選択可）</Text>
+                <View style={styles.memberSelectorWrapper}>
+                  {ROLE_GROUP_OPTIONS.map((option) => {
+                    const isSelected = selectedRoleGroups.includes(option.id);
+                    return (
+                      <TouchableOpacity
+                        key={option.id}
+                        style={[
+                          styles.memberOption,
+                          isSelected && styles.memberOptionSelected,
+                        ]}
+                        onPress={() => toggleRoleGroupSelection(option.id)}
                       >
-                        {clubMembers.map((m) => {
-                          const isSelected = selectedMembers.includes(m);
-                          return (
-                            <TouchableOpacity
-                              key={m}
-                              style={[
-                                styles.memberOption,
-                                isSelected && styles.memberOptionSelected,
-                              ]}
-                              onPress={() => toggleMemberSelection(m)}
-                            >
-                              <Text
-                                style={[
-                                  styles.memberOptionText,
-                                  isSelected && styles.memberOptionTextSelected,
-                                ]}
-                              >
-                                {m}
-                              </Text>
-                              {isSelected && (
-                                <Text style={styles.checkIcon}>✓</Text>
-                              )}
-                            </TouchableOpacity>
-                          );
-                        })}
-                        {clubMembers.length === 0 && (
+                        <View style={styles.roleOptionTextContainer}>
                           <Text
-                            style={{
-                              padding: 15,
-                              color: "#888",
-                              textAlign: "center",
-                            }}
+                            style={[
+                              styles.memberOptionText,
+                              isSelected && styles.memberOptionTextSelected,
+                            ]}
                           >
-                            部員がいません
+                            {option.label}
                           </Text>
-                        )}
-                      </ScrollView>
-                    </View>
-                  </View>
-                )}
+                          <Text style={styles.roleOptionDescription}>
+                            {option.description}
+                          </Text>
+                        </View>
+                        <Text
+                          style={[
+                            styles.roleOptionStatus,
+                            isSelected && styles.roleOptionStatusSelected,
+                          ]}
+                        >
+                          {isSelected ? "ON ✓" : "OFF"}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+                <Text style={styles.guardianDefaultNote}>
+                  ※保護者は新規作成時、デフォルトでOFFです。
+                </Text>
               </ScrollView>
 
               <View
@@ -1960,21 +2219,17 @@ const WorkspaceHomeScreen = ({
               >
                 <TouchableOpacity
                   style={styles.modalCancelBtn}
-                  onPress={() => {
-                    setIsAddChannelModalVisible(false);
-                    setNewChannelName("");
-                    setNewChannelIsReadOnly(false);
-                    setNewChannelScope("team");
-                    setSelectedMembers(["all"]);
-                  }}
+                  onPress={resetChannelForm}
                 >
                   <Text style={styles.modalCancelText}>キャンセル</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.modalSubmitBtn}
-                  onPress={handleAddChannel}
+                  onPress={handleSaveChannel}
                 >
-                  <Text style={styles.modalSubmitText}>作成する</Text>
+                  <Text style={styles.modalSubmitText}>
+                    {editingChannel ? "保存する" : "作成する"}
+                  </Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -2698,6 +2953,12 @@ const styles = StyleSheet.create({
     color: "#555",
     marginBottom: 8,
   },
+  fixedChannelNameNote: {
+    color: COLORS.textSub,
+    fontSize: 12,
+    marginTop: -8,
+    marginBottom: 15,
+  },
 
   memberSelectorWrapper: {
     borderWidth: 1,
@@ -2720,6 +2981,16 @@ const styles = StyleSheet.create({
   memberOptionText: { fontSize: 15, color: "#333" },
   memberOptionTextSelected: { color: COLORS.primary, fontWeight: "bold" },
   checkIcon: { color: COLORS.primary, fontSize: 16, fontWeight: "bold" },
+  roleOptionTextContainer: { flex: 1, paddingRight: 12 },
+  roleOptionDescription: { color: COLORS.textSub, fontSize: 12, marginTop: 3 },
+  roleOptionStatus: { color: COLORS.textSub, fontSize: 12, fontWeight: "bold" },
+  roleOptionStatusSelected: { color: COLORS.primary },
+  guardianDefaultNote: {
+    color: COLORS.textSub,
+    fontSize: 12,
+    marginTop: -7,
+    marginBottom: 18,
+  },
 
   reasonBtn: {
     backgroundColor: "#f9f9f9",

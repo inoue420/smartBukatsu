@@ -123,6 +123,7 @@ function AppContent() {
       const unsubNotices = subscribeNotices(activeTeamId, setNotices);
       const unsubWorkspacePosts = subscribeWorkspacePosts(
         activeTeamId,
+        user.uid,
         setPosts,
       );
       const unsubPersonal = subscribePersonalEvents(
