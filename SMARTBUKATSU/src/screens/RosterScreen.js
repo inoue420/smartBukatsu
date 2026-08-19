@@ -12,6 +12,12 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { updateMemberRoleConfig } from "../services/firestoreService";
+import {
+  DEFAULT_ALERT_THRESHOLDS,
+  getFatigueScore,
+  getPainScore,
+  MEDICAL_SCALE_MAX,
+} from "../utils/medicalScale";
 
 // ★ カラーパレット（他画面と統一）
 const COLORS = {
@@ -37,6 +43,7 @@ const RosterScreen = ({
   dailyReports = [],
   grades = [],
   positions = [],
+  alertThresholds = DEFAULT_ALERT_THRESHOLDS,
 }) => {
   // --- 権限の確認 ---
   const currentUserProfile =
@@ -97,12 +104,14 @@ const RosterScreen = ({
         if (
           latestReport.condition === "不良" ||
           latestReport.isParticipating === "不可" ||
-          latestReport.fatigue >= 8 ||
-          latestReport.hasPain
+          getFatigueScore(latestReport) >= alertThresholds.fatigueDanger ||
+          (latestReport.hasPain &&
+            getPainScore(latestReport) >= alertThresholds.painDanger)
         ) {
           alertLevel = "danger";
         } else if (
-          latestReport.fatigue >= 6 ||
+          getFatigueScore(latestReport) >= alertThresholds.fatigueWarning ||
+          latestReport.hasPain ||
           latestReport.isParticipating === "制限"
         ) {
           alertLevel = "warning";
@@ -166,6 +175,7 @@ const RosterScreen = ({
     filterPosition,
     filterCondition,
     isStaffOrAbove,
+    alertThresholds,
   ]);
 
   // --- UIコンポーネント ---
@@ -625,9 +635,9 @@ const RosterScreen = ({
                         </Text>
                       </View>
                       <View style={styles.detailRow}>
-                        <Text style={styles.detailLabel}>疲労度 (10段階)</Text>
+                        <Text style={styles.detailLabel}>疲労度 (5段階)</Text>
                         <Text style={styles.detailValue}>
-                          {selectedUser.latestReport.fatigue}
+                          {getFatigueScore(selectedUser.latestReport)}
                         </Text>
                       </View>
                       <View style={styles.detailRow}>
@@ -658,7 +668,8 @@ const RosterScreen = ({
                           </Text>
                           <Text style={styles.painAlertText}>
                             痛みの強さ:{" "}
-                            {selectedUser.latestReport.painDetails?.level}/10
+                            {getPainScore(selectedUser.latestReport)}/
+                            {MEDICAL_SCALE_MAX}
                           </Text>
                           <Text style={styles.painAlertText}>
                             処置:{" "}

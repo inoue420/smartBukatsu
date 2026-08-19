@@ -14,6 +14,14 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../AuthContext";
+import {
+  getFatigueScore,
+  getPainScore,
+  MEDICAL_SCALE_DEFAULT,
+  MEDICAL_SCALE_MAX,
+  MEDICAL_SCALE_VALUES,
+  MEDICAL_SCALE_VERSION,
+} from "../utils/medicalScale";
 
 const OptionGroup = ({ options, selected, onSelect, color = "#0077cc" }) => (
   <View style={styles.optionGroup}>
@@ -42,7 +50,7 @@ const ScaleSelector = ({ selected, onSelect, color }) => (
     showsHorizontalScrollIndicator={false}
     style={styles.scaleScroll}
   >
-    {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((num) => (
+    {MEDICAL_SCALE_VALUES.map((num) => (
       <TouchableOpacity
         key={num}
         style={[
@@ -96,13 +104,13 @@ const MedicalScreen = ({
   const [editingRecordId, setEditingRecordId] = useState(null);
 
   const [condition, setCondition] = useState("良い");
-  const [fatigue, setFatigue] = useState(5);
+  const [fatigue, setFatigue] = useState(MEDICAL_SCALE_DEFAULT);
   const [sleep, setSleep] = useState("7h");
   const [isParticipating, setIsParticipating] = useState("通常");
   const [hasPain, setHasPain] = useState(false);
 
   const [painPart, setPainPart] = useState("");
-  const [painLevel, setPainLevel] = useState(5);
+  const [painLevel, setPainLevel] = useState(MEDICAL_SCALE_DEFAULT);
   const [sinceWhen, setSinceWhen] = useState("");
   const [treatment, setTreatment] = useState("");
   const [memo, setMemo] = useState("");
@@ -132,14 +140,14 @@ const MedicalScreen = ({
     if (
       record.condition === "不良" ||
       record.isParticipating === "不可" ||
-      record.fatigue >= alertThresholds.fatigueDanger ||
+      getFatigueScore(record) >= alertThresholds.fatigueDanger ||
       (record.hasPain &&
-        record.painDetails?.level >= alertThresholds.painDanger)
+        getPainScore(record) >= alertThresholds.painDanger)
     ) {
       return "danger";
     }
     if (
-      record.fatigue >= alertThresholds.fatigueWarning ||
+      getFatigueScore(record) >= alertThresholds.fatigueWarning ||
       record.isParticipating === "制限" ||
       record.hasPain
     ) {
@@ -156,12 +164,12 @@ const MedicalScreen = ({
       if (userHistory.length > 0) {
         const lastRecord = userHistory[0];
         const fatigueWorsened =
-          record.fatigue >= alertThresholds.fatigueWarning &&
-          record.fatigue > lastRecord.fatigue;
+          getFatigueScore(record) >= alertThresholds.fatigueWarning &&
+          getFatigueScore(record) > getFatigueScore(lastRecord);
         const painWorsened =
           record.hasPain &&
           lastRecord.hasPain &&
-          record.painDetails.level > lastRecord.painDetails.level;
+          getPainScore(record) > getPainScore(lastRecord);
 
         if (fatigueWorsened || painWorsened) {
           return "danger";
@@ -235,14 +243,14 @@ const MedicalScreen = ({
     if (!selectedRecord) return;
     setEditingRecordId(selectedRecord.id);
     setCondition(selectedRecord.condition);
-    setFatigue(selectedRecord.fatigue);
+    setFatigue(getFatigueScore(selectedRecord));
     setSleep(selectedRecord.sleep);
     setIsParticipating(selectedRecord.isParticipating);
     setHasPain(selectedRecord.hasPain);
 
     if (selectedRecord.hasPain && selectedRecord.painDetails) {
       setPainPart(selectedRecord.painDetails.part || "");
-      setPainLevel(selectedRecord.painDetails.level || 5);
+      setPainLevel(getPainScore(selectedRecord));
       setSinceWhen(selectedRecord.painDetails.sinceWhen || "");
       setTreatment(selectedRecord.painDetails.treatment || "");
       setMemo(selectedRecord.painDetails.memo || "");
@@ -262,12 +270,12 @@ const MedicalScreen = ({
         style: "destructive",
         onPress: () => {
           setCondition("良い");
-          setFatigue(5);
+          setFatigue(MEDICAL_SCALE_DEFAULT);
           setSleep("7h");
           setIsParticipating("通常");
           setHasPain(false);
           setPainPart("");
-          setPainLevel(5);
+          setPainLevel(MEDICAL_SCALE_DEFAULT);
           setSinceWhen("");
           setTreatment("");
           setMemo("");
@@ -291,6 +299,7 @@ const MedicalScreen = ({
             ...r,
             condition,
             fatigue,
+            medicalScaleVersion: MEDICAL_SCALE_VERSION,
             sleep,
             isParticipating,
             hasPain,
@@ -322,6 +331,7 @@ const MedicalScreen = ({
         author: currentUser,
         condition,
         fatigue,
+        medicalScaleVersion: MEDICAL_SCALE_VERSION,
         sleep,
         isParticipating,
         hasPain,
@@ -357,12 +367,12 @@ const MedicalScreen = ({
     setIsCreateModalVisible(false);
     setEditingRecordId(null);
     setCondition("良い");
-    setFatigue(5);
+    setFatigue(MEDICAL_SCALE_DEFAULT);
     setSleep("7h");
     setIsParticipating("通常");
     setHasPain(false);
     setPainPart("");
-    setPainLevel(5);
+    setPainLevel(MEDICAL_SCALE_DEFAULT);
     setSinceWhen("");
     setTreatment("");
     setMemo("");
@@ -760,7 +770,7 @@ const MedicalScreen = ({
                           <Text style={styles.infoLabel}>
                             疲労度:{" "}
                             <Text style={styles.infoValue}>
-                              {record.fatigue}/10
+                              {getFatigueScore(record)}/{MEDICAL_SCALE_MAX}
                             </Text>
                           </Text>
                         </View>
@@ -904,7 +914,7 @@ const MedicalScreen = ({
                           <View style={styles.gridItem}>
                             <Text style={styles.gridTitle}>疲労度</Text>
                             <Text style={styles.gridValue}>
-                              {selectedRecord.fatigue} / 10
+                              {getFatigueScore(selectedRecord)} / {MEDICAL_SCALE_MAX}
                             </Text>
                           </View>
                           <View style={styles.gridItem}>
@@ -935,7 +945,7 @@ const MedicalScreen = ({
                               </Text>
                               <Text style={styles.painDetailText}>
                                 部位：{selectedRecord.painDetails.part} (痛さ:{" "}
-                                {selectedRecord.painDetails.level}/10)
+                                {getPainScore(selectedRecord)}/{MEDICAL_SCALE_MAX})
                               </Text>
                               <Text style={styles.painDetailText}>
                                 いつから：
@@ -1073,7 +1083,7 @@ const MedicalScreen = ({
                   color="#2ecc71"
                 />
                 <Text style={styles.inputLabel}>
-                  🔋 疲労度 (0:なし 〜 10:限界)
+                  🔋 疲労度 (1:なし 〜 5:限界)
                 </Text>
                 <ScaleSelector
                   selected={fatigue}
@@ -1147,7 +1157,7 @@ const MedicalScreen = ({
                       value={painPart}
                       onChangeText={setPainPart}
                     />
-                    <Text style={styles.subLabel}>痛みの強さ (0〜10)</Text>
+                    <Text style={styles.subLabel}>痛みの強さ (1〜5)</Text>
                     <ScaleSelector
                       selected={painLevel}
                       onSelect={setPainLevel}
