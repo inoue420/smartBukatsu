@@ -12,6 +12,12 @@ import {
   deleteDoc,
   arrayUnion,
   arrayRemove,
+  FieldPath,
+  getDocs,
+  increment,
+  runTransaction,
+  where,
+  writeBatch,
 } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { auth, db, cloudFunctions } from "../firebase";
@@ -633,6 +639,57 @@ export async function updateWorkspacePost(teamId, postId, updateData) {
   );
 }
 
+export async function appendWorkspacePostReply(teamId, postId, reply) {
+  if (!teamId || !postId) throw new Error("IDが不足しています");
+  await updateDoc(doc(db, "teams", teamId, "workspacePosts", postId), {
+    replies: arrayUnion(reply),
+    updatedAt: serverTimestamp(),
+  });
+}
+
+export async function updateWorkspacePostReply(
+  teamId,
+  postId,
+  replyId,
+  updater,
+) {
+  if (!teamId || !postId || !replyId) throw new Error("IDが不足しています");
+  const postRef = doc(db, "teams", teamId, "workspacePosts", postId);
+
+  await runTransaction(db, async (transaction) => {
+    const postSnapshot = await transaction.get(postRef);
+    if (!postSnapshot.exists()) throw new Error("投稿が見つかりません");
+
+    const currentReplies = postSnapshot.data().replies || [];
+    let replyFound = false;
+    const nextReplies = currentReplies.map((reply) => {
+      if (reply.id !== replyId) return reply;
+      replyFound = true;
+      return updater(reply);
+    });
+    if (!replyFound) throw new Error("返信が見つかりません");
+    transaction.update(postRef, {
+      replies: nextReplies,
+      updatedAt: serverTimestamp(),
+    });
+  });
+}
+
+export async function incrementWorkspacePostReaction(
+  teamId,
+  postId,
+  emoji,
+) {
+  if (!teamId || !postId || !emoji) throw new Error("IDが不足しています");
+  await updateDoc(
+    doc(db, "teams", teamId, "workspacePosts", postId),
+    new FieldPath("reactions", emoji),
+    increment(1),
+    "updatedAt",
+    serverTimestamp(),
+  );
+}
+
 export async function markWorkspacePostRead(
   teamId,
   postId,
@@ -650,20 +707,48 @@ export async function markWorkspacePostRead(
   );
 }
 
-export function subscribeWorkspacePosts(teamId, callback) {
-  if (!teamId) return () => {};
+export async function getWorkspacePostsForAudienceSync(teamId) {
+  if (!teamId) return [];
+  const snapshot = await getDocs(
+    collection(db, "teams", teamId, "workspacePosts"),
+  );
+  return snapshot.docs.map((postDoc) => ({
+    id: postDoc.id,
+    ...postDoc.data(),
+  }));
+}
+
+export async function updateWorkspacePostAudiences(teamId, updates) {
+  if (!teamId || !Array.isArray(updates) || updates.length === 0) return;
+
+  const batchSize = 400;
+  for (let index = 0; index < updates.length; index += batchSize) {
+    const batch = writeBatch(db);
+    updates.slice(index, index + batchSize).forEach(({ postId, audience }) => {
+      batch.update(doc(db, "teams", teamId, "workspacePosts", postId), {
+        ...audience,
+        updatedAt: serverTimestamp(),
+      });
+    });
+    await batch.commit();
+  }
+}
+
+export function subscribeWorkspacePosts(teamId, userUid, callback) {
+  if (!teamId || !userUid) return () => {};
   const q = query(
     collection(db, "teams", teamId, "workspacePosts"),
-    orderBy("createdAt", "desc"),
+    where("visibleToUids", "array-contains", userUid),
   );
   return subscribeToTeamData(q, (snapshot) => {
-    callback(
-      snapshot.docs.map((postDoc) => ({
+    const posts = snapshot.docs
+      .map((postDoc) => ({
         id: postDoc.id,
         ...postDoc.data(),
         createdAt: postDoc.data().createdAt?.toMillis() || Date.now(),
-      })),
-    );
+      }))
+      .sort((a, b) => b.createdAt - a.createdAt);
+    callback(posts);
   });
 }
 
