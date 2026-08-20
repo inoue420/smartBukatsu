@@ -83,10 +83,11 @@ const TeamSetupScreen = ({ route, navigation }) => {
             </Text>
             <TextInput
               style={styles.input}
-              placeholder="例: A1B2C3"
+              placeholder="例: aB3xY7（大文字・小文字を区別）"
               value={inviteCode}
               onChangeText={setInviteCode}
-              autoCapitalize="characters"
+              autoCapitalize="none"
+              autoCorrect={false}
             />
             <TouchableOpacity
               style={styles.btnPrimary}

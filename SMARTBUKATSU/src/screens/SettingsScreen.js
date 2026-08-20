@@ -33,6 +33,7 @@ import {
   updateMemberProfile,
   updateMemberRoleConfig,
   removeTeamMember,
+  deleteTeam,
   updateTeamAdSettings,
 } from "../services/firestoreService";
 import {
@@ -175,6 +176,7 @@ const SettingsScreen = ({
     normalizeInterstitialSettings(interstitialSettings),
   );
   const [isSavingAdSettings, setIsSavingAdSettings] = useState(false);
+  const [isDeletingTeam, setIsDeletingTeam] = useState(false);
   const [absenceDeadlineDraft, setAbsenceDeadlineDraft] = useState(
     String(absenceDeadlineDaysBefore),
   );
@@ -251,6 +253,7 @@ const SettingsScreen = ({
 
   const isTeamCreator =
     !!currentUserUid && !!teamCreatedBy && currentUserUid === teamCreatedBy;
+  const canDeleteTeam = isSupervisor && isTeamCreator;
   const hasSupervisor = Object.values(userProfiles).some((profile) =>
     ["owner", "admin"].includes(profile?.role),
   );
@@ -335,7 +338,7 @@ const SettingsScreen = ({
         onPress: async () => {
           try {
             if (activeTeamId && targetUid) {
-              const result = await removeTeamMember(activeTeamId, targetUid);
+              await removeTeamMember(activeTeamId, targetUid);
               Alert.alert(
                 isSelf ? "退会完了" : "除外完了",
                 isSelf
@@ -346,9 +349,7 @@ const SettingsScreen = ({
                       {
                         text: "OK",
                         onPress: () => {
-                          navigation.replace(
-                            result?.activeTeamId ? "WorkspaceHome" : "TeamSelect",
-                          );
+                          if (navigation.canGoBack()) navigation.goBack();
                         },
                       },
                     ]
@@ -367,6 +368,67 @@ const SettingsScreen = ({
         },
       },
     ]);
+  };
+
+  const handleDeleteTeam = () => {
+    if (!activeTeamId || !canDeleteTeam || isDeletingTeam) return;
+
+    const teamName = inputTeamName || "このチーム";
+    Alert.alert(
+      "チームを削除",
+      `${teamName} を削除しますか？\n他のメンバーが所属している場合は削除できません。`,
+      [
+        { text: "キャンセル", style: "cancel" },
+        {
+          text: "削除手続きへ",
+          style: "destructive",
+          onPress: () => {
+            Alert.alert(
+              "最終確認",
+              "チーム内の予定・動画・投稿・日報・添付ファイルと招待コードが完全に削除され、元に戻せません。",
+              [
+                { text: "キャンセル", style: "cancel" },
+                {
+                  text: "完全に削除する",
+                  style: "destructive",
+                  onPress: async () => {
+                    setIsDeletingTeam(true);
+                    try {
+                      await deleteTeam(activeTeamId);
+                      Alert.alert(
+                        "削除完了",
+                        `${teamName} を削除しました。`,
+                        [
+                          {
+                            text: "OK",
+                            onPress: () => {
+                              if (navigation.canGoBack()) navigation.goBack();
+                            },
+                          },
+                        ],
+                      );
+                    } catch (error) {
+                      console.log("チーム削除エラー:", error);
+                      const errorCode = String(error?.code || "");
+                      const errorMessage = errorCode.includes(
+                        "failed-precondition",
+                      )
+                        ? "他のメンバーが所属しているため削除できません。"
+                        : errorCode.includes("permission-denied")
+                          ? "チームを削除できるのは監督かつチーム作成者本人だけです。"
+                          : "チームを削除できませんでした。通信状態を確認してください。";
+                      Alert.alert("エラー", errorMessage);
+                    } finally {
+                      setIsDeletingTeam(false);
+                    }
+                  },
+                },
+              ],
+            );
+          },
+        },
+      ],
+    );
   };
 
   const handleAddTeamArrayItem = async (field, value, setter) => {
@@ -1012,6 +1074,29 @@ const SettingsScreen = ({
                     {activeTeamId || "---"}
                   </Text>
                 </View>
+                {canDeleteTeam && (
+                  <View style={styles.teamDeleteBox}>
+                    <Text style={styles.teamDeleteWarning}>
+                      チーム作成者本人で、所属者が自分だけの場合に限り削除できます。
+                    </Text>
+                    <TouchableOpacity
+                      style={[
+                        styles.teamDeleteBtn,
+                        isDeletingTeam && { opacity: 0.7 },
+                      ]}
+                      onPress={handleDeleteTeam}
+                      disabled={isDeletingTeam}
+                    >
+                      {isDeletingTeam ? (
+                        <ActivityIndicator color="#fff" />
+                      ) : (
+                        <Text style={styles.teamDeleteBtnText}>
+                          チームを完全に削除
+                        </Text>
+                      )}
+                    </TouchableOpacity>
+                  </View>
+                )}
               </SectionCard>
 
               <SectionCard
@@ -2012,6 +2097,27 @@ const styles = StyleSheet.create({
     borderRadius: 20,
   },
   copySubBtnText: { color: "#0077cc", fontSize: 13, fontWeight: "bold" },
+  teamDeleteBox: {
+    marginTop: 20,
+    paddingTop: 15,
+    borderTopWidth: 1,
+    borderTopColor: "#f5b7b1",
+    width: "100%",
+  },
+  teamDeleteWarning: {
+    color: "#c0392b",
+    fontSize: 12,
+    lineHeight: 18,
+    textAlign: "center",
+    marginBottom: 10,
+  },
+  teamDeleteBtn: {
+    backgroundColor: "#c0392b",
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: "center",
+  },
+  teamDeleteBtnText: { color: "#fff", fontSize: 14, fontWeight: "bold" },
 
   logoutContainer: {
     marginTop: 20,

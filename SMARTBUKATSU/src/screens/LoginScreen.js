@@ -237,10 +237,11 @@ const LoginScreen = () => {
                     <Text style={styles.label}>チームの招待コード</Text>
                     <TextInput
                       style={styles.input}
-                      placeholder="監督から共有された6桁のコード"
+                      placeholder="例: aB3xY7（大文字・小文字を区別）"
                       value={inviteCode}
                       onChangeText={setInviteCode}
-                      autoCapitalize="characters"
+                      autoCapitalize="none"
+                      autoCorrect={false}
                     />
                   </>
                 )}

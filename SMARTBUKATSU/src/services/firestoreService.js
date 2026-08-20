@@ -22,6 +22,21 @@ import {
 import { httpsCallable } from "firebase/functions";
 import { auth, db, cloudFunctions } from "../firebase";
 export const MAX_TEAMS_PER_USER = 5;
+const INVITE_CODE_LENGTH = 6;
+
+function generateInviteCode() {
+  let candidate = "";
+
+  do {
+    candidate = doc(collection(db, "invites")).id.slice(0, INVITE_CODE_LENGTH);
+  } while (
+    !/[a-z]/.test(candidate) ||
+    !/[A-Z]/.test(candidate) ||
+    !/[0-9]/.test(candidate)
+  );
+
+  return candidate;
+}
 
 function subscribeToTeamData(reference, callback) {
   return onSnapshot(reference, callback, (error) => {
@@ -120,10 +135,7 @@ export async function createTeam(uid, teamName, userName = "ゲスト") {
 
   const newTeamRef = doc(collection(db, "teams"));
   const teamId = newTeamRef.id;
-  const generatedInviteCode = Math.random()
-    .toString(36)
-    .substring(2, 8)
-    .toUpperCase();
+  const generatedInviteCode = generateInviteCode();
 
   await setDoc(newTeamRef, {
     name: trimmedTeamName,
@@ -153,7 +165,7 @@ export async function createTeam(uid, teamName, userName = "ゲスト") {
 
 export async function joinTeamWithInvite(uid, inviteCodeInput, userName = "ゲスト") {
   if (!uid) throw new Error("ユーザー情報を確認できませんでした。");
-  const inviteCode = (inviteCodeInput || "").trim().toUpperCase();
+  const inviteCode = (inviteCodeInput || "").trim();
   if (!inviteCode) throw new Error("招待コードを入力してください。");
 
   const joinTeam = httpsCallable(cloudFunctions, "joinTeamWithInvite");
@@ -485,6 +497,21 @@ export async function removeTeamMember(teamId, targetUid) {
 
   const removeMember = httpsCallable(cloudFunctions, "removeTeamMember");
   const response = await removeMember({ teamId, targetUid });
+  return response.data;
+}
+
+export async function deleteTeam(teamId) {
+  if (!teamId) throw new Error("チームIDがありません。");
+
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error("Authentication is required. Please sign in again.");
+  }
+
+  await currentUser.getIdToken(true);
+
+  const deleteTeamCallable = httpsCallable(cloudFunctions, "deleteTeam");
+  const response = await deleteTeamCallable({ teamId });
   return response.data;
 }
 
