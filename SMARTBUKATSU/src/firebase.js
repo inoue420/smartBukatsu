@@ -1,6 +1,7 @@
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
 import { getFunctions } from "firebase/functions";
+import { getStorage } from "firebase/storage";
 import {
   initializeAuth,
   getAuth,
@@ -42,3 +43,4 @@ export { auth };
 
 export const db = getFirestore(app);
 export const cloudFunctions = getFunctions(app, "asia-northeast1");
+export const storage = getStorage(app);

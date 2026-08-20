@@ -13,9 +13,13 @@ import {
   ActivityIndicator,
   Switch,
   Share,
+  Image,
+  Linking,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import * as Location from "expo-location";
+import * as ImagePicker from "expo-image-picker";
+import * as DocumentPicker from "expo-document-picker";
 import { Calendar, LocaleConfig } from "react-native-calendars";
 import { httpsCallable } from "firebase/functions";
 
@@ -23,6 +27,7 @@ import { useAuth } from "../AuthContext";
 import { cloudFunctions } from "../firebase";
 import {
   createClubEvent,
+  createClubEventId,
   updateClubEvent,
   removeClubEventAbsenceComment,
   deleteClubEvent,
@@ -30,6 +35,15 @@ import {
   updatePersonalEvent,
   deletePersonalEvent,
 } from "../services/firestoreService";
+import {
+  MAX_CALENDAR_ATTACHMENTS_PER_DATE,
+  deleteCalendarAttachments,
+  getActiveCalendarAttachments,
+  isCalendarAttachmentExpired,
+  prepareCalendarImageAttachment,
+  prepareCalendarPdfAttachment,
+  uploadCalendarAttachment,
+} from "../services/calendarAttachmentService";
 import {
   getFatigueScore,
   getPainScore,
@@ -524,6 +538,10 @@ const CalendarScreen = ({
   const [selectedAbsenceEvent, setSelectedAbsenceEvent] = useState(null);
   const [absenceModalMode, setAbsenceModalMode] = useState(null);
   const [absenceCommentText, setAbsenceCommentText] = useState("");
+  const [clubAttachmentsByDate, setClubAttachmentsByDate] = useState({});
+  const [clubAttachmentDate, setClubAttachmentDate] = useState(selectedDate);
+  const [removedClubAttachments, setRemovedClubAttachments] = useState([]);
+  const [viewingClubAttachment, setViewingClubAttachment] = useState(null);
 
   // === 個人の予定ステート ===
   const [editingPersonalEventId, setEditingPersonalEventId] = useState(null);
@@ -684,6 +702,24 @@ const CalendarScreen = ({
     [clubSelectedDates, selectedDate],
   );
 
+  const clubAttachmentTargetDates = useMemo(
+    () => (isMultiDay ? sortedClubSelectedDates : [clubAttachmentDate || selectedDate]),
+    [isMultiDay, sortedClubSelectedDates, clubAttachmentDate, selectedDate],
+  );
+
+  useEffect(() => {
+    if (!clubAttachmentTargetDates.includes(clubAttachmentDate)) {
+      setClubAttachmentDate(clubAttachmentTargetDates[0] || selectedDate);
+    }
+  }, [clubAttachmentTargetDates, clubAttachmentDate, selectedDate]);
+
+  const currentClubAttachments = (
+    clubAttachmentsByDate[clubAttachmentDate] || []
+  ).filter(
+    (attachment) =>
+      attachment?.pending || !isCalendarAttachmentExpired(attachment),
+  );
+
   const clubSelectionMarkedDates = useMemo(() => {
     const marks = {};
     sortedClubSelectedDates.forEach((date) => {
@@ -715,6 +751,119 @@ const CalendarScreen = ({
       }
       return getUniqueSortedDates([...current, dateString]);
     });
+  };
+
+  const appendClubAttachmentDrafts = (eventDate, attachments) => {
+    setClubAttachmentsByDate((prev) => {
+      const current = (prev[eventDate] || []).filter(
+        (attachment) =>
+          attachment?.pending || !isCalendarAttachmentExpired(attachment),
+      );
+      return {
+        ...prev,
+        [eventDate]: [...current, ...attachments].slice(
+          0,
+          MAX_CALENDAR_ATTACHMENTS_PER_DATE,
+        ),
+      };
+    });
+  };
+
+  const ensureClubAttachmentCapacity = () => {
+    if (isOffline) {
+      Alert.alert("通信エラー", "添付ファイルはオンライン時に追加してください。");
+      return 0;
+    }
+    const remaining =
+      MAX_CALENDAR_ATTACHMENTS_PER_DATE - currentClubAttachments.length;
+    if (remaining <= 0) {
+      Alert.alert(
+        "添付上限",
+        "写真とPDFを合わせて、1日につき3ファイルまで添付できます。",
+      );
+      return 0;
+    }
+    return remaining;
+  };
+
+  const handlePickClubImages = async () => {
+    const remaining = ensureClubAttachmentCapacity();
+    if (!remaining) return;
+    const targetDate = clubAttachmentDate;
+
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        allowsMultipleSelection: remaining > 1,
+        selectionLimit: remaining,
+        quality: 1,
+      });
+      if (result.canceled) return;
+
+      const selectedAssets = (result.assets || []).slice(0, remaining);
+      const preparedAttachments = await Promise.all(
+        selectedAssets.map(prepareCalendarImageAttachment),
+      );
+      appendClubAttachmentDrafts(targetDate, preparedAttachments);
+    } catch (error) {
+      Alert.alert("写真エラー", error?.message || "写真を追加できませんでした。");
+    }
+  };
+
+  const handlePickClubPdfs = async () => {
+    const remaining = ensureClubAttachmentCapacity();
+    if (!remaining) return;
+    const targetDate = clubAttachmentDate;
+
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: "application/pdf",
+        copyToCacheDirectory: true,
+        multiple: remaining > 1,
+        base64: false,
+      });
+      if (result.canceled) return;
+
+      const preparedAttachments = (result.assets || [])
+        .slice(0, remaining)
+        .map(prepareCalendarPdfAttachment);
+      appendClubAttachmentDrafts(targetDate, preparedAttachments);
+    } catch (error) {
+      Alert.alert("PDFエラー", error?.message || "PDFを追加できませんでした。");
+    }
+  };
+
+  const handleRemoveClubAttachment = (attachment) => {
+    setClubAttachmentsByDate((prev) => ({
+      ...prev,
+      [clubAttachmentDate]: (prev[clubAttachmentDate] || []).filter(
+        (item) => item.id !== attachment.id,
+      ),
+    }));
+    if (!attachment.pending && attachment.storagePath) {
+      setRemovedClubAttachments((prev) =>
+        prev.some((item) => item.storagePath === attachment.storagePath)
+          ? prev
+          : [...prev, attachment],
+      );
+    }
+  };
+
+  const openClubAttachment = async (attachment) => {
+    const attachmentUri = attachment?.downloadUrl || attachment?.localUri;
+    if (!attachmentUri) return;
+    if (attachment.type === "image") {
+      setViewingClubAttachment(attachment);
+      return;
+    }
+
+    if (attachment.pending) return;
+
+    try {
+      await Linking.openURL(attachmentUri);
+    } catch (error) {
+      Alert.alert("表示エラー", "PDFを開けませんでした。");
+    }
   };
 
   const activeAbsenceEvent = selectedAbsenceEvent
@@ -770,6 +919,14 @@ const CalendarScreen = ({
     const lastDate = remainingDates[remainingDates.length - 1];
     const firstSchedule = getClubScheduleForDate(event, firstDate);
     const remainingComments = getAbsenceCommentsOutsideDate(event, removedDate);
+    const remainingAttachmentsByDate = remainingDates.reduce(
+      (nextAttachments, date) => {
+        const attachments = getActiveCalendarAttachments(event, date);
+        if (attachments.length > 0) nextAttachments[date] = attachments;
+        return nextAttachments;
+      },
+      {},
+    );
 
     if (remainingDates.length === 1) {
       return {
@@ -782,6 +939,7 @@ const CalendarScreen = ({
         endTime: firstSchedule.end,
         timeSchedules: null,
         absenceComments: remainingComments,
+        attachmentsByDate: remainingAttachmentsByDate,
       };
     }
 
@@ -806,6 +964,7 @@ const CalendarScreen = ({
       endTime: event?.endTime || "12:00",
       timeSchedules: remainingSchedules,
       absenceComments: remainingComments,
+      attachmentsByDate: remainingAttachmentsByDate,
     };
   };
 
@@ -1185,6 +1344,66 @@ const CalendarScreen = ({
     return `⏰ ${item.startTime || "00:00"} 〜 ${item.endTime || "00:00"}`;
   };
 
+  const getClubAttachmentDraftsForDates = (eventDates) =>
+    eventDates.reduce((nextAttachments, date) => {
+      const attachments = (clubAttachmentsByDate[date] || []).filter(
+        (attachment) =>
+          attachment?.pending || !isCalendarAttachmentExpired(attachment),
+      );
+      if (attachments.length > 0) nextAttachments[date] = attachments;
+      return nextAttachments;
+    }, {});
+
+  const getPersistedClubAttachments = (attachmentDraftsByDate) =>
+    Object.entries(attachmentDraftsByDate).reduce(
+      (nextAttachments, [date, attachments]) => {
+        const persistedAttachments = attachments.filter(
+          (attachment) => !attachment.pending && attachment.downloadUrl,
+        );
+        if (persistedAttachments.length > 0) {
+          nextAttachments[date] = persistedAttachments;
+        }
+        return nextAttachments;
+      },
+      {},
+    );
+
+  const uploadPendingClubAttachments = async (
+    eventId,
+    attachmentDraftsByDate,
+  ) => {
+    const nextAttachmentsByDate = {};
+
+    for (const [date, attachments] of Object.entries(attachmentDraftsByDate)) {
+      const persistedAttachments = attachments.filter(
+        (attachment) => !attachment.pending && attachment.downloadUrl,
+      );
+      const pendingAttachments = attachments.filter(
+        (attachment) => attachment.pending,
+      );
+      const uploadedAttachments = await Promise.all(
+        pendingAttachments.map((attachment) =>
+          uploadCalendarAttachment({
+            teamId: activeTeamId,
+            eventId,
+            eventDate: date,
+            attachment,
+            uploadedBy: user?.uid || "",
+          }),
+        ),
+      );
+      const combinedAttachments = [
+        ...persistedAttachments,
+        ...uploadedAttachments,
+      ].slice(0, MAX_CALENDAR_ATTACHMENTS_PER_DATE);
+      if (combinedAttachments.length > 0) {
+        nextAttachmentsByDate[date] = combinedAttachments;
+      }
+    }
+
+    return nextAttachmentsByDate;
+  };
+
   const handleSaveClubEvent = async () => {
     const eventTitle = clubEventType;
 
@@ -1223,6 +1442,19 @@ const CalendarScreen = ({
       ? clubEvents.find((event) => event.id === editingClubEventId)
       : null;
     const splitEditDate = saveEventDate;
+    const attachmentDraftsByDate = getClubAttachmentDraftsForDates(eventDates);
+    const hasTooManyAttachments = Object.values(attachmentDraftsByDate).some(
+      (attachments) => attachments.length > MAX_CALENDAR_ATTACHMENTS_PER_DATE,
+    );
+    if (hasTooManyAttachments) {
+      return Alert.alert(
+        "添付上限",
+        "写真とPDFを合わせて、1日につき3ファイルまで添付できます。",
+      );
+    }
+    const persistedAttachmentsByDate = getPersistedClubAttachments(
+      attachmentDraftsByDate,
+    );
 
     setIsLoading(true);
 
@@ -1256,6 +1488,7 @@ const CalendarScreen = ({
         participants: "team",
         status: isOffline ? "pending" : "active",
         createdBy: user?.uid || "local_user",
+        attachmentsByDate: persistedAttachmentsByDate,
         absenceComments: editingClubEventSplit
           ? getAbsenceCommentsForDate(editingClubEvent, splitEditDate)
           : editingClubEventId
@@ -1269,6 +1502,9 @@ const CalendarScreen = ({
           : {}),
       };
 
+      let createdEventId = null;
+      let eventWasCreated = false;
+      let attachmentCleanupFailed = false;
       try {
         if (editingClubEventId) {
           if (!isOffline) {
@@ -1277,7 +1513,21 @@ const CalendarScreen = ({
                 editingClubEvent,
                 splitEditDate,
               );
-              await createClubEvent(activeTeamId, eventData);
+              createdEventId = createClubEventId(activeTeamId);
+              const uploadedAttachmentsByDate =
+                await uploadPendingClubAttachments(
+                  createdEventId,
+                  attachmentDraftsByDate,
+                );
+              await createClubEvent(
+                activeTeamId,
+                {
+                  ...eventData,
+                  attachmentsByDate: uploadedAttachmentsByDate,
+                },
+                createdEventId,
+              );
+              eventWasCreated = true;
               if (remainingEventData) {
                 await updateClubEvent(
                   activeTeamId,
@@ -1288,16 +1538,58 @@ const CalendarScreen = ({
                 await deleteClubEvent(activeTeamId, editingClubEventId);
               }
             } else {
-              await updateClubEvent(activeTeamId, editingClubEventId, eventData);
+              const uploadedAttachmentsByDate =
+                await uploadPendingClubAttachments(
+                  editingClubEventId,
+                  attachmentDraftsByDate,
+                );
+              await updateClubEvent(activeTeamId, editingClubEventId, {
+                ...eventData,
+                attachmentsByDate: uploadedAttachmentsByDate,
+              });
             }
           }
         } else {
-          if (!isOffline) await createClubEvent(activeTeamId, eventData);
+          if (!isOffline) {
+            createdEventId = createClubEventId(activeTeamId);
+            const uploadedAttachmentsByDate =
+              await uploadPendingClubAttachments(
+                createdEventId,
+                attachmentDraftsByDate,
+              );
+            await createClubEvent(
+              activeTeamId,
+              {
+                ...eventData,
+                attachmentsByDate: uploadedAttachmentsByDate,
+              },
+              createdEventId,
+            );
+            eventWasCreated = true;
+          }
+        }
+        if (!isOffline && removedClubAttachments.length > 0) {
+          try {
+            await deleteCalendarAttachments(removedClubAttachments);
+          } catch (error) {
+            attachmentCleanupFailed = true;
+          }
         }
         setIsClubModalVisible(false);
         resetClubForm();
+        if (attachmentCleanupFailed) {
+          Alert.alert(
+            "保存完了",
+            "予定は保存されましたが、一部の削除済み添付ファイルをStorageから削除できませんでした。期限切れ削除処理で再度削除されます。",
+          );
+        }
       } catch (error) {
-        Alert.alert("エラー", "保存に失敗しました。");
+        Alert.alert(
+          "エラー",
+          eventWasCreated
+            ? "予定は保存されましたが、保存処理の一部に失敗しました。予定を開き直して確認してください。"
+            : "保存に失敗しました。",
+        );
       } finally {
         setIsLoading(false);
       }
@@ -1318,6 +1610,9 @@ const CalendarScreen = ({
     setClubEndTime("12:00");
     setIsClubAllDay(false);
     setClubTimeSchedules({});
+    setClubAttachmentsByDate({});
+    setClubAttachmentDate(selectedDate);
+    setRemovedClubAttachments([]);
     clearClubLocation();
     setIsClubLocationDetailsEnabled(false);
   };
@@ -1345,6 +1640,18 @@ const CalendarScreen = ({
     setClubEndTime(schedule.end || "12:00");
     setIsClubAllDay(schedule.isAllDay);
     setClubTimeSchedules(editsSingleOccurrence ? {} : event.timeSchedules || {});
+    const attachmentDates = editsSingleOccurrence ? [targetDate] : eventDates;
+    const nextAttachmentsByDate = attachmentDates.reduce(
+      (attachmentsByDate, date) => {
+        const attachments = getActiveCalendarAttachments(event, date);
+        if (attachments.length > 0) attachmentsByDate[date] = attachments;
+        return attachmentsByDate;
+      },
+      {},
+    );
+    setClubAttachmentsByDate(nextAttachmentsByDate);
+    setClubAttachmentDate(targetDate);
+    setRemovedClubAttachments([]);
     const location = getLocationFromEvent(event);
     if (location) {
       applyClubLocation(location);
@@ -1374,6 +1681,11 @@ const CalendarScreen = ({
                 event,
                 targetDate,
               );
+              const attachmentsToDelete = remainingEventData
+                ? getActiveCalendarAttachments(event, targetDate)
+                : getEventDates(event).flatMap((date) =>
+                    getActiveCalendarAttachments(event, date),
+                  );
               if (remainingEventData) {
                 await updateClubEvent(
                   activeTeamId,
@@ -1383,7 +1695,13 @@ const CalendarScreen = ({
               } else {
                 await deleteClubEvent(activeTeamId, event.id);
               }
+              await deleteCalendarAttachments(attachmentsToDelete);
             }
+          } catch (error) {
+            Alert.alert(
+              "削除エラー",
+              "予定または添付ファイルを削除できませんでした。再度お試しください。",
+            );
           } finally {
             setIsLoading(false);
           }
@@ -1796,6 +2114,10 @@ const CalendarScreen = ({
                 item,
                 selectedDate,
               ).length;
+              const itemAttachments = getActiveCalendarAttachments(
+                item,
+                selectedDate,
+              );
               return (
                 <View
                   key={item.id}
@@ -1842,6 +2164,44 @@ const CalendarScreen = ({
                       <Text style={styles.eventDescription} numberOfLines={2}>
                         {item.description}
                       </Text>
+                    ) : null}
+                    {itemAttachments.length > 0 ? (
+                      <View style={styles.attachmentSummaryBox}>
+                        <Text style={styles.attachmentSummaryTitle}>
+                          添付資料（{itemAttachments.length}件）
+                        </Text>
+                        <ScrollView
+                          horizontal
+                          showsHorizontalScrollIndicator={false}
+                        >
+                          {itemAttachments.map((attachment) => (
+                            <TouchableOpacity
+                              key={attachment.id}
+                              style={styles.attachmentSummaryItem}
+                              onPress={() => openClubAttachment(attachment)}
+                            >
+                              {attachment.type === "image" ? (
+                                <Image
+                                  source={{ uri: attachment.downloadUrl }}
+                                  style={styles.attachmentSummaryImage}
+                                />
+                              ) : (
+                                <View style={styles.attachmentSummaryPdf}>
+                                  <Text style={styles.attachmentSummaryPdfText}>
+                                    PDF
+                                  </Text>
+                                </View>
+                              )}
+                              <Text
+                                style={styles.attachmentSummaryName}
+                                numberOfLines={1}
+                              >
+                                {attachment.name}
+                              </Text>
+                            </TouchableOpacity>
+                          ))}
+                        </ScrollView>
+                      </View>
                     ) : null}
                     {itemLocation ? (
                       <View style={styles.locationSummaryBox}>
@@ -2209,6 +2569,36 @@ const CalendarScreen = ({
         </View>
       </Modal>
 
+      <Modal
+        visible={!!viewingClubAttachment}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setViewingClubAttachment(null)}
+      >
+        <View style={styles.attachmentViewerOverlay}>
+          <TouchableOpacity
+            style={styles.attachmentViewerCloseBtn}
+            onPress={() => setViewingClubAttachment(null)}
+          >
+            <Text style={styles.attachmentViewerCloseText}>閉じる</Text>
+          </TouchableOpacity>
+          {viewingClubAttachment ? (
+            <Image
+              source={{
+                uri:
+                  viewingClubAttachment.downloadUrl ||
+                  viewingClubAttachment.localUri,
+              }}
+              style={styles.attachmentViewerImage}
+              resizeMode="contain"
+            />
+          ) : null}
+          <Text style={styles.attachmentViewerName} numberOfLines={2}>
+            {viewingClubAttachment?.name || ""}
+          </Text>
+        </View>
+      </Modal>
+
       {/* 部活予定モーダル */}
       <Modal visible={isClubModalVisible} transparent animationType="slide">
         <KeyboardAvoidingView
@@ -2275,6 +2665,106 @@ const CalendarScreen = ({
 
               <Text style={styles.label}>詳細説明・備考</Text>
               <TextInput style={[styles.input, styles.textArea]} value={clubEventDescription} onChangeText={setClubEventDescription} placeholder="集合時間、持ち物など" multiline blurOnSubmit={false} />
+
+              <View style={styles.attachmentEditor}>
+                <Text style={styles.attachmentEditorTitle}>写真・PDF添付</Text>
+                {clubAttachmentTargetDates.length > 1 ? (
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    style={styles.attachmentDateScroll}
+                  >
+                    {clubAttachmentTargetDates.map((date) => (
+                      <TouchableOpacity
+                        key={date}
+                        style={[
+                          styles.attachmentDateBtn,
+                          clubAttachmentDate === date &&
+                            styles.attachmentDateBtnActive,
+                        ]}
+                        onPress={() => setClubAttachmentDate(date)}
+                      >
+                        <Text
+                          style={[
+                            styles.attachmentDateBtnText,
+                            clubAttachmentDate === date &&
+                              styles.attachmentDateBtnTextActive,
+                          ]}
+                        >
+                          {date.replace(/-/g, "/")}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                ) : (
+                  <Text style={styles.attachmentDateLabel}>
+                    対象日：{clubAttachmentDate.replace(/-/g, "/")}
+                  </Text>
+                )}
+
+                {currentClubAttachments.map((attachment) => {
+                  const previewUri =
+                    attachment.downloadUrl || attachment.localUri;
+                  return (
+                    <View key={attachment.id} style={styles.attachmentDraftRow}>
+                      <TouchableOpacity
+                        style={styles.attachmentDraftPreview}
+                        onPress={() => openClubAttachment(attachment)}
+                        disabled={attachment.type === "pdf" && attachment.pending}
+                      >
+                        {attachment.type === "image" && previewUri ? (
+                          <Image
+                            source={{ uri: previewUri }}
+                            style={styles.attachmentDraftImage}
+                          />
+                        ) : (
+                          <Text style={styles.attachmentPdfIcon}>PDF</Text>
+                        )}
+                      </TouchableOpacity>
+                      <View style={styles.attachmentDraftInfo}>
+                        <Text style={styles.attachmentDraftName} numberOfLines={1}>
+                          {attachment.name}
+                        </Text>
+                        <Text style={styles.attachmentDraftStatus}>
+                          {attachment.pending ? "保存時にアップロード" : "アップロード済み"}
+                        </Text>
+                      </View>
+                      <TouchableOpacity
+                        style={styles.attachmentRemoveBtn}
+                        onPress={() => handleRemoveClubAttachment(attachment)}
+                      >
+                        <Text style={styles.attachmentRemoveBtnText}>削除</Text>
+                      </TouchableOpacity>
+                    </View>
+                  );
+                })}
+
+                <View style={styles.attachmentAddRow}>
+                  <TouchableOpacity
+                    style={[
+                      styles.attachmentAddBtn,
+                      isOffline && styles.attachmentAddBtnDisabled,
+                    ]}
+                    onPress={handlePickClubImages}
+                    disabled={isOffline}
+                  >
+                    <Text style={styles.attachmentAddBtnText}>写真を追加</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.attachmentAddBtn,
+                      isOffline && styles.attachmentAddBtnDisabled,
+                    ]}
+                    onPress={handlePickClubPdfs}
+                    disabled={isOffline}
+                  >
+                    <Text style={styles.attachmentAddBtnText}>PDFを追加</Text>
+                  </TouchableOpacity>
+                </View>
+                <Text style={styles.attachmentHint}>
+                  写真・PDF合計3ファイルまで。写真は長辺1600px・品質70%に圧縮し、各ファイルは10MBまでです。アップロードから3か月後に自動削除されます。
+                </Text>
+              </View>
 
               <Text style={styles.label}>場所</Text>
               <TextInput style={styles.input} value={clubLocationName} onChangeText={handleClubLocationNameChange} placeholder="施設名・住所・集合場所名" returnKeyType="done" />
@@ -2844,6 +3334,47 @@ const styles = StyleSheet.create({
     marginTop: 4,
     lineHeight: 18,
   },
+  attachmentSummaryBox: {
+    marginTop: 8,
+    padding: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#d9e8f5",
+    backgroundColor: "#f5faff",
+  },
+  attachmentSummaryTitle: {
+    fontSize: 12,
+    color: COLORS.primary,
+    fontWeight: "bold",
+    marginBottom: 6,
+  },
+  attachmentSummaryItem: { width: 82, marginRight: 8 },
+  attachmentSummaryImage: {
+    width: 72,
+    height: 58,
+    borderRadius: 6,
+    backgroundColor: "#e9eef3",
+  },
+  attachmentSummaryPdf: {
+    width: 72,
+    height: 58,
+    borderRadius: 6,
+    backgroundColor: "#fff0f0",
+    borderWidth: 1,
+    borderColor: "#f3c6c6",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  attachmentSummaryPdfText: {
+    color: COLORS.danger,
+    fontSize: 14,
+    fontWeight: "bold",
+  },
+  attachmentSummaryName: {
+    fontSize: 10,
+    color: COLORS.textSub,
+    marginTop: 3,
+  },
   eventSub: { fontSize: 11, color: "#aaa", marginTop: 4 },
   absenceCountBtn: {
     borderWidth: 1,
@@ -2934,6 +3465,35 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     fontSize: 16,
   },
+  attachmentViewerOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.94)",
+    padding: 20,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  attachmentViewerCloseBtn: {
+    position: "absolute",
+    top: 50,
+    right: 20,
+    zIndex: 2,
+    borderRadius: 18,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    backgroundColor: "rgba(255,255,255,0.18)",
+  },
+  attachmentViewerCloseText: {
+    color: "#ffffff",
+    fontSize: 13,
+    fontWeight: "bold",
+  },
+  attachmentViewerImage: { width: "100%", height: "75%" },
+  attachmentViewerName: {
+    color: "#ffffff",
+    fontSize: 13,
+    textAlign: "center",
+    marginTop: 12,
+  },
 
   modalKeyboardAvoiding: { flex: 1 },
 
@@ -2981,6 +3541,111 @@ const styles = StyleSheet.create({
   },
   textArea: { minHeight: 80, textAlignVertical: "top" },
   textAreaSmall: { minHeight: 56, textAlignVertical: "top" },
+  attachmentEditor: {
+    marginBottom: 10,
+    padding: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#d9e8f5",
+    backgroundColor: "#f8fbff",
+  },
+  attachmentEditorTitle: {
+    fontSize: 14,
+    fontWeight: "bold",
+    color: COLORS.primary,
+    marginBottom: 8,
+  },
+  attachmentDateScroll: { marginBottom: 8 },
+  attachmentDateBtn: {
+    borderWidth: 1,
+    borderColor: COLORS.primary,
+    borderRadius: 14,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    marginRight: 6,
+    backgroundColor: "#ffffff",
+  },
+  attachmentDateBtnActive: { backgroundColor: COLORS.primary },
+  attachmentDateBtnText: {
+    fontSize: 12,
+    color: COLORS.primary,
+    fontWeight: "bold",
+  },
+  attachmentDateBtnTextActive: { color: "#ffffff" },
+  attachmentDateLabel: {
+    fontSize: 12,
+    color: COLORS.textSub,
+    marginBottom: 8,
+  },
+  attachmentDraftRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 8,
+    padding: 8,
+    borderRadius: 8,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#e6edf4",
+  },
+  attachmentDraftPreview: {
+    width: 50,
+    height: 44,
+    borderRadius: 6,
+    backgroundColor: "#eef2f6",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  attachmentDraftImage: { width: 50, height: 44 },
+  attachmentPdfIcon: {
+    color: COLORS.danger,
+    fontSize: 12,
+    fontWeight: "bold",
+  },
+  attachmentDraftInfo: { flex: 1, marginHorizontal: 8 },
+  attachmentDraftName: {
+    fontSize: 12,
+    color: COLORS.textMain,
+    fontWeight: "bold",
+  },
+  attachmentDraftStatus: {
+    fontSize: 10,
+    color: COLORS.textSub,
+    marginTop: 3,
+  },
+  attachmentRemoveBtn: {
+    borderWidth: 1,
+    borderColor: COLORS.danger,
+    borderRadius: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+  },
+  attachmentRemoveBtnText: {
+    color: COLORS.danger,
+    fontSize: 11,
+    fontWeight: "bold",
+  },
+  attachmentAddRow: { flexDirection: "row", marginTop: 2 },
+  attachmentAddBtn: {
+    flex: 1,
+    borderRadius: 8,
+    backgroundColor: COLORS.primary,
+    paddingVertical: 10,
+    alignItems: "center",
+    marginRight: 8,
+  },
+  attachmentAddBtnDisabled: { opacity: 0.45 },
+  attachmentAddBtnText: {
+    color: "#ffffff",
+    fontSize: 12,
+    fontWeight: "bold",
+  },
+  attachmentHint: {
+    fontSize: 10,
+    color: COLORS.textSub,
+    lineHeight: 15,
+    marginTop: 8,
+  },
   recentLocationBox: {
     backgroundColor: "#f6fbff",
     borderWidth: 1,

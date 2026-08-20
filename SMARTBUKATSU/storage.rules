@@ -1,0 +1,39 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isTeamMember(teamId) {
+      return isSignedIn() &&
+        firestore.exists(
+          /databases/(default)/documents/teams/$(teamId)/members/$(request.auth.uid)
+        );
+    }
+
+    function canManageCalendar(teamId) {
+      return isTeamMember(teamId) &&
+        firestore.get(
+          /databases/(default)/documents/teams/$(teamId)/members/$(request.auth.uid)
+        ).data.role in ['owner', 'admin', 'staff', 'captain'];
+    }
+
+    function isAllowedCalendarAttachment() {
+      return request.resource.size <= 10 * 1024 * 1024 &&
+        (
+          request.resource.contentType == 'application/pdf' ||
+          request.resource.contentType.matches('image/.*')
+        );
+    }
+
+    match /calendarAttachments/{teamId}/{eventId}/{eventDate}/{fileName} {
+      allow read: if isTeamMember(teamId);
+      allow create: if canManageCalendar(teamId) &&
+        isAllowedCalendarAttachment();
+      allow update: if false;
+      allow delete: if canManageCalendar(teamId);
+    }
+  }
+}
