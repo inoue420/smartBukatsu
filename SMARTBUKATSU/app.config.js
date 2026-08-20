@@ -104,6 +104,9 @@ module.exports = ({ config }) => {
     plugins: expoPlugins,
     ios: {
       ...(appJson.expo.ios || {}),
+      icon: isDevelopmentBuild
+        ? "./assets/icon_ios_dev.png"
+        : appJson.expo.ios?.icon,
       bundleIdentifier: isDevelopmentBuild
         ? "com.sharprise.smartbukatsu.dev"
         : appJson.expo.ios?.bundleIdentifier,
@@ -115,6 +118,15 @@ module.exports = ({ config }) => {
     },
     android: {
       ...(appJson.expo.android || {}),
+      icon: isDevelopmentBuild
+        ? "./assets/icon_android_dev.png"
+        : appJson.expo.android?.icon,
+      adaptiveIcon: {
+        ...(appJson.expo.android?.adaptiveIcon || {}),
+        foregroundImage: isDevelopmentBuild
+          ? "./assets/icon_android_dev.png"
+          : appJson.expo.android?.adaptiveIcon?.foregroundImage,
+      },
       package: isDevelopmentBuild
         ? "com.sharprise.smartbukatsu.dev"
         : appJson.expo.android?.package,
