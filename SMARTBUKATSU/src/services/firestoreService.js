@@ -21,8 +21,21 @@ import {
 } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { auth, db, cloudFunctions } from "../firebase";
-export const MAX_TEAMS_PER_USER = 5;
+export const DEFAULT_MAX_TEAMS_PER_USER = 5;
+export const SHARP_RISE_MAX_TEAMS_PER_USER = 100;
+export const SHARP_RISE_INVITE_CODE = "AWUH95";
 const INVITE_CODE_LENGTH = 6;
+
+export function getMaxTeamsForMemberships(teams = [], inviteCode = "") {
+  const isJoiningSharpRise = inviteCode.trim() === SHARP_RISE_INVITE_CODE;
+  const isSharpRiseMember = teams.some(
+    (team) => team?.inviteCode === SHARP_RISE_INVITE_CODE,
+  );
+
+  return isJoiningSharpRise || isSharpRiseMember
+    ? SHARP_RISE_MAX_TEAMS_PER_USER
+    : DEFAULT_MAX_TEAMS_PER_USER;
+}
 
 function generateInviteCode() {
   let candidate = "";
@@ -64,8 +77,11 @@ async function assertCanAddTeam(uid, teamId = null) {
   const teamIds = userSnap.exists() ? normalizeTeamIds(userSnap.data()) : [];
 
   if (teamId && teamIds.includes(teamId)) return teamIds;
-  if (teamIds.length >= MAX_TEAMS_PER_USER) {
-    throw new Error(`所属できるチームは最大${MAX_TEAMS_PER_USER}件までです。`);
+  const teams = teamIds.length > 0 ? await getUserTeams(uid) : [];
+  const maxTeamsPerUser = getMaxTeamsForMemberships(teams);
+
+  if (teamIds.length >= maxTeamsPerUser) {
+    throw new Error(`所属できるチームは最大${maxTeamsPerUser}件までです。`);
   }
   return teamIds;
 }
