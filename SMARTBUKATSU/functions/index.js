@@ -9,7 +9,9 @@ const { getStorage } = require("firebase-admin/storage");
 initializeApp();
 
 const firestore = getFirestore();
-const MAX_TEAMS_PER_USER = 5;
+const DEFAULT_MAX_TEAMS_PER_USER = 5;
+const SHARP_RISE_MAX_TEAMS_PER_USER = 100;
+const SHARP_RISE_INVITE_CODE = "AWUH95";
 const MEMBER_MANAGER_ROLES = new Set(["owner", "admin", "staff"]);
 
 const googleMapsServerApiKey = defineSecret("GOOGLE_MAPS_SERVER_API_KEY");
@@ -101,10 +103,38 @@ exports.joinTeamWithInvite = onCall(
 
       const teamIds = userSnap.exists ? normalizeTeamIds(userSnap.data()) : [];
       const isRemembered = teamIds.includes(teamId);
-      if (!isRemembered && teamIds.length >= MAX_TEAMS_PER_USER) {
+      let maxTeamsPerUser = DEFAULT_MAX_TEAMS_PER_USER;
+
+      if (!isRemembered && teamIds.length >= DEFAULT_MAX_TEAMS_PER_USER) {
+        let isSharpRiseMember = inviteCode === SHARP_RISE_INVITE_CODE;
+
+        if (!isSharpRiseMember) {
+          const sharpRiseInviteSnap = await transaction.get(
+            firestore.collection("invites").doc(SHARP_RISE_INVITE_CODE),
+          );
+          const sharpRiseTeamId = sharpRiseInviteSnap.data()?.teamId;
+
+          if (typeof sharpRiseTeamId === "string" && sharpRiseTeamId) {
+            const sharpRiseMemberSnap = await transaction.get(
+              firestore
+                .collection("teams")
+                .doc(sharpRiseTeamId)
+                .collection("members")
+                .doc(uid),
+            );
+            isSharpRiseMember = sharpRiseMemberSnap.exists;
+          }
+        }
+
+        if (isSharpRiseMember) {
+          maxTeamsPerUser = SHARP_RISE_MAX_TEAMS_PER_USER;
+        }
+      }
+
+      if (!isRemembered && teamIds.length >= maxTeamsPerUser) {
         throw new HttpsError(
           "failed-precondition",
-          `所属できるチームは最大${MAX_TEAMS_PER_USER}件までです。`,
+          `所属できるチームは最大${maxTeamsPerUser}件までです。`,
         );
       }
 

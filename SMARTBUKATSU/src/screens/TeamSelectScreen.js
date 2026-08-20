@@ -16,9 +16,10 @@ import { useFocusEffect } from "@react-navigation/native";
 import { useAuth } from "../AuthContext";
 import {
   createTeam,
+  getMaxTeamsForMemberships,
   getUserTeams,
   joinTeamWithInvite,
-  MAX_TEAMS_PER_USER,
+  SHARP_RISE_MAX_TEAMS_PER_USER,
 } from "../services/firestoreService";
 
 const roleLabels = {
@@ -42,7 +43,12 @@ const TeamSelectScreen = ({ navigation }) => {
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [shouldReturnHome, setShouldReturnHome] = useState(false);
 
-  const canAddTeam = (teamIds?.length || 0) < MAX_TEAMS_PER_USER;
+  const teamCount = teamIds?.length || 0;
+  const maxTeamsPerUser = getMaxTeamsForMemberships(teams);
+  const joinTeamLimit = getMaxTeamsForMemberships(teams, inviteCode);
+  const canCreateTeam = teamCount < maxTeamsPerUser;
+  const canJoinTeam = teamCount < joinTeamLimit;
+  const canEnterInviteCode = teamCount < SHARP_RISE_MAX_TEAMS_PER_USER;
   const canGoBack = navigation.canGoBack();
 
   const loadTeams = useCallback(async () => {
@@ -115,10 +121,10 @@ const TeamSelectScreen = ({ navigation }) => {
   };
 
   const handleCreateTeam = async () => {
-    if (!canAddTeam) {
+    if (!canCreateTeam) {
       return Alert.alert(
         "上限に達しています",
-        `所属できるチームは最大${MAX_TEAMS_PER_USER}件までです。`,
+        `所属できるチームは最大${maxTeamsPerUser}件までです。`,
       );
     }
     if (!teamName.trim()) {
@@ -145,10 +151,10 @@ const TeamSelectScreen = ({ navigation }) => {
   };
 
   const handleJoinTeam = async () => {
-    if (!canAddTeam) {
+    if (!canJoinTeam) {
       return Alert.alert(
         "上限に達しています",
-        `所属できるチームは最大${MAX_TEAMS_PER_USER}件までです。`,
+        `所属できるチームは最大${joinTeamLimit}件までです。`,
       );
     }
     if (!inviteCode.trim()) {
@@ -202,7 +208,7 @@ const TeamSelectScreen = ({ navigation }) => {
           <View style={styles.header}>
             <View style={styles.titleBox}>
               <Text style={styles.title}>チーム管理</Text>
-              <Text style={styles.subtitle}>所属 {teams.length} / {MAX_TEAMS_PER_USER}</Text>
+              <Text style={styles.subtitle}>所属 {teams.length} / {maxTeamsPerUser}</Text>
             </View>
             <View style={styles.headerActions}>
               {canGoBack && (
@@ -284,12 +290,12 @@ const TeamSelectScreen = ({ navigation }) => {
               onChangeText={setInviteCode}
               autoCapitalize="none"
               autoCorrect={false}
-              editable={canAddTeam && !isJoining}
+              editable={canEnterInviteCode && !isJoining}
             />
             <TouchableOpacity
-              style={[styles.primaryBtn, (!canAddTeam || isJoining) && styles.btnDisabled]}
+              style={[styles.primaryBtn, (!canJoinTeam || isJoining) && styles.btnDisabled]}
               onPress={handleJoinTeam}
-              disabled={!canAddTeam || isJoining}
+              disabled={!canJoinTeam || isJoining}
             >
               {isJoining ? (
                 <ActivityIndicator color="#fff" />
@@ -306,12 +312,12 @@ const TeamSelectScreen = ({ navigation }) => {
               placeholder="チーム名"
               value={teamName}
               onChangeText={setTeamName}
-              editable={canAddTeam && !isCreating}
+              editable={canCreateTeam && !isCreating}
             />
             <TouchableOpacity
-              style={[styles.secondaryBtn, (!canAddTeam || isCreating) && styles.btnDisabled]}
+              style={[styles.secondaryBtn, (!canCreateTeam || isCreating) && styles.btnDisabled]}
               onPress={handleCreateTeam}
-              disabled={!canAddTeam || isCreating}
+              disabled={!canCreateTeam || isCreating}
             >
               {isCreating ? (
                 <ActivityIndicator color="#fff" />
