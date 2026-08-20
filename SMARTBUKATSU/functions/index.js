@@ -60,12 +60,10 @@ exports.joinTeamWithInvite = onCall(
       throw new HttpsError("unauthenticated", "ログインが必要です。");
     }
 
-    const inviteCode = String(request.data?.inviteCode || "")
-      .trim()
-      .toUpperCase();
+    const inviteCode = String(request.data?.inviteCode || "").trim();
     const userName = String(request.data?.userName || "ゲスト").trim() || "ゲスト";
 
-    if (!/^[A-Z0-9]{6}$/.test(inviteCode)) {
+    if (!/^[A-Za-z0-9]{6}$/.test(inviteCode)) {
       throw new HttpsError("invalid-argument", "無効な招待コードです。");
     }
     if (userName.length > 100) {
@@ -215,6 +213,165 @@ exports.removeTeamMember = onCall(
         teamIds: remainingTeamIds,
       };
     });
+  },
+);
+
+exports.deleteTeam = onCall(
+  {
+    region: "asia-northeast1",
+    timeoutSeconds: 540,
+    memory: "512MiB",
+  },
+  async (request) => {
+    const callerUid = request.auth?.uid;
+    if (!callerUid) {
+      throw new HttpsError("unauthenticated", "ログインが必要です。");
+    }
+
+    const teamId = String(request.data?.teamId || "").trim();
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(teamId)) {
+      throw new HttpsError("invalid-argument", "無効なチームIDです。");
+    }
+
+    const teamRef = firestore.collection("teams").doc(teamId);
+    const callerMemberRef = teamRef.collection("members").doc(callerUid);
+    const callerUserRef = firestore.collection("users").doc(callerUid);
+    const [teamSnap, callerMemberSnap] = await Promise.all([
+      teamRef.get(),
+      callerMemberRef.get(),
+    ]);
+
+    if (!teamSnap.exists || !callerMemberSnap.exists) {
+      throw new HttpsError("not-found", "チームが見つかりません。");
+    }
+
+    const teamData = teamSnap.data() || {};
+    const callerRole = callerMemberSnap.data()?.role || "member";
+    if (
+      !["owner", "admin"].includes(callerRole) ||
+      teamData.createdBy !== callerUid
+    ) {
+      throw new HttpsError(
+        "permission-denied",
+        "チームを削除できるのは監督かつチーム作成者本人だけです。",
+      );
+    }
+
+    const inviteCode =
+      typeof teamData.inviteCode === "string" &&
+      /^[A-Za-z0-9]{6}$/.test(teamData.inviteCode)
+        ? teamData.inviteCode
+        : "";
+    const inviteRef = inviteCode
+      ? firestore.collection("invites").doc(inviteCode)
+      : null;
+    const inviteSnap = inviteRef ? await inviteRef.get() : null;
+    const inviteBelongsToTeam =
+      inviteSnap?.exists && inviteSnap.data()?.teamId === teamId;
+    let inviteDisabled = false;
+    let teamDeleted = false;
+
+    try {
+      if (inviteBelongsToTeam) {
+        await inviteRef.set(
+          {
+            active: false,
+            deletionRequestedAt: FieldValue.serverTimestamp(),
+          },
+          { merge: true },
+        );
+        inviteDisabled = true;
+      }
+
+      const membersSnap = await teamRef.collection("members").limit(2).get();
+      if (
+        membersSnap.size !== 1 ||
+        membersSnap.docs[0]?.id !== callerUid
+      ) {
+        throw new HttpsError(
+          "failed-precondition",
+          "他のメンバーが所属しているチームは削除できません。",
+        );
+      }
+
+      const bucket = getStorage().bucket();
+      const [attachmentFiles] = await bucket.getFiles({
+        prefix: `calendarAttachments/${teamId}/`,
+      });
+      await Promise.all(
+        attachmentFiles.map((file) => file.delete({ ignoreNotFound: true })),
+      );
+
+      await firestore.recursiveDelete(teamRef);
+      teamDeleted = true;
+
+      return firestore.runTransaction(async (transaction) => {
+        const currentUserSnap = await transaction.get(callerUserRef);
+        const callerUserData = currentUserSnap.exists
+          ? currentUserSnap.data()
+          : {};
+        const remainingTeamIds = normalizeTeamIds(callerUserData).filter(
+          (id) => id !== teamId,
+        );
+        const currentActiveTeamId =
+          typeof callerUserData.activeTeamId === "string"
+            ? callerUserData.activeTeamId
+            : "";
+        const nextActiveTeamId =
+          currentActiveTeamId === teamId ||
+          (currentActiveTeamId &&
+            !remainingTeamIds.includes(currentActiveTeamId))
+            ? remainingTeamIds[0] || ""
+            : currentActiveTeamId;
+
+        transaction.set(
+          callerUserRef,
+          {
+            activeTeamId: nextActiveTeamId,
+            teamIds: remainingTeamIds,
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          { merge: true },
+        );
+        if (inviteBelongsToTeam) {
+          transaction.delete(inviteRef);
+        }
+
+        return {
+          deletedTeamId: teamId,
+          activeTeamId: nextActiveTeamId || null,
+          teamIds: remainingTeamIds,
+        };
+      });
+    } catch (error) {
+      if (inviteDisabled && !teamDeleted) {
+        try {
+          const currentInviteSnap = await inviteRef.get();
+          if (
+            currentInviteSnap.exists &&
+            currentInviteSnap.data()?.teamId === teamId
+          ) {
+            await inviteRef.set(
+              {
+                active: true,
+                deletionRequestedAt: FieldValue.delete(),
+              },
+              { merge: true },
+            );
+          }
+        } catch (restoreError) {
+          logger.error("Failed to restore invite after team deletion error.", {
+            teamId,
+            error: restoreError,
+          });
+        }
+      }
+
+      if (error instanceof HttpsError) throw error;
+
+      logger.error("Team deletion failed.", { teamId, callerUid, error });
+      throw new HttpsError("internal", "チームを削除できませんでした。");
+    }
   },
 );
 

@@ -68,14 +68,35 @@ const TeamSelectScreen = ({ navigation }) => {
   useEffect(() => {
     if (!shouldReturnHome || !activeTeamId) return undefined;
 
-    const timer = setTimeout(() => {
+    let timer;
+    let attempts = 0;
+    const returnToWorkspaceHome = () => {
       if (navigation.canGoBack()) {
+        setShouldReturnHome(false);
         navigation.goBack();
         return;
       }
 
-      navigation.replace("WorkspaceHome");
-    }, 100);
+      const routeNames = navigation.getState()?.routeNames || [];
+      if (routeNames.includes("WorkspaceHome")) {
+        setShouldReturnHome(false);
+        navigation.reset({
+          index: 0,
+          routes: [{ name: "WorkspaceHome" }],
+        });
+        return;
+      }
+
+      attempts += 1;
+      if (attempts < 20) {
+        timer = setTimeout(returnToWorkspaceHome, 50);
+        return;
+      }
+
+      setShouldReturnHome(false);
+    };
+
+    timer = setTimeout(returnToWorkspaceHome, 50);
 
     return () => clearTimeout(timer);
   }, [activeTeamId, navigation, shouldReturnHome]);
@@ -258,10 +279,11 @@ const TeamSelectScreen = ({ navigation }) => {
             <Text style={styles.sectionTitle}>招待コードで参加</Text>
             <TextInput
               style={styles.input}
-              placeholder="招待コード"
+              placeholder="例: aB3xY7（大文字・小文字を区別）"
               value={inviteCode}
               onChangeText={setInviteCode}
-              autoCapitalize="characters"
+              autoCapitalize="none"
+              autoCorrect={false}
               editable={canAddTeam && !isJoining}
             />
             <TouchableOpacity
