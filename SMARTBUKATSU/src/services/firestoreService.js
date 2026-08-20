@@ -331,14 +331,22 @@ export function subscribeClubEvents(teamId, callback) {
   });
 }
 
-export async function createClubEvent(teamId, eventData) {
+export function createClubEventId(teamId) {
+  if (!teamId) throw new Error("チームIDがありません。");
+  return doc(collection(db, "teams", teamId, "clubEvents")).id;
+}
+
+export async function createClubEvent(teamId, eventData, eventId = null) {
   if (!teamId) return;
-  const ref = collection(db, "teams", teamId, "clubEvents");
-  await addDoc(ref, {
+  const eventRef = eventId
+    ? doc(db, "teams", teamId, "clubEvents", eventId)
+    : doc(collection(db, "teams", teamId, "clubEvents"));
+  await setDoc(eventRef, {
     ...eventData,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
+  return eventRef.id;
 }
 
 export async function updateClubEvent(teamId, eventId, updateData) {

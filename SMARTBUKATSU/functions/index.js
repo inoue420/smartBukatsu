@@ -1,8 +1,10 @@
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
+const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { defineSecret } = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
 const { initializeApp } = require("firebase-admin/app");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
+const { getStorage } = require("firebase-admin/storage");
 
 initializeApp();
 
@@ -296,5 +298,105 @@ exports.searchPlaceLocation = onCall(
         source: "google_places_text_search",
       },
     };
+  },
+);
+
+exports.deleteExpiredCalendarAttachments = onSchedule(
+  {
+    region: "asia-northeast1",
+    schedule: "0 3 * * *",
+    timeZone: "Asia/Tokyo",
+    timeoutSeconds: 540,
+    memory: "512MiB",
+  },
+  async () => {
+    const bucket = getStorage().bucket();
+    const [files] = await bucket.getFiles({
+      prefix: "calendarAttachments/",
+    });
+    const now = Date.now();
+    const expiredFiles = [];
+
+    for (const file of files) {
+      const [metadata] = await file.getMetadata();
+      const customMetadata = metadata.metadata || {};
+      const expiresAt = Date.parse(customMetadata.expiresAt || "");
+      if (!Number.isFinite(expiresAt) || expiresAt > now) continue;
+
+      const pathParts = file.name.split("/");
+      const teamId = customMetadata.teamId || pathParts[1] || "";
+      expiredFiles.push({ file, storagePath: file.name, teamId });
+    }
+
+    if (expiredFiles.length === 0) {
+      logger.info("No expired calendar attachments found.");
+      return;
+    }
+
+    const expiredPathsByTeam = new Map();
+    for (const expiredFile of expiredFiles) {
+      await expiredFile.file.delete({ ignoreNotFound: true });
+      if (!expiredFile.teamId) continue;
+      const teamPaths = expiredPathsByTeam.get(expiredFile.teamId) || new Set();
+      teamPaths.add(expiredFile.storagePath);
+      expiredPathsByTeam.set(expiredFile.teamId, teamPaths);
+    }
+
+    let updatedEventCount = 0;
+    for (const [teamId, expiredPaths] of expiredPathsByTeam.entries()) {
+      const eventsSnapshot = await firestore
+        .collection("teams")
+        .doc(teamId)
+        .collection("clubEvents")
+        .get();
+
+      for (const eventSnapshot of eventsSnapshot.docs) {
+        const attachmentsByDate = eventSnapshot.data().attachmentsByDate;
+        if (!attachmentsByDate || typeof attachmentsByDate !== "object") {
+          continue;
+        }
+
+        const containsExpiredPath = Object.values(attachmentsByDate).some(
+          (attachments) =>
+            Array.isArray(attachments) &&
+            attachments.some((attachment) =>
+              expiredPaths.has(attachment?.storagePath),
+            ),
+        );
+        if (!containsExpiredPath) continue;
+
+        await firestore.runTransaction(async (transaction) => {
+          const currentSnapshot = await transaction.get(eventSnapshot.ref);
+          if (!currentSnapshot.exists) return;
+
+          const currentAttachments =
+            currentSnapshot.data().attachmentsByDate || {};
+          const nextAttachments = Object.entries(currentAttachments).reduce(
+            (nextByDate, [date, attachments]) => {
+              if (!Array.isArray(attachments)) return nextByDate;
+              const activeAttachments = attachments.filter(
+                (attachment) => !expiredPaths.has(attachment?.storagePath),
+              );
+              if (activeAttachments.length > 0) {
+                nextByDate[date] = activeAttachments;
+              }
+              return nextByDate;
+            },
+            {},
+          );
+
+          transaction.update(eventSnapshot.ref, {
+            attachmentsByDate: nextAttachments,
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+        });
+        updatedEventCount += 1;
+      }
+    }
+
+    logger.info("Expired calendar attachments deleted.", {
+      deletedFileCount: expiredFiles.length,
+      updatedEventCount,
+    });
   },
 );
