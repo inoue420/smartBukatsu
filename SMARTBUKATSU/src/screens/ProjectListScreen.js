@@ -389,7 +389,7 @@ const ProjectListScreen = ({
   }, [projects, selectedHighlightProject, selectedHighlightVideoIds]);
 
   // ==========================================
-  // ハイライト（プレイリスト）用ステート
+  // プロジェクト（プレイリスト）用ステート
   // ==========================================
   const [selectedHighlightTags, setSelectedHighlightTags] = useState([]);
   const [searchMode, setSearchMode] = useState("OR");
@@ -1138,7 +1138,7 @@ const ProjectListScreen = ({
 
     return (
       <TouchableOpacity
-        style={styles.card}
+        style={[styles.card, styles.videoListCard]}
         onPress={() =>
           navigation.navigate("ProjectDetail", {
             project: item,
@@ -1147,7 +1147,7 @@ const ProjectListScreen = ({
           })
         }
       >
-        <View style={styles.cardHeader}>
+        <View style={[styles.cardHeader, styles.videoListCardHeader]}>
           <View
             style={[
               styles.badge,
@@ -1173,13 +1173,13 @@ const ProjectListScreen = ({
             </TouchableOpacity>
           )}
         </View>
-        <Text style={styles.cardSub}>作成日: {item.date}</Text>
-        <Text style={styles.tagGroupText} numberOfLines={1}>
-          タグリスト: {getProjectTagGroup(item).name}
-        </Text>
-        {item.videoUrl ? (
-          <Text style={styles.urlText}>🔗 動画リンクあり</Text>
-        ) : (
+        <View style={styles.cardMetaRow}>
+          <Text style={styles.cardSub}>作成日: {item.date}</Text>
+          <Text style={styles.tagGroupText} numberOfLines={1}>
+            タグリスト: {getProjectTagGroup(item).name}
+          </Text>
+        </View>
+        {!item.videoUrl && (
           <Text style={styles.noUrlText}>※ 動画未設定</Text>
         )}
       </TouchableOpacity>
@@ -1821,7 +1821,7 @@ const ProjectListScreen = ({
         <View style={styles.tabContainer}>
           {[
             { id: "list", label: "動画一覧" },
-            { id: "summary", label: "ハイライトまとめ" },
+            { id: "summary", label: "プロジェクトまとめ" },
           ].map((tab) => (
             <TouchableOpacity
               key={tab.id}
@@ -2353,7 +2353,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 15,
+    marginBottom: 10,
   },
   sectionTitle: { fontSize: 18, fontWeight: "bold", color: "#333" },
   createBtn: {
@@ -2363,9 +2363,9 @@ const styles = StyleSheet.create({
     borderRadius: 20,
   },
   createBtnText: { color: "#fff", fontWeight: "bold", fontSize: 13 },
-  topActions: { alignItems: "stretch" },
+  topActions: { flexDirection: "row", alignItems: "center" },
   tagEditBtn: {
-    marginTop: 8,
+    marginLeft: 8,
     borderWidth: 1,
     borderColor: "#0077cc",
     paddingHorizontal: 15,
@@ -2421,7 +2421,9 @@ const styles = StyleSheet.create({
     borderLeftColor: "#0077cc",
     elevation: 1,
   },
+  videoListCard: { paddingTop: 10, paddingBottom: 10 },
   cardHeader: { flexDirection: "row", alignItems: "center", marginBottom: 8 },
+  videoListCardHeader: { marginBottom: 4 },
   badge: {
     paddingHorizontal: 8,
     paddingVertical: 3,
@@ -2437,10 +2439,16 @@ const styles = StyleSheet.create({
   editIconBtn: { padding: 5, marginLeft: 10 },
   editIconText: { fontSize: 16 },
 
-  cardSub: { fontSize: 12, color: "#888", marginBottom: 5 },
-  tagGroupText: { fontSize: 12, color: "#0077cc", fontWeight: "bold", marginBottom: 5 },
-  urlText: { fontSize: 12, color: "#2ecc71", fontWeight: "bold" },
-  noUrlText: { fontSize: 12, color: "#e74c3c" },
+  cardMetaRow: { flexDirection: "row", alignItems: "center", minWidth: 0 },
+  cardSub: { fontSize: 12, color: "#888", flexShrink: 0, marginRight: 10 },
+  tagGroupText: {
+    fontSize: 12,
+    color: "#0077cc",
+    fontWeight: "bold",
+    flex: 1,
+    minWidth: 0,
+  },
+  noUrlText: { fontSize: 12, color: "#e74c3c", marginTop: 5 },
 
   summaryContainer: { flex: 1, marginHorizontal: -15 },
   tagSelectorWrapper: {
