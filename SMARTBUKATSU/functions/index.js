@@ -3,7 +3,12 @@ const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { defineSecret } = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
 const { initializeApp } = require("firebase-admin/app");
-const { getFirestore, FieldValue } = require("firebase-admin/firestore");
+const {
+  getFirestore,
+  FieldValue,
+  Timestamp,
+} = require("firebase-admin/firestore");
+const { getAuth } = require("firebase-admin/auth");
 const { getStorage } = require("firebase-admin/storage");
 
 initializeApp();
@@ -13,6 +18,46 @@ const DEFAULT_MAX_TEAMS_PER_USER = 5;
 const SHARP_RISE_MAX_TEAMS_PER_USER = 100;
 const SHARP_RISE_INVITE_CODE = "AWUH95";
 const MEMBER_MANAGER_ROLES = new Set(["owner", "admin", "staff"]);
+const ACCOUNT_DELETION_REAUTH_MAX_AGE_SECONDS = 5 * 60;
+const DELETED_USER_UID = "deleted_user";
+const DELETED_USER_LABEL = "削除済みユーザー";
+const ACCOUNT_DATA_COLLECTIONS = [
+  "members",
+  "projects",
+  "tagGroups",
+  "highlightProjects",
+  "clubEvents",
+  "notices",
+  "workspacePosts",
+  "dailyReports",
+];
+const UID_IDENTITY_FIELDS = new Set([
+  "uid",
+  "userUid",
+  "authorUid",
+  "createdBy",
+  "updatedBy",
+  "uploadedBy",
+  "ownerId",
+]);
+const DISPLAY_NAME_FIELDS = new Set(["user", "author", "displayName"]);
+const LEGACY_DISPLAY_IDENTITY_FIELDS = new Set([
+  ...DISPLAY_NAME_FIELDS,
+  "createdBy",
+  "updatedBy",
+  "uploadedBy",
+]);
+const LEGACY_DISPLAY_NAME_SUFFIXES = [
+  "(監督)",
+  "(管理者)",
+  "(コーチ)",
+  "(スタッフ)",
+  "(キャプテン)",
+  "(保護者)",
+];
+const PROFILE_NAME_IDENTITY_FIELDS = new Set(["uid", "userUid"]);
+const NAME_ARRAY_FIELDS = new Set(["readBy", "allowedMembers"]);
+const NAME_SCALAR_FIELDS = new Set(["assignedStaff"]);
 
 const googleMapsServerApiKey = defineSecret("GOOGLE_MAPS_SERVER_API_KEY");
 
@@ -48,6 +93,304 @@ const normalizeTeamIds = (data = {}) => {
       : null;
 
   return [...new Set([...teamIds, ...(activeTeamId ? [activeTeamId] : [])])];
+};
+
+const isPlainObject = (value) =>
+  value !== null &&
+  typeof value === "object" &&
+  Object.getPrototypeOf(value) === Object.prototype;
+
+const hasReportedEvidence = (value) =>
+  Array.isArray(value?.reported) && value.reported.length > 0;
+
+const anonymizeAccountValue = (
+  value,
+  { uid, uniqueDisplayNames, evidenceHoldUntil, fieldName = "" },
+) => {
+  if (Array.isArray(value)) {
+    const nextValue = [];
+    let changed = false;
+
+    value.forEach((item) => {
+      if (item === uid) {
+        changed = true;
+        return;
+      }
+      if (
+        typeof item === "string" &&
+        NAME_ARRAY_FIELDS.has(fieldName) &&
+        uniqueDisplayNames.has(item)
+      ) {
+        changed = true;
+        return;
+      }
+
+      const sanitized = anonymizeAccountValue(item, {
+        uid,
+        uniqueDisplayNames,
+        evidenceHoldUntil,
+        fieldName,
+      });
+      nextValue.push(sanitized.value);
+      changed = changed || sanitized.changed;
+    });
+
+    return { value: nextValue, changed };
+  }
+
+  if (!isPlainObject(value)) {
+    if (value === uid) {
+      return { value: DELETED_USER_UID, changed: true };
+    }
+    if (
+      typeof value === "string" &&
+      LEGACY_DISPLAY_IDENTITY_FIELDS.has(fieldName) &&
+      uniqueDisplayNames.has(value)
+    ) {
+      return { value: DELETED_USER_UID, changed: true };
+    }
+    if (
+      typeof value === "string" &&
+      NAME_SCALAR_FIELDS.has(fieldName) &&
+      uniqueDisplayNames.has(value)
+    ) {
+      return { value: null, changed: true };
+    }
+    return { value, changed: false };
+  }
+
+  const matchingUidIdentityFields = [...UID_IDENTITY_FIELDS].filter(
+    (key) => value[key] === uid,
+  );
+  const matchingDisplayIdentityFields = [
+    ...LEGACY_DISPLAY_IDENTITY_FIELDS,
+  ].filter(
+    (key) =>
+      typeof value[key] === "string" && uniqueDisplayNames.has(value[key]),
+  );
+  const identityMatches =
+    matchingUidIdentityFields.length > 0 ||
+    matchingDisplayIdentityFields.length > 0;
+  if (identityMatches && hasReportedEvidence(value)) {
+    const alreadyHidden =
+      value.status === "deleted" && value.evidenceHold === true;
+    return {
+      value: alreadyHidden
+        ? value
+        : {
+            ...value,
+            status: "deleted",
+            evidenceHold: true,
+            evidenceHoldUntil,
+          },
+      changed: !alreadyHidden,
+    };
+  }
+
+  const nextValue = {};
+  let changed = false;
+  Object.entries(value).forEach(([key, nestedValue]) => {
+    const isProfileName =
+      key === "name" &&
+      matchingUidIdentityFields.some((identityField) =>
+        PROFILE_NAME_IDENTITY_FIELDS.has(identityField),
+      );
+    if (
+      identityMatches &&
+      (DISPLAY_NAME_FIELDS.has(key) || isProfileName) &&
+      typeof nestedValue === "string"
+    ) {
+      nextValue[key] = DELETED_USER_LABEL;
+      changed = changed || nestedValue !== DELETED_USER_LABEL;
+      return;
+    }
+
+    const sanitized = anonymizeAccountValue(nestedValue, {
+      uid,
+      uniqueDisplayNames,
+      evidenceHoldUntil,
+      fieldName: key,
+    });
+    nextValue[key] = sanitized.value;
+    changed = changed || sanitized.changed;
+  });
+
+  return { value: nextValue, changed };
+};
+
+const getAccountDocumentUpdates = (data, context) => {
+  const matchingUidIdentityFields = [...UID_IDENTITY_FIELDS].filter(
+    (key) => data?.[key] === context.uid,
+  );
+  const matchingDisplayIdentityFields = [
+    ...LEGACY_DISPLAY_IDENTITY_FIELDS,
+  ].filter(
+    (key) =>
+      typeof data?.[key] === "string" &&
+      context.uniqueDisplayNames.has(data[key]),
+  );
+  const identityMatches =
+    matchingUidIdentityFields.length > 0 ||
+    matchingDisplayIdentityFields.length > 0;
+  if (identityMatches && hasReportedEvidence(data)) {
+    if (data.status === "deleted" && data.evidenceHold === true) return {};
+    return {
+      status: "deleted",
+      evidenceHold: true,
+      evidenceHoldUntil: context.evidenceHoldUntil,
+    };
+  }
+
+  const updates = {};
+  Object.entries(data || {}).forEach(([key, value]) => {
+    const isProfileName =
+      key === "name" &&
+      matchingUidIdentityFields.some((identityField) =>
+        PROFILE_NAME_IDENTITY_FIELDS.has(identityField),
+      );
+    if (
+      identityMatches &&
+      (DISPLAY_NAME_FIELDS.has(key) || isProfileName) &&
+      typeof value === "string"
+    ) {
+      if (value !== DELETED_USER_LABEL) updates[key] = DELETED_USER_LABEL;
+      return;
+    }
+
+    const sanitized = anonymizeAccountValue(value, {
+      ...context,
+      fieldName: key,
+    });
+    if (sanitized.changed) updates[key] = sanitized.value;
+  });
+  return updates;
+};
+
+const getAccountDeletionContext = async (uid) => {
+  const userRef = firestore.collection("users").doc(uid);
+  const userSnap = await userRef.get();
+  const userData = userSnap.exists ? userSnap.data() || {} : {};
+  const teamIds = normalizeTeamIds(userData);
+  const teamEntries = await Promise.all(
+    teamIds.map(async (teamId) => {
+      const teamRef = firestore.collection("teams").doc(teamId);
+      const memberRef = teamRef.collection("members").doc(uid);
+      const [teamSnap, memberSnap] = await Promise.all([
+        teamRef.get(),
+        memberRef.get(),
+      ]);
+      const teamData = teamSnap.exists ? teamSnap.data() || {} : {};
+      const memberData = memberSnap.exists ? memberSnap.data() || {} : {};
+      return {
+        teamId,
+        teamRef,
+        teamSnap,
+        memberRef,
+        memberSnap,
+        teamData,
+        memberData,
+      };
+    }),
+  );
+  const blockingTeams = teamEntries
+    .filter(({ teamSnap, teamData }) => teamSnap.exists && teamData.createdBy === uid)
+    .map(({ teamId, teamData }) => ({
+      teamId,
+      teamName: String(teamData.teamName || teamData.name || "名称未設定"),
+    }));
+
+  return { userRef, userSnap, userData, teamIds, teamEntries, blockingTeams };
+};
+
+const assertAccountDeletionEligible = (context) => {
+  if (context.blockingTeams.length === 0) return;
+  throw new HttpsError(
+    "failed-precondition",
+    "作成者として残っているチームがあります。チーム削除または所有権移管を先に完了してください。",
+    { blockingTeams: context.blockingTeams },
+  );
+};
+
+const assertRecentAuthentication = (request) => {
+  const authTime = Number(request.auth?.token?.auth_time);
+  const currentTime = Math.floor(Date.now() / 1000);
+  if (
+    !Number.isFinite(authTime) ||
+    currentTime - authTime > ACCOUNT_DELETION_REAUTH_MAX_AGE_SECONDS
+  ) {
+    throw new HttpsError(
+      "failed-precondition",
+      "安全のため、パスワードを再入力して本人確認を行ってください。",
+      { reason: "recent-auth-required" },
+    );
+  }
+};
+
+const getUniqueDisplayNames = async ({ teamRef, memberData }) => {
+  const displayName = String(memberData.name || "").trim();
+  if (!displayName) return new Set();
+  const sameNameMembers = await teamRef
+    .collection("members")
+    .where("name", "==", displayName)
+    .limit(2)
+    .get();
+  if (sameNameMembers.size !== 1) return new Set();
+  return new Set([
+    displayName,
+    ...LEGACY_DISPLAY_NAME_SUFFIXES.map((suffix) => `${displayName}${suffix}`),
+  ]);
+};
+
+const anonymizeAccountDataInTeam = async ({ uid, teamEntry, evidenceHoldUntil }) => {
+  if (!teamEntry.teamSnap.exists) return 0;
+
+  const uniqueDisplayNames = await getUniqueDisplayNames(teamEntry);
+  const context = { uid, uniqueDisplayNames, evidenceHoldUntil };
+  const writer = firestore.bulkWriter();
+  let updatedDocumentCount = 0;
+
+  const teamUpdates = getAccountDocumentUpdates(teamEntry.teamData, context);
+  if (Object.keys(teamUpdates).length > 0) {
+    writer.update(teamEntry.teamRef, teamUpdates);
+    updatedDocumentCount += 1;
+  }
+
+  for (const collectionName of ACCOUNT_DATA_COLLECTIONS) {
+    const snapshot = await teamEntry.teamRef.collection(collectionName).get();
+    snapshot.docs.forEach((documentSnapshot) => {
+      if (collectionName === "members" && documentSnapshot.id === uid) return;
+      const updates = getAccountDocumentUpdates(documentSnapshot.data(), context);
+      if (Object.keys(updates).length === 0) return;
+      writer.update(documentSnapshot.ref, updates);
+      updatedDocumentCount += 1;
+    });
+  }
+
+  await writer.close();
+  return updatedDocumentCount;
+};
+
+const anonymizeAccountStorageInTeam = async ({ uid, teamId }) => {
+  const bucket = getStorage().bucket();
+  const [files] = await bucket.getFiles({
+    prefix: `calendarAttachments/${teamId}/`,
+  });
+  let updatedFileCount = 0;
+
+  for (const file of files) {
+    const [metadata] = await file.getMetadata();
+    const customMetadata = metadata?.metadata || {};
+    if (customMetadata.uploadedBy !== uid) continue;
+    await file.setMetadata({
+      metadata: {
+        ...customMetadata,
+        uploadedBy: DELETED_USER_UID,
+      },
+    });
+    updatedFileCount += 1;
+  }
+
+  return updatedFileCount;
 };
 
 exports.joinTeamWithInvite = onCall(
@@ -243,6 +586,92 @@ exports.removeTeamMember = onCall(
         teamIds: remainingTeamIds,
       };
     });
+  },
+);
+
+exports.checkAccountDeletionEligibility = onCall(
+  {
+    region: "asia-northeast1",
+    timeoutSeconds: 30,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const uid = request.auth?.uid;
+    if (!uid) {
+      throw new HttpsError("unauthenticated", "ログインが必要です。");
+    }
+
+    const context = await getAccountDeletionContext(uid);
+    return {
+      eligible: context.blockingTeams.length === 0,
+      blockingTeams: context.blockingTeams,
+    };
+  },
+);
+
+exports.deleteUserAccount = onCall(
+  {
+    region: "asia-northeast1",
+    timeoutSeconds: 540,
+    memory: "512MiB",
+  },
+  async (request) => {
+    const uid = request.auth?.uid;
+    if (!uid) {
+      throw new HttpsError("unauthenticated", "ログインが必要です。");
+    }
+
+    assertRecentAuthentication(request);
+    const context = await getAccountDeletionContext(uid);
+    assertAccountDeletionEligible(context);
+
+    const evidenceHoldUntil = Timestamp.fromMillis(
+      Date.now() + 365 * 24 * 60 * 60 * 1000,
+    );
+    let anonymizedDocumentCount = 0;
+    let anonymizedStorageFileCount = 0;
+
+    try {
+      for (const teamEntry of context.teamEntries) {
+        anonymizedDocumentCount += await anonymizeAccountDataInTeam({
+          uid,
+          teamEntry,
+          evidenceHoldUntil,
+        });
+        anonymizedStorageFileCount += await anonymizeAccountStorageInTeam({
+          uid,
+          teamId: teamEntry.teamId,
+        });
+      }
+
+      const membershipWriter = firestore.bulkWriter();
+      context.teamEntries.forEach(({ memberRef, memberSnap }) => {
+        if (memberSnap.exists) membershipWriter.delete(memberRef);
+      });
+      await membershipWriter.close();
+
+      await firestore.recursiveDelete(context.userRef);
+
+      await getAuth().deleteUser(uid);
+
+      return {
+        deleted: true,
+        removedTeamCount: context.teamEntries.filter(
+          ({ memberSnap }) => memberSnap.exists,
+        ).length,
+        anonymizedDocumentCount,
+        anonymizedStorageFileCount,
+      };
+    } catch (error) {
+      if (error instanceof HttpsError) throw error;
+      logger.error("Account deletion failed.", {
+        code: String(error?.code || "unknown"),
+      });
+      throw new HttpsError(
+        "internal",
+        "アカウントを削除できませんでした。データは可能な範囲で保持されています。時間をおいて再度お試しください。",
+      );
+    }
   },
 );
 

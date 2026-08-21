@@ -100,7 +100,7 @@ export default function TagGroupEditScreen({
         await updateTagGroup(activeTeamId, editingGroupId, {
           name: trimmedName,
           tags,
-          updatedBy: currentUser || "unknown",
+          updatedBy: currentUserUid || currentUser || "unknown",
         });
         setTagGroups?.((prev) =>
           prev.map((group) =>
@@ -113,7 +113,7 @@ export default function TagGroupEditScreen({
         const createdId = await createTagGroup(activeTeamId, {
           name: trimmedName,
           tags,
-          createdBy: currentUser || "unknown",
+          createdBy: currentUserUid || currentUser || "unknown",
         });
         setTagGroups?.((prev) => {
           const createdGroup = {

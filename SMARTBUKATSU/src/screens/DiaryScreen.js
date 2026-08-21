@@ -455,6 +455,7 @@ const DiaryScreen = ({
                 id: "post_shared_" + Date.now().toString(),
                 channel: "共有日記",
                 user: displayUserName,
+                authorUid: currentUserUid,
                 content: `📢 ${report.author} の振り返りを共有します！\n\n【振り返り】\n${report.reflection || "未入力"}\n\n※詳細は振り返り画面から確認できます。`,
                 time: "たった今",
                 replyTo: null,
@@ -558,6 +559,7 @@ const DiaryScreen = ({
           id: "rep_" + Date.now().toString(),
           date: reportDate,
           author: currentUser,
+          authorUid: currentUserUid,
           condition,
           fatigue,
           medicalScaleVersion: MEDICAL_SCALE_VERSION,
@@ -675,6 +677,7 @@ const DiaryScreen = ({
       const newComment = {
         id: "c_" + Date.now().toString(),
         user: displayUserName,
+        uid: currentUserUid,
         text: commentText,
         time: "たった今",
         status: isOffline ? "pending" : "sent",

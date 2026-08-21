@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   ScrollView,
   StyleSheet,
@@ -13,9 +14,17 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect } from "@react-navigation/native";
-import { useAuth } from "../AuthContext";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
+  EmailAuthProvider,
+  reauthenticateWithCredential,
+} from "firebase/auth";
+import { useAuth } from "../AuthContext";
+import { auth } from "../firebase";
+import {
+  checkAccountDeletionEligibility,
   createTeam,
+  deleteCurrentUserAccount,
   getMaxTeamsForMemberships,
   getUserTeams,
   joinTeamWithInvite,
@@ -42,6 +51,14 @@ const TeamSelectScreen = ({ navigation }) => {
   const [isJoining, setIsJoining] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [shouldReturnHome, setShouldReturnHome] = useState(false);
+  const [isAccountDeleteModalVisible, setIsAccountDeleteModalVisible] =
+    useState(false);
+  const [accountDeletePassword, setAccountDeletePassword] = useState("");
+  const [showAccountDeletePassword, setShowAccountDeletePassword] =
+    useState(false);
+  const [isCheckingAccountDeletion, setIsCheckingAccountDeletion] =
+    useState(false);
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
 
   const teamCount = teamIds?.length || 0;
   const maxTeamsPerUser = getMaxTeamsForMemberships(teams);
@@ -198,6 +215,166 @@ const TeamSelectScreen = ({ navigation }) => {
     ]);
   };
 
+  const formatBlockingTeams = (blockingTeams = []) =>
+    blockingTeams
+      .map((team) => team?.teamName || team?.teamId)
+      .filter(Boolean)
+      .map((blockingTeamName) => `・${blockingTeamName}`)
+      .join("\n");
+
+  const showAccountDeletionError = (error) => {
+    const errorCode = String(error?.code || "");
+    const blockingTeams = error?.details?.blockingTeams || [];
+
+    if (blockingTeams.length > 0) {
+      Alert.alert(
+        "アカウントを削除できません",
+        "作成者として残っているチームがあります。チーム削除または所有権移管を先に完了してください。\n\n" +
+          formatBlockingTeams(blockingTeams),
+      );
+      return;
+    }
+    if (
+      errorCode.includes("auth/invalid-credential") ||
+      errorCode.includes("auth/wrong-password")
+    ) {
+      Alert.alert("本人確認エラー", "現在のパスワードが正しくありません。");
+      return;
+    }
+    if (
+      errorCode.includes("auth/too-many-requests") ||
+      errorCode.includes("auth/user-disabled")
+    ) {
+      Alert.alert(
+        "本人確認エラー",
+        "現在は本人確認を行えません。時間をおいてから再度お試しください。",
+      );
+      return;
+    }
+    if (
+      errorCode.includes("failed-precondition") &&
+      error?.details?.reason === "recent-auth-required"
+    ) {
+      Alert.alert(
+        "再認証が必要です",
+        "本人確認の有効時間が切れました。パスワードを再入力してください。",
+      );
+      return;
+    }
+
+    Alert.alert(
+      "アカウント削除エラー",
+      "アカウントを削除できませんでした。通信状態を確認し、時間をおいて再度お試しください。",
+    );
+  };
+
+  const handleOpenAccountDeletion = async () => {
+    if (isCheckingAccountDeletion || isDeletingAccount) return;
+
+    setIsCheckingAccountDeletion(true);
+    try {
+      const result = await checkAccountDeletionEligibility();
+      const blockingTeams = result?.blockingTeams || [];
+      if (!result?.eligible || blockingTeams.length > 0) {
+        Alert.alert(
+          "アカウントを削除できません",
+          "作成者として残っているチームがあります。チーム削除または所有権移管を先に完了してください。\n\n" +
+            formatBlockingTeams(blockingTeams),
+        );
+        return;
+      }
+
+      setAccountDeletePassword("");
+      setShowAccountDeletePassword(false);
+      setIsAccountDeleteModalVisible(true);
+    } catch (error) {
+      console.log("アカウント削除可否確認エラー:", error?.code || error?.message);
+      showAccountDeletionError(error);
+    } finally {
+      setIsCheckingAccountDeletion(false);
+    }
+  };
+
+  const performAccountDeletion = async () => {
+    setIsDeletingAccount(true);
+    try {
+      await deleteCurrentUserAccount();
+      setIsAccountDeleteModalVisible(false);
+      setAccountDeletePassword("");
+      if (userName) {
+        try {
+          await AsyncStorage.removeItem(`diary_draft_${userName}`);
+        } catch (storageError) {
+          console.log(
+            "削除完了後の端末下書き削除エラー:",
+            storageError?.message,
+          );
+        }
+      }
+      try {
+        await signOut();
+      } catch (signOutError) {
+        console.log(
+          "削除完了後のログアウトエラー:",
+          signOutError?.code || signOutError?.message,
+        );
+      }
+      Alert.alert(
+        "アカウント削除完了",
+        "アカウントと個人データを削除しました。同じメールアドレスで再登録しても、以前のデータは復元されません。",
+      );
+    } catch (error) {
+      console.log("アカウント削除エラー:", error?.code || error?.message);
+      showAccountDeletionError(error);
+    } finally {
+      setIsDeletingAccount(false);
+    }
+  };
+
+  const handleConfirmAccountDeletion = async () => {
+    const currentAuthUser = auth.currentUser;
+    if (!currentAuthUser?.email) {
+      Alert.alert(
+        "本人確認エラー",
+        "メールアドレスでログイン中のユーザーを確認できませんでした。",
+      );
+      return;
+    }
+    if (!accountDeletePassword) {
+      Alert.alert("入力エラー", "現在のパスワードを入力してください。");
+      return;
+    }
+
+    setIsDeletingAccount(true);
+    try {
+      const credential = EmailAuthProvider.credential(
+        currentAuthUser.email,
+        accountDeletePassword,
+      );
+      await reauthenticateWithCredential(currentAuthUser, credential);
+      await currentAuthUser.getIdToken(true);
+      setIsDeletingAccount(false);
+
+      Alert.alert(
+        "最終確認",
+        "この操作は取り消せません。すべての所属チームから退会し、プロフィール・個人予定・認証情報を削除します。アカウントを完全に削除しますか？",
+        [
+          { text: "キャンセル", style: "cancel" },
+          {
+            text: "完全に削除する",
+            style: "destructive",
+            onPress: performAccountDeletion,
+          },
+        ],
+      );
+    } catch (error) {
+      console.log("アカウント削除の本人確認エラー:", error?.code || error?.message);
+      showAccountDeletionError(error);
+    } finally {
+      setIsDeletingAccount(false);
+    }
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <KeyboardAvoidingView
@@ -326,8 +503,103 @@ const TeamSelectScreen = ({ navigation }) => {
               )}
             </TouchableOpacity>
           </View>
+
+          <View style={styles.accountDeleteContainer}>
+            <Text style={styles.accountDeleteTitle}>アカウントの削除</Text>
+            <Text style={styles.accountDeleteDescription}>
+              すべての所属チームから退会し、プロフィール・個人予定・ログイン情報を削除します。作成者として残っているチームがある場合は削除できません。
+            </Text>
+            <TouchableOpacity
+              style={[
+                styles.accountDeleteBtn,
+                (isCheckingAccountDeletion || isDeletingAccount) && {
+                  opacity: 0.6,
+                },
+              ]}
+              onPress={handleOpenAccountDeletion}
+              disabled={isCheckingAccountDeletion || isDeletingAccount}
+            >
+              {isCheckingAccountDeletion ? (
+                <ActivityIndicator color="#c0392b" />
+              ) : (
+                <Text style={styles.accountDeleteBtnText}>
+                  アカウントを削除
+                </Text>
+              )}
+            </TouchableOpacity>
+          </View>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      <Modal
+        visible={isAccountDeleteModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!isDeletingAccount) setIsAccountDeleteModalVisible(false);
+        }}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.accountDeleteModalTitle}>
+              アカウントを削除
+            </Text>
+            <Text style={styles.accountDeleteModalWarning}>
+              削除後は元に戻せません。本人確認のため、現在のパスワードを入力してください。
+            </Text>
+            <Text style={styles.modalLabel}>現在のパスワード</Text>
+            <View style={styles.passwordRow}>
+              <TextInput
+                style={styles.passwordInput}
+                placeholder="現在のパスワード"
+                secureTextEntry={!showAccountDeletePassword}
+                value={accountDeletePassword}
+                onChangeText={setAccountDeletePassword}
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={!isDeletingAccount}
+              />
+              <TouchableOpacity
+                style={styles.passwordToggleBtn}
+                onPress={() =>
+                  setShowAccountDeletePassword(!showAccountDeletePassword)
+                }
+                disabled={isDeletingAccount}
+              >
+                <Text style={styles.passwordToggleBtnText}>
+                  {showAccountDeletePassword ? "隠す" : "表示"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity
+              style={[
+                styles.accountDeleteConfirmBtn,
+                isDeletingAccount && { opacity: 0.7 },
+              ]}
+              onPress={handleConfirmAccountDeletion}
+              disabled={isDeletingAccount}
+            >
+              {isDeletingAccount ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.accountDeleteConfirmBtnText}>
+                  本人確認して削除手続きへ
+                </Text>
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.cancelBtn}
+              onPress={() => {
+                setIsAccountDeleteModalVisible(false);
+                setAccountDeletePassword("");
+              }}
+              disabled={isDeletingAccount}
+            >
+              <Text style={styles.cancelBtnText}>キャンセル</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -441,6 +713,121 @@ const styles = StyleSheet.create({
   },
   btnDisabled: { backgroundColor: "#9aa7b2" },
   primaryBtnText: { color: "#fff", fontSize: 15, fontWeight: "bold" },
+  accountDeleteContainer: {
+    marginBottom: 20,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: "#f5b7b1",
+    borderRadius: 10,
+    backgroundColor: "#fff8f7",
+  },
+  accountDeleteTitle: {
+    color: "#922b21",
+    fontSize: 15,
+    fontWeight: "bold",
+    marginBottom: 8,
+  },
+  accountDeleteDescription: {
+    color: "#7b241c",
+    fontSize: 12,
+    lineHeight: 18,
+    marginBottom: 12,
+  },
+  accountDeleteBtn: {
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: "#c0392b",
+    borderRadius: 8,
+    alignItems: "center",
+    backgroundColor: "#fff",
+  },
+  accountDeleteBtnText: {
+    color: "#c0392b",
+    fontSize: 14,
+    fontWeight: "bold",
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0, 0, 0, 0.5)",
+    justifyContent: "center",
+    padding: 24,
+  },
+  modalContent: {
+    width: "100%",
+    maxWidth: 440,
+    alignSelf: "center",
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    padding: 20,
+  },
+  accountDeleteModalTitle: {
+    color: "#c0392b",
+    fontSize: 18,
+    fontWeight: "bold",
+    marginBottom: 12,
+  },
+  accountDeleteModalWarning: {
+    color: "#7b241c",
+    fontSize: 13,
+    lineHeight: 20,
+    marginBottom: 18,
+  },
+  modalLabel: {
+    color: "#555",
+    fontSize: 14,
+    fontWeight: "bold",
+    marginBottom: 5,
+  },
+  passwordRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 16,
+  },
+  passwordInput: {
+    flex: 1,
+    backgroundColor: "#f8fafc",
+    borderWidth: 1,
+    borderColor: "#dce2e8",
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 15,
+    color: "#222",
+  },
+  passwordToggleBtn: {
+    marginLeft: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: "#dce2e8",
+    borderRadius: 8,
+    backgroundColor: "#fff",
+  },
+  passwordToggleBtnText: {
+    color: "#333",
+    fontSize: 13,
+    fontWeight: "bold",
+  },
+  accountDeleteConfirmBtn: {
+    backgroundColor: "#c0392b",
+    paddingVertical: 14,
+    borderRadius: 8,
+    alignItems: "center",
+  },
+  accountDeleteConfirmBtnText: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "bold",
+  },
+  cancelBtn: {
+    marginTop: 10,
+    paddingVertical: 12,
+    alignItems: "center",
+  },
+  cancelBtnText: {
+    color: "#667085",
+    fontSize: 14,
+    fontWeight: "bold",
+  },
 });
 
 export default TeamSelectScreen;
