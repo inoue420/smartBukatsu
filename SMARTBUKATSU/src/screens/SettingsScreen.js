@@ -123,7 +123,7 @@ const SettingsScreen = ({
   setAbsenceDeadlineDaysBefore,
   setUserProfiles,
 }) => {
-  const { activeTeamId, logout, user } = useAuth();
+  const { activeTeamId, signOut, user } = useAuth();
   const [inviteCode, setInviteCode] = useState("読み込み中...");
 
   const currentUserUid =
@@ -238,7 +238,6 @@ const SettingsScreen = ({
   const [showNewPass, setShowNewPass] = useState(false);
   const [showConfirmPass, setShowConfirmPass] = useState(false);
   const [isChangingPassword, setIsChangingPassword] = useState(false);
-
   const [isRoleModalVisible, setIsRoleModalVisible] = useState(false);
   const [selectedMemberForRole, setSelectedMemberForRole] = useState(null);
   const [isChangingMemberRole, setIsChangingMemberRole] = useState(false);
@@ -782,11 +781,7 @@ const SettingsScreen = ({
         style: "destructive",
         onPress: async () => {
           try {
-            if (logout) {
-              await logout();
-            } else {
-              await auth.signOut();
-            }
+            await signOut();
           } catch (error) {
             console.log("ログアウトエラー:", error);
             Alert.alert("エラー", "ログアウトに失敗しました。");
@@ -2121,7 +2116,7 @@ const styles = StyleSheet.create({
 
   logoutContainer: {
     marginTop: 20,
-    marginBottom: 40,
+    marginBottom: 20,
     alignItems: "center",
   },
   logoutBtn: {

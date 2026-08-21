@@ -46,6 +46,7 @@ const ProjectDetailScreen = ({
   route,
   navigation,
   currentUser,
+  currentUserUid = "",
   projects,
   setProjects,
   tagGroups = [],
@@ -404,6 +405,7 @@ const ProjectDetailScreen = ({
       videoTime,
       label,
       user: displayUserName,
+      uid: currentUserUid,
       status: "private",
       useCustomClipDuration: false,
     };

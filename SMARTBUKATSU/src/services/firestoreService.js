@@ -531,6 +531,33 @@ export async function deleteTeam(teamId) {
   return response.data;
 }
 
+export async function checkAccountDeletionEligibility() {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error("Authentication is required. Please sign in again.");
+  }
+
+  await currentUser.getIdToken(true);
+  const checkEligibility = httpsCallable(
+    cloudFunctions,
+    "checkAccountDeletionEligibility",
+  );
+  const response = await checkEligibility();
+  return response.data;
+}
+
+export async function deleteCurrentUserAccount() {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error("Authentication is required. Please sign in again.");
+  }
+
+  await currentUser.getIdToken(true);
+  const deleteAccount = httpsCallable(cloudFunctions, "deleteUserAccount");
+  const response = await deleteAccount();
+  return response.data;
+}
+
 // ==========================================
 // 🏟️ チーム設定・設定画面関連
 // ==========================================

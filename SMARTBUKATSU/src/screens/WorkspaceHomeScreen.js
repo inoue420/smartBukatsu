@@ -995,6 +995,7 @@ const WorkspaceHomeScreen = ({
               content: post.content,
               date: new Date().toLocaleDateString("ja-JP"),
               author: displayUserName,
+              authorUid: currentUserUid,
               readBy: [currentUser],
               isImportant: false,
               isSharedPost: true,

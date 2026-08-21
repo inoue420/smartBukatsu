@@ -193,6 +193,7 @@ const NoticeBoardScreen = ({
           title: newTitle.trim(),
           content: newContent.trim(),
           author: displayUserName,
+          authorUid: currentUserUid,
           date: dateString,
           isImportant: isImportant,
           readBy: [currentUser],
