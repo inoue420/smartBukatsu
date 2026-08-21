@@ -2647,7 +2647,7 @@ const CalendarScreen = ({
                   <View style={{ marginTop: 15 }}>
                     <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 10 }}>
                       <Text style={styles.label}>時間設定</Text>
-                      <View style={{ flexDirection: "row", alignItems: "center" }}><Text style={{ marginRight: 5, fontSize: 14, fontWeight: "bold", color: COLORS.textSub }}>終日</Text><Switch value={isClubAllDay} onValueChange={setIsClubAllDay} /></View>
+                      {editingClubEventId ? <View style={{ flexDirection: "row", alignItems: "center" }}><Text style={{ marginRight: 5, fontSize: 14, fontWeight: "bold", color: COLORS.textSub }}>終日</Text><Switch value={isClubAllDay} onValueChange={setIsClubAllDay} /></View> : null}
                     </View>
                     {!isClubAllDay && <View style={styles.timeInputRow}><TouchableOpacity style={styles.timeSelectBtn} onPress={() => { setTimePickerTarget("club_single_start"); setIsTimePickerVisible(true); }}><Text style={styles.timeSelectBtnText}>{clubStartTime}</Text></TouchableOpacity><Text style={styles.timeBetween}>〜</Text><TouchableOpacity style={styles.timeSelectBtn} onPress={() => { setTimePickerTarget("club_single_end"); setIsTimePickerVisible(true); }}><Text style={styles.timeSelectBtnText}>{clubEndTime}</Text></TouchableOpacity></View>}
                     <Text style={styles.multiDateSummary}>選択した全日に同じ時間設定を保存します。</Text>
@@ -2657,7 +2657,7 @@ const CalendarScreen = ({
                 <View>
                   <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 10 }}>
                     <Text style={styles.label}>時間</Text>
-                    <View style={{ flexDirection: "row", alignItems: "center" }}><Text style={{ marginRight: 5, fontSize: 14, fontWeight: "bold", color: COLORS.textSub }}>終日</Text><Switch value={isClubAllDay} onValueChange={setIsClubAllDay} /></View>
+                    {editingClubEventId ? <View style={{ flexDirection: "row", alignItems: "center" }}><Text style={{ marginRight: 5, fontSize: 14, fontWeight: "bold", color: COLORS.textSub }}>終日</Text><Switch value={isClubAllDay} onValueChange={setIsClubAllDay} /></View> : null}
                   </View>
                   {!isClubAllDay && <View style={styles.timeInputRow}><TouchableOpacity style={styles.timeSelectBtn} onPress={() => { setTimePickerTarget("club_single_start"); setIsTimePickerVisible(true); }}><Text style={styles.timeSelectBtnText}>{clubStartTime}</Text></TouchableOpacity><Text style={styles.timeBetween}>〜</Text><TouchableOpacity style={styles.timeSelectBtn} onPress={() => { setTimePickerTarget("club_single_end"); setIsTimePickerVisible(true); }}><Text style={styles.timeSelectBtnText}>{clubEndTime}</Text></TouchableOpacity></View>}
                 </View>
