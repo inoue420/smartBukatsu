@@ -703,6 +703,18 @@ export function subscribeNotices(teamId, callback) {
 // ==========================================
 // 💬 ワークスペース掲示板（Workspace Posts）関連
 // ==========================================
+export async function submitSafetyReport(reportData) {
+  const submitReport = httpsCallable(cloudFunctions, "submitSafetyReport");
+  const result = await submitReport(reportData);
+  return result.data;
+}
+
+export async function submitSupportRequest(requestData) {
+  const submitRequest = httpsCallable(cloudFunctions, "submitSupportRequest");
+  const result = await submitRequest(requestData);
+  return result.data;
+}
+
 export async function createWorkspacePost(teamId, postData) {
   if (!teamId) throw new Error("チームIDがありません");
 

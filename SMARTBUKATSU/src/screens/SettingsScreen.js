@@ -34,6 +34,7 @@ import {
   updateMemberProfile,
   updateMemberRoleConfig,
   removeTeamMember,
+  submitSupportRequest,
   deleteTeam,
   updateTeamAdSettings,
 } from "../services/firestoreService";
@@ -75,6 +76,12 @@ const ThresholdSelector = ({ label, value, min, max, onChange }) => (
     </View>
   </View>
 );
+
+const SUPPORT_REQUEST_CATEGORIES = [
+  { value: "bug_report", label: "バグ報告" },
+  { value: "feature_request", label: "改善要望" },
+  { value: "safety_consultation", label: "ハラスメント・規約違反相談" },
+];
 
 const SectionCard = ({ isExp, onToggle, title, children }) => (
   <View style={styles.card}>
@@ -255,6 +262,10 @@ const SettingsScreen = ({
   const [isStaffScopeModalVisible, setIsStaffScopeModalVisible] =
     useState(false);
   const [selectedStaffForScope, setSelectedStaffForScope] = useState(null);
+  const [isSupportModalVisible, setIsSupportModalVisible] = useState(false);
+  const [supportCategory, setSupportCategory] = useState("");
+  const [supportDetails, setSupportDetails] = useState("");
+  const [isSubmittingSupport, setIsSubmittingSupport] = useState(false);
 
   const isTeamCreator =
     !!currentUserUid && !!teamCreatedBy && currentUserUid === teamCreatedBy;
@@ -806,6 +817,48 @@ const SettingsScreen = ({
         "ページを開けません",
         `${pageName}を開けませんでした。通信環境をご確認ください。`,
       );
+    }
+  };
+
+  const closeSupportModal = () => {
+    if (isSubmittingSupport) return;
+    setIsSupportModalVisible(false);
+    setSupportCategory("");
+    setSupportDetails("");
+  };
+
+  const handleSubmitSupportRequest = async () => {
+    if (!supportCategory || !supportDetails.trim()) {
+      Alert.alert("入力確認", "相談種別と内容を入力してください。");
+      return;
+    }
+    if (!activeTeamId) {
+      Alert.alert("送信できません", "所属チームを確認してください。");
+      return;
+    }
+
+    setIsSubmittingSupport(true);
+    try {
+      await submitSupportRequest({
+        teamId: activeTeamId,
+        category: supportCategory,
+        details: supportDetails.trim(),
+      });
+      setIsSupportModalVisible(false);
+      setSupportCategory("");
+      setSupportDetails("");
+      Alert.alert(
+        "相談を受け付けました",
+        "運営が内容を確認します。緊急の危険がある場合は、保護者・所属団体責任者・警察等の適切な窓口にも連絡してください。",
+      );
+    } catch (error) {
+      console.log("相談送信エラー:", error);
+      Alert.alert(
+        "送信できませんでした",
+        error?.message || "通信状態を確認し、時間をおいて再度お試しください。",
+      );
+    } finally {
+      setIsSubmittingSupport(false);
     }
   };
 
@@ -1595,6 +1648,13 @@ const SettingsScreen = ({
             <Text style={styles.legalTitle}>法務・サポート</Text>
             <TouchableOpacity
               style={styles.legalButton}
+              onPress={() => setIsSupportModalVisible(true)}
+            >
+              <Text style={styles.legalButtonText}>運営への相談窓口</Text>
+              <Text style={styles.legalButtonArrow}>›</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.legalButton}
               onPress={() =>
                 openExternalPage(SMARTBUKATSU_TERMS_URL, "利用規約")
               }
@@ -1620,7 +1680,7 @@ const SettingsScreen = ({
                 openExternalPage(SMARTBUKATSU_SUPPORT_URL, "お問い合わせ")
               }
             >
-              <Text style={styles.legalButtonText}>お問い合わせ</Text>
+              <Text style={styles.legalButtonText}>Webお問い合わせ</Text>
               <Text style={styles.legalButtonArrow}>›</Text>
             </TouchableOpacity>
           </View>
@@ -1838,6 +1898,86 @@ const SettingsScreen = ({
             </TouchableOpacity>
           </View>
         </View>
+      </Modal>
+
+      <Modal
+        visible={isSupportModalVisible}
+        transparent
+        animationType="fade"
+      >
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+        >
+          <View style={[styles.modalContent, { maxHeight: "90%" }]}>
+            <ScrollView keyboardShouldPersistTaps="handled">
+              <Text style={styles.modalTitle}>運営への相談窓口</Text>
+              <Text style={styles.supportHelpText}>
+                相談内容は運営だけが確認する非公開の受付領域へ送信されます。
+              </Text>
+
+              <Text style={styles.supportLabel}>相談種別</Text>
+              {SUPPORT_REQUEST_CATEGORIES.map((category) => (
+                <TouchableOpacity
+                  key={category.value}
+                  style={[
+                    styles.supportCategoryBtn,
+                    supportCategory === category.value &&
+                      styles.supportCategoryBtnActive,
+                  ]}
+                  onPress={() => setSupportCategory(category.value)}
+                  disabled={isSubmittingSupport}
+                >
+                  <Text style={styles.supportCategoryText}>
+                    {category.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+
+              <Text style={styles.supportLabel}>内容</Text>
+              <TextInput
+                style={styles.supportDetailsInput}
+                value={supportDetails}
+                onChangeText={setSupportDetails}
+                placeholder="発生した状況や運営に伝えたいことを入力してください"
+                multiline
+                maxLength={2000}
+                editable={!isSubmittingSupport}
+              />
+              <Text style={styles.supportCharacterCount}>
+                {supportDetails.length}/2000
+              </Text>
+
+              <TouchableOpacity
+                style={[
+                  styles.supportSubmitBtn,
+                  (!supportCategory || !supportDetails.trim() ||
+                    isSubmittingSupport) &&
+                    styles.supportButtonDisabled,
+                ]}
+                onPress={handleSubmitSupportRequest}
+                disabled={
+                  !supportCategory ||
+                  !supportDetails.trim() ||
+                  isSubmittingSupport
+                }
+              >
+                {isSubmittingSupport ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.supportSubmitText}>相談を送信</Text>
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.cancelBtn}
+                onPress={closeSupportModal}
+                disabled={isSubmittingSupport}
+              >
+                <Text style={styles.cancelBtnText}>キャンセル</Text>
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );
@@ -2154,6 +2294,59 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     color: "#888",
   },
+  supportHelpText: {
+    color: "#666",
+    fontSize: 12,
+    lineHeight: 18,
+    marginBottom: 16,
+  },
+  supportLabel: {
+    color: "#333",
+    fontSize: 14,
+    fontWeight: "bold",
+    marginBottom: 8,
+  },
+  supportCategoryBtn: {
+    minHeight: 46,
+    justifyContent: "center",
+    paddingHorizontal: 14,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: "#ddd",
+    borderRadius: 8,
+    backgroundColor: "#f9f9f9",
+  },
+  supportCategoryBtnActive: {
+    borderColor: "#e74c3c",
+    backgroundColor: "#fff1f0",
+  },
+  supportCategoryText: { color: "#333", fontSize: 14, fontWeight: "bold" },
+  supportDetailsInput: {
+    minHeight: 120,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: "#ddd",
+    borderRadius: 8,
+    backgroundColor: "#fff",
+    color: "#333",
+    textAlignVertical: "top",
+  },
+  supportCharacterCount: {
+    color: "#888",
+    fontSize: 11,
+    textAlign: "right",
+    marginTop: 4,
+    marginBottom: 12,
+  },
+  supportSubmitBtn: {
+    minHeight: 48,
+    justifyContent: "center",
+    alignItems: "center",
+    borderRadius: 8,
+    backgroundColor: "#e74c3c",
+  },
+  supportSubmitText: { color: "#fff", fontSize: 15, fontWeight: "bold" },
+  supportButtonDisabled: { opacity: 0.45 },
 
   idInfoBox: { alignItems: "center", paddingVertical: 10 },
   idLabel: { fontSize: 12, color: "#888", fontWeight: "bold", marginBottom: 5 },
