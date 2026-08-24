@@ -1,5 +1,9 @@
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
+const {
+  onDocumentUpdated,
+  onDocumentWritten,
+} = require("firebase-functions/v2/firestore");
 const { defineSecret } = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
 const { initializeApp } = require("firebase-admin/app");
@@ -58,6 +62,29 @@ const LEGACY_DISPLAY_NAME_SUFFIXES = [
 const PROFILE_NAME_IDENTITY_FIELDS = new Set(["uid", "userUid"]);
 const NAME_ARRAY_FIELDS = new Set(["readBy", "allowedMembers"]);
 const NAME_SCALAR_FIELDS = new Set(["assignedStaff"]);
+const SUPPORT_CASE_COLLECTION = "supportCases";
+const SUPPORT_CASE_RETENTION_MS = 365 * 24 * 60 * 60 * 1000;
+const ACTIVE_SUPPORT_CASE_STATUSES = new Set(["received", "reviewing"]);
+const SAFETY_REPORT_REASONS = new Set([
+  "harassment_bullying",
+  "threat_violence",
+  "hate_discrimination",
+  "sexual_inappropriate",
+  "impersonation_privacy",
+  "spam_fraud",
+  "other",
+]);
+const SUPPORT_REQUEST_CATEGORIES = new Set([
+  "bug_report",
+  "feature_request",
+  "safety_consultation",
+]);
+const SAFETY_REPORT_SUBJECTS = new Set(["content", "user"]);
+const SAFETY_REPORT_TARGET_TYPES = new Set([
+  "workspace_post",
+  "workspace_reply",
+  "daily_report_comment",
+]);
 
 const googleMapsServerApiKey = defineSecret("GOOGLE_MAPS_SERVER_API_KEY");
 
@@ -69,6 +96,176 @@ const JAPAN_LOCATION_BIAS = {
 };
 
 const normalizeQuery = (value) => String(value || "").trim().replace(/\s+/g, " ");
+
+const normalizeCaseText = (value, maxLength) =>
+  String(value || "").trim().slice(0, maxLength);
+
+const getEvidenceValue = (value) => {
+  if (value === null || value === undefined) return null;
+  if (value instanceof Timestamp) {
+    return { timestampMillis: value.toMillis() };
+  }
+  if (Array.isArray(value)) return value.map(getEvidenceValue);
+  if (isPlainObject(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, nestedValue]) => [
+        key,
+        getEvidenceValue(nestedValue),
+      ]),
+    );
+  }
+  if (["string", "number", "boolean"].includes(typeof value)) return value;
+  return String(value);
+};
+
+const getReplyEvidence = (reply = {}) => ({
+  id: normalizeCaseText(reply.id, 200),
+  user: normalizeCaseText(reply.user, 200),
+  authorUid: normalizeCaseText(reply.authorUid, 128),
+  content: normalizeCaseText(reply.content, 10000),
+  createdAt: getEvidenceValue(reply.createdAt),
+  updatedAt: getEvidenceValue(reply.updatedAt),
+  status: normalizeCaseText(reply.status, 50),
+  deletedAt: getEvidenceValue(reply.deletedAt),
+  deletedBy: normalizeCaseText(reply.deletedBy, 200),
+  attachments: getEvidenceValue(reply.attachments || []),
+});
+
+const getWorkspacePostEvidence = (
+  postData,
+  { postId = "", targetType = "workspace_post", replyId = "" } = {},
+) => {
+  if (!postData) return null;
+  const baseEvidence = {
+    postId,
+    channelId: normalizeCaseText(postData.channelId, 200),
+    channel: normalizeCaseText(postData.channel, 200),
+    user: normalizeCaseText(postData.user, 200),
+    authorUid: normalizeCaseText(postData.authorUid, 128),
+    content: normalizeCaseText(postData.content, 10000),
+    createdAt: getEvidenceValue(postData.createdAt),
+    updatedAt: getEvidenceValue(postData.updatedAt),
+    status: normalizeCaseText(postData.status, 50),
+    deletedAt: getEvidenceValue(postData.deletedAt),
+    deletedBy: normalizeCaseText(postData.deletedBy, 200),
+    attachments: getEvidenceValue(postData.attachments || []),
+  };
+
+  if (targetType === "workspace_reply") {
+    const targetReply = (postData.replies || []).find(
+      (reply) => String(reply?.id || "") === replyId,
+    );
+    return {
+      ...baseEvidence,
+      targetReply: targetReply ? getReplyEvidence(targetReply) : null,
+    };
+  }
+
+  return {
+    ...baseEvidence,
+    replyCount: (postData.replies || []).length,
+    repliesTruncated: (postData.replies || []).length > 100,
+    replies: (postData.replies || []).slice(-100).map(getReplyEvidence),
+  };
+};
+
+const getWorkspaceDocumentFingerprint = (postData, postId) =>
+  JSON.stringify(getWorkspacePostEvidence(postData, { postId }));
+
+const getDailyReportCommentEvidence = (comment = {}) => ({
+  id: normalizeCaseText(comment.id, 200),
+  user: normalizeCaseText(comment.user, 200),
+  uid: normalizeCaseText(comment.uid, 128),
+  text: normalizeCaseText(comment.text, 10000),
+  time: normalizeCaseText(comment.time, 100),
+  status: normalizeCaseText(comment.status, 50),
+  createdAt: getEvidenceValue(comment.createdAt),
+  updatedAt: getEvidenceValue(comment.updatedAt),
+  deletedAt: getEvidenceValue(comment.deletedAt),
+});
+
+const getDailyReportEvidence = (
+  reportData,
+  { reportId = "", commentId = "" } = {},
+) => {
+  if (!reportData) return null;
+  const comments = Array.isArray(reportData.comments) ? reportData.comments : [];
+  const targetComment = comments.find(
+    (comment) => String(comment?.id || "") === commentId,
+  );
+  return {
+    reportId,
+    date: normalizeCaseText(reportData.date, 100),
+    author: normalizeCaseText(reportData.author, 200),
+    authorUid: normalizeCaseText(reportData.authorUid, 128),
+    status: normalizeCaseText(reportData.status, 50),
+    createdAt: getEvidenceValue(reportData.createdAt),
+    updatedAt: getEvidenceValue(reportData.updatedAt),
+    targetComment: targetComment
+      ? getDailyReportCommentEvidence(targetComment)
+      : null,
+    commentCount: comments.length,
+    commentsTruncated: comments.length > 100,
+    comments: comments.slice(-100).map(getDailyReportCommentEvidence),
+  };
+};
+
+const getDailyReportDocumentFingerprint = (reportData, reportId) =>
+  JSON.stringify(getDailyReportEvidence(reportData, { reportId }));
+
+const getAuthenticatedTeamMember = async (teamId, uid) => {
+  const normalizedTeamId = normalizeCaseText(teamId, 200);
+  if (!normalizedTeamId) {
+    throw new HttpsError("invalid-argument", "チームIDが不足しています。");
+  }
+  const teamRef = firestore.collection("teams").doc(normalizedTeamId);
+  const [teamSnap, memberSnap] = await Promise.all([
+    teamRef.get(),
+    teamRef.collection("members").doc(uid).get(),
+  ]);
+  if (!teamSnap.exists || !memberSnap.exists) {
+    throw new HttpsError(
+      "permission-denied",
+      "このチームの通報・相談を送信する権限がありません。",
+    );
+  }
+  return {
+    teamId: normalizedTeamId,
+    teamRef,
+    memberData: memberSnap.data() || {},
+  };
+};
+
+const createSupportCaseWithEvidence = async ({ caseData, evidence }) => {
+  const caseRef = firestore.collection(SUPPORT_CASE_COLLECTION).doc();
+  const batch = firestore.batch();
+  batch.set(caseRef, caseData);
+  if (evidence) {
+    batch.set(caseRef.collection("evidence").doc(), evidence);
+  }
+  await batch.commit();
+  return caseRef.id;
+};
+
+const deleteNonSafetySupportCasesForAccount = async (uid) => {
+  const casesSnapshot = await firestore
+    .collection(SUPPORT_CASE_COLLECTION)
+    .where("reporterUid", "==", uid)
+    .get();
+  let deletedCaseCount = 0;
+
+  for (const caseSnapshot of casesSnapshot.docs) {
+    const caseData = caseSnapshot.data() || {};
+    const isSafetyCase =
+      caseData.caseType === "safety_report" ||
+      caseData.category === "safety_consultation";
+    if (isSafetyCase) continue;
+    await firestore.recursiveDelete(caseSnapshot.ref);
+    deletedCaseCount += 1;
+  }
+
+  return deletedCaseCount;
+};
 
 const isValidCoordinate = (latitude, longitude) => {
   const lat = Number(latitude);
@@ -100,12 +297,9 @@ const isPlainObject = (value) =>
   typeof value === "object" &&
   Object.getPrototypeOf(value) === Object.prototype;
 
-const hasReportedEvidence = (value) =>
-  Array.isArray(value?.reported) && value.reported.length > 0;
-
 const anonymizeAccountValue = (
   value,
-  { uid, uniqueDisplayNames, evidenceHoldUntil, fieldName = "" },
+  { uid, uniqueDisplayNames, fieldName = "" },
 ) => {
   if (Array.isArray(value)) {
     const nextValue = [];
@@ -128,7 +322,6 @@ const anonymizeAccountValue = (
       const sanitized = anonymizeAccountValue(item, {
         uid,
         uniqueDisplayNames,
-        evidenceHoldUntil,
         fieldName,
       });
       nextValue.push(sanitized.value);
@@ -171,22 +364,6 @@ const anonymizeAccountValue = (
   const identityMatches =
     matchingUidIdentityFields.length > 0 ||
     matchingDisplayIdentityFields.length > 0;
-  if (identityMatches && hasReportedEvidence(value)) {
-    const alreadyHidden =
-      value.status === "deleted" && value.evidenceHold === true;
-    return {
-      value: alreadyHidden
-        ? value
-        : {
-            ...value,
-            status: "deleted",
-            evidenceHold: true,
-            evidenceHoldUntil,
-          },
-      changed: !alreadyHidden,
-    };
-  }
-
   const nextValue = {};
   let changed = false;
   Object.entries(value).forEach(([key, nestedValue]) => {
@@ -208,7 +385,6 @@ const anonymizeAccountValue = (
     const sanitized = anonymizeAccountValue(nestedValue, {
       uid,
       uniqueDisplayNames,
-      evidenceHoldUntil,
       fieldName: key,
     });
     nextValue[key] = sanitized.value;
@@ -232,15 +408,6 @@ const getAccountDocumentUpdates = (data, context) => {
   const identityMatches =
     matchingUidIdentityFields.length > 0 ||
     matchingDisplayIdentityFields.length > 0;
-  if (identityMatches && hasReportedEvidence(data)) {
-    if (data.status === "deleted" && data.evidenceHold === true) return {};
-    return {
-      status: "deleted",
-      evidenceHold: true,
-      evidenceHoldUntil: context.evidenceHoldUntil,
-    };
-  }
-
   const updates = {};
   Object.entries(data || {}).forEach(([key, value]) => {
     const isProfileName =
@@ -341,11 +508,11 @@ const getUniqueDisplayNames = async ({ teamRef, memberData }) => {
   ]);
 };
 
-const anonymizeAccountDataInTeam = async ({ uid, teamEntry, evidenceHoldUntil }) => {
+const anonymizeAccountDataInTeam = async ({ uid, teamEntry }) => {
   if (!teamEntry.teamSnap.exists) return 0;
 
   const uniqueDisplayNames = await getUniqueDisplayNames(teamEntry);
-  const context = { uid, uniqueDisplayNames, evidenceHoldUntil };
+  const context = { uid, uniqueDisplayNames };
   const writer = firestore.bulkWriter();
   let updatedDocumentCount = 0;
 
@@ -392,6 +559,409 @@ const anonymizeAccountStorageInTeam = async ({ uid, teamId }) => {
 
   return updatedFileCount;
 };
+
+exports.submitSafetyReport = onCall(
+  {
+    region: "asia-northeast1",
+    timeoutSeconds: 30,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const reporterUid = request.auth?.uid;
+    if (!reporterUid) {
+      throw new HttpsError("unauthenticated", "ログインが必要です。");
+    }
+
+    const input = request.data || {};
+    const targetType = normalizeCaseText(input.targetType, 50);
+    const reportSubject = normalizeCaseText(input.reportSubject, 50);
+    const reason = normalizeCaseText(input.reason, 100);
+    const postId = normalizeCaseText(input.postId, 200);
+    const replyId = normalizeCaseText(input.replyId, 200);
+    const dailyReportId = normalizeCaseText(input.dailyReportId, 200);
+    const commentId = normalizeCaseText(input.commentId, 200);
+    const details = normalizeCaseText(input.details, 1000);
+    const isWorkspaceReply = targetType === "workspace_reply";
+    const isDailyReportComment = targetType === "daily_report_comment";
+
+    if (
+      !SAFETY_REPORT_TARGET_TYPES.has(targetType) ||
+      !SAFETY_REPORT_SUBJECTS.has(reportSubject) ||
+      !SAFETY_REPORT_REASONS.has(reason) ||
+      (isDailyReportComment
+        ? !dailyReportId || !commentId
+        : !postId || (isWorkspaceReply && !replyId))
+    ) {
+      throw new HttpsError("invalid-argument", "通報内容が正しくありません。");
+    }
+
+    const { teamId, teamRef, memberData } = await getAuthenticatedTeamMember(
+      input.teamId,
+      reporterUid,
+    );
+    let targetUserUid = "";
+    let targetUserDisplayName = "";
+    let targetDocumentPath = "";
+    let targetEvidence = null;
+
+    if (isDailyReportComment) {
+      const reportRef = teamRef.collection("dailyReports").doc(dailyReportId);
+      const reportSnap = await reportRef.get();
+      if (!reportSnap.exists) {
+        throw new HttpsError("not-found", "通報対象の日報が見つかりません。");
+      }
+      const reportData = reportSnap.data() || {};
+      const reportComments = Array.isArray(reportData.comments)
+        ? reportData.comments
+        : [];
+      const targetComment = reportComments.find(
+        (comment) => String(comment?.id || "") === commentId,
+      );
+      if (!targetComment) {
+        throw new HttpsError("not-found", "通報対象のコメントが見つかりません。");
+      }
+      targetUserUid = normalizeCaseText(targetComment.uid, 128);
+      targetUserDisplayName = normalizeCaseText(targetComment.user, 200);
+      targetDocumentPath = reportRef.path;
+      targetEvidence = getDailyReportEvidence(reportData, {
+        reportId: dailyReportId,
+        commentId,
+      });
+    } else {
+      const postRef = teamRef.collection("workspacePosts").doc(postId);
+      const postSnap = await postRef.get();
+      if (!postSnap.exists) {
+        throw new HttpsError("not-found", "通報対象の投稿が見つかりません。");
+      }
+      const postData = postSnap.data() || {};
+      const targetReply = isWorkspaceReply
+        ? (postData.replies || []).find(
+            (reply) => String(reply?.id || "") === replyId,
+          )
+        : null;
+      if (isWorkspaceReply && !targetReply) {
+        throw new HttpsError("not-found", "通報対象の返信が見つかりません。");
+      }
+      targetUserUid = normalizeCaseText(
+        isWorkspaceReply ? targetReply?.authorUid : postData.authorUid,
+        128,
+      );
+      targetUserDisplayName = normalizeCaseText(
+        isWorkspaceReply ? targetReply?.user : postData.user,
+        200,
+      );
+      targetDocumentPath = postRef.path;
+      targetEvidence = getWorkspacePostEvidence(postData, {
+        postId,
+        targetType,
+        replyId,
+      });
+    }
+
+    if (reportSubject === "user" && !targetUserUid) {
+      throw new HttpsError(
+        "failed-precondition",
+        "この投稿はユーザー識別情報が不足しているため、内容を通報してください。",
+      );
+    }
+    if (reportSubject === "user" && targetUserUid === reporterUid) {
+      throw new HttpsError("invalid-argument", "自分自身は通報できません。");
+    }
+
+    const now = Timestamp.now();
+    const caseId = await createSupportCaseWithEvidence({
+      caseData: {
+        caseType: "safety_report",
+        reportSubject,
+        reason,
+        details,
+        teamId,
+        reporterUid,
+        reporterDisplayName: normalizeCaseText(memberData.name, 200),
+        targetType,
+        targetDocumentPath,
+        targetPostId: postId || null,
+        targetReplyId: replyId || null,
+        targetDailyReportId: dailyReportId || null,
+        targetCommentId: commentId || null,
+        targetUserUid: targetUserUid || null,
+        targetUserDisplayName,
+        status: "received",
+        createdAt: now,
+        statusUpdatedAt: now,
+        resolvedAt: null,
+        deleteAfter: null,
+        legalHold: false,
+        source: "app",
+      },
+      evidence: {
+        eventType: "reported",
+        capturedAt: now,
+        snapshot: targetEvidence,
+      },
+    });
+
+    logger.info("Safety report received.", {
+      caseId,
+      teamId,
+      targetType,
+      reportSubject,
+    });
+    return { accepted: true, caseId };
+  },
+);
+
+exports.submitSupportRequest = onCall(
+  {
+    region: "asia-northeast1",
+    timeoutSeconds: 30,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const reporterUid = request.auth?.uid;
+    if (!reporterUid) {
+      throw new HttpsError("unauthenticated", "ログインが必要です。");
+    }
+
+    const input = request.data || {};
+    const category = normalizeCaseText(input.category, 100);
+    const details = normalizeCaseText(input.details, 2000);
+    if (!SUPPORT_REQUEST_CATEGORIES.has(category) || !details) {
+      throw new HttpsError("invalid-argument", "相談内容を入力してください。");
+    }
+
+    const { teamId, memberData } = await getAuthenticatedTeamMember(
+      input.teamId,
+      reporterUid,
+    );
+    const now = Timestamp.now();
+    const caseId = await createSupportCaseWithEvidence({
+      caseData: {
+        caseType: "support_request",
+        category,
+        details,
+        teamId,
+        reporterUid,
+        reporterDisplayName: normalizeCaseText(memberData.name, 200),
+        status: "received",
+        createdAt: now,
+        statusUpdatedAt: now,
+        resolvedAt: null,
+        deleteAfter: null,
+        legalHold: false,
+        source: "app_settings",
+      },
+    });
+
+    logger.info("Support request received.", { caseId, teamId, category });
+    return { accepted: true, caseId };
+  },
+);
+
+exports.trackReportedWorkspacePostChanges = onDocumentWritten(
+  {
+    document: "teams/{teamId}/workspacePosts/{postId}",
+    region: "asia-northeast1",
+    timeoutSeconds: 60,
+    memory: "256MiB",
+  },
+  async (event) => {
+    const beforeData = event.data?.before.exists
+      ? event.data.before.data() || {}
+      : null;
+    const afterData = event.data?.after.exists
+      ? event.data.after.data() || {}
+      : null;
+    if (!beforeData) return;
+
+    const { teamId, postId } = event.params;
+    if (
+      getWorkspaceDocumentFingerprint(beforeData, postId) ===
+      getWorkspaceDocumentFingerprint(afterData, postId)
+    ) {
+      return;
+    }
+
+    const targetDocumentPath = `teams/${teamId}/workspacePosts/${postId}`;
+    const casesSnapshot = await firestore
+      .collection(SUPPORT_CASE_COLLECTION)
+      .where("targetDocumentPath", "==", targetDocumentPath)
+      .get();
+    const activeCases = casesSnapshot.docs.filter((caseSnapshot) =>
+      ACTIVE_SUPPORT_CASE_STATUSES.has(caseSnapshot.data()?.status),
+    );
+    if (activeCases.length === 0) return;
+
+    const capturedAt = Timestamp.now();
+    const writer = firestore.bulkWriter();
+    activeCases.forEach((caseSnapshot) => {
+      const caseData = caseSnapshot.data() || {};
+      const evidenceOptions = {
+        postId,
+        targetType: caseData.targetType,
+        replyId: caseData.targetReplyId || "",
+      };
+      const beforeSnapshot = getWorkspacePostEvidence(
+        beforeData,
+        evidenceOptions,
+      );
+      const afterSnapshot = getWorkspacePostEvidence(afterData, evidenceOptions);
+      if (JSON.stringify(beforeSnapshot) === JSON.stringify(afterSnapshot)) return;
+      writer.set(caseSnapshot.ref.collection("evidence").doc(), {
+        eventType: afterData ? "updated" : "deleted",
+        capturedAt,
+        before: beforeSnapshot,
+        after: afterSnapshot,
+      });
+    });
+    await writer.close();
+  },
+);
+
+exports.trackReportedDailyReportChanges = onDocumentWritten(
+  {
+    document: "teams/{teamId}/dailyReports/{reportId}",
+    region: "asia-northeast1",
+    timeoutSeconds: 60,
+    memory: "256MiB",
+  },
+  async (event) => {
+    const beforeData = event.data?.before.exists
+      ? event.data.before.data() || {}
+      : null;
+    const afterData = event.data?.after.exists
+      ? event.data.after.data() || {}
+      : null;
+    if (!beforeData) return;
+
+    const { teamId, reportId } = event.params;
+    if (
+      getDailyReportDocumentFingerprint(beforeData, reportId) ===
+      getDailyReportDocumentFingerprint(afterData, reportId)
+    ) {
+      return;
+    }
+
+    const targetDocumentPath = `teams/${teamId}/dailyReports/${reportId}`;
+    const casesSnapshot = await firestore
+      .collection(SUPPORT_CASE_COLLECTION)
+      .where("targetDocumentPath", "==", targetDocumentPath)
+      .get();
+    const activeCases = casesSnapshot.docs.filter((caseSnapshot) =>
+      ACTIVE_SUPPORT_CASE_STATUSES.has(caseSnapshot.data()?.status),
+    );
+    if (activeCases.length === 0) return;
+
+    const capturedAt = Timestamp.now();
+    const writer = firestore.bulkWriter();
+    activeCases.forEach((caseSnapshot) => {
+      const caseData = caseSnapshot.data() || {};
+      const evidenceOptions = {
+        reportId,
+        commentId: caseData.targetCommentId || "",
+      };
+      const beforeSnapshot = getDailyReportEvidence(
+        beforeData,
+        evidenceOptions,
+      );
+      const afterSnapshot = getDailyReportEvidence(afterData, evidenceOptions);
+      if (JSON.stringify(beforeSnapshot) === JSON.stringify(afterSnapshot)) return;
+      writer.set(caseSnapshot.ref.collection("evidence").doc(), {
+        eventType: afterData ? "updated" : "deleted",
+        capturedAt,
+        before: beforeSnapshot,
+        after: afterSnapshot,
+      });
+    });
+    await writer.close();
+  },
+);
+
+exports.applySupportCaseRetention = onDocumentUpdated(
+  {
+    document: `${SUPPORT_CASE_COLLECTION}/{caseId}`,
+    region: "asia-northeast1",
+    timeoutSeconds: 30,
+    memory: "256MiB",
+  },
+  async (event) => {
+    const beforeData = event.data.before.data() || {};
+    const afterData = event.data.after.data() || {};
+    const updates = {};
+
+    if (beforeData.status !== afterData.status) {
+      updates.statusUpdatedAt = Timestamp.now();
+      if (afterData.status === "resolved") {
+        const resolvedAt = Timestamp.now();
+        updates.resolvedAt = resolvedAt;
+        updates.deleteAfter = afterData.legalHold
+          ? null
+          : Timestamp.fromMillis(
+              resolvedAt.toMillis() + SUPPORT_CASE_RETENTION_MS,
+            );
+      } else {
+        updates.resolvedAt = null;
+        updates.deleteAfter = null;
+      }
+    }
+
+    if (beforeData.legalHold !== afterData.legalHold) {
+      if (afterData.legalHold) {
+        updates.deleteAfter = null;
+      } else if (afterData.status === "resolved") {
+        const resolvedAt =
+          afterData.resolvedAt instanceof Timestamp
+            ? afterData.resolvedAt
+            : Timestamp.now();
+        if (!(afterData.resolvedAt instanceof Timestamp)) {
+          updates.resolvedAt = resolvedAt;
+        }
+        updates.deleteAfter = Timestamp.fromMillis(
+          resolvedAt.toMillis() + SUPPORT_CASE_RETENTION_MS,
+        );
+      }
+    }
+
+    if (Object.keys(updates).length > 0) {
+      await event.data.after.ref.set(updates, { merge: true });
+    }
+  },
+);
+
+exports.deleteExpiredSupportCases = onSchedule(
+  {
+    region: "asia-northeast1",
+    schedule: "30 3 * * *",
+    timeZone: "Asia/Tokyo",
+    timeoutSeconds: 540,
+    memory: "512MiB",
+  },
+  async () => {
+    const now = Timestamp.now();
+    let deletedCaseCount = 0;
+
+    while (true) {
+      const expiredSnapshot = await firestore
+        .collection(SUPPORT_CASE_COLLECTION)
+        .where("deleteAfter", "<=", now)
+        .limit(100)
+        .get();
+      if (expiredSnapshot.empty) break;
+
+      let deletedInBatch = 0;
+      for (const caseSnapshot of expiredSnapshot.docs) {
+        const caseData = caseSnapshot.data() || {};
+        if (caseData.legalHold || caseData.status !== "resolved") continue;
+        await firestore.recursiveDelete(caseSnapshot.ref);
+        deletedCaseCount += 1;
+        deletedInBatch += 1;
+      }
+      if (deletedInBatch === 0 || expiredSnapshot.size < 100) break;
+    }
+
+    logger.info("Expired support cases deleted.", { deletedCaseCount });
+  },
+);
 
 exports.joinTeamWithInvite = onCall(
   {
@@ -625,18 +1195,17 @@ exports.deleteUserAccount = onCall(
     const context = await getAccountDeletionContext(uid);
     assertAccountDeletionEligible(context);
 
-    const evidenceHoldUntil = Timestamp.fromMillis(
-      Date.now() + 365 * 24 * 60 * 60 * 1000,
-    );
     let anonymizedDocumentCount = 0;
     let anonymizedStorageFileCount = 0;
+    let deletedSupportCaseCount = 0;
 
     try {
+      deletedSupportCaseCount =
+        await deleteNonSafetySupportCasesForAccount(uid);
       for (const teamEntry of context.teamEntries) {
         anonymizedDocumentCount += await anonymizeAccountDataInTeam({
           uid,
           teamEntry,
-          evidenceHoldUntil,
         });
         anonymizedStorageFileCount += await anonymizeAccountStorageInTeam({
           uid,
@@ -661,6 +1230,7 @@ exports.deleteUserAccount = onCall(
         ).length,
         anonymizedDocumentCount,
         anonymizedStorageFileCount,
+        deletedSupportCaseCount,
       };
     } catch (error) {
       if (error instanceof HttpsError) throw error;

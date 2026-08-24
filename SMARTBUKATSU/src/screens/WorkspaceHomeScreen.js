@@ -24,6 +24,7 @@ import {
   getWorkspacePostsForAudienceSync,
   incrementWorkspacePostReaction,
   markWorkspacePostRead,
+  submitSafetyReport,
   updateWorkspacePost,
   updateWorkspacePostAudiences,
   updateWorkspacePostReply,
@@ -47,8 +48,15 @@ const COLORS = {
 };
 
 const REACTION_EMOJIS = ["👍", "❤️", "😂", "🔥", "👀", "🙏"];
-const REPORT_REASONS = ["暴言・誹謗中傷", "スパム・宣伝", "その他"];
-const REPORTING_ENABLED = false;
+const REPORT_REASONS = [
+  { value: "harassment_bullying", label: "いじめ・嫌がらせ・誹謗中傷" },
+  { value: "threat_violence", label: "脅迫・暴力的な内容" },
+  { value: "hate_discrimination", label: "差別的な内容" },
+  { value: "sexual_inappropriate", label: "性的・不適切な内容" },
+  { value: "impersonation_privacy", label: "なりすまし・個人情報侵害" },
+  { value: "spam_fraud", label: "スパム・詐欺" },
+  { value: "other", label: "その他" },
+];
 const MANAGER_ROLES = ["owner", "admin", "staff"];
 const DEFAULT_ALLOWED_ROLE_GROUPS = ["staff", "captain", "member"];
 const ROLE_GROUP_OPTIONS = [
@@ -444,7 +452,10 @@ const WorkspaceHomeScreen = ({
   const [isNotifModalVisible, setIsNotifModalVisible] = useState(false);
   const [isReportModalVisible, setIsReportModalVisible] = useState(false);
   const [reportingTarget, setReportingTarget] = useState(null);
-  const [isDashboardVisible, setIsDashboardVisible] = useState(false);
+  const [reportSubject, setReportSubject] = useState("content");
+  const [reportReason, setReportReason] = useState("");
+  const [reportDetails, setReportDetails] = useState("");
+  const [isSubmittingReport, setIsSubmittingReport] = useState(false);
   const [selectedUnreadPost, setSelectedUnreadPost] = useState(null);
 
   const mainInputRef = useRef(null);
@@ -550,25 +561,6 @@ const WorkspaceHomeScreen = ({
       }
     }
   }, [isOffline]);
-
-  const reportedItems = [];
-  posts.forEach((post) => {
-    if (post.status === "deleted") return;
-    if (post.reported && post.reported.length > 0)
-      reportedItems.push({ type: "post", item: post, postId: post.id });
-
-    post.replies?.forEach((reply) => {
-      if (reply.status === "deleted") return;
-      if (reply.reported && reply.reported.length > 0)
-        reportedItems.push({
-          type: "reply",
-          item: reply,
-          postId: post.id,
-          replyId: reply.id,
-        });
-    });
-  });
-  const reportCount = reportedItems.length;
 
   const resetChannelForm = () => {
     setIsAddChannelModalVisible(false);
@@ -721,7 +713,6 @@ const WorkspaceHomeScreen = ({
       reactions: {},
       attachments: [],
       replies: [],
-      reported: [],
       readBy: isReadEligible ? [currentUser] : [],
       readByUids: isReadEligible && currentUserUid ? [currentUserUid] : [],
       isPinned: false,
@@ -770,7 +761,6 @@ const WorkspaceHomeScreen = ({
         content: currentReplyText,
         time: "たった今",
         createdAt: Date.now(),
-        reported: [],
         status: isOffline ? "pending" : "sent",
       },
     ];
@@ -791,129 +781,71 @@ const WorkspaceHomeScreen = ({
     setIsLoading(false);
   };
 
-  const openReportModal = (type, postId, replyId = null) => {
-    setReportingTarget({ type, postId, replyId });
+  const closeReportModal = () => {
+    if (isSubmittingReport) return;
+    setIsReportModalVisible(false);
+    setReportingTarget(null);
+    setReportSubject("content");
+    setReportReason("");
+    setReportDetails("");
+  };
+
+  const openReportModal = (
+    type,
+    postId,
+    replyId = null,
+    targetUserUid = "",
+  ) => {
+    setReportingTarget({ type, postId, replyId, targetUserUid });
+    setReportSubject("content");
+    setReportReason("");
+    setReportDetails("");
     setIsReportModalVisible(true);
     setActiveLongPressPostId(null);
     setActiveLongPressReply(null);
   };
 
-  const submitReport = (reason) => {
+  const submitReport = async () => {
     if (isOffline) {
       Alert.alert("エラー", "オフライン時は使用できません。");
-      setIsReportModalVisible(false);
       return;
     }
-    const targetPost = posts.find((post) => post.id === reportingTarget.postId);
-    if (targetPost) {
-      if (reportingTarget.type === "post") {
-        const reported = [
-          ...(targetPost.reported || []),
-          { by: displayUserName, reason },
-        ];
-        setPosts((prevPosts) =>
-          prevPosts.map((post) =>
-            post.id === targetPost.id ? { ...post, reported } : post,
-          ),
-        );
-        persistPostUpdate(targetPost.id, { reported });
-      } else {
-        const replies = (targetPost.replies || []).map((reply) =>
-          reply.id === reportingTarget.replyId
-            ? {
-                ...reply,
-                reported: [
-                  ...(reply.reported || []),
-                  { by: displayUserName, reason },
-                ],
-              }
-            : reply,
-        );
-        setPosts((prevPosts) =>
-          prevPosts.map((post) =>
-            post.id === targetPost.id ? { ...post, replies } : post,
-          ),
-        );
-        persistReplyUpdate(
-          targetPost.id,
-          reportingTarget.replyId,
-          (reply) => ({
-            ...reply,
-            reported: [
-              ...(reply.reported || []),
-              { by: displayUserName, reason },
-            ],
-          }),
-        );
-      }
+    if (!reportingTarget || !reportReason) {
+      Alert.alert("入力確認", "通報理由を選択してください。");
+      return;
     }
-    setIsReportModalVisible(false);
-    setReportingTarget(null);
-    Alert.alert("報告完了", "管理者に報告しました。");
-  };
 
-  const handleResolveReport = (type, postId, replyId, action) => {
-    const targetPost = posts.find((post) => post.id === postId);
-    if (!targetPost) return;
-
-    if (action === "delete") {
-      if (type === "post") {
-        const patch = {
-          status: "deleted",
-          deletedBy: displayUserName,
-          deletedAt: new Date().toISOString(),
-        };
-        setPosts((prevPosts) =>
-          prevPosts.map((post) =>
-            post.id === postId ? { ...post, ...patch } : post,
-          ),
-        );
-        persistPostUpdate(postId, patch);
-      } else {
-        const replies = (targetPost.replies || []).map((reply) =>
-          reply.id === replyId
-            ? {
-                ...reply,
-                status: "deleted",
-                deletedBy: displayUserName,
-                deletedAt: new Date().toISOString(),
-              }
-            : reply,
-        );
-        setPosts((prevPosts) =>
-          prevPosts.map((post) =>
-            post.id === postId ? { ...post, replies } : post,
-          ),
-        );
-        persistReplyUpdate(postId, replyId, (reply) => ({
-          ...reply,
-          status: "deleted",
-          deletedBy: displayUserName,
-          deletedAt: new Date().toISOString(),
-        }));
-      }
-    } else if (action === "ignore") {
-      if (type === "post") {
-        setPosts((prevPosts) =>
-          prevPosts.map((post) =>
-            post.id === postId ? { ...post, reported: [] } : post,
-          ),
-        );
-        persistPostUpdate(postId, { reported: [] });
-      } else {
-        const replies = (targetPost.replies || []).map((reply) =>
-          reply.id === replyId ? { ...reply, reported: [] } : reply,
-        );
-        setPosts((prevPosts) =>
-          prevPosts.map((post) =>
-            post.id === postId ? { ...post, replies } : post,
-          ),
-        );
-        persistReplyUpdate(postId, replyId, (reply) => ({
-          ...reply,
-          reported: [],
-        }));
-      }
+    setIsSubmittingReport(true);
+    try {
+      await submitSafetyReport({
+        teamId: activeTeamId,
+        targetType:
+          reportingTarget.type === "reply"
+            ? "workspace_reply"
+            : "workspace_post",
+        reportSubject,
+        reason: reportReason,
+        details: reportDetails,
+        postId: reportingTarget.postId,
+        replyId: reportingTarget.replyId || null,
+      });
+      setIsReportModalVisible(false);
+      setReportingTarget(null);
+      setReportSubject("content");
+      setReportReason("");
+      setReportDetails("");
+      Alert.alert(
+        "通報を受け付けました",
+        "運営が内容を確認します。緊急の危険がある場合は、保護者・所属団体責任者・警察等の適切な窓口にも連絡してください。",
+      );
+    } catch (error) {
+      console.log("通報送信エラー:", error);
+      Alert.alert(
+        "通報できませんでした",
+        error?.message || "通信状態を確認し、時間をおいて再度お試しください。",
+      );
+    } finally {
+      setIsSubmittingReport(false);
     }
   };
 
@@ -1119,8 +1051,6 @@ const WorkspaceHomeScreen = ({
 
   const insertText = (textToInsert) =>
     setNewPostText((prev) => prev + textToInsert);
-  const isReportedByMe = (item) =>
-    item.reported?.some((r) => r.by === displayUserName);
 
   let filteredPosts = posts.filter(
     (post) =>
@@ -1143,14 +1073,6 @@ const WorkspaceHomeScreen = ({
     });
 
   const renderPostCard = (post, isPinnedArea = false) => {
-    if (REPORTING_ENABLED && isReportedByMe(post) && !isStaffOrAbove)
-      return (
-        <View key={post.id} style={styles.reportedMaskCard}>
-          <Text style={styles.reportedMaskText}>
-            ※管理者に報告済みのため非表示
-          </Text>
-        </View>
-      );
     const isPending = post.status === "pending";
     const validReplies = post.replies
       ? post.replies.filter((r) => r.status !== "deleted")
@@ -1172,10 +1094,6 @@ const WorkspaceHomeScreen = ({
         style={[
           styles.postCard,
           isPinnedArea && styles.pinnedCard,
-          REPORTING_ENABLED &&
-          post.reported?.length > 0 &&
-            isStaffOrAbove &&
-            styles.adminReportedCard,
           isPending && styles.pendingCard,
           isPinnedArea && { marginBottom: 10 },
           activeLongPressPostId === post.id && {
@@ -1234,14 +1152,6 @@ const WorkspaceHomeScreen = ({
             </Text>
           </View>
         )}
-        {REPORTING_ENABLED && post.reported?.length > 0 && isStaffOrAbove && !isPending && (
-          <View style={styles.adminReportedHeader}>
-            <Text style={styles.adminReportedHeaderText}>
-              🚨 {post.reported.length}件の報告があります
-            </Text>
-          </View>
-        )}
-
         <View style={styles.postHeader}>
           <View
             style={[styles.userIcon, isPending && { backgroundColor: "#aaa" }]}
@@ -1411,8 +1321,10 @@ const WorkspaceHomeScreen = ({
               <Text style={styles.longPressMenuText}>↩️ リプライする</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.longPressMenuItem, !REPORTING_ENABLED && { display: "none" }]}
-              onPress={() => openReportModal("post", post.id)}
+              style={styles.longPressMenuItem}
+              onPress={() =>
+                openReportModal("post", post.id, null, post.authorUid || "")
+              }
             >
               <Text
                 style={[styles.longPressMenuText, { color: COLORS.danger }]}
@@ -1459,22 +1371,12 @@ const WorkspaceHomeScreen = ({
 
             {validReplies.map((reply) => {
               const isReplyPending = reply.status === "pending";
-              if (REPORTING_ENABLED && isReportedByMe(reply) && !isStaffOrAbove)
-                return (
-                  <View key={reply.id} style={styles.reportedMaskCard}>
-                    <Text style={styles.reportedMaskText}>※報告済み</Text>
-                  </View>
-                );
               return (
                 <TouchableOpacity
                   key={reply.id}
                   style={[
                     styles.replyCard,
                     { position: "relative", zIndex: 1 },
-                    REPORTING_ENABLED &&
-                    reply.reported?.length > 0 &&
-                      isStaffOrAbove &&
-                      styles.adminReportedCard,
                     isReplyPending && styles.pendingCard,
                     activeLongPressReply?.replyId === reply.id && {
                       zIndex: 9999,
@@ -1553,9 +1455,14 @@ const WorkspaceHomeScreen = ({
                           </TouchableOpacity>
                         )}
                         <TouchableOpacity
-                          style={[styles.longPressMenuItem, !REPORTING_ENABLED && { display: "none" }]}
+                          style={styles.longPressMenuItem}
                           onPress={() =>
-                            openReportModal("reply", post.id, reply.id)
+                            openReportModal(
+                              "reply",
+                              post.id,
+                              reply.id,
+                              reply.authorUid || "",
+                            )
                           }
                         >
                           <Text
@@ -1647,20 +1554,6 @@ const WorkspaceHomeScreen = ({
                 </View>
               )}
             </TouchableOpacity>
-
-            {REPORTING_ENABLED && isStaffOrAbove && (
-              <TouchableOpacity
-                style={styles.headerIconBtn}
-                onPress={() => setIsDashboardVisible(true)}
-              >
-                <Text style={styles.headerIcon}>🚨</Text>
-                {reportCount > 0 && (
-                  <View style={styles.badge}>
-                    <Text style={styles.badgeText}>{reportCount}</Text>
-                  </View>
-                )}
-              </TouchableOpacity>
-            )}
 
             <TouchableOpacity
               style={styles.headerIconBtn}
@@ -2240,117 +2133,118 @@ const WorkspaceHomeScreen = ({
       </Modal>
 
       <Modal
-        visible={REPORTING_ENABLED && isReportModalVisible}
+        visible={isReportModalVisible}
         transparent={true}
         animationType="fade"
       >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text
-              style={[
-                styles.modalTitle,
-                { textAlign: "center", marginBottom: 20 },
-              ]}
-            >
-              管理者に報告する
-            </Text>
-            {REPORT_REASONS.map((reason) => (
-              <TouchableOpacity
-                key={reason}
-                style={styles.reasonBtn}
-                onPress={() => submitReport(reason)}
-              >
-                <Text style={styles.reasonBtnText}>{reason}</Text>
-              </TouchableOpacity>
-            ))}
-            <TouchableOpacity
-              style={{ marginTop: 20, alignItems: "center", padding: 10 }}
-              onPress={() => setIsReportModalVisible(false)}
-            >
-              <Text style={{ color: "#888", fontWeight: "bold", fontSize: 15 }}>
-                キャンセル
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+        >
+          <View style={[styles.modalContent, { maxHeight: "90%" }]}>
+            <ScrollView keyboardShouldPersistTaps="handled">
+              <Text style={[styles.modalTitle, { textAlign: "center" }]}>
+                運営へ通報する
               </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
+              <Text style={styles.reportHelpText}>
+                通報内容と通報時点の対象データは、調査と安全対応のため通常データから分離して保全されます。
+              </Text>
 
-      <Modal
-        visible={REPORTING_ENABLED && isDashboardVisible}
-        transparent={true}
-        animationType="slide"
-      >
-        <SafeAreaView style={styles.dashboardContainer}>
-          <View style={styles.dashboardHeader}>
-            <Text style={styles.dashboardTitle}>🚨 通報管理</Text>
-            <TouchableOpacity onPress={() => setIsDashboardVisible(false)}>
-              <Text style={{ fontSize: 24 }}>✕</Text>
-            </TouchableOpacity>
-          </View>
-          <ScrollView style={styles.dashboardContent}>
-            {reportedItems.length === 0 ? (
-              <Text style={styles.emptyText}>
-                現在、通報された投稿はありません。
+              <Text style={styles.reportSectionLabel}>通報対象</Text>
+              <View style={styles.reportSubjectRow}>
+                <TouchableOpacity
+                  style={[
+                    styles.reportSubjectBtn,
+                    reportSubject === "content" && styles.reportOptionSelected,
+                  ]}
+                  onPress={() => setReportSubject("content")}
+                  disabled={isSubmittingReport}
+                >
+                  <Text style={styles.reportSubjectText}>投稿内容</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.reportSubjectBtn,
+                    reportSubject === "user" && styles.reportOptionSelected,
+                    (!reportingTarget?.targetUserUid ||
+                      reportingTarget?.targetUserUid === currentUserUid) &&
+                      styles.reportOptionDisabled,
+                  ]}
+                  onPress={() => setReportSubject("user")}
+                  disabled={
+                    isSubmittingReport ||
+                    !reportingTarget?.targetUserUid ||
+                    reportingTarget?.targetUserUid === currentUserUid
+                  }
+                >
+                  <Text style={styles.reportSubjectText}>投稿したユーザー</Text>
+                </TouchableOpacity>
+              </View>
+              {(!reportingTarget?.targetUserUid ||
+                reportingTarget?.targetUserUid === currentUserUid) && (
+                <Text style={styles.reportHintText}>
+                  ユーザー通報を利用できないため、必要な場合は投稿内容を通報してください。
+                </Text>
+              )}
+
+              <Text style={styles.reportSectionLabel}>理由</Text>
+              {REPORT_REASONS.map((reason) => (
+                <TouchableOpacity
+                  key={reason.value}
+                  style={[
+                    styles.reasonBtn,
+                    reportReason === reason.value && styles.reportOptionSelected,
+                  ]}
+                  onPress={() => setReportReason(reason.value)}
+                  disabled={isSubmittingReport}
+                >
+                  <Text style={styles.reasonBtnText}>{reason.label}</Text>
+                </TouchableOpacity>
+              ))}
+
+              <Text style={styles.reportSectionLabel}>補足（任意）</Text>
+              <TextInput
+                style={styles.reportDetailsInput}
+                value={reportDetails}
+                onChangeText={setReportDetails}
+                placeholder="状況や運営に伝えたいことを入力してください"
+                multiline
+                maxLength={1000}
+                editable={!isSubmittingReport}
+              />
+              <Text style={styles.reportCharacterCount}>
+                {reportDetails.length}/1000
               </Text>
-            ) : (
-              reportedItems.map((ri, index) => (
-                <View key={index} style={styles.dashboardCard}>
-                  <Text style={{ fontWeight: "bold", marginBottom: 5 }}>
-                    [{ri.type === "post" ? "投稿" : "返信"}] {ri.item.user}
-                    の書き込み
-                  </Text>
-                  <Text
-                    style={{
-                      color: COLORS.textSub,
-                      backgroundColor: "#f0f0f0",
-                      padding: 10,
-                      borderRadius: 5,
-                      marginBottom: 10,
-                    }}
-                  >
-                    {ri.item.content}
-                  </Text>
-                  <View
-                    style={{ flexDirection: "row", justifyContent: "flex-end" }}
-                  >
-                    <TouchableOpacity
-                      style={[
-                        styles.dashBtn,
-                        { backgroundColor: COLORS.success, marginRight: 10 },
-                      ]}
-                      onPress={() =>
-                        handleResolveReport(
-                          ri.type,
-                          ri.postId,
-                          ri.replyId,
-                          "ignore",
-                        )
-                      }
-                    >
-                      <Text style={{ color: "#fff" }}>✅ 問題なし</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[
-                        styles.dashBtn,
-                        { backgroundColor: COLORS.danger },
-                      ]}
-                      onPress={() =>
-                        handleResolveReport(
-                          ri.type,
-                          ri.postId,
-                          ri.replyId,
-                          "delete",
-                        )
-                      }
-                    >
-                      <Text style={{ color: "#fff" }}>🗑 削除</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              ))
-            )}
-          </ScrollView>
-        </SafeAreaView>
+
+              <TouchableOpacity
+                style={[
+                  styles.reportSubmitBtn,
+                  (!reportReason || isSubmittingReport) &&
+                    styles.reportOptionDisabled,
+                ]}
+                onPress={submitReport}
+                disabled={!reportReason || isSubmittingReport}
+              >
+                {isSubmittingReport ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.reportSubmitText}>通報を送信</Text>
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={{ marginTop: 10, alignItems: "center", padding: 10 }}
+                onPress={closeReportModal}
+                disabled={isSubmittingReport}
+              >
+                <Text
+                  style={{ color: "#888", fontWeight: "bold", fontSize: 15 }}
+                >
+                  キャンセル
+                </Text>
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );
@@ -3009,6 +2903,77 @@ const styles = StyleSheet.create({
     color: COLORS.danger,
     fontWeight: "bold",
   },
+  reportHelpText: {
+    color: COLORS.textSub,
+    fontSize: 12,
+    lineHeight: 18,
+    marginBottom: 18,
+  },
+  reportSectionLabel: {
+    color: COLORS.textMain,
+    fontSize: 14,
+    fontWeight: "bold",
+    marginBottom: 8,
+    marginTop: 4,
+  },
+  reportSubjectRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 8,
+  },
+  reportSubjectBtn: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 48,
+    paddingHorizontal: 10,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 8,
+    backgroundColor: "#f9f9f9",
+  },
+  reportSubjectText: {
+    color: COLORS.textMain,
+    fontSize: 13,
+    fontWeight: "bold",
+    textAlign: "center",
+  },
+  reportOptionSelected: {
+    borderColor: COLORS.danger,
+    backgroundColor: "#fff1f0",
+  },
+  reportOptionDisabled: { opacity: 0.45 },
+  reportHintText: {
+    color: COLORS.textSub,
+    fontSize: 11,
+    lineHeight: 16,
+    marginBottom: 12,
+  },
+  reportDetailsInput: {
+    minHeight: 100,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 8,
+    padding: 12,
+    textAlignVertical: "top",
+    backgroundColor: "#fff",
+    color: COLORS.textMain,
+  },
+  reportCharacterCount: {
+    color: COLORS.textSub,
+    fontSize: 11,
+    textAlign: "right",
+    marginTop: 4,
+    marginBottom: 12,
+  },
+  reportSubmitBtn: {
+    minHeight: 48,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: COLORS.danger,
+  },
+  reportSubmitText: { color: "#fff", fontSize: 15, fontWeight: "bold" },
 });
 
 export default WorkspaceHomeScreen;

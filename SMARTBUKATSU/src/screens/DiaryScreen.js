@@ -21,8 +21,10 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useAuth } from "../AuthContext";
 import {
   createDailyReport,
+  createWorkspacePost,
   updateDailyReport,
   deleteDailyReport,
+  submitSafetyReport,
 } from "../services/firestoreService";
 import {
   DEFAULT_ALERT_THRESHOLDS,
@@ -86,6 +88,16 @@ const getTodayString = () => {
   return `${today.getFullYear()}/${String(today.getMonth() + 1).padStart(2, "0")}/${String(today.getDate()).padStart(2, "0")}`;
 };
 
+const REPORT_REASONS = [
+  { value: "harassment_bullying", label: "いじめ・嫌がらせ・誹謗中傷" },
+  { value: "threat_violence", label: "脅迫・暴力的な内容" },
+  { value: "hate_discrimination", label: "差別的な内容" },
+  { value: "sexual_inappropriate", label: "性的・不適切な内容" },
+  { value: "impersonation_privacy", label: "なりすまし・個人情報侵害" },
+  { value: "spam_fraud", label: "スパム・詐欺" },
+  { value: "other", label: "その他" },
+];
+
 const DiaryScreen = ({
   navigation,
   isAdmin,
@@ -94,7 +106,6 @@ const DiaryScreen = ({
   isOffline,
   grades,
   positions,
-  posts,
   setPosts,
   userProfiles = {},
   dailyReports = [],
@@ -126,6 +137,12 @@ const DiaryScreen = ({
   const [selectedReport, setSelectedReport] = useState(null);
   const [commentText, setCommentText] = useState("");
   const [editingReportId, setEditingReportId] = useState(null);
+  const [isReportModalVisible, setIsReportModalVisible] = useState(false);
+  const [reportingComment, setReportingComment] = useState(null);
+  const [reportSubject, setReportSubject] = useState("content");
+  const [reportReason, setReportReason] = useState("");
+  const [reportDetails, setReportDetails] = useState("");
+  const [isSubmittingReport, setIsSubmittingReport] = useState(false);
 
   const [isLoading, setIsLoading] = useState(false);
 
@@ -462,12 +479,28 @@ const DiaryScreen = ({
                 reactions: {},
                 attachments: [],
                 replies: [],
-                reported: [],
                 readCount: 0,
                 isPinned: false,
                 status: isOffline ? "pending" : "sent",
+                createdAt: Date.now(),
               };
-              setPosts([sharedPost, ...posts]);
+              setPosts((prevPosts) => [sharedPost, ...prevPosts]);
+              if (activeTeamId && !isOffline) {
+                createWorkspacePost(activeTeamId, sharedPost).catch((error) => {
+                  console.log("共有振り返り投稿エラー:", error);
+                  setPosts((prevPosts) =>
+                    prevPosts.map((post) =>
+                      post.id === sharedPost.id
+                        ? { ...post, status: "pending" }
+                        : post,
+                    ),
+                  );
+                  Alert.alert(
+                    "送信待ちにしました",
+                    "共有振り返りを保存できませんでした。通信復旧後に掲示板から再送します。",
+                  );
+                });
+              }
             },
           },
         ],
@@ -718,6 +751,69 @@ const DiaryScreen = ({
       console.log("コメント送信エラー:", e);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const closeReportModal = () => {
+    if (isSubmittingReport) return;
+    setIsReportModalVisible(false);
+    setReportingComment(null);
+    setReportSubject("content");
+    setReportReason("");
+    setReportDetails("");
+  };
+
+  const openCommentReportModal = (comment) => {
+    if (!selectedReport?.id || !comment?.id) return;
+    setReportingComment({
+      dailyReportId: selectedReport.id,
+      commentId: comment.id,
+      targetUserUid: comment.uid || "",
+    });
+    setReportSubject("content");
+    setReportReason("");
+    setReportDetails("");
+    setIsReportModalVisible(true);
+  };
+
+  const submitCommentReport = async () => {
+    if (isOffline) {
+      Alert.alert("エラー", "オフライン時は使用できません。");
+      return;
+    }
+    if (!activeTeamId || !reportingComment || !reportReason) {
+      Alert.alert("入力確認", "通報理由を選択してください。");
+      return;
+    }
+
+    setIsSubmittingReport(true);
+    try {
+      await submitSafetyReport({
+        teamId: activeTeamId,
+        targetType: "daily_report_comment",
+        reportSubject,
+        reason: reportReason,
+        details: reportDetails,
+        dailyReportId: reportingComment.dailyReportId,
+        commentId: reportingComment.commentId,
+      });
+      setIsReportModalVisible(false);
+      setReportingComment(null);
+      setReportSubject("content");
+      setReportReason("");
+      setReportDetails("");
+      Alert.alert(
+        "通報を受け付けました",
+        "運営が内容を確認します。緊急の危険がある場合は、保護者・所属団体責任者・警察等の適切な窓口にも連絡してください。",
+      );
+    } catch (error) {
+      console.log("日報コメント通報エラー:", error);
+      Alert.alert(
+        "通報できませんでした",
+        error?.message || "通信状態を確認し、時間をおいて再度お試しください。",
+      );
+    } finally {
+      setIsSubmittingReport(false);
     }
   };
 
@@ -1163,7 +1259,7 @@ const DiaryScreen = ({
 
       {/* 詳細表示モーダル */}
       <Modal
-        visible={selectedReport !== null}
+        visible={selectedReport !== null && !isReportModalVisible}
         transparent={true}
         animationType="slide"
       >
@@ -1398,10 +1494,16 @@ const DiaryScreen = ({
                       </Text>
                       <View style={styles.threadArea}>
                         {selectedReport.comments.map((c) => {
-                          const isMe = c.user === displayUserName;
+                          const isMe = c.uid
+                            ? c.uid === currentUserUid
+                            : c.user === displayUserName;
                           return (
-                            <View
+                            <TouchableOpacity
                               key={c.id}
+                              activeOpacity={0.85}
+                              delayLongPress={400}
+                              onLongPress={() => openCommentReportModal(c)}
+                              accessibilityLabel={`${c.user}のコメント。長押しで通報`}
                               style={[
                                 styles.commentBubbleWrapper,
                                 isMe
@@ -1440,7 +1542,7 @@ const DiaryScreen = ({
                                   </Text>
                                 </View>
                               </View>
-                            </View>
+                            </TouchableOpacity>
                           );
                         })}
                       </View>
@@ -1767,6 +1869,116 @@ const DiaryScreen = ({
             )}
           </KeyboardAvoidingView>
         </SafeAreaView>
+      </Modal>
+
+      <Modal
+        visible={isReportModalVisible}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={closeReportModal}
+      >
+        <KeyboardAvoidingView
+          style={styles.reportModalOverlay}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+        >
+          <View style={styles.reportModalContent}>
+            <ScrollView keyboardShouldPersistTaps="handled">
+              <Text style={styles.reportModalTitle}>運営へ通報する</Text>
+              <Text style={styles.reportHelpText}>
+                長押ししたコメントと会話部分は、調査と安全対応のため通常データから分離して保全されます。日報の体調・痛みなどの項目は通報証拠へ複製されません。
+              </Text>
+
+              <Text style={styles.reportSectionLabel}>通報対象</Text>
+              <View style={styles.reportSubjectRow}>
+                <TouchableOpacity
+                  style={[
+                    styles.reportSubjectBtn,
+                    reportSubject === "content" && styles.reportOptionSelected,
+                  ]}
+                  onPress={() => setReportSubject("content")}
+                  disabled={isSubmittingReport}
+                >
+                  <Text style={styles.reportSubjectText}>コメント内容</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.reportSubjectBtn,
+                    reportSubject === "user" && styles.reportOptionSelected,
+                    (!reportingComment?.targetUserUid ||
+                      reportingComment?.targetUserUid === currentUserUid) &&
+                      styles.reportOptionDisabled,
+                  ]}
+                  onPress={() => setReportSubject("user")}
+                  disabled={
+                    isSubmittingReport ||
+                    !reportingComment?.targetUserUid ||
+                    reportingComment?.targetUserUid === currentUserUid
+                  }
+                >
+                  <Text style={styles.reportSubjectText}>コメントしたユーザー</Text>
+                </TouchableOpacity>
+              </View>
+              {(!reportingComment?.targetUserUid ||
+                reportingComment?.targetUserUid === currentUserUid) && (
+                <Text style={styles.reportHintText}>
+                  ユーザー通報を利用できないため、必要な場合はコメント内容を通報してください。
+                </Text>
+              )}
+
+              <Text style={styles.reportSectionLabel}>理由</Text>
+              {REPORT_REASONS.map((reason) => (
+                <TouchableOpacity
+                  key={reason.value}
+                  style={[
+                    styles.reportReasonBtn,
+                    reportReason === reason.value && styles.reportOptionSelected,
+                  ]}
+                  onPress={() => setReportReason(reason.value)}
+                  disabled={isSubmittingReport}
+                >
+                  <Text style={styles.reportReasonText}>{reason.label}</Text>
+                </TouchableOpacity>
+              ))}
+
+              <Text style={styles.reportSectionLabel}>補足（任意）</Text>
+              <TextInput
+                style={styles.reportDetailsInput}
+                value={reportDetails}
+                onChangeText={setReportDetails}
+                placeholder="状況や運営に伝えたいことを入力してください"
+                multiline
+                maxLength={1000}
+                editable={!isSubmittingReport}
+              />
+              <Text style={styles.reportCharacterCount}>
+                {reportDetails.length}/1000
+              </Text>
+
+              <TouchableOpacity
+                style={[
+                  styles.reportSubmitBtn,
+                  (!reportReason || isSubmittingReport) &&
+                    styles.reportOptionDisabled,
+                ]}
+                onPress={submitCommentReport}
+                disabled={!reportReason || isSubmittingReport}
+              >
+                {isSubmittingReport ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.reportSubmitText}>通報を送信</Text>
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.reportCancelBtn}
+                onPress={closeReportModal}
+                disabled={isSubmittingReport}
+              >
+                <Text style={styles.reportCancelText}>キャンセル</Text>
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {isLoading && (
@@ -2363,6 +2575,120 @@ const styles = StyleSheet.create({
     marginTop: 10,
     marginBottom: 10,
   },
+
+  reportModalOverlay: {
+    flex: 1,
+    justifyContent: "center",
+    padding: 20,
+    backgroundColor: "rgba(0,0,0,0.55)",
+  },
+  reportModalContent: {
+    width: "100%",
+    maxHeight: "90%",
+    padding: 20,
+    borderRadius: 14,
+    backgroundColor: "#fff",
+    elevation: 8,
+  },
+  reportModalTitle: {
+    color: "#333",
+    fontSize: 18,
+    fontWeight: "bold",
+    textAlign: "center",
+    marginBottom: 10,
+  },
+  reportHelpText: {
+    color: "#666",
+    fontSize: 12,
+    lineHeight: 18,
+    marginBottom: 18,
+  },
+  reportSectionLabel: {
+    color: "#333",
+    fontSize: 14,
+    fontWeight: "bold",
+    marginBottom: 8,
+    marginTop: 4,
+  },
+  reportSubjectRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 8,
+  },
+  reportSubjectBtn: {
+    flex: 1,
+    minHeight: 48,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 8,
+    borderWidth: 1,
+    borderColor: "#ddd",
+    borderRadius: 8,
+    backgroundColor: "#f9f9f9",
+  },
+  reportSubjectText: {
+    color: "#333",
+    fontSize: 13,
+    fontWeight: "bold",
+    textAlign: "center",
+  },
+  reportOptionSelected: {
+    borderColor: "#e74c3c",
+    backgroundColor: "#fff1f0",
+  },
+  reportOptionDisabled: { opacity: 0.45 },
+  reportHintText: {
+    color: "#666",
+    fontSize: 11,
+    lineHeight: 16,
+    marginBottom: 12,
+  },
+  reportReasonBtn: {
+    alignItems: "center",
+    paddingVertical: 13,
+    paddingHorizontal: 16,
+    borderWidth: 1,
+    borderColor: "#ddd",
+    borderRadius: 8,
+    backgroundColor: "#f9f9f9",
+    marginBottom: 8,
+  },
+  reportReasonText: {
+    color: "#e74c3c",
+    fontSize: 15,
+    fontWeight: "bold",
+  },
+  reportDetailsInput: {
+    minHeight: 100,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: "#ddd",
+    borderRadius: 8,
+    backgroundColor: "#fff",
+    color: "#333",
+    textAlignVertical: "top",
+  },
+  reportCharacterCount: {
+    color: "#666",
+    fontSize: 11,
+    textAlign: "right",
+    marginTop: 4,
+    marginBottom: 12,
+  },
+  reportSubmitBtn: {
+    minHeight: 48,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 8,
+    backgroundColor: "#e74c3c",
+  },
+  reportSubmitText: { color: "#fff", fontSize: 15, fontWeight: "bold" },
+  reportCancelBtn: {
+    alignItems: "center",
+    padding: 10,
+    marginTop: 10,
+  },
+  reportCancelText: { color: "#888", fontSize: 15, fontWeight: "bold" },
 
   globalLoadingOverlay: {
     position: "absolute",
