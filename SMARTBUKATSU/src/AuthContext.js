@@ -173,6 +173,7 @@ export function AuthProvider({ children }) {
         userName: registrationUserName,
         teamName,
         inviteCode,
+        legalConsent,
       },
     ) => {
       authFlowRef.current = "signup";
@@ -192,7 +193,7 @@ export function AuthProvider({ children }) {
           registrationUserName,
           teamName,
           inviteCode,
-          { emailVerificationRequired: true },
+          { emailVerificationRequired: true, legalConsent },
         );
         await sendEmailVerification(userCredential.user);
         return userCredential;

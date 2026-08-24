@@ -13,6 +13,7 @@ import {
   Modal,
   Clipboard,
   ActivityIndicator,
+  Linking,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../AuthContext";
@@ -47,6 +48,11 @@ import {
   normalizeInterstitialSettings,
 } from "../ads/adSettings";
 import { MEDICAL_SCALE_MAX } from "../utils/medicalScale";
+import {
+  SMARTBUKATSU_PRIVACY_URL,
+  SMARTBUKATSU_SUPPORT_URL,
+  SMARTBUKATSU_TERMS_URL,
+} from "../legal";
 
 
 const ThresholdSelector = ({ label, value, min, max, onChange }) => (
@@ -789,6 +795,18 @@ const SettingsScreen = ({
         },
       },
     ]);
+  };
+
+  const openExternalPage = async (url, pageName) => {
+    try {
+      await Linking.openURL(url);
+    } catch (error) {
+      console.log(`${pageName}を開けませんでした:`, error);
+      Alert.alert(
+        "ページを開けません",
+        `${pageName}を開けませんでした。通信環境をご確認ください。`,
+      );
+    }
   };
 
   return (
@@ -1573,6 +1591,40 @@ const SettingsScreen = ({
             </>
           )}
 
+          <View style={styles.legalContainer}>
+            <Text style={styles.legalTitle}>法務・サポート</Text>
+            <TouchableOpacity
+              style={styles.legalButton}
+              onPress={() =>
+                openExternalPage(SMARTBUKATSU_TERMS_URL, "利用規約")
+              }
+            >
+              <Text style={styles.legalButtonText}>利用規約</Text>
+              <Text style={styles.legalButtonArrow}>›</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.legalButton}
+              onPress={() =>
+                openExternalPage(
+                  SMARTBUKATSU_PRIVACY_URL,
+                  "プライバシーポリシー",
+                )
+              }
+            >
+              <Text style={styles.legalButtonText}>プライバシーポリシー</Text>
+              <Text style={styles.legalButtonArrow}>›</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.legalButton, styles.legalButtonLast]}
+              onPress={() =>
+                openExternalPage(SMARTBUKATSU_SUPPORT_URL, "お問い合わせ")
+              }
+            >
+              <Text style={styles.legalButtonText}>お問い合わせ</Text>
+              <Text style={styles.legalButtonArrow}>›</Text>
+            </TouchableOpacity>
+          </View>
+
           <View style={styles.logoutContainer}>
             <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
               <Text style={styles.logoutBtnText}>🚪 ログアウト</Text>
@@ -1860,6 +1912,34 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   hintText: { fontSize: 11, color: "#888", marginTop: 4 },
+  legalContainer: {
+    marginTop: 20,
+    borderWidth: 1,
+    borderColor: "#e5e5e5",
+    borderRadius: 10,
+    backgroundColor: "#fff",
+    overflow: "hidden",
+  },
+  legalTitle: {
+    paddingHorizontal: 15,
+    paddingVertical: 12,
+    color: "#555",
+    fontSize: 13,
+    fontWeight: "bold",
+    backgroundColor: "#f7f7f7",
+  },
+  legalButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 15,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: "#eee",
+  },
+  legalButtonLast: { borderBottomWidth: 0 },
+  legalButtonText: { color: "#1677c8", fontSize: 14, fontWeight: "bold" },
+  legalButtonArrow: { color: "#999", fontSize: 22 },
 
   optionBtn: {
     backgroundColor: "#f0f0f0",

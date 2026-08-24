@@ -11,9 +11,15 @@ import {
   Platform,
   ScrollView,
   Modal, // ★ 追加：ポップアップ表示用
+  Linking,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../AuthContext";
+import {
+  MINIMUM_USER_AGE,
+  SMARTBUKATSU_PRIVACY_URL,
+  SMARTBUKATSU_TERMS_URL,
+} from "../legal";
 
 const LoginScreen = () => {
   const { signIn, signUp, resetPassword } = useAuth();
@@ -29,6 +35,8 @@ const LoginScreen = () => {
   const [role, setRole] = useState("member"); // "admin" or "member"
   const [teamName, setTeamName] = useState(""); // 管理者用
   const [inviteCode, setInviteCode] = useState(""); // 部員用
+  const [eligibilityConfirmed, setEligibilityConfirmed] = useState(false);
+  const [legalAccepted, setLegalAccepted] = useState(false);
 
   // ★ 追加：パスワードリセット用の状態
   const [isResetModalVisible, setIsResetModalVisible] = useState(false);
@@ -53,6 +61,18 @@ const LoginScreen = () => {
       if (role === "member" && !inviteCode.trim()) {
         return Alert.alert("エラー", "招待コードを入力してください。");
       }
+      if (!eligibilityConfirmed) {
+        return Alert.alert(
+          "年齢・同意条件の確認",
+          `${MINIMUM_USER_AGE}歳以上であることと、18歳未満の場合の同意条件を確認してください。`,
+        );
+      }
+      if (!legalAccepted) {
+        return Alert.alert(
+          "利用条件の確認",
+          "利用規約とプライバシーポリシーを確認し、同意してください。",
+        );
+      }
     }
 
     setIsLoading(true);
@@ -70,6 +90,12 @@ const LoginScreen = () => {
             userName: userName.trim(),
             teamName: teamName.trim(),
             inviteCode: inviteCode.trim(),
+            legalConsent: {
+              minimumAgeConfirmed: true,
+              minorConsentRequirementAcknowledged: true,
+              termsAccepted: true,
+              privacyPolicyAcknowledged: true,
+            },
           },
         );
 
@@ -132,6 +158,20 @@ const LoginScreen = () => {
     setUserName("");
     setTeamName("");
     setInviteCode("");
+    setEligibilityConfirmed(false);
+    setLegalAccepted(false);
+  };
+
+  const openLegalPage = async (url, pageName) => {
+    try {
+      await Linking.openURL(url);
+    } catch (error) {
+      console.log(`${pageName}を開けませんでした:`, error);
+      Alert.alert(
+        "ページを開けません",
+        `${pageName}を開けませんでした。通信環境をご確認ください。`,
+      );
+    }
   };
 
   return (
@@ -277,6 +317,74 @@ const LoginScreen = () => {
               passwordRules={isLogin ? undefined : "minlength: 6;"}
               importantForAutofill="yes"
             />
+
+            {!isLogin && (
+              <View style={styles.consentContainer}>
+                <TouchableOpacity
+                  style={styles.consentRow}
+                  onPress={() => setEligibilityConfirmed((value) => !value)}
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: eligibilityConfirmed }}
+                >
+                  <View
+                    style={[
+                      styles.checkbox,
+                      eligibilityConfirmed && styles.checkboxChecked,
+                    ]}
+                  >
+                    {eligibilityConfirmed && (
+                      <Text style={styles.checkboxMark}>✓</Text>
+                    )}
+                  </View>
+                  <Text style={styles.consentText}>
+                    私は{MINIMUM_USER_AGE}
+                    歳以上です。18歳未満の場合は、保護者または所属団体責任者の同意・管理のもとで利用します。
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.consentRow}
+                  onPress={() => setLegalAccepted((value) => !value)}
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: legalAccepted }}
+                >
+                  <View
+                    style={[
+                      styles.checkbox,
+                      legalAccepted && styles.checkboxChecked,
+                    ]}
+                  >
+                    {legalAccepted && <Text style={styles.checkboxMark}>✓</Text>}
+                  </View>
+                  <Text style={styles.consentText}>
+                    利用規約とプライバシーポリシーに同意します。
+                  </Text>
+                </TouchableOpacity>
+
+                <View style={styles.legalLinksRow}>
+                  <TouchableOpacity
+                    onPress={() =>
+                      openLegalPage(SMARTBUKATSU_TERMS_URL, "利用規約")
+                    }
+                  >
+                    <Text style={styles.legalLink}>利用規約を確認</Text>
+                  </TouchableOpacity>
+                  <Text style={styles.legalLinkSeparator}>／</Text>
+                  <TouchableOpacity
+                    onPress={() =>
+                      openLegalPage(
+                        SMARTBUKATSU_PRIVACY_URL,
+                        "プライバシーポリシー",
+                      )
+                    }
+                  >
+                    <Text style={styles.legalLink}>
+                      プライバシーポリシーを確認
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
 
             {isLoading ? (
               <ActivityIndicator
@@ -464,6 +572,62 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 16,
     fontWeight: "bold",
+  },
+  consentContainer: {
+    marginTop: 2,
+    marginBottom: 4,
+    padding: 12,
+    backgroundColor: "#f7fbf8",
+    borderWidth: 1,
+    borderColor: "#d6eadc",
+    borderRadius: 10,
+  },
+  consentRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    marginBottom: 12,
+  },
+  checkbox: {
+    width: 22,
+    height: 22,
+    marginRight: 10,
+    borderWidth: 1,
+    borderColor: "#9aa5a0",
+    borderRadius: 4,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#fff",
+  },
+  checkboxChecked: {
+    backgroundColor: "#27ae60",
+    borderColor: "#27ae60",
+  },
+  checkboxMark: {
+    color: "#fff",
+    fontWeight: "bold",
+    fontSize: 15,
+    lineHeight: 18,
+  },
+  consentText: {
+    flex: 1,
+    color: "#444",
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  legalLinksRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "center",
+  },
+  legalLink: {
+    color: "#1677c8",
+    fontSize: 12,
+    fontWeight: "bold",
+    textDecorationLine: "underline",
+  },
+  legalLinkSeparator: {
+    color: "#888",
+    fontSize: 12,
   },
 
   // ★ 追加：モーダル用のスタイル

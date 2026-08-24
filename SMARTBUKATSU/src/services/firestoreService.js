@@ -21,6 +21,7 @@ import {
 } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { auth, db, cloudFunctions } from "../firebase";
+import { LEGAL_POLICY_VERSION, MINIMUM_USER_AGE } from "../legal";
 export const DEFAULT_MAX_TEAMS_PER_USER = 5;
 export const SHARP_RISE_MAX_TEAMS_PER_USER = 100;
 export const SHARP_RISE_INVITE_CODE = "AWUH95";
@@ -616,8 +617,17 @@ export async function executeRegistration(
   userName,
   teamName,
   inviteCodeInput,
-  { emailVerificationRequired = false } = {},
+  { emailVerificationRequired = false, legalConsent = {} } = {},
 ) {
+  if (
+    legalConsent.minimumAgeConfirmed !== true ||
+    legalConsent.minorConsentRequirementAcknowledged !== true ||
+    legalConsent.termsAccepted !== true ||
+    legalConsent.privacyPolicyAcknowledged !== true
+  ) {
+    throw new Error("利用条件への同意を確認できませんでした。");
+  }
+
   const userRef = doc(db, "users", uid);
   await setDoc(
     userRef,
@@ -625,6 +635,14 @@ export async function executeRegistration(
       name: userName,
       createdAt: serverTimestamp(),
       emailVerificationRequired: emailVerificationRequired === true,
+      legalConsent: {
+        minimumAge: MINIMUM_USER_AGE,
+        minimumAgeConfirmed: true,
+        minorConsentRequirementAcknowledged: true,
+        termsVersion: LEGAL_POLICY_VERSION,
+        privacyPolicyVersion: LEGAL_POLICY_VERSION,
+        acceptedAt: serverTimestamp(),
+      },
     },
     { merge: true },
   );
