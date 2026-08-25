@@ -222,15 +222,46 @@ const TeamSelectScreen = ({ navigation }) => {
       .map((blockingTeamName) => `・${blockingTeamName}`)
       .join("\n");
 
+  const handleOpenBlockingTeamManagement = async (blockingTeam) => {
+    if (!blockingTeam?.teamId || busyTeamId) return;
+
+    setBusyTeamId(blockingTeam.teamId);
+    try {
+      await selectTeam(blockingTeam.teamId);
+      setShouldReturnHome(true);
+      Alert.alert(
+        "対象チームを選択しました",
+        `${blockingTeam.teamName || "対象チーム"} のホーム画面から設定を開き、「チーム所有権の移管」を行ってください。`,
+      );
+    } catch (error) {
+      console.log("所有チーム選択エラー:", error?.code || error?.message);
+      Alert.alert(
+        "エラー",
+        "対象チームを選択できませんでした。通信状態を確認してください。",
+      );
+    } finally {
+      setBusyTeamId(null);
+    }
+  };
+
   const showAccountDeletionError = (error) => {
     const errorCode = String(error?.code || "");
     const blockingTeams = error?.details?.blockingTeams || [];
 
     if (blockingTeams.length > 0) {
+      const firstBlockingTeam = blockingTeams[0];
       Alert.alert(
         "アカウントを削除できません",
-        "作成者として残っているチームがあります。チーム削除または所有権移管を先に完了してください。\n\n" +
+        "作成者として残っているチームがあります。チーム削除または所有権移管を先に完了してください。複数ある場合は1チームずつ処理します。\n\n" +
           formatBlockingTeams(blockingTeams),
+        [
+          { text: "閉じる", style: "cancel" },
+          {
+            text: "対象チームを選択",
+            onPress: () =>
+              handleOpenBlockingTeamManagement(firstBlockingTeam),
+          },
+        ],
       );
       return;
     }
@@ -276,11 +307,10 @@ const TeamSelectScreen = ({ navigation }) => {
       const result = await checkAccountDeletionEligibility();
       const blockingTeams = result?.blockingTeams || [];
       if (!result?.eligible || blockingTeams.length > 0) {
-        Alert.alert(
-          "アカウントを削除できません",
-          "作成者として残っているチームがあります。チーム削除または所有権移管を先に完了してください。\n\n" +
-            formatBlockingTeams(blockingTeams),
-        );
+        showAccountDeletionError({
+          code: "failed-precondition",
+          details: { blockingTeams },
+        });
         return;
       }
 
@@ -507,7 +537,7 @@ const TeamSelectScreen = ({ navigation }) => {
           <View style={styles.accountDeleteContainer}>
             <Text style={styles.accountDeleteTitle}>アカウントの削除</Text>
             <Text style={styles.accountDeleteDescription}>
-              すべての所属チームから退会し、プロフィール・個人予定・ログイン情報を削除します。作成者として残っているチームがある場合は削除できません。
+              すべての所属チームから退会し、プロフィール・個人予定・ログイン情報を削除します。作成者として残っているチームがある場合は、対象チームの設定から所有権を移管できます。
             </Text>
             <TouchableOpacity
               style={[
