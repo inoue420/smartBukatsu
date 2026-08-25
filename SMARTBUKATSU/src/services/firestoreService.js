@@ -559,6 +559,25 @@ export async function deleteCurrentUserAccount() {
   return response.data;
 }
 
+export async function transferTeamOwnership(teamId, targetUid) {
+  if (!teamId || !targetUid) {
+    throw new Error("チームまたは移管先の管理者を確認できませんでした。");
+  }
+
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error("Authentication is required. Please sign in again.");
+  }
+
+  await currentUser.getIdToken(true);
+  const transferOwnership = httpsCallable(
+    cloudFunctions,
+    "transferTeamOwnership",
+  );
+  const response = await transferOwnership({ teamId, targetUid });
+  return response.data;
+}
+
 // ==========================================
 // 🏟️ チーム設定・設定画面関連
 // ==========================================

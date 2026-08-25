@@ -37,6 +37,7 @@ import {
   setUserBlocked,
   submitSupportRequest,
   deleteTeam,
+  transferTeamOwnership,
   moderateWorkspaceContent,
   updateTeamAdSettings,
 } from "../services/firestoreService";
@@ -242,6 +243,16 @@ const SettingsScreen = ({
   );
   const [isSavingAdSettings, setIsSavingAdSettings] = useState(false);
   const [isDeletingTeam, setIsDeletingTeam] = useState(false);
+  const [isOwnershipTransferModalVisible, setIsOwnershipTransferModalVisible] =
+    useState(false);
+  const [selectedOwnershipTargetUid, setSelectedOwnershipTargetUid] =
+    useState("");
+  const [ownershipTransferPassword, setOwnershipTransferPassword] =
+    useState("");
+  const [showOwnershipTransferPassword, setShowOwnershipTransferPassword] =
+    useState(false);
+  const [isTransferringOwnership, setIsTransferringOwnership] =
+    useState(false);
   const [absenceDeadlineDraft, setAbsenceDeadlineDraft] = useState(
     String(absenceDeadlineDaysBefore),
   );
@@ -334,10 +345,25 @@ const SettingsScreen = ({
   const selectedStaffForScopeProfile = getMemberProfileByUid(
     selectedStaffForScope,
   );
+  const ownershipTransferCandidates = useMemo(
+    () =>
+      Object.values(userProfiles).filter(
+        (profile) =>
+          profile?.uid &&
+          profile.uid !== currentUserUid &&
+          ["owner", "admin"].includes(profile.role),
+      ),
+    [currentUserUid, userProfiles],
+  );
+  const hasOtherTeamMembers = Object.values(userProfiles).some(
+    (profile) => profile?.uid && profile.uid !== currentUserUid,
+  );
   const canPromoteSelectedMemberToSupervisor =
     !!selectedMemberForRole &&
-    selectedMemberForRole === currentUserUid &&
-    (isTeamCreator || (currentMemberRole === "staff" && !hasSupervisor));
+    ((isTeamCreator && selectedMemberForRole !== currentUserUid) ||
+      (selectedMemberForRole === currentUserUid &&
+        (isTeamCreator ||
+          (currentMemberRole === "staff" && !hasSupervisor))));
 
   const roleConfig = {
     owner: { label: "監督(オーナー)", color: "#e74c3c", bg: "#fceeea" },
@@ -426,6 +452,15 @@ const SettingsScreen = ({
             }
           } catch (error) {
             console.log("メンバー除外エラー:", error);
+            if (
+              error?.details?.reason === "team-owner-transfer-required"
+            ) {
+              Alert.alert(
+                "所有権の処理が必要です",
+                "チーム作成者は、別の管理者へ所有権を移管するかチームを削除するまで退会・除外できません。",
+              );
+              return;
+            }
             Alert.alert(
               "エラー",
               targetRole === "admin" || targetRole === "owner"
@@ -497,6 +532,149 @@ const SettingsScreen = ({
         },
       ],
     );
+  };
+
+  const getOwnershipTargetProfile = (targetUid) =>
+    ownershipTransferCandidates.find((profile) => profile.uid === targetUid) ||
+    {};
+
+  const showOwnershipTransferError = (error) => {
+    const errorCode = String(error?.code || "");
+    const reason = error?.details?.reason;
+
+    if (
+      errorCode.includes("auth/invalid-credential") ||
+      errorCode.includes("auth/wrong-password")
+    ) {
+      Alert.alert("本人確認エラー", "現在のパスワードが正しくありません。");
+      return;
+    }
+    if (
+      errorCode.includes("auth/too-many-requests") ||
+      errorCode.includes("auth/user-disabled")
+    ) {
+      Alert.alert(
+        "本人確認エラー",
+        "現在は本人確認を行えません。時間をおいてから再度お試しください。",
+      );
+      return;
+    }
+    if (reason === "recent-auth-required") {
+      Alert.alert(
+        "再認証が必要です",
+        "本人確認の有効時間が切れました。パスワードを再入力してください。",
+      );
+      return;
+    }
+    if (reason === "target-admin-required") {
+      Alert.alert(
+        "管理者設定が必要です",
+        "移管先の役割が変更されています。先に管理者へ設定してください。",
+      );
+      return;
+    }
+    if (reason === "target-not-team-member") {
+      Alert.alert(
+        "移管先を確認できません",
+        "選択した管理者はこのチームに所属していません。",
+      );
+      return;
+    }
+    if (errorCode.includes("permission-denied")) {
+      Alert.alert(
+        "権限エラー",
+        "所有権を移管できるのはチーム作成者本人だけです。",
+      );
+      return;
+    }
+
+    Alert.alert(
+      "所有権移管エラー",
+      "所有権を移管できませんでした。通信状態と移管先の権限を確認してください。",
+    );
+  };
+
+  const handleOpenOwnershipTransfer = (targetUid) => {
+    if (!isTeamCreator || isTransferringOwnership) return;
+    setSelectedOwnershipTargetUid(targetUid);
+    setOwnershipTransferPassword("");
+    setShowOwnershipTransferPassword(false);
+    setIsOwnershipTransferModalVisible(true);
+  };
+
+  const performOwnershipTransfer = async (targetUid, targetName) => {
+    setIsTransferringOwnership(true);
+    try {
+      await transferTeamOwnership(activeTeamId, targetUid);
+      setTeamCreatedBy(targetUid);
+      setSelectedOwnershipTargetUid("");
+      Alert.alert(
+        "所有権移管完了",
+        `${targetName} にチーム所有権を移管しました。引き続き管理者として利用することも、チーム管理画面から退会またはアカウント削除へ進むこともできます。`,
+      );
+    } catch (error) {
+      console.log("所有権移管エラー:", error?.code || error?.message);
+      showOwnershipTransferError(error);
+    } finally {
+      setIsTransferringOwnership(false);
+    }
+  };
+
+  const handleConfirmOwnershipTransfer = async () => {
+    const targetProfile = getOwnershipTargetProfile(
+      selectedOwnershipTargetUid,
+    );
+    const currentAuthUser = auth.currentUser;
+    if (!activeTeamId || !targetProfile.uid) {
+      Alert.alert("入力エラー", "移管先の管理者を確認できませんでした。");
+      return;
+    }
+    if (!currentAuthUser?.email) {
+      Alert.alert(
+        "本人確認エラー",
+        "メールアドレスでログイン中のユーザーを確認できませんでした。",
+      );
+      return;
+    }
+    if (!ownershipTransferPassword) {
+      Alert.alert("入力エラー", "現在のパスワードを入力してください。");
+      return;
+    }
+
+    setIsTransferringOwnership(true);
+    try {
+      const credential = EmailAuthProvider.credential(
+        currentAuthUser.email,
+        ownershipTransferPassword,
+      );
+      await reauthenticateWithCredential(currentAuthUser, credential);
+      await currentAuthUser.getIdToken(true);
+
+      const targetUid = targetProfile.uid;
+      const targetName = targetProfile.name || "選択した管理者";
+      setIsOwnershipTransferModalVisible(false);
+      setOwnershipTransferPassword("");
+      setShowOwnershipTransferPassword(false);
+      setIsTransferringOwnership(false);
+
+      Alert.alert(
+        "最終確認",
+        `${inputTeamName || "このチーム"} の所有権を ${targetName} に移管します。移管後、この操作を自分で元に戻すことはできません。`,
+        [
+          { text: "キャンセル", style: "cancel" },
+          {
+            text: "所有権を移管する",
+            style: "destructive",
+            onPress: () => performOwnershipTransfer(targetUid, targetName),
+          },
+        ],
+      );
+    } catch (error) {
+      console.log("所有権移管の本人確認エラー:", error?.code || error?.message);
+      showOwnershipTransferError(error);
+    } finally {
+      setIsTransferringOwnership(false);
+    }
   };
 
   const handleAddTeamArrayItem = async (field, value, setter) => {
@@ -1267,6 +1445,65 @@ const SettingsScreen = ({
                     {activeTeamId || "---"}
                   </Text>
                 </View>
+                {isTeamCreator && (
+                  <View style={styles.ownershipTransferBox}>
+                    <Text style={styles.ownershipTransferTitle}>
+                      チーム所有権の移管
+                    </Text>
+                    <Text style={styles.ownershipTransferDescription}>
+                      アカウントを削除またはチームから退会する場合は、先に別の管理者へ所有権を移管してください。移管前にパスワードで本人確認を行います。
+                    </Text>
+
+                    {ownershipTransferCandidates.length > 0 ? (
+                      ownershipTransferCandidates.map((profile) => (
+                        <TouchableOpacity
+                          key={profile.uid}
+                          style={styles.ownershipCandidateBtn}
+                          onPress={() =>
+                            handleOpenOwnershipTransfer(profile.uid)
+                          }
+                          disabled={isTransferringOwnership}
+                        >
+                          <Text style={styles.ownershipCandidateName}>
+                            {profile.name || "名称未設定の管理者"}
+                          </Text>
+                          <Text style={styles.ownershipCandidateAction}>
+                            この管理者へ移管
+                          </Text>
+                        </TouchableOpacity>
+                      ))
+                    ) : (
+                      <>
+                        <Text style={styles.ownershipTransferWarning}>
+                          移管できる別の管理者がいません。
+                          {hasOtherTeamMembers
+                            ? "先に部員リストから移管先を管理者へ設定してください。"
+                            : "所属者が自分だけの場合は、下のボタンからチームを削除できます。"}
+                        </Text>
+                        {hasOtherTeamMembers && (
+                          <TouchableOpacity
+                            style={styles.ownershipAddAdminBtn}
+                            onPress={() => {
+                              setExpanded((prev) => ({
+                                ...prev,
+                                teamInfo: false,
+                                member: true,
+                              }));
+                              Alert.alert(
+                                "管理者を追加",
+                                "部員リストで移管先メンバーの役割を開き、「監督（管理者）」を選択してください。",
+                              );
+                            }}
+                          >
+                            <Text style={styles.ownershipAddAdminBtnText}>
+                              部員リストで管理者を追加
+                            </Text>
+                          </TouchableOpacity>
+                        )}
+                      </>
+                    )}
+                  </View>
+                )}
                 {canDeleteTeam && (
                   <View style={styles.teamDeleteBox}>
                     <Text style={styles.teamDeleteWarning}>
@@ -1888,6 +2125,87 @@ const SettingsScreen = ({
       {/* ▼ モーダル群 */}
       {/* ========================================== */}
       <Modal
+        visible={isOwnershipTransferModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!isTransferringOwnership) {
+            setIsOwnershipTransferModalVisible(false);
+            setOwnershipTransferPassword("");
+          }
+        }}
+      >
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+        >
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>チーム所有権を移管</Text>
+            <Text style={styles.ownershipModalDescription}>
+              移管先：
+              {getOwnershipTargetProfile(selectedOwnershipTargetUid).name ||
+                "選択した管理者"}
+              {"\n"}
+              本人確認のため、現在のパスワードを入力してください。
+            </Text>
+            <Text style={styles.label}>現在のパスワード</Text>
+            <View style={styles.passwordRow}>
+              <TextInput
+                style={styles.passwordInput}
+                placeholder="現在のパスワード"
+                secureTextEntry={!showOwnershipTransferPassword}
+                value={ownershipTransferPassword}
+                onChangeText={setOwnershipTransferPassword}
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={!isTransferringOwnership}
+              />
+              <TouchableOpacity
+                style={styles.toggleBtn}
+                onPress={() =>
+                  setShowOwnershipTransferPassword(
+                    !showOwnershipTransferPassword,
+                  )
+                }
+                disabled={isTransferringOwnership}
+              >
+                <Text style={styles.toggleBtnText}>
+                  {showOwnershipTransferPassword ? "隠す" : "表示"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity
+              style={[
+                styles.ownershipConfirmBtn,
+                isTransferringOwnership && { opacity: 0.7 },
+              ]}
+              onPress={handleConfirmOwnershipTransfer}
+              disabled={isTransferringOwnership}
+            >
+              {isTransferringOwnership ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.ownershipConfirmBtnText}>
+                  本人確認して移管手続きへ
+                </Text>
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.cancelBtn}
+              onPress={() => {
+                setIsOwnershipTransferModalVisible(false);
+                setOwnershipTransferPassword("");
+                setShowOwnershipTransferPassword(false);
+              }}
+              disabled={isTransferringOwnership}
+            >
+              <Text style={styles.cancelBtnText}>キャンセル</Text>
+            </TouchableOpacity>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal
         visible={isRoleModalVisible}
         transparent={true}
         animationType="fade"
@@ -1907,9 +2225,11 @@ const SettingsScreen = ({
                   onPress={() => handleChangeRole("admin")}
                   disabled={isChangingMemberRole}
                 >
-                  <Text style={styles.roleSelectTitle}>🛡️ 監督</Text>
+                  <Text style={styles.roleSelectTitle}>
+                    🛡️ 監督（管理者）
+                  </Text>
                   <Text style={styles.roleSelectDesc}>
-                    チーム作成者、または他に監督がいないスタッフ本人だけが選択できます。
+                    チーム作成者は移管先となる管理者を追加できます。他に監督がいない場合は、スタッフ本人も選択できます。
                   </Text>
                 </TouchableOpacity>
               )}
@@ -2554,6 +2874,87 @@ const styles = StyleSheet.create({
     borderRadius: 20,
   },
   copySubBtnText: { color: "#0077cc", fontSize: 13, fontWeight: "bold" },
+  ownershipTransferBox: {
+    marginTop: 20,
+    paddingTop: 15,
+    borderTopWidth: 1,
+    borderTopColor: "#f5cba7",
+    width: "100%",
+  },
+  ownershipTransferTitle: {
+    color: "#a04000",
+    fontSize: 15,
+    fontWeight: "bold",
+    textAlign: "center",
+    marginBottom: 8,
+  },
+  ownershipTransferDescription: {
+    color: "#666",
+    fontSize: 12,
+    lineHeight: 18,
+    textAlign: "center",
+    marginBottom: 12,
+  },
+  ownershipTransferWarning: {
+    color: "#a04000",
+    fontSize: 12,
+    lineHeight: 18,
+    textAlign: "center",
+    marginBottom: 10,
+  },
+  ownershipCandidateBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: 12,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: "#e67e22",
+    borderRadius: 8,
+    backgroundColor: "#fff8f0",
+  },
+  ownershipCandidateName: {
+    flex: 1,
+    color: "#333",
+    fontSize: 14,
+    fontWeight: "bold",
+    marginRight: 10,
+  },
+  ownershipCandidateAction: {
+    color: "#d35400",
+    fontSize: 12,
+    fontWeight: "bold",
+  },
+  ownershipAddAdminBtn: {
+    paddingVertical: 12,
+    alignItems: "center",
+    borderRadius: 8,
+    backgroundColor: "#e67e22",
+  },
+  ownershipAddAdminBtnText: {
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "bold",
+  },
+  ownershipModalDescription: {
+    color: "#666",
+    fontSize: 13,
+    lineHeight: 20,
+    marginBottom: 15,
+    textAlign: "center",
+  },
+  ownershipConfirmBtn: {
+    minHeight: 48,
+    justifyContent: "center",
+    alignItems: "center",
+    borderRadius: 8,
+    backgroundColor: "#e67e22",
+  },
+  ownershipConfirmBtnText: {
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: "bold",
+  },
   teamDeleteBox: {
     marginTop: 20,
     paddingTop: 15,

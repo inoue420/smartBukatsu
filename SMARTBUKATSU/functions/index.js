@@ -548,9 +548,17 @@ const getAccountDocumentUpdates = (data, context) => {
 
 const getAccountDeletionContext = async (uid) => {
   const userRef = firestore.collection("users").doc(uid);
-  const userSnap = await userRef.get();
+  const [userSnap, ownedTeamsSnapshot] = await Promise.all([
+    userRef.get(),
+    firestore.collection("teams").where("createdBy", "==", uid).get(),
+  ]);
   const userData = userSnap.exists ? userSnap.data() || {} : {};
-  const teamIds = normalizeTeamIds(userData);
+  const teamIds = [
+    ...new Set([
+      ...normalizeTeamIds(userData),
+      ...ownedTeamsSnapshot.docs.map((teamSnapshot) => teamSnapshot.id),
+    ]),
+  ];
   const teamEntries = await Promise.all(
     teamIds.map(async (teamId) => {
       const teamRef = firestore.collection("teams").doc(teamId);
@@ -1579,6 +1587,15 @@ exports.removeTeamMember = onCall(
         );
       }
 
+      const teamData = teamSnap.data() || {};
+      if (teamData.createdBy === targetUid) {
+        throw new HttpsError(
+          "failed-precondition",
+          "チーム作成者は、所有権を移管するかチームを削除するまで退会・除外できません。",
+          { reason: "team-owner-transfer-required" },
+        );
+      }
+
       const isSelfRemoval = callerUid === targetUid;
       const callerRole = callerMemberSnap.data()?.role || "member";
       if (!isSelfRemoval && !MEMBER_MANAGER_ROLES.has(callerRole)) {
@@ -1708,6 +1725,114 @@ exports.deleteUserAccount = onCall(
         "アカウントを削除できませんでした。データは可能な範囲で保持されています。時間をおいて再度お試しください。",
       );
     }
+  },
+);
+
+exports.transferTeamOwnership = onCall(
+  {
+    region: "asia-northeast1",
+    timeoutSeconds: 30,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const callerUid = request.auth?.uid;
+    if (!callerUid) {
+      throw new HttpsError("unauthenticated", "ログインが必要です。");
+    }
+
+    assertRecentAuthentication(request);
+
+    const teamId = String(request.data?.teamId || "").trim();
+    const targetUid = String(request.data?.targetUid || "").trim();
+    if (
+      !/^[A-Za-z0-9_-]{1,128}$/.test(teamId) ||
+      !targetUid ||
+      targetUid.length > 128
+    ) {
+      throw new HttpsError(
+        "invalid-argument",
+        "移管先のチームまたは管理者が正しくありません。",
+      );
+    }
+    if (callerUid === targetUid) {
+      throw new HttpsError(
+        "invalid-argument",
+        "自分自身を移管先に指定することはできません。",
+      );
+    }
+
+    const teamRef = firestore.collection("teams").doc(teamId);
+    const callerMemberRef = teamRef.collection("members").doc(callerUid);
+    const targetMemberRef = teamRef.collection("members").doc(targetUid);
+
+    return firestore.runTransaction(async (transaction) => {
+      const [teamSnap, callerMemberSnap, targetMemberSnap] = await Promise.all([
+        transaction.get(teamRef),
+        transaction.get(callerMemberRef),
+        transaction.get(targetMemberRef),
+      ]);
+
+      if (!teamSnap.exists || !callerMemberSnap.exists) {
+        throw new HttpsError("not-found", "チームが見つかりません。");
+      }
+      if (!targetMemberSnap.exists) {
+        throw new HttpsError(
+          "failed-precondition",
+          "移管先が同じチームに所属していません。",
+          { reason: "target-not-team-member" },
+        );
+      }
+
+      const teamData = teamSnap.data() || {};
+      const callerRole = callerMemberSnap.data()?.role || "member";
+      const targetRole = targetMemberSnap.data()?.role || "member";
+      if (
+        teamData.createdBy !== callerUid ||
+        !["owner", "admin"].includes(callerRole)
+      ) {
+        throw new HttpsError(
+          "permission-denied",
+          "所有権を移管できるのはチーム作成者本人だけです。",
+        );
+      }
+      if (!["owner", "admin"].includes(targetRole)) {
+        throw new HttpsError(
+          "failed-precondition",
+          "移管先を先に管理者へ設定してください。",
+          { reason: "target-admin-required" },
+        );
+      }
+
+      const inviteCode =
+        typeof teamData.inviteCode === "string" &&
+        /^[A-Za-z0-9]{6}$/.test(teamData.inviteCode)
+          ? teamData.inviteCode
+          : "";
+      const inviteRef = inviteCode
+        ? firestore.collection("invites").doc(inviteCode)
+        : null;
+      const inviteSnap = inviteRef ? await transaction.get(inviteRef) : null;
+      const inviteBelongsToTeam =
+        inviteSnap?.exists && inviteSnap.data()?.teamId === teamId;
+
+      transaction.update(teamRef, {
+        createdBy: targetUid,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      if (inviteBelongsToTeam) {
+        transaction.update(inviteRef, {
+          createdBy: targetUid,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
+
+      return {
+        transferred: true,
+        teamId,
+        previousOwnerUid: callerUid,
+        ownerUid: targetUid,
+      };
+    });
   },
 );
 
