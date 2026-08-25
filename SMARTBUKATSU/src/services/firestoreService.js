@@ -715,6 +715,41 @@ export async function submitSupportRequest(requestData) {
   return result.data;
 }
 
+export async function setUserBlocked(teamId, targetUid, blocked) {
+  if (!targetUid) throw new Error("ブロック対象を確認できませんでした。");
+  const updateUserBlock = httpsCallable(cloudFunctions, "setUserBlocked");
+  const result = await updateUserBlock({
+    teamId: teamId || null,
+    targetUid,
+    blocked: blocked === true,
+  });
+  return result.data;
+}
+
+export async function validateUserContent(teamId, contentType, content) {
+  const validateContent = httpsCallable(cloudFunctions, "validateUserContent");
+  const result = await validateContent({ teamId, contentType, content });
+  return result.data;
+}
+
+export async function moderateWorkspaceContent(moderationData) {
+  const moderateContent = httpsCallable(
+    cloudFunctions,
+    "moderateWorkspaceContent",
+  );
+  const result = await moderateContent(moderationData);
+  return result.data;
+}
+
+export async function manageOwnWorkspaceContent(contentData) {
+  const manageContent = httpsCallable(
+    cloudFunctions,
+    "manageOwnWorkspaceContent",
+  );
+  const result = await manageContent(contentData);
+  return result.data;
+}
+
 export async function createWorkspacePost(teamId, postData) {
   if (!teamId) throw new Error("チームIDがありません");
 

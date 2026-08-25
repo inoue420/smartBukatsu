@@ -11,7 +11,11 @@ import {
   Alert,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { updateMemberRoleConfig } from "../services/firestoreService";
+import { useAuth } from "../AuthContext";
+import {
+  setUserBlocked,
+  updateMemberRoleConfig,
+} from "../services/firestoreService";
 import {
   DEFAULT_ALERT_THRESHOLDS,
   getFatigueScore,
@@ -45,6 +49,7 @@ const RosterScreen = ({
   positions = [],
   alertThresholds = DEFAULT_ALERT_THRESHOLDS,
 }) => {
+  const { blockedUserUids = [] } = useAuth();
   // --- 権限の確認 ---
   const currentUserProfile =
     Object.values(userProfiles).find(
@@ -74,6 +79,7 @@ const RosterScreen = ({
   const [editingGrade, setEditingGrade] = useState("");
   const [editingPosition, setEditingPosition] = useState("");
   const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [isUpdatingBlock, setIsUpdatingBlock] = useState(false);
 
   // --- データの事前計算 ---
 
@@ -217,6 +223,37 @@ const RosterScreen = ({
     } finally {
       setIsSavingProfile(false);
     }
+  };
+
+  const handleBlockSelectedUser = () => {
+    const targetUid = selectedUser?.profile?.uid;
+    if (!targetUid || targetUid === currentUserUid || !activeTeamId) return;
+    Alert.alert(
+      "ユーザーをブロック",
+      `${selectedUser.name}をブロックしますか？\n\n投稿、返信、メンション通知、日報コメントが表示されなくなります。設定画面から解除できます。`,
+      [
+        { text: "キャンセル", style: "cancel" },
+        {
+          text: "ブロックする",
+          style: "destructive",
+          onPress: async () => {
+            setIsUpdatingBlock(true);
+            try {
+              await setUserBlocked(activeTeamId, targetUid, true);
+              setSelectedUser(null);
+              Alert.alert("ブロックしました", "設定画面からいつでも解除できます。");
+            } catch (error) {
+              Alert.alert(
+                "ブロックできませんでした",
+                error?.message || "通信状態を確認してください。",
+              );
+            } finally {
+              setIsUpdatingBlock(false);
+            }
+          },
+        },
+      ],
+    );
   };
 
   const renderFilterScroll = (options, selected, onSelect, prefix = "") => (
@@ -692,6 +729,30 @@ const RosterScreen = ({
                       ※日報の提出履歴がありません
                     </Text>
                   )}
+                  {selectedUser.profile.uid &&
+                    selectedUser.profile.uid !== currentUserUid && (
+                      <TouchableOpacity
+                        style={[
+                          styles.blockUserButton,
+                          (blockedUserUids.includes(selectedUser.profile.uid) ||
+                            isUpdatingBlock) &&
+                            styles.blockUserButtonDisabled,
+                        ]}
+                        onPress={handleBlockSelectedUser}
+                        disabled={
+                          blockedUserUids.includes(selectedUser.profile.uid) ||
+                          isUpdatingBlock
+                        }
+                      >
+                        <Text style={styles.blockUserButtonText}>
+                          {blockedUserUids.includes(selectedUser.profile.uid)
+                            ? "🚫 ブロック中（設定から解除できます）"
+                            : isUpdatingBlock
+                              ? "処理中..."
+                              : "🚫 このユーザーをブロック"}
+                        </Text>
+                      </TouchableOpacity>
+                    )}
                 </ScrollView>
               </>
             )}
@@ -853,6 +914,22 @@ const styles = StyleSheet.create({
   },
   modalTitle: { fontSize: 18, fontWeight: "bold", color: COLORS.textMain },
   closeBtnText: { fontSize: 15, color: COLORS.primary, fontWeight: "bold" },
+  blockUserButton: {
+    marginTop: 20,
+    paddingVertical: 13,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: COLORS.danger,
+    alignItems: "center",
+    backgroundColor: "#fff5f4",
+  },
+  blockUserButtonDisabled: { opacity: 0.5 },
+  blockUserButtonText: {
+    color: COLORS.danger,
+    fontSize: 14,
+    fontWeight: "bold",
+  },
 
   modalProfileTop: { alignItems: "center", marginBottom: 25 },
   avatarBoxLarge: {

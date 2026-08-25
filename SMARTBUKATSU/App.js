@@ -447,6 +447,8 @@ function AppContent() {
                   absenceDeadlineDaysBefore={absenceDeadlineDaysBefore}
                   setAbsenceDeadlineDaysBefore={setAbsenceDeadlineDaysBefore}
                   setUserProfiles={setUserProfiles}
+                  posts={posts}
+                  setPosts={setPosts}
                 />
               )}
             </Stack.Screen>
