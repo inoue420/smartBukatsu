@@ -471,7 +471,16 @@ const CalendarScreen = ({
   isOffline = false,
   absenceDeadlineDaysBefore = 3,
 }) => {
-  const { activeTeamId, user, role: authUserRole } = useAuth();
+  const {
+    activeTeamId,
+    blockedUserUids = [],
+    user,
+    role: authUserRole,
+  } = useAuth();
+  const blockedUserUidSet = useMemo(
+    () => new Set(blockedUserUids),
+    [blockedUserUids],
+  );
 
   const currentUserProfile =
     Object.values(userProfiles).find(
@@ -2436,12 +2445,18 @@ const CalendarScreen = ({
                     viewingReport.comments.length > 0 && (
                       <>
                         <Text style={styles.label}>💬 やり取り</Text>
-                        {viewingReport.comments.map((c) => (
+                        {viewingReport.comments
+                          .filter(
+                            (comment) =>
+                              !comment.uid ||
+                              !blockedUserUidSet.has(comment.uid),
+                          )
+                          .map((c) => (
                           <View key={c.id} style={styles.commentBox}>
                             <Text style={styles.commentUser}>{c.user}</Text>
                             <Text style={styles.commentText}>{c.text}</Text>
                           </View>
-                        ))}
+                          ))}
                       </>
                     )}
                 </>

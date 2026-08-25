@@ -23,13 +23,23 @@ import {
   createWorkspacePost,
   getWorkspacePostsForAudienceSync,
   incrementWorkspacePostReaction,
+  manageOwnWorkspaceContent,
   markWorkspacePostRead,
+  moderateWorkspaceContent,
+  setUserBlocked,
   submitSafetyReport,
   updateWorkspacePost,
   updateWorkspacePostAudiences,
   updateWorkspacePostReply,
+  validateUserContent,
 } from "../services/firestoreService";
 import { getFatigueScore, getPainScore } from "../utils/medicalScale";
+import {
+  getBlockedContentMessage,
+  getContentWarningMessage,
+  inspectUserContent,
+  shouldUseLocalModerationFallback,
+} from "../utils/contentModeration";
 
 // ★ 追加：Firestoreの直接操作用
 import { db } from "../firebase";
@@ -128,7 +138,7 @@ const WorkspaceHomeScreen = ({
   alertThresholds,
   userProfiles = {},
 }) => {
-  const { activeTeamId } = useAuth();
+  const { activeTeamId, blockedUserUids = [] } = useAuth();
   const currentUserProfile =
     Object.values(userProfiles).find(
       (profile) => profile?.uid === currentUserUid,
@@ -156,6 +166,32 @@ const WorkspaceHomeScreen = ({
     userRole,
   );
   const isReadEligible = userRole !== "guardian";
+  const blockedUserUidSet = useMemo(
+    () => new Set(blockedUserUids),
+    [blockedUserUids],
+  );
+  const isBlockedUser = (uid) => Boolean(uid) && blockedUserUidSet.has(uid);
+  const canBlockUser = (uid) =>
+    Boolean(uid) && uid !== currentUserUid && !isBlockedUser(uid);
+  const normalizeLegacyDisplayName = (value) =>
+    String(value || "")
+      .trim()
+      .replace(
+        /(?:\(監督\)|\(管理者\)|\(コーチ\)|\(スタッフ\)|\(キャプテン\)|\(保護者\)|\(あなた\))$/u,
+        "",
+      )
+      .trim();
+  const resolveContentAuthorUid = (authorUid, displayName) => {
+    if (authorUid) return authorUid;
+    const normalizedDisplayName = normalizeLegacyDisplayName(displayName);
+    if (!normalizedDisplayName) return "";
+    const matchingProfiles = Object.values(userProfiles).filter(
+      (profile) =>
+        profile?.uid &&
+        normalizeLegacyDisplayName(profile.name) === normalizedDisplayName,
+    );
+    return matchingProfiles.length === 1 ? matchingProfiles[0].uid : "";
+  };
   const memberEntries = useMemo(
     () =>
       Object.entries(userProfiles).filter(([, profile]) => profile?.uid),
@@ -446,6 +482,9 @@ const WorkspaceHomeScreen = ({
   const [activeReactionPostId, setActiveReactionPostId] = useState(null);
   const [activeLongPressPostId, setActiveLongPressPostId] = useState(null);
   const [activeLongPressReply, setActiveLongPressReply] = useState(null);
+  const [editingOwnContent, setEditingOwnContent] = useState(null);
+  const [editingOwnContentText, setEditingOwnContentText] = useState("");
+  const [isSavingOwnContent, setIsSavingOwnContent] = useState(false);
   const [replyingTo, setReplyingTo] = useState(null);
   const [isReplyFocused, setIsReplyFocused] = useState(false);
 
@@ -460,6 +499,307 @@ const WorkspaceHomeScreen = ({
 
   const mainInputRef = useRef(null);
   const replyInputRef = useRef(null);
+
+  const confirmContentForSubmission = async (content, contentType) => {
+    const localInspection = inspectUserContent(content);
+    if (localInspection.blocked) {
+      Alert.alert(
+        "送信できません",
+        getBlockedContentMessage(localInspection),
+      );
+      return false;
+    }
+
+    let warnings = localInspection.warnings;
+    if (!isOffline && activeTeamId) {
+      try {
+        const serverResult = await validateUserContent(
+          activeTeamId,
+          contentType,
+          content,
+        );
+        warnings = [
+          ...new Set([...(warnings || []), ...(serverResult?.warnings || [])]),
+        ];
+      } catch (error) {
+        const blockedReasons = error?.details?.blockedReasons || [];
+        if (
+          error?.details?.reason === "content-blocked" ||
+          blockedReasons.length > 0
+        ) {
+          Alert.alert(
+            "送信できません",
+            getBlockedContentMessage({ blockedReasons }),
+          );
+          return false;
+        }
+        if (shouldUseLocalModerationFallback(error)) {
+          console.warn(
+            "Remote content validation unavailable; local validation used:",
+            error?.code || "unknown",
+          );
+        } else {
+          Alert.alert(
+            "内容を確認できませんでした",
+            error?.code === "functions/unauthenticated"
+              ? "ログイン状態を確認できませんでした。再度ログインしてお試しください。"
+              : "安全確認に失敗しました。通信状態を確認し、時間をおいて再度お試しください。",
+          );
+          console.warn(
+            "Remote content validation failed:",
+            error?.code || "unknown",
+          );
+          return false;
+        }
+      }
+    }
+
+    if (warnings.length === 0) return true;
+    return new Promise((resolve) => {
+      Alert.alert("送信前の確認", getContentWarningMessage({ warnings }), [
+        { text: "内容を見直す", style: "cancel", onPress: () => resolve(false) },
+        { text: "確認して送信", onPress: () => resolve(true) },
+      ]);
+    });
+  };
+
+  const handleBlockUser = (targetUid, targetName = "このユーザー") => {
+    if (!canBlockUser(targetUid) || !activeTeamId || isOffline) {
+      if (isOffline) {
+        Alert.alert("オフラインです", "ユーザーのブロックには通信が必要です。");
+      }
+      return;
+    }
+
+    Alert.alert(
+      "ユーザーをブロック",
+      `${targetName}をブロックしますか？\n\nこのユーザーの投稿、返信、メンション通知、日報コメントが表示されなくなります。設定から解除できます。`,
+      [
+        { text: "キャンセル", style: "cancel" },
+        {
+          text: "ブロックする",
+          style: "destructive",
+          onPress: async () => {
+            setIsLoading(true);
+            try {
+              await setUserBlocked(activeTeamId, targetUid, true);
+              setActiveLongPressPostId(null);
+              setActiveLongPressReply(null);
+              setIsReportModalVisible(false);
+              Alert.alert("ブロックしました", "設定画面からいつでも解除できます。");
+            } catch (error) {
+              Alert.alert(
+                "ブロックできませんでした",
+                error?.message || "通信状態を確認してください。",
+              );
+            } finally {
+              setIsLoading(false);
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  const handleModerateContent = (postId, replyId = null) => {
+    if (!isStaffOrAbove || !activeTeamId || isOffline) {
+      if (isOffline) {
+        Alert.alert("オフラインです", "コンテンツ管理には通信が必要です。");
+      }
+      return;
+    }
+    Alert.alert(
+      replyId ? "返信を非表示" : "投稿を非表示",
+      "問題のあるコンテンツとしてチームメンバーから非表示にします。内容は通報・監査対応のため削除せず保持され、設定画面から復元できます。",
+      [
+        { text: "キャンセル", style: "cancel" },
+        {
+          text: "非表示にする",
+          style: "destructive",
+          onPress: async () => {
+            setIsLoading(true);
+            try {
+              await moderateWorkspaceContent({
+                teamId: activeTeamId,
+                postId,
+                replyId,
+                action: "hide",
+                reason: "チーム管理者による安全対応",
+              });
+              setPosts((currentPosts) =>
+                currentPosts.map((post) => {
+                  if (post.id !== postId) return post;
+                  if (!replyId) {
+                    return { ...post, moderationStatus: "hidden" };
+                  }
+                  return {
+                    ...post,
+                    replies: (post.replies || []).map((reply) =>
+                      reply.id === replyId
+                        ? { ...reply, moderationStatus: "hidden" }
+                        : reply,
+                    ),
+                  };
+                }),
+              );
+              setActiveLongPressPostId(null);
+              setActiveLongPressReply(null);
+            } catch (error) {
+              Alert.alert(
+                "非表示にできませんでした",
+                error?.message || "権限と通信状態を確認してください。",
+              );
+            } finally {
+              setIsLoading(false);
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  const openOwnContentEditor = ({ postId, replyId = null, content }) => {
+    if (isOffline) {
+      Alert.alert("オフラインです", "投稿・返信の編集には通信が必要です。");
+      return;
+    }
+    setEditingOwnContent({ postId, replyId });
+    setEditingOwnContentText(String(content || ""));
+    setActiveLongPressPostId(null);
+    setActiveLongPressReply(null);
+  };
+
+  const closeOwnContentEditor = () => {
+    if (isSavingOwnContent) return;
+    setEditingOwnContent(null);
+    setEditingOwnContentText("");
+  };
+
+  const handleSaveOwnContent = async () => {
+    const target = editingOwnContent;
+    const nextContent = editingOwnContentText.trim();
+    if (!target || !nextContent || !activeTeamId || isSavingOwnContent) return;
+
+    const canSubmit = await confirmContentForSubmission(
+      nextContent,
+      target.replyId ? "workspace_reply" : "workspace_post",
+    );
+    if (!canSubmit) return;
+
+    setIsSavingOwnContent(true);
+    try {
+      await manageOwnWorkspaceContent({
+        teamId: activeTeamId,
+        postId: target.postId,
+        replyId: target.replyId,
+        action: "edit",
+        content: nextContent,
+      });
+      const editedAt = new Date().toISOString();
+      setPosts((currentPosts) =>
+        currentPosts.map((post) => {
+          if (post.id !== target.postId) return post;
+          if (!target.replyId) {
+            return {
+              ...post,
+              content: nextContent,
+              editedAt,
+              editedByUid: currentUserUid,
+            };
+          }
+          return {
+            ...post,
+            replies: (post.replies || []).map((reply) =>
+              reply.id === target.replyId
+                ? {
+                    ...reply,
+                    content: nextContent,
+                    editedAt,
+                    editedByUid: currentUserUid,
+                  }
+                : reply,
+            ),
+          };
+        }),
+      );
+      setEditingOwnContent(null);
+      setEditingOwnContentText("");
+    } catch (error) {
+      const blockedReasons = error?.details?.blockedReasons || [];
+      Alert.alert(
+        "編集できませんでした",
+        error?.details?.reason === "content-blocked" || blockedReasons.length > 0
+          ? getBlockedContentMessage({ blockedReasons })
+          : error?.message || "権限と通信状態を確認してください。",
+      );
+    } finally {
+      setIsSavingOwnContent(false);
+    }
+  };
+
+  const handleDeleteOwnContent = ({ postId, replyId = null }) => {
+    if (isOffline) {
+      Alert.alert("オフラインです", "投稿・返信の削除には通信が必要です。");
+      return;
+    }
+    Alert.alert(
+      replyId ? "返信を削除" : "投稿を削除",
+      "削除すると元に戻せません。よろしいですか？",
+      [
+        { text: "キャンセル", style: "cancel" },
+        {
+          text: "削除する",
+          style: "destructive",
+          onPress: async () => {
+            setIsLoading(true);
+            try {
+              await manageOwnWorkspaceContent({
+                teamId: activeTeamId,
+                postId,
+                replyId,
+                action: "delete",
+              });
+              setPosts((currentPosts) =>
+                currentPosts.map((post) => {
+                  if (post.id !== postId) return post;
+                  if (!replyId) {
+                    return {
+                      ...post,
+                      status: "deleted",
+                      deletedAt: new Date().toISOString(),
+                      deletedByUid: currentUserUid,
+                    };
+                  }
+                  return {
+                    ...post,
+                    replies: (post.replies || []).map((reply) =>
+                      reply.id === replyId
+                        ? {
+                            ...reply,
+                            status: "deleted",
+                            deletedAt: new Date().toISOString(),
+                            deletedByUid: currentUserUid,
+                          }
+                        : reply,
+                    ),
+                  };
+                }),
+              );
+              setActiveLongPressPostId(null);
+              setActiveLongPressReply(null);
+            } catch (error) {
+              Alert.alert(
+                "削除できませんでした",
+                error?.message || "権限と通信状態を確認してください。",
+              );
+            } finally {
+              setIsLoading(false);
+            }
+          },
+        },
+      ],
+    );
+  };
 
   const persistPostUpdate = (postId, updateData) => {
     if (!activeTeamId) return;
@@ -480,7 +820,12 @@ const WorkspaceHomeScreen = ({
   const notifications = useMemo(() => {
     const notifs = [];
     posts.forEach((post) => {
-      if (post.status === "deleted") return;
+      if (
+        post.status === "deleted" ||
+        post.moderationStatus === "hidden" ||
+        isBlockedUser(resolveContentAuthorUid(post.authorUid, post.user))
+      )
+        return;
 
       if (
         post.content.includes(`@${currentUser}`) &&
@@ -501,6 +846,8 @@ const WorkspaceHomeScreen = ({
       post.replies?.forEach((reply) => {
         if (
           reply.status === "deleted" ||
+          reply.moderationStatus === "hidden" ||
+          isBlockedUser(resolveContentAuthorUid(reply.authorUid, reply.user)) ||
           (reply.dismissedNotifs || []).includes(currentUser)
         )
           return;
@@ -534,7 +881,14 @@ const WorkspaceHomeScreen = ({
       });
     });
     return notifs.reverse();
-  }, [posts, currentUser, displayUserName]);
+  }, [
+    posts,
+    currentUser,
+    currentUserUid,
+    displayUserName,
+    blockedUserUids,
+    userProfiles,
+  ]);
 
   const unreadNotifCount = notifications.filter((n) => !n.isRead).length;
 
@@ -673,7 +1027,7 @@ const WorkspaceHomeScreen = ({
     );
   };
 
-  const handleCreatePost = () => {
+  const handleCreatePost = async () => {
     if (newPostText.trim() === "") return;
     if (memberEntries.length === 0) {
       Alert.alert(
@@ -684,6 +1038,11 @@ const WorkspaceHomeScreen = ({
     }
 
     const contentToPost = newPostText.trim();
+    const canSubmit = await confirmContentForSubmission(
+      contentToPost,
+      "workspace_post",
+    );
+    if (!canSubmit) return;
     const currentReplyTo = replyingTo;
     const { visibleToUids, readTargetUids } = getPostAudience(
       activeChannelObj,
@@ -733,10 +1092,15 @@ const WorkspaceHomeScreen = ({
     setIsLoading(false);
   };
 
-  const handleSendReply = (postId) => {
+  const handleSendReply = async (postId) => {
     if (replyText.trim() === "") return;
 
     const currentReplyText = replyText.trim();
+    const canSubmit = await confirmContentForSubmission(
+      currentReplyText,
+      "workspace_reply",
+    );
+    if (!canSubmit) return;
 
     setReplyText("");
     if (replyInputRef.current) {
@@ -1054,7 +1418,10 @@ const WorkspaceHomeScreen = ({
 
   let filteredPosts = posts.filter(
     (post) =>
-      post.channel === activeChannelObj?.name && post.status !== "deleted",
+      post.channel === activeChannelObj?.name &&
+      post.status !== "deleted" &&
+      post.moderationStatus !== "hidden" &&
+      !isBlockedUser(resolveContentAuthorUid(post.authorUid, post.user)),
   );
   if (searchQuery.trim() !== "") {
     filteredPosts = filteredPosts.filter(
@@ -1075,7 +1442,14 @@ const WorkspaceHomeScreen = ({
   const renderPostCard = (post, isPinnedArea = false) => {
     const isPending = post.status === "pending";
     const validReplies = post.replies
-      ? post.replies.filter((r) => r.status !== "deleted")
+      ? post.replies.filter(
+          (reply) =>
+            reply.status !== "deleted" &&
+            reply.moderationStatus !== "hidden" &&
+            !isBlockedUser(
+              resolveContentAuthorUid(reply.authorUid, reply.user),
+            ),
+        )
       : [];
 
     const isExpanded = expandedPostId === post.id;
@@ -1168,7 +1542,9 @@ const WorkspaceHomeScreen = ({
           </Text>
           {isUnread && <Text style={styles.newPostBadge}>NEW</Text>}
           <Text style={styles.postTime}>
-            {isPending ? "送信待機中..." : post.time}
+            {isPending
+              ? "送信待機中..."
+              : `${post.time}${post.editedAt ? "・編集済み" : ""}`}
           </Text>
         </View>
 
@@ -1292,15 +1668,74 @@ const WorkspaceHomeScreen = ({
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.longPressMenuItem}
-                  onPress={() => handleDeletePost(post.id)}
+                  onPress={() => handleModerateContent(post.id)}
                 >
                   <Text
                     style={[styles.longPressMenuText, { color: COLORS.danger }]}
                   >
-                    🗑 削除する
+                    🛡️ 管理者として非表示
+                  </Text>
+                </TouchableOpacity>
+                {post.authorUid !== currentUserUid && (
+                  <TouchableOpacity
+                    style={styles.longPressMenuItem}
+                    onPress={() => handleDeletePost(post.id)}
+                  >
+                    <Text
+                      style={[
+                        styles.longPressMenuText,
+                        { color: COLORS.danger },
+                      ]}
+                    >
+                      🗑 管理者として削除
+                    </Text>
+                  </TouchableOpacity>
+                )}
+              </>
+            )}
+            {post.authorUid === currentUserUid && (
+              <>
+                <TouchableOpacity
+                  style={styles.longPressMenuItem}
+                  onPress={() =>
+                    openOwnContentEditor({
+                      postId: post.id,
+                      content: post.content,
+                    })
+                  }
+                >
+                  <Text style={styles.longPressMenuText}>✏️ 投稿を編集</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.longPressMenuItem}
+                  onPress={() => handleDeleteOwnContent({ postId: post.id })}
+                >
+                  <Text
+                    style={[styles.longPressMenuText, { color: COLORS.danger }]}
+                  >
+                    🗑 自分の投稿を削除
                   </Text>
                 </TouchableOpacity>
               </>
+            )}
+            {canBlockUser(
+              resolveContentAuthorUid(post.authorUid, post.user),
+            ) && (
+              <TouchableOpacity
+                style={styles.longPressMenuItem}
+                onPress={() =>
+                  handleBlockUser(
+                    resolveContentAuthorUid(post.authorUid, post.user),
+                    post.user,
+                  )
+                }
+              >
+                <Text
+                  style={[styles.longPressMenuText, { color: COLORS.danger }]}
+                >
+                  🚫 このユーザーをブロック
+                </Text>
+              </TouchableOpacity>
             )}
             <TouchableOpacity
               style={styles.longPressMenuItem}
@@ -1323,7 +1758,12 @@ const WorkspaceHomeScreen = ({
             <TouchableOpacity
               style={styles.longPressMenuItem}
               onPress={() =>
-                openReportModal("post", post.id, null, post.authorUid || "")
+                openReportModal(
+                  "post",
+                  post.id,
+                  null,
+                  resolveContentAuthorUid(post.authorUid, post.user),
+                )
               }
             >
               <Text
@@ -1403,7 +1843,9 @@ const WorkspaceHomeScreen = ({
                   <View style={styles.postHeader}>
                     <Text style={styles.replyUser}>{reply.user}</Text>
                     <Text style={styles.postTime}>
-                      {isReplyPending ? "待機中..." : reply.time}
+                      {isReplyPending
+                        ? "待機中..."
+                        : `${reply.time}${reply.editedAt ? "・編集済み" : ""}`}
                     </Text>
                   </View>
                   <Text style={styles.replyContent}>
@@ -1415,34 +1857,117 @@ const WorkspaceHomeScreen = ({
                         style={[styles.longPressMenu, { top: 10, right: 10 }]}
                       >
                         {isStaffOrAbove && (
-                          <TouchableOpacity
-                            style={styles.longPressMenuItem}
-                            onPress={() => {
-                              const replies = (post.replies || []).map((item) =>
-                                item.id === reply.id
-                                  ? {
+                          <>
+                            <TouchableOpacity
+                              style={styles.longPressMenuItem}
+                              onPress={() =>
+                                handleModerateContent(post.id, reply.id)
+                              }
+                            >
+                              <Text
+                                style={[
+                                  styles.longPressMenuText,
+                                  { color: COLORS.danger },
+                                ]}
+                              >
+                                🛡️ 管理者として非表示
+                              </Text>
+                            </TouchableOpacity>
+                            {reply.authorUid !== currentUserUid && (
+                              <TouchableOpacity
+                                style={styles.longPressMenuItem}
+                                onPress={() => {
+                                  const replies = (post.replies || []).map(
+                                    (item) =>
+                                      item.id === reply.id
+                                        ? {
+                                            ...item,
+                                            status: "deleted",
+                                            deletedBy: displayUserName,
+                                            deletedAt: new Date().toISOString(),
+                                          }
+                                        : item,
+                                  );
+                                  setPosts((prevPosts) =>
+                                    prevPosts.map((p) =>
+                                      p.id === post.id ? { ...p, replies } : p,
+                                    ),
+                                  );
+                                  persistReplyUpdate(
+                                    post.id,
+                                    reply.id,
+                                    (item) => ({
                                       ...item,
                                       status: "deleted",
                                       deletedBy: displayUserName,
                                       deletedAt: new Date().toISOString(),
-                                    }
-                                  : item,
-                              );
-                              setPosts((prevPosts) =>
-                                prevPosts.map((p) =>
-                                  p.id === post.id
-                                    ? { ...p, replies }
-                                    : p,
+                                    }),
+                                  );
+                                  setActiveLongPressReply(null);
+                                }}
+                              >
+                                <Text
+                                  style={[
+                                    styles.longPressMenuText,
+                                    { color: COLORS.danger },
+                                  ]}
+                                >
+                                  🗑 管理者として削除
+                                </Text>
+                              </TouchableOpacity>
+                            )}
+                          </>
+                        )}
+                        {reply.authorUid === currentUserUid && (
+                          <>
+                            <TouchableOpacity
+                              style={styles.longPressMenuItem}
+                              onPress={() =>
+                                openOwnContentEditor({
+                                  postId: post.id,
+                                  replyId: reply.id,
+                                  content: reply.content,
+                                })
+                              }
+                            >
+                              <Text style={styles.longPressMenuText}>
+                                ✏️ 返信を編集
+                              </Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                              style={styles.longPressMenuItem}
+                              onPress={() =>
+                                handleDeleteOwnContent({
+                                  postId: post.id,
+                                  replyId: reply.id,
+                                })
+                              }
+                            >
+                              <Text
+                                style={[
+                                  styles.longPressMenuText,
+                                  { color: COLORS.danger },
+                                ]}
+                              >
+                                🗑 自分の返信を削除
+                              </Text>
+                            </TouchableOpacity>
+                          </>
+                        )}
+                        {canBlockUser(
+                          resolveContentAuthorUid(reply.authorUid, reply.user),
+                        ) && (
+                          <TouchableOpacity
+                            style={styles.longPressMenuItem}
+                            onPress={() =>
+                              handleBlockUser(
+                                resolveContentAuthorUid(
+                                  reply.authorUid,
+                                  reply.user,
                                 ),
-                              );
-                              persistReplyUpdate(post.id, reply.id, (item) => ({
-                                ...item,
-                                status: "deleted",
-                                deletedBy: displayUserName,
-                                deletedAt: new Date().toISOString(),
-                              }));
-                              setActiveLongPressReply(null);
-                            }}
+                                reply.user,
+                              )
+                            }
                           >
                             <Text
                               style={[
@@ -1450,7 +1975,7 @@ const WorkspaceHomeScreen = ({
                                 { color: COLORS.danger },
                               ]}
                             >
-                              🗑 削除
+                              🚫 このユーザーをブロック
                             </Text>
                           </TouchableOpacity>
                         )}
@@ -1461,7 +1986,10 @@ const WorkspaceHomeScreen = ({
                               "reply",
                               post.id,
                               reply.id,
-                              reply.authorUid || "",
+                              resolveContentAuthorUid(
+                                reply.authorUid,
+                                reply.user,
+                              ),
                             )
                           }
                         >
@@ -1814,6 +2342,64 @@ const WorkspaceHomeScreen = ({
           <Text style={styles.globalLoadingText}>通信中...</Text>
         </View>
       )}
+
+      <Modal
+        visible={Boolean(editingOwnContent)}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={closeOwnContentEditor}
+      >
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+        >
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>
+              {editingOwnContent?.replyId ? "返信を編集" : "投稿を編集"}
+            </Text>
+            <TextInput
+              style={[
+                styles.modalInput,
+                { minHeight: 140, textAlignVertical: "top" },
+              ]}
+              value={editingOwnContentText}
+              onChangeText={setEditingOwnContentText}
+              placeholder="内容を入力してください"
+              multiline
+              maxLength={5000}
+              editable={!isSavingOwnContent}
+              autoFocus
+            />
+            <Text style={styles.reportCharacterCount}>
+              {editingOwnContentText.length}/5000
+            </Text>
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={styles.modalCancelBtn}
+                onPress={closeOwnContentEditor}
+                disabled={isSavingOwnContent}
+              >
+                <Text style={styles.modalCancelText}>キャンセル</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.modalSubmitBtn,
+                  (!editingOwnContentText.trim() || isSavingOwnContent) &&
+                    styles.reportOptionDisabled,
+                ]}
+                onPress={handleSaveOwnContent}
+                disabled={!editingOwnContentText.trim() || isSavingOwnContent}
+              >
+                {isSavingOwnContent ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.modalSubmitText}>保存する</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
 
       <Modal
         visible={isNotifModalVisible}
@@ -2185,6 +2771,27 @@ const WorkspaceHomeScreen = ({
                 <Text style={styles.reportHintText}>
                   ユーザー通報を利用できないため、必要な場合は投稿内容を通報してください。
                 </Text>
+              )}
+              {canBlockUser(reportingTarget?.targetUserUid) && (
+                <TouchableOpacity
+                  style={[
+                    styles.reasonBtn,
+                    { borderColor: COLORS.danger, marginTop: 10 },
+                  ]}
+                  onPress={() =>
+                    handleBlockUser(
+                      reportingTarget.targetUserUid,
+                      "この投稿のユーザー",
+                    )
+                  }
+                  disabled={isSubmittingReport}
+                >
+                  <Text
+                    style={[styles.reasonBtnText, { color: COLORS.danger }]}
+                  >
+                    🚫 このユーザーをブロック
+                  </Text>
+                </TouchableOpacity>
               )}
 
               <Text style={styles.reportSectionLabel}>理由</Text>

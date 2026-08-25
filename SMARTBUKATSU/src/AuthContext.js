@@ -36,6 +36,7 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
   const [activeTeamId, setActiveTeamId] = useState(null);
   const [teamIds, setTeamIds] = useState([]);
+  const [blockedUserUids, setBlockedUserUids] = useState([]);
   const [role, setRole] = useState(null);
   const [hasSelectedTeam, setHasSelectedTeam] = useState(false);
   const [teamAccessRevoked, setTeamAccessRevoked] = useState(false);
@@ -52,6 +53,7 @@ export function AuthProvider({ children }) {
       setRole(null);
       setActiveTeamId(null);
       setTeamIds([]);
+      setBlockedUserUids([]);
       setUserName(""); // リセット
       setHasSelectedTeam(false);
       setTeamAccessRevoked(false);
@@ -114,8 +116,18 @@ export function AuthProvider({ children }) {
         ? data.teamIds.filter((id) => typeof id === "string" && id)
         : [];
       const normalizedTeamIds = [...new Set([...ids, ...(t ? [t] : [])])];
+      const normalizedBlockedUserUids = Array.isArray(data.blockedUserUids)
+        ? [
+            ...new Set(
+              data.blockedUserUids.filter(
+                (uid) => typeof uid === "string" && uid && uid !== user.uid,
+              ),
+            ),
+          ]
+        : [];
 
       setTeamIds(normalizedTeamIds);
+      setBlockedUserUids(normalizedBlockedUserUids);
       setActiveTeamId(t || null);
       // ★取得した名前をセット（名前がなければメールアドレスを表示）
       setUserName(data.name || user.email || "ゲスト");
@@ -241,6 +253,7 @@ export function AuthProvider({ children }) {
       loading,
       activeTeamId,
       teamIds,
+      blockedUserUids,
       role,
       isAdmin: role === "admin" || role === "owner", // ownerも管理者として扱うように強化
       teamSelectionRequired:
@@ -263,6 +276,7 @@ export function AuthProvider({ children }) {
     loading,
     activeTeamId,
     teamIds,
+    blockedUserUids,
     role,
     hasSelectedTeam,
     emailVerificationRequired,

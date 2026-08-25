@@ -34,8 +34,10 @@ import {
   updateMemberProfile,
   updateMemberRoleConfig,
   removeTeamMember,
+  setUserBlocked,
   submitSupportRequest,
   deleteTeam,
+  moderateWorkspaceContent,
   updateTeamAdSettings,
 } from "../services/firestoreService";
 import {
@@ -135,8 +137,10 @@ const SettingsScreen = ({
   absenceDeadlineDaysBefore = 3,
   setAbsenceDeadlineDaysBefore,
   setUserProfiles,
+  posts = [],
+  setPosts,
 }) => {
-  const { activeTeamId, signOut, user } = useAuth();
+  const { activeTeamId, blockedUserUids = [], signOut, user } = useAuth();
   const [inviteCode, setInviteCode] = useState("読み込み中...");
 
   const currentUserUid =
@@ -150,6 +154,52 @@ const SettingsScreen = ({
   const isSupervisor = ["owner", "admin"].includes(userRole);
   const isStaffOrAbove = ["owner", "staff", "admin"].includes(userRole);
   const canManageGuardianPermissions = isStaffOrAbove;
+  const blockedUsersDetails = useMemo(
+    () =>
+      blockedUserUids.map((uid) => {
+        const profile = getMemberProfileByUid(uid);
+        return {
+          uid,
+          name:
+            profile.name ||
+            `現在のチーム外のユーザー（${uid.slice(0, 6)}…）`,
+        };
+      }),
+    [blockedUserUids, userProfiles],
+  );
+  const hiddenContentItems = useMemo(
+    () =>
+      posts.flatMap((post) => {
+        const items = [];
+        if (post.moderationStatus === "hidden") {
+          items.push({
+            key: `post-${post.id}`,
+            type: "post",
+            postId: post.id,
+            replyId: null,
+            author: post.user || "名称未設定",
+            content: post.content || "",
+            reason: post.moderationReason || "チーム管理者による安全対応",
+          });
+        }
+        (post.replies || []).forEach((reply) => {
+          if (reply.moderationStatus !== "hidden") return;
+          items.push({
+            key: `reply-${post.id}-${reply.id}`,
+            type: "reply",
+            postId: post.id,
+            replyId: reply.id,
+            author: reply.user || "名称未設定",
+            content: reply.content || "",
+            reason: reply.moderationReason || "チーム管理者による安全対応",
+          });
+        });
+        return items;
+      }),
+    [posts],
+  );
+  const [isUpdatingSafetySetting, setIsUpdatingSafetySetting] =
+    useState(false);
 
   useEffect(() => {
     if (!activeTeamId) return;
@@ -181,6 +231,8 @@ const SettingsScreen = ({
     position: false,
     myProfile: false,
     myPassword: false,
+    blockedUsers: false,
+    moderatedContent: false,
   });
 
   const [myNewName, setMyNewName] = useState(currentUser);
@@ -806,6 +858,81 @@ const SettingsScreen = ({
         },
       },
     ]);
+  };
+
+  const handleUnblockUser = (blockedUser) => {
+    Alert.alert(
+      "ブロックを解除",
+      `${blockedUser.name}のブロックを解除しますか？`,
+      [
+        { text: "キャンセル", style: "cancel" },
+        {
+          text: "解除する",
+          onPress: async () => {
+            setIsUpdatingSafetySetting(true);
+            try {
+              await setUserBlocked(null, blockedUser.uid, false);
+            } catch (error) {
+              Alert.alert(
+                "解除できませんでした",
+                error?.message || "通信状態を確認してください。",
+              );
+            } finally {
+              setIsUpdatingSafetySetting(false);
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  const handleRestoreModeratedContent = (item) => {
+    if (!activeTeamId || !isStaffOrAbove) return;
+    Alert.alert(
+      item.type === "reply" ? "返信を再表示" : "投稿を再表示",
+      "このコンテンツをチームメンバーへ再表示しますか？",
+      [
+        { text: "キャンセル", style: "cancel" },
+        {
+          text: "再表示する",
+          onPress: async () => {
+            setIsUpdatingSafetySetting(true);
+            try {
+              await moderateWorkspaceContent({
+                teamId: activeTeamId,
+                postId: item.postId,
+                replyId: item.replyId,
+                action: "restore",
+                reason: item.reason,
+              });
+              setPosts?.((currentPosts) =>
+                currentPosts.map((post) => {
+                  if (post.id !== item.postId) return post;
+                  if (!item.replyId) {
+                    return { ...post, moderationStatus: "active" };
+                  }
+                  return {
+                    ...post,
+                    replies: (post.replies || []).map((reply) =>
+                      reply.id === item.replyId
+                        ? { ...reply, moderationStatus: "active" }
+                        : reply,
+                    ),
+                  };
+                }),
+              );
+            } catch (error) {
+              Alert.alert(
+                "再表示できませんでした",
+                error?.message || "権限と通信状態を確認してください。",
+              );
+            } finally {
+              setIsUpdatingSafetySetting(false);
+            }
+          },
+        },
+      ],
+    );
   };
 
   const openExternalPage = async (url, pageName) => {
@@ -1644,6 +1771,68 @@ const SettingsScreen = ({
             </>
           )}
 
+          <SectionCard
+            isExp={expanded.blockedUsers}
+            onToggle={() => toggleSection("blockedUsers")}
+            title={`🚫 ブロック中のユーザー（${blockedUsersDetails.length}）`}
+          >
+            <Text style={styles.subText}>
+              ブロック中のユーザーによる投稿、返信、メンション通知、日報コメントは表示されません。ブロック設定は所属チームを切り替えても維持されます。
+            </Text>
+            {blockedUsersDetails.length === 0 ? (
+              <Text style={styles.emptyText}>ブロック中のユーザーはいません</Text>
+            ) : (
+              blockedUsersDetails.map((blockedUser) => (
+                <View key={blockedUser.uid} style={styles.safetyListItem}>
+                  <Text style={styles.safetyListTitle}>{blockedUser.name}</Text>
+                  <TouchableOpacity
+                    style={styles.safetyActionButton}
+                    onPress={() => handleUnblockUser(blockedUser)}
+                    disabled={isUpdatingSafetySetting}
+                  >
+                    <Text style={styles.safetyActionButtonText}>解除</Text>
+                  </TouchableOpacity>
+                </View>
+              ))
+            )}
+          </SectionCard>
+
+          {isStaffOrAbove && (
+            <SectionCard
+              isExp={expanded.moderatedContent}
+              onToggle={() => toggleSection("moderatedContent")}
+              title={`🛡️ 非表示コンテンツ管理（${hiddenContentItems.length}）`}
+            >
+              <Text style={styles.subText}>
+                安全対応として非表示にした投稿・返信です。内容を確認し、問題が解消した場合だけ再表示してください。
+              </Text>
+              {hiddenContentItems.length === 0 ? (
+                <Text style={styles.emptyText}>非表示コンテンツはありません</Text>
+              ) : (
+                hiddenContentItems.map((item) => (
+                  <View key={item.key} style={styles.moderatedContentItem}>
+                    <Text style={styles.safetyListTitle}>
+                      {item.type === "reply" ? "返信" : "投稿"}・{item.author}
+                    </Text>
+                    <Text style={styles.moderatedContentText} numberOfLines={3}>
+                      {item.content}
+                    </Text>
+                    <Text style={styles.moderatedContentReason}>
+                      理由：{item.reason}
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.restoreContentButton}
+                      onPress={() => handleRestoreModeratedContent(item)}
+                      disabled={isUpdatingSafetySetting}
+                    >
+                      <Text style={styles.restoreContentButtonText}>再表示</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))
+              )}
+            </SectionCard>
+          )}
+
           <View style={styles.legalContainer}>
             <Text style={styles.legalTitle}>法務・サポート</Text>
             <TouchableOpacity
@@ -2386,6 +2575,67 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   teamDeleteBtnText: { color: "#fff", fontSize: 14, fontWeight: "bold" },
+
+  safetyListItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#eee",
+  },
+  safetyListTitle: {
+    flex: 1,
+    color: "#333",
+    fontSize: 14,
+    fontWeight: "bold",
+  },
+  safetyActionButton: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#e74c3c",
+  },
+  safetyActionButtonText: {
+    color: "#e74c3c",
+    fontSize: 13,
+    fontWeight: "bold",
+  },
+  moderatedContentItem: {
+    marginBottom: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: "#f5b7b1",
+    borderRadius: 8,
+    backgroundColor: "#fff8f7",
+  },
+  moderatedContentText: {
+    color: "#555",
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: 6,
+  },
+  moderatedContentReason: {
+    color: "#888",
+    fontSize: 11,
+    lineHeight: 17,
+    marginTop: 8,
+  },
+  restoreContentButton: {
+    alignSelf: "flex-end",
+    marginTop: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: "#3498db",
+  },
+  restoreContentButtonText: {
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "bold",
+  },
 
   logoutContainer: {
     marginTop: 20,

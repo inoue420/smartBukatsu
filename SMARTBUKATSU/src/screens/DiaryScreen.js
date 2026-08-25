@@ -24,7 +24,9 @@ import {
   createWorkspacePost,
   updateDailyReport,
   deleteDailyReport,
+  setUserBlocked,
   submitSafetyReport,
+  validateUserContent,
 } from "../services/firestoreService";
 import {
   DEFAULT_ALERT_THRESHOLDS,
@@ -36,6 +38,12 @@ import {
   MEDICAL_SCALE_VERSION,
   normalizeMedicalScaleValue,
 } from "../utils/medicalScale";
+import {
+  getBlockedContentMessage,
+  getContentWarningMessage,
+  inspectUserContent,
+  shouldUseLocalModerationFallback,
+} from "../utils/contentModeration";
 
 const OptionGroup = ({ options, selected, onSelect, color = "#0077cc" }) => (
   <View style={styles.optionGroup}>
@@ -114,7 +122,11 @@ const DiaryScreen = ({
   onDiarySubmitted,
   alertThresholds = DEFAULT_ALERT_THRESHOLDS,
 }) => {
-  const { activeTeamId } = useAuth();
+  const { activeTeamId, blockedUserUids = [] } = useAuth();
+  const blockedUserUidSet = useMemo(
+    () => new Set(blockedUserUids),
+    [blockedUserUids],
+  );
 
   const currentUserProfile =
     Object.values(userProfiles).find(
@@ -145,6 +157,69 @@ const DiaryScreen = ({
   const [isSubmittingReport, setIsSubmittingReport] = useState(false);
 
   const [isLoading, setIsLoading] = useState(false);
+
+  const confirmContentForSubmission = async (content, contentType) => {
+    const localInspection = inspectUserContent(content);
+    if (localInspection.blocked) {
+      Alert.alert(
+        "送信できません",
+        getBlockedContentMessage(localInspection),
+      );
+      return false;
+    }
+
+    let warnings = localInspection.warnings;
+    if (!isOffline && activeTeamId) {
+      try {
+        const serverResult = await validateUserContent(
+          activeTeamId,
+          contentType,
+          content,
+        );
+        warnings = [
+          ...new Set([...(warnings || []), ...(serverResult?.warnings || [])]),
+        ];
+      } catch (error) {
+        const blockedReasons = error?.details?.blockedReasons || [];
+        if (
+          error?.details?.reason === "content-blocked" ||
+          blockedReasons.length > 0
+        ) {
+          Alert.alert(
+            "送信できません",
+            getBlockedContentMessage({ blockedReasons }),
+          );
+          return false;
+        }
+        if (shouldUseLocalModerationFallback(error)) {
+          console.warn(
+            "Remote content validation unavailable; local validation used:",
+            error?.code || "unknown",
+          );
+        } else {
+          Alert.alert(
+            "内容を確認できませんでした",
+            error?.code === "functions/unauthenticated"
+              ? "ログイン状態を確認できませんでした。再度ログインしてお試しください。"
+              : "安全確認に失敗しました。通信状態を確認し、時間をおいて再度お試しください。",
+          );
+          console.warn(
+            "Remote content validation failed:",
+            error?.code || "unknown",
+          );
+          return false;
+        }
+      }
+    }
+
+    if (warnings.length === 0) return true;
+    return new Promise((resolve) => {
+      Alert.alert("送信前の確認", getContentWarningMessage({ warnings }), [
+        { text: "内容を見直す", style: "cancel", onPress: () => resolve(false) },
+        { text: "確認して送信", onPress: () => resolve(true) },
+      ]);
+    });
+  };
 
   // === 入力ステート ===
   const [reportDate, setReportDate] = useState(getTodayString());
@@ -457,7 +532,13 @@ const DiaryScreen = ({
           { text: "キャンセル", style: "cancel" },
           {
             text: "公開する",
-            onPress: () => {
+            onPress: async () => {
+              const sharedContent = `📢 ${report.author} の振り返りを共有します！\n\n【振り返り】\n${report.reflection || "未入力"}\n\n※詳細は振り返り画面から確認できます。`;
+              const canSubmit = await confirmContentForSubmission(
+                sharedContent,
+                "workspace_post",
+              );
+              if (!canSubmit) return;
               setDailyReports((prev) =>
                 prev.map((d) =>
                   d.id === reportId ? { ...d, sharedWith: "all" } : d,
@@ -473,7 +554,7 @@ const DiaryScreen = ({
                 channel: "共有日記",
                 user: displayUserName,
                 authorUid: currentUserUid,
-                content: `📢 ${report.author} の振り返りを共有します！\n\n【振り返り】\n${report.reflection || "未入力"}\n\n※詳細は振り返り画面から確認できます。`,
+                content: sharedContent,
                 time: "たった今",
                 replyTo: null,
                 reactions: {},
@@ -704,6 +785,12 @@ const DiaryScreen = ({
 
   const handleSendComment = async () => {
     if (commentText.trim() === "") return;
+    const contentToSend = commentText.trim();
+    const canSubmit = await confirmContentForSubmission(
+      contentToSend,
+      "daily_report_comment",
+    );
+    if (!canSubmit) return;
     setIsLoading(true);
 
     try {
@@ -711,7 +798,7 @@ const DiaryScreen = ({
         id: "c_" + Date.now().toString(),
         user: displayUserName,
         uid: currentUserUid,
-        text: commentText,
+        text: contentToSend,
         time: "たった今",
         status: isOffline ? "pending" : "sent",
       };
@@ -774,6 +861,49 @@ const DiaryScreen = ({
     setReportReason("");
     setReportDetails("");
     setIsReportModalVisible(true);
+  };
+
+  const handleBlockReportingUser = () => {
+    const targetUid = reportingComment?.targetUserUid;
+    if (
+      !targetUid ||
+      targetUid === currentUserUid ||
+      blockedUserUidSet.has(targetUid) ||
+      !activeTeamId ||
+      isOffline
+    ) {
+      if (isOffline) {
+        Alert.alert("オフラインです", "ユーザーのブロックには通信が必要です。");
+      }
+      return;
+    }
+    Alert.alert(
+      "ユーザーをブロック",
+      "このコメントのユーザーをブロックしますか？\n\n投稿、返信、メンション通知、日報コメントが表示されなくなります。設定画面から解除できます。",
+      [
+        { text: "キャンセル", style: "cancel" },
+        {
+          text: "ブロックする",
+          style: "destructive",
+          onPress: async () => {
+            setIsSubmittingReport(true);
+            try {
+              await setUserBlocked(activeTeamId, targetUid, true);
+              setIsReportModalVisible(false);
+              setReportingComment(null);
+              Alert.alert("ブロックしました", "設定画面からいつでも解除できます。");
+            } catch (error) {
+              Alert.alert(
+                "ブロックできませんでした",
+                error?.message || "通信状態を確認してください。",
+              );
+            } finally {
+              setIsSubmittingReport(false);
+            }
+          },
+        },
+      ],
+    );
   };
 
   const submitCommentReport = async () => {
@@ -1493,7 +1623,13 @@ const DiaryScreen = ({
                         💬 コーチとのやり取り
                       </Text>
                       <View style={styles.threadArea}>
-                        {selectedReport.comments.map((c) => {
+                        {(selectedReport.comments || [])
+                          .filter(
+                            (comment) =>
+                              !comment.uid ||
+                              !blockedUserUidSet.has(comment.uid),
+                          )
+                          .map((c) => {
                           const isMe = c.uid
                             ? c.uid === currentUserUid
                             : c.user === displayUserName;
@@ -1544,7 +1680,7 @@ const DiaryScreen = ({
                               </View>
                             </TouchableOpacity>
                           );
-                        })}
+                          })}
                       </View>
                     </ScrollView>
                   );
@@ -1924,6 +2060,24 @@ const DiaryScreen = ({
                   ユーザー通報を利用できないため、必要な場合はコメント内容を通報してください。
                 </Text>
               )}
+              {reportingComment?.targetUserUid &&
+                reportingComment.targetUserUid !== currentUserUid &&
+                !blockedUserUidSet.has(reportingComment.targetUserUid) && (
+                  <TouchableOpacity
+                    style={[
+                      styles.reportReasonBtn,
+                      { borderColor: "#e74c3c", marginTop: 10 },
+                    ]}
+                    onPress={handleBlockReportingUser}
+                    disabled={isSubmittingReport}
+                  >
+                    <Text
+                      style={[styles.reportReasonText, { color: "#e74c3c" }]}
+                    >
+                      🚫 このユーザーをブロック
+                    </Text>
+                  </TouchableOpacity>
+                )}
 
               <Text style={styles.reportSectionLabel}>理由</Text>
               {REPORT_REASONS.map((reason) => (

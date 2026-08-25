@@ -43,6 +43,10 @@ const UID_IDENTITY_FIELDS = new Set([
   "updatedBy",
   "uploadedBy",
   "ownerId",
+  "editedByUid",
+  "deletedByUid",
+  "moderatedByUid",
+  "moderationRestoredByUid",
 ]);
 const DISPLAY_NAME_FIELDS = new Set(["user", "author", "displayName"]);
 const LEGACY_DISPLAY_IDENTITY_FIELDS = new Set([
@@ -85,6 +89,44 @@ const SAFETY_REPORT_TARGET_TYPES = new Set([
   "workspace_reply",
   "daily_report_comment",
 ]);
+const MODERATED_CONTENT_TYPES = new Set([
+  "workspace_post",
+  "workspace_reply",
+  "daily_report_comment",
+]);
+const PROHIBITED_CONTENT_PATTERNS = [
+  {
+    label: "生命・身体への脅迫表現",
+    pattern:
+      /(?:死ね|消えろ|ぶっ殺す|(?:殺|ころ)してやる|(?:お前|てめえ|貴様|あいつ|こいつ|そいつ|あなた|君|きみ)(?:を|は|が|に|、|\s)*(?:殺す|ころす|しね)|(?:殺す|ころす)(?:ぞ|からな|からね)|(?:^|[\s、。！？!?])しね(?:$|[\s、。！？!?]))/u,
+  },
+  {
+    label: "性的な強要・搾取を示す表現",
+    pattern: /(?:レイプ|強姦|裸(?:の)?(?:写真|画像)(?:を)?送れ)/u,
+  },
+];
+const ATTACK_WARNING_PATTERNS = [
+  /(?:バカ|馬鹿|アホ|クズ|きもい|気持ち悪い|役立たず)/u,
+  /(?:殴る|蹴る|痛い目にあわせる|殺す|ころす|殺して|ころして)/u,
+];
+const PERSONAL_INFORMATION_PATTERNS = [
+  {
+    label: "メールアドレス",
+    pattern: /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/iu,
+  },
+  {
+    label: "電話番号",
+    pattern: /(?:\+?81[-\s]?)?0\d{1,4}[-\sー‐–—]?\d{1,4}[-\sー‐–—]?\d{3,4}/u,
+  },
+  {
+    label: "郵便番号",
+    pattern: /〒?\s*\d{3}[-ー‐–—]\d{4}/u,
+  },
+  {
+    label: "外部連絡先ID",
+    pattern: /(?:LINE|ライン|SNS)\s*(?:ID|ＩＤ|id)?\s*[:：]\s*\S+/iu,
+  },
+];
 
 const googleMapsServerApiKey = defineSecret("GOOGLE_MAPS_SERVER_API_KEY");
 
@@ -99,6 +141,25 @@ const normalizeQuery = (value) => String(value || "").trim().replace(/\s+/g, " "
 
 const normalizeCaseText = (value, maxLength) =>
   String(value || "").trim().slice(0, maxLength);
+
+const inspectUserContent = (value) => {
+  const normalized = String(value || "")
+    .normalize("NFKC")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .trim();
+  const blockedReasons = PROHIBITED_CONTENT_PATTERNS.filter(({ pattern }) =>
+    pattern.test(normalized),
+  ).map(({ label }) => label);
+  const warnings = [
+    ...(ATTACK_WARNING_PATTERNS.some((pattern) => pattern.test(normalized))
+      ? ["攻撃的と受け取られる可能性のある表現"]
+      : []),
+    ...PERSONAL_INFORMATION_PATTERNS.filter(({ pattern }) =>
+      pattern.test(normalized),
+    ).map(({ label }) => `${label}などの個人情報である可能性`),
+  ];
+  return { normalized, blockedReasons, warnings };
+};
 
 const getEvidenceValue = (value) => {
   if (value === null || value === undefined) return null;
@@ -128,6 +189,18 @@ const getReplyEvidence = (reply = {}) => ({
   status: normalizeCaseText(reply.status, 50),
   deletedAt: getEvidenceValue(reply.deletedAt),
   deletedBy: normalizeCaseText(reply.deletedBy, 200),
+  deletedByUid: normalizeCaseText(reply.deletedByUid, 128),
+  editedAt: getEvidenceValue(reply.editedAt),
+  editedByUid: normalizeCaseText(reply.editedByUid, 128),
+  moderationStatus: normalizeCaseText(reply.moderationStatus, 50),
+  moderationReason: normalizeCaseText(reply.moderationReason, 500),
+  moderatedByUid: normalizeCaseText(reply.moderatedByUid, 128),
+  moderatedAt: getEvidenceValue(reply.moderatedAt),
+  moderationRestoredByUid: normalizeCaseText(
+    reply.moderationRestoredByUid,
+    128,
+  ),
+  moderationRestoredAt: getEvidenceValue(reply.moderationRestoredAt),
   attachments: getEvidenceValue(reply.attachments || []),
 });
 
@@ -148,6 +221,20 @@ const getWorkspacePostEvidence = (
     status: normalizeCaseText(postData.status, 50),
     deletedAt: getEvidenceValue(postData.deletedAt),
     deletedBy: normalizeCaseText(postData.deletedBy, 200),
+    deletedByUid: normalizeCaseText(postData.deletedByUid, 128),
+    editedAt: getEvidenceValue(postData.editedAt),
+    editedByUid: normalizeCaseText(postData.editedByUid, 128),
+    moderationStatus: normalizeCaseText(postData.moderationStatus, 50),
+    moderationReason: normalizeCaseText(postData.moderationReason, 500),
+    moderatedByUid: normalizeCaseText(postData.moderatedByUid, 128),
+    moderatedAt: getEvidenceValue(postData.moderatedAt),
+    moderationRestoredByUid: normalizeCaseText(
+      postData.moderationRestoredByUid,
+      128,
+    ),
+    moderationRestoredAt: getEvidenceValue(
+      postData.moderationRestoredAt,
+    ),
     attachments: getEvidenceValue(postData.attachments || []),
   };
 
@@ -169,8 +256,12 @@ const getWorkspacePostEvidence = (
   };
 };
 
-const getWorkspaceDocumentFingerprint = (postData, postId) =>
-  JSON.stringify(getWorkspacePostEvidence(postData, { postId }));
+const getWorkspaceDocumentFingerprint = (postData, postId) => {
+  const evidence = getWorkspacePostEvidence(postData, { postId });
+  if (!evidence) return JSON.stringify(null);
+  const { updatedAt, ...contentEvidence } = evidence;
+  return JSON.stringify(contentEvidence);
+};
 
 const getDailyReportCommentEvidence = (comment = {}) => ({
   id: normalizeCaseText(comment.id, 200),
@@ -210,8 +301,12 @@ const getDailyReportEvidence = (
   };
 };
 
-const getDailyReportDocumentFingerprint = (reportData, reportId) =>
-  JSON.stringify(getDailyReportEvidence(reportData, { reportId }));
+const getDailyReportDocumentFingerprint = (reportData, reportId) => {
+  const evidence = getDailyReportEvidence(reportData, { reportId });
+  if (!evidence) return JSON.stringify(null);
+  const { updatedAt, ...contentEvidence } = evidence;
+  return JSON.stringify(contentEvidence);
+};
 
 const getAuthenticatedTeamMember = async (teamId, uid) => {
   const normalizedTeamId = normalizeCaseText(teamId, 200);
@@ -265,6 +360,24 @@ const deleteNonSafetySupportCasesForAccount = async (uid) => {
   }
 
   return deletedCaseCount;
+};
+
+const removeAccountFromBlockLists = async (uid) => {
+  const usersSnapshot = await firestore
+    .collection("users")
+    .where("blockedUserUids", "array-contains", uid)
+    .get();
+  if (usersSnapshot.empty) return 0;
+
+  const writer = firestore.bulkWriter();
+  usersSnapshot.docs.forEach((userSnapshot) => {
+    writer.update(userSnapshot.ref, {
+      blockedUserUids: FieldValue.arrayRemove(uid),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+  });
+  await writer.close();
+  return usersSnapshot.size;
 };
 
 const isValidCoordinate = (latitude, longitude) => {
@@ -758,6 +871,356 @@ exports.submitSupportRequest = onCall(
   },
 );
 
+exports.setUserBlocked = onCall(
+  {
+    region: "asia-northeast1",
+    timeoutSeconds: 15,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const callerUid = request.auth?.uid;
+    if (!callerUid) {
+      throw new HttpsError("unauthenticated", "ログインが必要です。");
+    }
+
+    const targetUid = normalizeCaseText(request.data?.targetUid, 128);
+    const shouldBlock = request.data?.blocked === true;
+    if (!targetUid || targetUid.includes("/") || targetUid === callerUid) {
+      throw new HttpsError("invalid-argument", "ブロック対象が正しくありません。");
+    }
+
+    if (shouldBlock) {
+      const { teamRef } = await getAuthenticatedTeamMember(
+        request.data?.teamId,
+        callerUid,
+      );
+      const targetMemberSnap = await teamRef
+        .collection("members")
+        .doc(targetUid)
+        .get();
+      if (!targetMemberSnap.exists) {
+        throw new HttpsError(
+          "not-found",
+          "同じチームに所属するユーザーを確認できませんでした。",
+        );
+      }
+    }
+
+    await firestore
+      .collection("users")
+      .doc(callerUid)
+      .set(
+        {
+          blockedUserUids: shouldBlock
+            ? FieldValue.arrayUnion(targetUid)
+            : FieldValue.arrayRemove(targetUid),
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+
+    logger.info("User block preference updated.", {
+      callerUid,
+      targetUid,
+      blocked: shouldBlock,
+    });
+    return { targetUid, blocked: shouldBlock };
+  },
+);
+
+exports.validateUserContent = onCall(
+  {
+    region: "asia-northeast1",
+    timeoutSeconds: 15,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const callerUid = request.auth?.uid;
+    if (!callerUid) {
+      throw new HttpsError("unauthenticated", "ログインが必要です。");
+    }
+
+    const contentType = normalizeCaseText(request.data?.contentType, 50);
+    const content = normalizeCaseText(request.data?.content, 5000);
+    if (!MODERATED_CONTENT_TYPES.has(contentType) || !content) {
+      throw new HttpsError("invalid-argument", "確認対象の内容が正しくありません。");
+    }
+    await getAuthenticatedTeamMember(request.data?.teamId, callerUid);
+
+    const inspection = inspectUserContent(content);
+    if (inspection.blockedReasons.length > 0) {
+      throw new HttpsError(
+        "failed-precondition",
+        "安全上の理由により、この内容は送信できません。",
+        {
+          reason: "content-blocked",
+          blockedReasons: inspection.blockedReasons,
+        },
+      );
+    }
+    return { accepted: true, warnings: inspection.warnings };
+  },
+);
+
+exports.manageOwnWorkspaceContent = onCall(
+  {
+    region: "asia-northeast1",
+    timeoutSeconds: 30,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const callerUid = request.auth?.uid;
+    if (!callerUid) {
+      throw new HttpsError("unauthenticated", "ログインが必要です。");
+    }
+
+    const input = request.data || {};
+    const postId = normalizeCaseText(input.postId, 200);
+    const replyId = normalizeCaseText(input.replyId, 200);
+    const action = normalizeCaseText(input.action, 20);
+    const rawContent =
+      typeof input.content === "string" ? input.content.trim() : "";
+    if (!postId || !new Set(["edit", "delete"]).has(action)) {
+      throw new HttpsError("invalid-argument", "編集対象が正しくありません。");
+    }
+    if (action === "edit" && (!rawContent || rawContent.length > 5000)) {
+      throw new HttpsError(
+        "invalid-argument",
+        "内容は1文字以上5000文字以内で入力してください。",
+      );
+    }
+
+    const { teamId, teamRef } = await getAuthenticatedTeamMember(
+      input.teamId,
+      callerUid,
+    );
+    const inspection =
+      action === "edit" ? inspectUserContent(rawContent) : null;
+    if (inspection?.blockedReasons.length > 0) {
+      throw new HttpsError(
+        "failed-precondition",
+        "安全上の理由により、この内容は保存できません。",
+        {
+          reason: "content-blocked",
+          blockedReasons: inspection.blockedReasons,
+        },
+      );
+    }
+
+    const postRef = teamRef.collection("workspacePosts").doc(postId);
+    const now = Timestamp.now();
+    const result = await firestore.runTransaction(async (transaction) => {
+      const postSnapshot = await transaction.get(postRef);
+      if (!postSnapshot.exists) {
+        throw new HttpsError("not-found", "対象の投稿が見つかりません。");
+      }
+      const postData = postSnapshot.data() || {};
+
+      if (replyId) {
+        let targetFound = false;
+        const replies = (postData.replies || []).map((reply) => {
+          if (String(reply?.id || "") !== replyId) return reply;
+          targetFound = true;
+          if (reply.authorUid !== callerUid) {
+            throw new HttpsError(
+              "permission-denied",
+              "自分の返信だけを編集・削除できます。",
+            );
+          }
+          if (reply.status === "deleted") {
+            throw new HttpsError(
+              "failed-precondition",
+              "削除済みの返信は変更できません。",
+            );
+          }
+          return action === "edit"
+            ? {
+                ...reply,
+                content: rawContent,
+                editedAt: now,
+                editedByUid: callerUid,
+              }
+            : {
+                ...reply,
+                status: "deleted",
+                deletedAt: now,
+                deletedByUid: callerUid,
+              };
+        });
+        if (!targetFound) {
+          throw new HttpsError("not-found", "対象の返信が見つかりません。");
+        }
+        transaction.update(postRef, {
+          replies,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+        return { teamId, postId, replyId, action, content: rawContent };
+      }
+
+      if (postData.authorUid !== callerUid) {
+        throw new HttpsError(
+          "permission-denied",
+          "自分の投稿だけを編集・削除できます。",
+        );
+      }
+      if (postData.status === "deleted") {
+        throw new HttpsError(
+          "failed-precondition",
+          "削除済みの投稿は変更できません。",
+        );
+      }
+      const updateData =
+        action === "edit"
+          ? {
+              content: rawContent,
+              editedAt: now,
+              editedByUid: callerUid,
+              updatedAt: FieldValue.serverTimestamp(),
+            }
+          : {
+              status: "deleted",
+              deletedAt: now,
+              deletedByUid: callerUid,
+              updatedAt: FieldValue.serverTimestamp(),
+            };
+      transaction.update(postRef, updateData);
+      return { teamId, postId, replyId: null, action, content: rawContent };
+    });
+
+    logger.info("Workspace content owner action completed.", {
+      teamId: result.teamId,
+      postId: result.postId,
+      replyId: result.replyId,
+      action: result.action,
+      callerUid,
+    });
+    return result;
+  },
+);
+
+exports.moderateWorkspaceContent = onCall(
+  {
+    region: "asia-northeast1",
+    timeoutSeconds: 30,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const callerUid = request.auth?.uid;
+    if (!callerUid) {
+      throw new HttpsError("unauthenticated", "ログインが必要です。");
+    }
+
+    const input = request.data || {};
+    const postId = normalizeCaseText(input.postId, 200);
+    const replyId = normalizeCaseText(input.replyId, 200);
+    const action = normalizeCaseText(input.action, 20);
+    const reason =
+      normalizeCaseText(input.reason, 500) || "チーム管理者による安全対応";
+    if (!postId || !new Set(["hide", "restore"]).has(action)) {
+      throw new HttpsError("invalid-argument", "非表示対象が正しくありません。");
+    }
+
+    const { teamId, teamRef, memberData } = await getAuthenticatedTeamMember(
+      input.teamId,
+      callerUid,
+    );
+    const callerRole = normalizeCaseText(memberData.role, 50) || "member";
+    if (!MEMBER_MANAGER_ROLES.has(callerRole)) {
+      throw new HttpsError(
+        "permission-denied",
+        "コンテンツを管理する権限がありません。",
+      );
+    }
+
+    const membersSnapshot = await teamRef.collection("members").get();
+    const managerUids = membersSnapshot.docs
+      .filter((memberSnapshot) =>
+        MEMBER_MANAGER_ROLES.has(memberSnapshot.data()?.role || "member"),
+      )
+      .map((memberSnapshot) => memberSnapshot.id);
+    if (!managerUids.includes(callerUid)) managerUids.push(callerUid);
+
+    const postRef = teamRef.collection("workspacePosts").doc(postId);
+    const now = Timestamp.now();
+    const result = await firestore.runTransaction(async (transaction) => {
+      const postSnapshot = await transaction.get(postRef);
+      if (!postSnapshot.exists) {
+        throw new HttpsError("not-found", "対象の投稿が見つかりません。");
+      }
+      const postData = postSnapshot.data() || {};
+
+      if (replyId) {
+        let targetFound = false;
+        const replies = (postData.replies || []).map((reply) => {
+          if (String(reply?.id || "") !== replyId) return reply;
+          targetFound = true;
+          return action === "hide"
+            ? {
+                ...reply,
+                moderationStatus: "hidden",
+                moderationReason: reason,
+                moderatedByUid: callerUid,
+                moderatedAt: now,
+              }
+            : {
+                ...reply,
+                moderationStatus: "active",
+                moderationRestoredByUid: callerUid,
+                moderationRestoredAt: now,
+              };
+        });
+        if (!targetFound) {
+          throw new HttpsError("not-found", "対象の返信が見つかりません。");
+        }
+        transaction.update(postRef, {
+          replies,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+        return { teamId, postId, replyId, action };
+      }
+
+      if (action === "hide") {
+        transaction.update(postRef, {
+          moderationStatus: "hidden",
+          moderationReason: reason,
+          moderatedByUid: callerUid,
+          moderatedAt: now,
+          moderationOriginalVisibleToUids:
+            postData.moderationOriginalVisibleToUids ||
+            postData.visibleToUids ||
+            [],
+          moderationOriginalReadTargetUids:
+            postData.moderationOriginalReadTargetUids ||
+            postData.readTargetUids ||
+            [],
+          visibleToUids: [...new Set(managerUids)],
+          readTargetUids: [...new Set(managerUids)],
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      } else {
+        transaction.update(postRef, {
+          moderationStatus: "active",
+          moderationRestoredByUid: callerUid,
+          moderationRestoredAt: now,
+          visibleToUids:
+            postData.moderationOriginalVisibleToUids ||
+            postData.visibleToUids ||
+            [],
+          readTargetUids:
+            postData.moderationOriginalReadTargetUids ||
+            postData.readTargetUids ||
+            [],
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
+      return { teamId, postId, replyId: null, action };
+    });
+
+    logger.info("Workspace content moderation updated.", result);
+    return result;
+  },
+);
+
 exports.trackReportedWorkspacePostChanges = onDocumentWritten(
   {
     document: "teams/{teamId}/workspacePosts/{postId}",
@@ -1198,10 +1661,12 @@ exports.deleteUserAccount = onCall(
     let anonymizedDocumentCount = 0;
     let anonymizedStorageFileCount = 0;
     let deletedSupportCaseCount = 0;
+    let removedBlockReferenceCount = 0;
 
     try {
       deletedSupportCaseCount =
         await deleteNonSafetySupportCasesForAccount(uid);
+      removedBlockReferenceCount = await removeAccountFromBlockLists(uid);
       for (const teamEntry of context.teamEntries) {
         anonymizedDocumentCount += await anonymizeAccountDataInTeam({
           uid,
@@ -1231,6 +1696,7 @@ exports.deleteUserAccount = onCall(
         anonymizedDocumentCount,
         anonymizedStorageFileCount,
         deletedSupportCaseCount,
+        removedBlockReferenceCount,
       };
     } catch (error) {
       if (error instanceof HttpsError) throw error;
