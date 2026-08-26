@@ -26,6 +26,7 @@ export const DEFAULT_MAX_TEAMS_PER_USER = 5;
 export const SHARP_RISE_MAX_TEAMS_PER_USER = 100;
 export const SHARP_RISE_INVITE_CODE = "AWUH95";
 const INVITE_CODE_LENGTH = 6;
+const AMBIGUOUS_INVITE_CODE_CHARACTERS = /[IlO0]/;
 
 export function getMaxTeamsForMemberships(teams = [], inviteCode = "") {
   const isJoiningSharpRise = inviteCode.trim() === SHARP_RISE_INVITE_CODE;
@@ -44,6 +45,7 @@ function generateInviteCode() {
   do {
     candidate = doc(collection(db, "invites")).id.slice(0, INVITE_CODE_LENGTH);
   } while (
+    AMBIGUOUS_INVITE_CODE_CHARACTERS.test(candidate) ||
     !/[a-z]/.test(candidate) ||
     !/[A-Z]/.test(candidate) ||
     !/[0-9]/.test(candidate)
