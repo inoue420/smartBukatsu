@@ -17,6 +17,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../AuthContext";
+import MedicalSafetyNotice from "../components/MedicalSafetyNotice";
 import { auth, db } from "../firebase";
 import { doc, getDoc, updateDoc } from "firebase/firestore";
 
@@ -1706,6 +1707,7 @@ const SettingsScreen = ({
                 <Text style={styles.subText}>
                   コンディション一覧で「注意(黄)」「危険(赤)」になる数値を設定します。
                 </Text>
+                <MedicalSafetyNotice variant="threshold" />
                 <ThresholdSelector
                   label="疲労度「注意」の基準 (5段階中)"
                   value={alertThresholds.fatigueWarning}

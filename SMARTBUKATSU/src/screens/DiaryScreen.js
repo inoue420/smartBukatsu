@@ -19,6 +19,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { useAuth } from "../AuthContext";
+import MedicalSafetyNotice from "../components/MedicalSafetyNotice";
 import {
   createDailyReport,
   createWorkspacePost,
@@ -1132,6 +1133,9 @@ const DiaryScreen = ({
         style={styles.content}
         contentContainerStyle={{ paddingBottom: 100 }}
       >
+        {isStaffOrAbove && activeTab === "danger" && (
+          <MedicalSafetyNotice variant="alert" />
+        )}
         {displayDates.length === 0 ? (
           <Text style={styles.emptyText}>データがありません。</Text>
         ) : (
@@ -1561,6 +1565,13 @@ const DiaryScreen = ({
                         {/* メディカル詳細エリア */}
                         {selectedReport.condition && (
                           <View style={styles.medicalDetailBox}>
+                            <MedicalSafetyNotice
+                              variant={
+                                getAlertLevel(selectedReport) === "danger"
+                                  ? "alert"
+                                  : "general"
+                              }
+                            />
                             <Text style={styles.medicalDetailTitle}>
                               🏥 コンディション
                             </Text>
@@ -1842,6 +1853,7 @@ const DiaryScreen = ({
                 {/* === コンディション（メディカル）入力部分 === */}
                 <View style={[styles.formSection, { marginTop: 20 }]}>
                   <Text style={styles.formSectionTitle}>🏥 コンディション</Text>
+                  <MedicalSafetyNotice />
                   <Text style={styles.inputLabel}>😀 全体的な体調</Text>
                   <OptionGroup
                     options={["良い", "普通", "不良"]}

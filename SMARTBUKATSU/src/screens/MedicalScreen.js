@@ -14,6 +14,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../AuthContext";
+import MedicalSafetyNotice from "../components/MedicalSafetyNotice";
 import {
   getFatigueScore,
   getPainScore,
@@ -496,6 +497,14 @@ const MedicalScreen = ({
         </View>
       )}
 
+      <View style={{ paddingHorizontal: 15 }}>
+        <MedicalSafetyNotice
+          variant={
+            isStaffOrAbove && activeTab === "danger" ? "alert" : "general"
+          }
+        />
+      </View>
+
       {isStaffOrAbove && (
         <View style={styles.adminDashboard}>
           <View style={styles.summaryRow}>
@@ -876,6 +885,17 @@ const MedicalScreen = ({
                       style={styles.detailScroll}
                       keyboardShouldPersistTaps="handled"
                     >
+                      <MedicalSafetyNotice
+                        variant={
+                          getAlertLevel(selectedRecord, medicalRecords) ===
+                            "danger" ||
+                          selectedRecord.managementTags?.includes(
+                            "🏥 受診推奨",
+                          )
+                            ? "alert"
+                            : "general"
+                        }
+                      />
                       <View style={styles.detailCard}>
                         <View style={[styles.cardHeader, { marginBottom: 10 }]}>
                           <Text style={styles.cardDate}>
@@ -1074,6 +1094,8 @@ const MedicalScreen = ({
                     ※入力内容は自動で下書き保存されます。
                   </Text>
                 )}
+
+                <MedicalSafetyNotice />
 
                 <Text style={styles.inputLabel}>😀 全体的な体調</Text>
                 <OptionGroup
