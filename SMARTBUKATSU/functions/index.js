@@ -629,6 +629,280 @@ const getUniqueDisplayNames = async ({ teamRef, memberData }) => {
   ]);
 };
 
+const matchesAccountContentAuthor = (
+  value,
+  { uid, uniqueDisplayNames, uidField, displayNameField },
+) => {
+  const storedUid = normalizeCaseText(value?.[uidField], 128);
+  if (storedUid) return storedUid === uid;
+  const storedDisplayName = String(value?.[displayNameField] || "").trim();
+  return Boolean(
+    storedDisplayName && uniqueDisplayNames.has(storedDisplayName),
+  );
+};
+
+const buildAccountContentDeletionPlanInTeam = async ({ uid, teamEntry }) => {
+  const plan = {
+    teamId: teamEntry.teamId,
+    workspacePostDeletes: [],
+    workspacePostUpdates: [],
+    dailyReportDeletes: [],
+    dailyReportUpdates: [],
+  };
+  if (!teamEntry.teamSnap.exists) return plan;
+
+  const [uniqueDisplayNames, workspacePostsSnapshot, dailyReportsSnapshot] =
+    await Promise.all([
+      getUniqueDisplayNames(teamEntry),
+      teamEntry.teamRef.collection("workspacePosts").get(),
+      teamEntry.teamRef.collection("dailyReports").get(),
+    ]);
+  const identityContext = { uid, uniqueDisplayNames };
+
+  workspacePostsSnapshot.docs.forEach((documentSnapshot) => {
+    const postData = documentSnapshot.data() || {};
+    if (
+      matchesAccountContentAuthor(postData, {
+        ...identityContext,
+        uidField: "authorUid",
+        displayNameField: "user",
+      })
+    ) {
+      plan.workspacePostDeletes.push(documentSnapshot);
+      return;
+    }
+
+    const replies = Array.isArray(postData.replies) ? postData.replies : [];
+    const remainingReplies = replies.filter(
+      (reply) =>
+        !matchesAccountContentAuthor(reply, {
+          ...identityContext,
+          uidField: "authorUid",
+          displayNameField: "user",
+        }),
+    );
+    if (remainingReplies.length !== replies.length) {
+      plan.workspacePostUpdates.push({
+        documentSnapshot,
+        remainingReplies,
+        removedReplyCount: replies.length - remainingReplies.length,
+      });
+    }
+  });
+
+  dailyReportsSnapshot.docs.forEach((documentSnapshot) => {
+    const reportData = documentSnapshot.data() || {};
+    if (
+      matchesAccountContentAuthor(reportData, {
+        ...identityContext,
+        uidField: "authorUid",
+        displayNameField: "author",
+      })
+    ) {
+      plan.dailyReportDeletes.push(documentSnapshot);
+      return;
+    }
+
+    const comments = Array.isArray(reportData.comments) ? reportData.comments : [];
+    const remainingComments = comments.filter(
+      (comment) =>
+        !matchesAccountContentAuthor(comment, {
+          ...identityContext,
+          uidField: "uid",
+          displayNameField: "user",
+        }),
+    );
+    if (remainingComments.length !== comments.length) {
+      plan.dailyReportUpdates.push({
+        documentSnapshot,
+        remainingComments,
+        removedCommentCount: comments.length - remainingComments.length,
+      });
+    }
+  });
+
+  return plan;
+};
+
+const getAccountContentDeletionPaths = (plans) => [
+  ...new Set(
+    plans.flatMap((plan) => [
+      ...plan.workspacePostDeletes.map(
+        (documentSnapshot) => documentSnapshot.ref.path,
+      ),
+      ...plan.workspacePostUpdates.map(
+        ({ documentSnapshot }) => documentSnapshot.ref.path,
+      ),
+      ...plan.dailyReportDeletes.map(
+        (documentSnapshot) => documentSnapshot.ref.path,
+      ),
+      ...plan.dailyReportUpdates.map(
+        ({ documentSnapshot }) => documentSnapshot.ref.path,
+      ),
+    ]),
+  ),
+];
+
+const getAccountContentDeletionSnapshots = (plans) =>
+  new Map(
+    plans.flatMap((plan) => [
+      ...plan.workspacePostDeletes.map((documentSnapshot) => [
+        documentSnapshot.ref.path,
+        documentSnapshot,
+      ]),
+      ...plan.workspacePostUpdates.map(({ documentSnapshot }) => [
+        documentSnapshot.ref.path,
+        documentSnapshot,
+      ]),
+      ...plan.dailyReportDeletes.map((documentSnapshot) => [
+        documentSnapshot.ref.path,
+        documentSnapshot,
+      ]),
+      ...plan.dailyReportUpdates.map(({ documentSnapshot }) => [
+        documentSnapshot.ref.path,
+        documentSnapshot,
+      ]),
+    ]),
+  );
+
+const prepareAccountContentEvidencePreservation = async ({ uid, plans }) => {
+  const targetDocumentPaths = getAccountContentDeletionPaths(plans);
+  const targetDocumentSnapshots = getAccountContentDeletionSnapshots(plans);
+  const relatedSafetyCases = [];
+
+  for (let index = 0; index < targetDocumentPaths.length; index += 10) {
+    const pathChunk = targetDocumentPaths.slice(index, index + 10);
+    const casesSnapshot = await firestore
+      .collection(SUPPORT_CASE_COLLECTION)
+      .where("targetDocumentPath", "in", pathChunk)
+      .get();
+    casesSnapshot.docs.forEach((caseSnapshot) => {
+      if (caseSnapshot.data()?.caseType === "safety_report") {
+        relatedSafetyCases.push(caseSnapshot);
+      }
+    });
+  }
+
+  const evidenceResults = await Promise.all(
+    relatedSafetyCases.map(async (caseSnapshot) => ({
+      caseSnapshot,
+      evidenceSnapshot: await caseSnapshot.ref
+        .collection("evidence")
+        .limit(1)
+        .get(),
+    })),
+  );
+  const missingEvidenceCaseIds = evidenceResults
+    .filter(({ evidenceSnapshot }) => evidenceSnapshot.empty)
+    .map(({ caseSnapshot }) => caseSnapshot.id);
+
+  if (missingEvidenceCaseIds.length > 0) {
+    logger.error("Account deletion stopped because report evidence is missing.", {
+      missingEvidenceCaseIds,
+    });
+    throw new HttpsError(
+      "failed-precondition",
+      "通報に関係する証拠の保全を確認できないため、アカウント削除を中断しました。時間をおいて再度お試しください。",
+      { reason: "support-evidence-incomplete" },
+    );
+  }
+
+  if (relatedSafetyCases.length > 0) {
+    const capturedAt = Timestamp.now();
+    const writer = firestore.bulkWriter();
+    relatedSafetyCases.forEach((caseSnapshot) => {
+      const caseData = caseSnapshot.data() || {};
+      const documentSnapshot = targetDocumentSnapshots.get(
+        caseData.targetDocumentPath,
+      );
+      if (!documentSnapshot) return;
+      const snapshot =
+        documentSnapshot.ref.parent.id === "workspacePosts"
+          ? getWorkspacePostEvidence(documentSnapshot.data() || {}, {
+              postId: documentSnapshot.id,
+              targetType: caseData.targetType,
+              replyId: caseData.targetReplyId || "",
+            })
+          : getDailyReportEvidence(documentSnapshot.data() || {}, {
+              reportId: documentSnapshot.id,
+              commentId: caseData.targetCommentId || "",
+            });
+      writer.set(
+        caseSnapshot.ref
+          .collection("evidence")
+          .doc(`accountDeletion_${uid}`),
+        {
+          eventType: "account_deletion_prepared",
+          capturedAt,
+          snapshot,
+        },
+      );
+    });
+    await writer.close();
+  }
+
+  return relatedSafetyCases.length;
+};
+
+const deleteAccountContentInTeam = async (plan) => {
+  const result = {
+    deletedWorkspacePostCount: plan.workspacePostDeletes.length,
+    removedWorkspaceReplyCount: plan.workspacePostUpdates.reduce(
+      (total, update) => total + update.removedReplyCount,
+      0,
+    ),
+    deletedDailyReportCount: plan.dailyReportDeletes.length,
+    removedDailyReportCommentCount: plan.dailyReportUpdates.reduce(
+      (total, update) => total + update.removedCommentCount,
+      0,
+    ),
+  };
+  const operationCount =
+    plan.workspacePostDeletes.length +
+    plan.workspacePostUpdates.length +
+    plan.dailyReportDeletes.length +
+    plan.dailyReportUpdates.length;
+  if (operationCount === 0) return result;
+
+  const writer = firestore.bulkWriter();
+  plan.workspacePostDeletes.forEach((documentSnapshot) => {
+    writer.delete(documentSnapshot.ref, {
+      lastUpdateTime: documentSnapshot.updateTime,
+    });
+  });
+  plan.workspacePostUpdates.forEach(
+    ({ documentSnapshot, remainingReplies }) => {
+      writer.update(
+        documentSnapshot.ref,
+        {
+          replies: remainingReplies,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { lastUpdateTime: documentSnapshot.updateTime },
+      );
+    },
+  );
+  plan.dailyReportDeletes.forEach((documentSnapshot) => {
+    writer.delete(documentSnapshot.ref, {
+      lastUpdateTime: documentSnapshot.updateTime,
+    });
+  });
+  plan.dailyReportUpdates.forEach(
+    ({ documentSnapshot, remainingComments }) => {
+      writer.update(
+        documentSnapshot.ref,
+        {
+          comments: remainingComments,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { lastUpdateTime: documentSnapshot.updateTime },
+      );
+    },
+  );
+  await writer.close();
+  return result;
+};
+
 const anonymizeAccountDataInTeam = async ({ uid, teamEntry }) => {
   if (!teamEntry.teamSnap.exists) return 0;
 
@@ -1675,12 +1949,41 @@ exports.deleteUserAccount = onCall(
     const context = await getAccountDeletionContext(uid);
     assertAccountDeletionEligible(context);
 
+    let deletedWorkspacePostCount = 0;
+    let removedWorkspaceReplyCount = 0;
+    let deletedDailyReportCount = 0;
+    let removedDailyReportCommentCount = 0;
+    let verifiedSupportCaseCount = 0;
     let anonymizedDocumentCount = 0;
     let anonymizedStorageFileCount = 0;
     let deletedSupportCaseCount = 0;
     let removedBlockReferenceCount = 0;
 
     try {
+      const contentDeletionPlans = await Promise.all(
+        context.teamEntries.map((teamEntry) =>
+          buildAccountContentDeletionPlanInTeam({ uid, teamEntry }),
+        ),
+      );
+      verifiedSupportCaseCount =
+        await prepareAccountContentEvidencePreservation({
+          uid,
+          plans: contentDeletionPlans,
+        });
+
+      for (const contentDeletionPlan of contentDeletionPlans) {
+        const deletionResult = await deleteAccountContentInTeam(
+          contentDeletionPlan,
+        );
+        deletedWorkspacePostCount +=
+          deletionResult.deletedWorkspacePostCount;
+        removedWorkspaceReplyCount +=
+          deletionResult.removedWorkspaceReplyCount;
+        deletedDailyReportCount += deletionResult.deletedDailyReportCount;
+        removedDailyReportCommentCount +=
+          deletionResult.removedDailyReportCommentCount;
+      }
+
       deletedSupportCaseCount =
         await deleteNonSafetySupportCasesForAccount(uid);
       removedBlockReferenceCount = await removeAccountFromBlockLists(uid);
@@ -1710,6 +2013,11 @@ exports.deleteUserAccount = onCall(
         removedTeamCount: context.teamEntries.filter(
           ({ memberSnap }) => memberSnap.exists,
         ).length,
+        deletedWorkspacePostCount,
+        removedWorkspaceReplyCount,
+        deletedDailyReportCount,
+        removedDailyReportCommentCount,
+        verifiedSupportCaseCount,
         anonymizedDocumentCount,
         anonymizedStorageFileCount,
         deletedSupportCaseCount,
