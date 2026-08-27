@@ -660,9 +660,12 @@ const anonymizeAccountDataInTeam = async ({ uid, teamEntry }) => {
 
 const anonymizeAccountStorageInTeam = async ({ uid, teamId }) => {
   const bucket = getStorage().bucket();
-  const [files] = await bucket.getFiles({
-    prefix: `calendarAttachments/${teamId}/`,
-  });
+  const attachmentFileResults = await Promise.all(
+    ["calendarAttachments", "dailyReportAttachments"].map((root) =>
+      bucket.getFiles({ prefix: `${root}/${teamId}/` }),
+    ),
+  );
+  const files = attachmentFileResults.flatMap(([rootFiles]) => rootFiles);
   let updatedFileCount = 0;
 
   for (const file of files) {
@@ -673,6 +676,9 @@ const anonymizeAccountStorageInTeam = async ({ uid, teamId }) => {
       metadata: {
         ...customMetadata,
         uploadedBy: DELETED_USER_UID,
+        ...(customMetadata.authorUid === uid
+          ? { authorUid: DELETED_USER_UID }
+          : {}),
       },
     });
     updatedFileCount += 1;
@@ -1915,9 +1921,14 @@ exports.deleteTeam = onCall(
       }
 
       const bucket = getStorage().bucket();
-      const [attachmentFiles] = await bucket.getFiles({
-        prefix: `calendarAttachments/${teamId}/`,
-      });
+      const attachmentFileResults = await Promise.all(
+        ["calendarAttachments", "dailyReportAttachments"].map((root) =>
+          bucket.getFiles({ prefix: `${root}/${teamId}/` }),
+        ),
+      );
+      const attachmentFiles = attachmentFileResults.flatMap(
+        ([rootFiles]) => rootFiles,
+      );
       await Promise.all(
         attachmentFiles.map((file) => file.delete({ ignoreNotFound: true })),
       );
@@ -2088,9 +2099,14 @@ exports.deleteExpiredCalendarAttachments = onSchedule(
   },
   async () => {
     const bucket = getStorage().bucket();
-    const [files] = await bucket.getFiles({
-      prefix: "calendarAttachments/",
-    });
+    const [calendarFileResult, dailyReportFileResult] = await Promise.all([
+      bucket.getFiles({ prefix: "calendarAttachments/" }),
+      bucket.getFiles({ prefix: "dailyReportAttachments/" }),
+    ]);
+    const files = [
+      ...calendarFileResult[0],
+      ...dailyReportFileResult[0],
+    ];
     const now = Date.now();
     const expiredFiles = [];
 
@@ -2102,25 +2118,46 @@ exports.deleteExpiredCalendarAttachments = onSchedule(
 
       const pathParts = file.name.split("/");
       const teamId = customMetadata.teamId || pathParts[1] || "";
-      expiredFiles.push({ file, storagePath: file.name, teamId });
+      const attachmentType = pathParts[0];
+      const reportId = customMetadata.reportId || pathParts[3] || "";
+      expiredFiles.push({
+        file,
+        storagePath: file.name,
+        teamId,
+        reportId,
+        attachmentType,
+      });
     }
 
     if (expiredFiles.length === 0) {
-      logger.info("No expired calendar attachments found.");
+      logger.info("No expired attachments found.");
       return;
     }
 
-    const expiredPathsByTeam = new Map();
+    const calendarExpiredPathsByTeam = new Map();
+    const dailyReportExpiredPathsByDocument = new Map();
     for (const expiredFile of expiredFiles) {
       await expiredFile.file.delete({ ignoreNotFound: true });
       if (!expiredFile.teamId) continue;
-      const teamPaths = expiredPathsByTeam.get(expiredFile.teamId) || new Set();
-      teamPaths.add(expiredFile.storagePath);
-      expiredPathsByTeam.set(expiredFile.teamId, teamPaths);
+      if (
+        expiredFile.attachmentType === "dailyReportAttachments" &&
+        expiredFile.reportId
+      ) {
+        const documentKey = `${expiredFile.teamId}/${expiredFile.reportId}`;
+        const reportPaths =
+          dailyReportExpiredPathsByDocument.get(documentKey) || new Set();
+        reportPaths.add(expiredFile.storagePath);
+        dailyReportExpiredPathsByDocument.set(documentKey, reportPaths);
+      } else {
+        const teamPaths =
+          calendarExpiredPathsByTeam.get(expiredFile.teamId) || new Set();
+        teamPaths.add(expiredFile.storagePath);
+        calendarExpiredPathsByTeam.set(expiredFile.teamId, teamPaths);
+      }
     }
 
     let updatedEventCount = 0;
-    for (const [teamId, expiredPaths] of expiredPathsByTeam.entries()) {
+    for (const [teamId, expiredPaths] of calendarExpiredPathsByTeam.entries()) {
       const eventsSnapshot = await firestore
         .collection("teams")
         .doc(teamId)
@@ -2171,9 +2208,44 @@ exports.deleteExpiredCalendarAttachments = onSchedule(
       }
     }
 
-    logger.info("Expired calendar attachments deleted.", {
+    let updatedDailyReportCount = 0;
+    for (const [documentKey, expiredPaths] of
+      dailyReportExpiredPathsByDocument.entries()) {
+      const separatorIndex = documentKey.indexOf("/");
+      const teamId = documentKey.slice(0, separatorIndex);
+      const reportId = documentKey.slice(separatorIndex + 1);
+      const reportRef = firestore
+        .collection("teams")
+        .doc(teamId)
+        .collection("dailyReports")
+        .doc(reportId);
+
+      const reportUpdated = await firestore.runTransaction(
+        async (transaction) => {
+          const reportSnapshot = await transaction.get(reportRef);
+          if (!reportSnapshot.exists) return false;
+
+          const attachments = reportSnapshot.data().attachments;
+          if (!Array.isArray(attachments)) return false;
+          const activeAttachments = attachments.filter(
+            (attachment) => !expiredPaths.has(attachment?.storagePath),
+          );
+          if (activeAttachments.length === attachments.length) return false;
+
+          transaction.update(reportRef, {
+            attachments: activeAttachments,
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+          return true;
+        },
+      );
+      if (reportUpdated) updatedDailyReportCount += 1;
+    }
+
+    logger.info("Expired attachments deleted.", {
       deletedFileCount: expiredFiles.length,
       updatedEventCount,
+      updatedDailyReportCount,
     });
   },
 );

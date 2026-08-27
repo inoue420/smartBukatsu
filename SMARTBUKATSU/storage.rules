@@ -20,7 +20,7 @@ service firebase.storage {
         ).data.role in ['owner', 'admin', 'staff', 'captain'];
     }
 
-    function isAllowedCalendarAttachment() {
+    function isAllowedAttachment() {
       return request.resource.size <= 10 * 1024 * 1024 &&
         (
           request.resource.contentType == 'application/pdf' ||
@@ -31,9 +31,28 @@ service firebase.storage {
     match /calendarAttachments/{teamId}/{eventId}/{eventDate}/{fileName} {
       allow read: if isTeamMember(teamId);
       allow create: if canManageCalendar(teamId) &&
-        isAllowedCalendarAttachment();
+        isAllowedAttachment();
       allow update: if false;
       allow delete: if canManageCalendar(teamId);
+    }
+
+    function canDeleteDailyReportAttachment(teamId, authorUid) {
+      return isTeamMember(teamId) &&
+        (
+          request.auth.uid == authorUid ||
+          firestore.get(
+            /databases/(default)/documents/teams/$(teamId)/members/$(request.auth.uid)
+          ).data.role in ['owner', 'admin', 'staff']
+        );
+    }
+
+    match /dailyReportAttachments/{teamId}/{authorUid}/{reportId}/{fileName} {
+      allow read: if isTeamMember(teamId);
+      allow create: if isTeamMember(teamId) &&
+        request.auth.uid == authorUid &&
+        isAllowedAttachment();
+      allow update: if false;
+      allow delete: if canDeleteDailyReportAttachment(teamId, authorUid);
     }
   }
 }
