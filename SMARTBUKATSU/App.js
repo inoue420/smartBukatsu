@@ -5,6 +5,7 @@ import {
 } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { Alert, LogBox, ActivityIndicator, View, Text } from "react-native";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import NetInfo from "@react-native-community/netinfo";
 
 import { AdsProvider, useAds } from "./src/ads/AdManager";
@@ -463,10 +464,12 @@ function AppContent() {
 
 export default function App() {
   return (
-    <AdsProvider>
-      <AuthProvider>
-        <AppContent />
-      </AuthProvider>
-    </AdsProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <AdsProvider>
+        <AuthProvider>
+          <AppContent />
+        </AuthProvider>
+      </AdsProvider>
+    </GestureHandlerRootView>
   );
 }

@@ -12,14 +12,19 @@ import {
   Platform,
   Keyboard,
   ActivityIndicator,
+  Image,
+  Linking,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import * as ImagePicker from "expo-image-picker";
+import * as DocumentPicker from "expo-document-picker";
 
 // ★ 追加：下書きをアプリ終了後も保持するためのライブラリ
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { useAuth } from "../AuthContext";
 import MedicalSafetyNotice from "../components/MedicalSafetyNotice";
+import ZoomableImage from "../components/ZoomableImage";
 import {
   createDailyReport,
   createWorkspacePost,
@@ -45,6 +50,21 @@ import {
   inspectUserContent,
   shouldUseLocalModerationFallback,
 } from "../utils/contentModeration";
+import {
+  MAX_DAILY_REPORT_ATTACHMENTS,
+  deleteDailyReportAttachments,
+  getActiveDailyReportAttachments,
+  prepareDailyReportImageAttachment,
+  prepareDailyReportPdfAttachment,
+  uploadDailyReportAttachment,
+} from "../services/dailyReportAttachmentService";
+
+const formatAttachmentSize = (bytes) => {
+  const size = Number(bytes);
+  if (!Number.isFinite(size) || size <= 0) return "";
+  if (size < 1024 * 1024) return `${Math.round(size / 1024)}KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)}MB`;
+};
 
 const OptionGroup = ({ options, selected, onSelect, color = "#0077cc" }) => (
   <View style={styles.optionGroup}>
@@ -91,6 +111,41 @@ const ScaleSelector = ({ selected, onSelect, color }) => (
     ))}
   </ScrollView>
 );
+
+const AttachmentViewerOverlay = ({ attachment, onClose }) => {
+  const [isZoomed, setIsZoomed] = useState(false);
+
+  useEffect(() => {
+    setIsZoomed(false);
+  }, [attachment?.id]);
+
+  if (!attachment) return null;
+  return (
+    <View style={styles.attachmentViewerOverlay}>
+      <TouchableOpacity
+        style={styles.attachmentViewerCloseBtn}
+        onPress={onClose}
+      >
+        <Text style={styles.attachmentViewerCloseText}>閉じる</Text>
+      </TouchableOpacity>
+      <ZoomableImage
+        uri={attachment.downloadUrl || attachment.localUri}
+        style={styles.attachmentViewerImage}
+        onZoomChange={setIsZoomed}
+      />
+      {!isZoomed ? (
+        <>
+          <Text style={styles.attachmentViewerHint}>
+            2本指で拡大・縮小、拡大後は1本指で移動できます
+          </Text>
+          <Text style={styles.attachmentViewerName} numberOfLines={2}>
+            {attachment.name || ""}
+          </Text>
+        </>
+      ) : null}
+    </View>
+  );
+};
 
 const getTodayString = () => {
   const today = new Date();
@@ -238,7 +293,9 @@ const DiaryScreen = ({
   const [reflection, setReflection] = useState("");
   const [achievement, setAchievement] = useState(3);
 
-  const [images, setImages] = useState([]);
+  const [attachments, setAttachments] = useState([]);
+  const [removedAttachments, setRemovedAttachments] = useState([]);
+  const [viewingAttachment, setViewingAttachment] = useState(null);
   const [memo, setMemo] = useState("");
   const [highlightLink, setHighlightLink] = useState("");
   // ========================================
@@ -619,9 +676,109 @@ const DiaryScreen = ({
     setTreatment("");
     setReflection("");
     setAchievement(3);
-    setImages([]);
+    setAttachments([]);
+    setRemovedAttachments([]);
+    setViewingAttachment(null);
     setMemo("");
     setHighlightLink("");
+  };
+
+  const ensureAttachmentCapacity = () => {
+    if (isOffline) {
+      Alert.alert("通信エラー", "添付ファイルはオンライン時に追加してください。");
+      return 0;
+    }
+    const remaining = MAX_DAILY_REPORT_ATTACHMENTS - attachments.length;
+    if (remaining <= 0) {
+      Alert.alert(
+        "添付上限",
+        "写真とPDFを合わせて、振り返り1件につき2ファイルまで添付できます。",
+      );
+      return 0;
+    }
+    return remaining;
+  };
+
+  const appendAttachments = (nextAttachments) => {
+    setAttachments((current) =>
+      [...current, ...nextAttachments].slice(0, MAX_DAILY_REPORT_ATTACHMENTS),
+    );
+  };
+
+  const handlePickImages = async () => {
+    const remaining = ensureAttachmentCapacity();
+    if (!remaining) return;
+
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        allowsMultipleSelection: remaining > 1,
+        selectionLimit: remaining,
+        quality: 1,
+      });
+      if (result.canceled) return;
+
+      const preparedAttachments = await Promise.all(
+        (result.assets || [])
+          .slice(0, remaining)
+          .map((asset) => prepareDailyReportImageAttachment(asset)),
+      );
+      appendAttachments(preparedAttachments);
+    } catch (error) {
+      Alert.alert("写真エラー", error?.message || "写真を追加できませんでした。");
+    }
+  };
+
+  const handlePickPdfs = async () => {
+    const remaining = ensureAttachmentCapacity();
+    if (!remaining) return;
+
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: "application/pdf",
+        copyToCacheDirectory: true,
+        multiple: remaining > 1,
+        base64: false,
+      });
+      if (result.canceled) return;
+
+      appendAttachments(
+        (result.assets || [])
+          .slice(0, remaining)
+          .map(prepareDailyReportPdfAttachment),
+      );
+    } catch (error) {
+      Alert.alert("PDFエラー", error?.message || "PDFを追加できませんでした。");
+    }
+  };
+
+  const handleRemoveAttachment = (attachment) => {
+    setAttachments((current) =>
+      current.filter((item) => item.id !== attachment.id),
+    );
+    if (!attachment.pending && attachment.storagePath) {
+      setRemovedAttachments((current) =>
+        current.some((item) => item.storagePath === attachment.storagePath)
+          ? current
+          : [...current, attachment],
+      );
+    }
+  };
+
+  const openAttachment = async (attachment) => {
+    const attachmentUri = attachment?.downloadUrl || attachment?.localUri;
+    if (!attachmentUri) return;
+    if (attachment.type === "image") {
+      setViewingAttachment(attachment);
+      return;
+    }
+    if (attachment.pending) return;
+
+    try {
+      await Linking.openURL(attachmentUri);
+    } catch (error) {
+      Alert.alert("表示エラー", "PDFを開けませんでした。");
+    }
   };
 
   const handleCreateOrEditReport = async () => {
@@ -633,14 +790,42 @@ const DiaryScreen = ({
       Alert.alert("入力エラー", "痛む部位を入力してください。");
       return;
     }
+    if (attachments.length > MAX_DAILY_REPORT_ATTACHMENTS) {
+      Alert.alert(
+        "添付上限",
+        "写真とPDFを合わせて、振り返り1件につき2ファイルまで添付できます。",
+      );
+      return;
+    }
 
     setIsLoading(true);
     const safeTeamId = activeTeamId || "test_team";
+    const reportId = editingReportId || `rep_${Date.now().toString()}`;
+    let uploadedAttachments = [];
+    let attachmentCleanupFailed = false;
 
     try {
       const painDetailsData = hasPain
         ? { part: painPart, level: painLevel, sinceWhen, treatment }
         : null;
+
+      const persistedAttachments = attachments.filter(
+        (attachment) => !attachment.pending && attachment.downloadUrl,
+      );
+      if (!isOffline) {
+        for (const attachment of attachments.filter(
+          (item) => item.pending,
+        )) {
+          const uploadedAttachment = await uploadDailyReportAttachment({
+            teamId: safeTeamId,
+            authorUid: currentUserUid,
+            reportId,
+            attachment,
+          });
+          uploadedAttachments.push(uploadedAttachment);
+        }
+      }
+      const nextAttachments = [...persistedAttachments, ...uploadedAttachments];
 
       if (editingReportId) {
         const updateData = {
@@ -653,7 +838,7 @@ const DiaryScreen = ({
           painDetails: painDetailsData,
           reflection,
           achievement,
-          images,
+          attachments: nextAttachments,
           memo,
           highlightLink,
           status: isOffline ? "pending" : "sent",
@@ -663,15 +848,26 @@ const DiaryScreen = ({
           if (r.id === editingReportId) return { ...r, ...updateData };
           return r;
         });
-        setDailyReports(updated);
 
         if (!isOffline) {
           await updateDailyReport(safeTeamId, editingReportId, updateData);
+          try {
+            await deleteDailyReportAttachments(removedAttachments);
+          } catch (error) {
+            console.warn("削除済み添付のStorage削除エラー:", error);
+            attachmentCleanupFailed = true;
+          }
         }
-        Alert.alert("修正完了", "振り返りを修正しました。");
+        setDailyReports(updated);
+        Alert.alert(
+          attachmentCleanupFailed ? "修正完了（一部削除待ち）" : "修正完了",
+          attachmentCleanupFailed
+            ? "振り返りは修正されましたが、一部の添付ファイルをStorageから削除できませんでした。保持期限後の削除処理で再度削除されます。"
+            : "振り返りを修正しました。",
+        );
       } else {
         const newReport = {
-          id: "rep_" + Date.now().toString(),
+          id: reportId,
           date: reportDate,
           author: currentUser,
           authorUid: currentUserUid,
@@ -683,7 +879,7 @@ const DiaryScreen = ({
           painDetails: painDetailsData,
           reflection,
           achievement,
-          images,
+          attachments: nextAttachments,
           memo,
           highlightLink,
           status: isOffline ? "pending" : "sent",
@@ -695,11 +891,10 @@ const DiaryScreen = ({
           comments: [],
         };
 
-        setDailyReports([newReport, ...dailyReports]);
-
         if (!isOffline) {
           await createDailyReport(safeTeamId, newReport);
         }
+        setDailyReports([newReport, ...dailyReports]);
         Alert.alert("提出完了", "振り返りを提出しました。", [
           {
             text: "OK",
@@ -714,6 +909,13 @@ const DiaryScreen = ({
       }
     } catch (error) {
       console.log("Firestore保存エラー:", error);
+      if (uploadedAttachments.length > 0) {
+        try {
+          await deleteDailyReportAttachments(uploadedAttachments);
+        } catch (cleanupError) {
+          console.warn("保存失敗後の添付削除エラー:", cleanupError);
+        }
+      }
       Alert.alert("エラー", "データの保存に失敗しました。");
     } finally {
       setIsLoading(false);
@@ -742,7 +944,8 @@ const DiaryScreen = ({
     setReflection(selectedReport.reflection || "");
     setAchievement(selectedReport.achievement || 3);
 
-    setImages(selectedReport.images || []);
+    setAttachments(getActiveDailyReportAttachments(selectedReport));
+    setRemovedAttachments([]);
     setMemo(selectedReport.memo || "");
     setHighlightLink(selectedReport.highlightLink || "");
 
@@ -775,6 +978,17 @@ const DiaryScreen = ({
             try {
               const safeTeamId = activeTeamId || "test_team";
               await deleteDailyReport(safeTeamId, reportId);
+              try {
+                await deleteDailyReportAttachments(
+                  getActiveDailyReportAttachments(report),
+                );
+              } catch (attachmentError) {
+                console.warn("日報添付削除エラー:", attachmentError);
+                Alert.alert(
+                  "一部削除エラー",
+                  "振り返りは削除されましたが、一部の添付ファイルをStorageから削除できませんでした。保持期限後の削除処理で再度削除されます。",
+                );
+              }
             } catch (error) {
               console.log("Firestore削除エラー:", error);
             }
@@ -1476,6 +1690,8 @@ const DiaryScreen = ({
                     Date.now() - (selectedReport.createdAt || Date.now());
                   const isEditable =
                     timeElapsed < 30 * 60 * 1000 && !selectedReport.isReviewed;
+                  const reportAttachments =
+                    getActiveDailyReportAttachments(selectedReport);
 
                   return (
                     <ScrollView
@@ -1543,7 +1759,7 @@ const DiaryScreen = ({
                         </View>
 
                         {(selectedReport.memo ||
-                          selectedReport.images?.length > 0 ||
+                          reportAttachments.length > 0 ||
                           selectedReport.highlightLink) && (
                           <View style={styles.cardSection}>
                             <Text
@@ -1558,6 +1774,45 @@ const DiaryScreen = ({
                               <Text style={styles.sectionText}>
                                 {selectedReport.memo}
                               </Text>
+                            ) : null}
+                            {reportAttachments.length > 0 ? (
+                              <>
+                                <Text style={styles.attachmentTapHint}>
+                                  画像をタップして拡大
+                                </Text>
+                                <ScrollView
+                                  horizontal
+                                  showsHorizontalScrollIndicator={false}
+                                  style={styles.attachmentList}
+                                >
+                                  {reportAttachments.map((attachment) => (
+                                    <TouchableOpacity
+                                      key={attachment.id}
+                                      style={styles.attachmentCard}
+                                      onPress={() => openAttachment(attachment)}
+                                    >
+                                      {attachment.type === "image" ? (
+                                        <Image
+                                          source={{ uri: attachment.downloadUrl }}
+                                          style={styles.attachmentImage}
+                                        />
+                                      ) : (
+                                        <View style={styles.attachmentPdf}>
+                                          <Text style={styles.attachmentPdfText}>
+                                            PDF
+                                          </Text>
+                                        </View>
+                                      )}
+                                      <Text
+                                        style={styles.attachmentName}
+                                        numberOfLines={1}
+                                      >
+                                        {attachment.name}
+                                      </Text>
+                                    </TouchableOpacity>
+                                  ))}
+                                </ScrollView>
+                              </>
                             ) : null}
                           </View>
                         )}
@@ -1742,6 +1997,10 @@ const DiaryScreen = ({
               </View>
             </View>
           </KeyboardAvoidingView>
+          <AttachmentViewerOverlay
+            attachment={viewingAttachment}
+            onClose={() => setViewingAttachment(null)}
+          />
         </SafeAreaView>
       </Modal>
 
@@ -1761,7 +2020,11 @@ const DiaryScreen = ({
                 <TouchableOpacity
                   onPress={() => {
                     setIsCreateModalVisible(false);
-                    setEditingReportId(null);
+                    if (editingReportId) {
+                      resetForm();
+                    } else {
+                      setEditingReportId(null);
+                    }
                   }}
                 >
                   <Text style={styles.closeBtn}>✕ 閉じる</Text>
@@ -1848,6 +2111,90 @@ const DiaryScreen = ({
                     onChangeText={setMemo}
                     multiline
                   />
+
+                  <Text style={styles.inputLabel}>📎 写真・PDF</Text>
+                  {attachments.map((attachment) => {
+                    const previewUri =
+                      attachment.downloadUrl || attachment.localUri;
+                    return (
+                      <TouchableOpacity
+                        key={attachment.id}
+                        style={styles.attachmentDraftRow}
+                        onPress={() => {
+                          if (attachment.type === "pdf" && attachment.pending) {
+                            return;
+                          }
+                          openAttachment(attachment);
+                        }}
+                      >
+                        <View style={styles.attachmentDraftPreview}>
+                          {attachment.type === "image" && previewUri ? (
+                            <Image
+                              source={{ uri: previewUri }}
+                              style={styles.attachmentDraftImage}
+                            />
+                          ) : (
+                            <Text style={styles.attachmentDraftPdf}>PDF</Text>
+                          )}
+                        </View>
+                        <View style={styles.attachmentDraftInfo}>
+                          <Text
+                            style={styles.attachmentDraftName}
+                            numberOfLines={1}
+                          >
+                            {attachment.name}
+                          </Text>
+                          <Text style={styles.attachmentDraftStatus}>
+                            {attachment.type === "image"
+                              ? `${
+                                  formatAttachmentSize(attachment.size)
+                                    ? `${formatAttachmentSize(attachment.size)}・`
+                                    : ""
+                                }${
+                                  attachment.pending
+                                    ? "提出時にアップロード"
+                                    : "アップロード済み"
+                                }・タップして拡大`
+                              : attachment.pending
+                                ? "提出時にアップロード"
+                                : "アップロード済み"}
+                          </Text>
+                        </View>
+                        <TouchableOpacity
+                          style={styles.attachmentRemoveBtn}
+                          onPress={(event) => {
+                            event.stopPropagation();
+                            handleRemoveAttachment(attachment);
+                          }}
+                        >
+                          <Text style={styles.attachmentRemoveBtnText}>削除</Text>
+                        </TouchableOpacity>
+                      </TouchableOpacity>
+                    );
+                  })}
+                  <View style={styles.attachmentAddRow}>
+                    <TouchableOpacity
+                      style={[
+                        styles.attachmentAddBtn,
+                        isOffline && styles.attachmentAddBtnDisabled,
+                      ]}
+                      onPress={handlePickImages}
+                    >
+                      <Text style={styles.attachmentAddBtnText}>写真を追加</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[
+                        styles.attachmentAddBtn,
+                        isOffline && styles.attachmentAddBtnDisabled,
+                      ]}
+                      onPress={handlePickPdfs}
+                    >
+                      <Text style={styles.attachmentAddBtnText}>PDFを追加</Text>
+                    </TouchableOpacity>
+                  </View>
+                  <Text style={styles.attachmentHint}>
+                    写真とPDFを合わせて2件まで・1件10MBまで。写真はアップロード時に自動でサイズ調整され、添付は1年間保持します。
+                  </Text>
                 </View>
 
                 {/* === コンディション（メディカル）入力部分 === */}
@@ -2016,6 +2363,10 @@ const DiaryScreen = ({
               </TouchableOpacity>
             )}
           </KeyboardAvoidingView>
+          <AttachmentViewerOverlay
+            attachment={viewingAttachment}
+            onClose={() => setViewingAttachment(null)}
+          />
         </SafeAreaView>
       </Modal>
 
@@ -2378,6 +2729,25 @@ const styles = StyleSheet.create({
     marginBottom: 5,
   },
   sectionText: { fontSize: 14, color: "#333", lineHeight: 20 },
+  attachmentList: { marginTop: 10 },
+  attachmentTapHint: { color: "#777", fontSize: 11, marginTop: 8 },
+  attachmentCard: { width: 92, marginRight: 10 },
+  attachmentImage: {
+    width: 92,
+    height: 70,
+    borderRadius: 8,
+    backgroundColor: "#e9ecef",
+  },
+  attachmentPdf: {
+    width: 92,
+    height: 70,
+    borderRadius: 8,
+    backgroundColor: "#e74c3c",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  attachmentPdfText: { color: "#fff", fontSize: 16, fontWeight: "bold" },
+  attachmentName: { fontSize: 11, color: "#555", marginTop: 4 },
   commentCountText: {
     fontSize: 12,
     color: "#888",
@@ -2642,6 +3012,64 @@ const styles = StyleSheet.create({
     minHeight: 80,
     textAlignVertical: "top",
   },
+  attachmentDraftRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#f8f9fa",
+    borderWidth: 1,
+    borderColor: "#e1e4e8",
+    borderRadius: 8,
+    padding: 8,
+    marginBottom: 8,
+  },
+  attachmentDraftPreview: {
+    width: 54,
+    height: 46,
+    borderRadius: 6,
+    backgroundColor: "#e9ecef",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  attachmentDraftImage: { width: 54, height: 46 },
+  attachmentDraftPdf: { color: "#c0392b", fontWeight: "bold", fontSize: 13 },
+  attachmentDraftInfo: { flex: 1, marginHorizontal: 8 },
+  attachmentDraftName: { fontSize: 13, color: "#333", fontWeight: "bold" },
+  attachmentDraftStatus: { fontSize: 11, color: "#777", marginTop: 3 },
+  attachmentRemoveBtn: {
+    backgroundColor: "#fff0f0",
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  attachmentRemoveBtnText: {
+    color: "#c0392b",
+    fontSize: 12,
+    fontWeight: "bold",
+  },
+  attachmentAddRow: { flexDirection: "row", marginTop: 2 },
+  attachmentAddBtn: {
+    flex: 1,
+    backgroundColor: "#e8f5e9",
+    borderWidth: 1,
+    borderColor: "#27ae60",
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: "center",
+    marginRight: 8,
+  },
+  attachmentAddBtnDisabled: { opacity: 0.45 },
+  attachmentAddBtnText: {
+    color: "#218c53",
+    fontSize: 13,
+    fontWeight: "bold",
+  },
+  attachmentHint: {
+    color: "#777",
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 7,
+  },
 
   optionGroup: { flexDirection: "row", flexWrap: "wrap", marginBottom: 5 },
   optionBtn: {
@@ -2855,6 +3283,30 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   reportCancelText: { color: "#888", fontSize: 15, fontWeight: "bold" },
+
+  attachmentViewerOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.92)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 20,
+    zIndex: 10000,
+    elevation: 10000,
+  },
+  attachmentViewerCloseBtn: {
+    position: "absolute",
+    top: 55,
+    right: 20,
+    zIndex: 2,
+    backgroundColor: "rgba(255,255,255,0.2)",
+    borderRadius: 18,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  attachmentViewerCloseText: { color: "#fff", fontWeight: "bold" },
+  attachmentViewerImage: { width: "100%", height: "75%" },
+  attachmentViewerHint: { color: "#ddd", fontSize: 12, marginTop: 10 },
+  attachmentViewerName: { color: "#fff", fontSize: 14, marginTop: 12 },
 
   globalLoadingOverlay: {
     position: "absolute",

@@ -24,6 +24,7 @@ import { Calendar, LocaleConfig } from "react-native-calendars";
 import { httpsCallable } from "firebase/functions";
 
 import { useAuth } from "../AuthContext";
+import ZoomableImage from "../components/ZoomableImage";
 import { cloudFunctions } from "../firebase";
 import {
   createClubEvent,
@@ -44,6 +45,7 @@ import {
   prepareCalendarPdfAttachment,
   uploadCalendarAttachment,
 } from "../services/calendarAttachmentService";
+import { getActiveDailyReportAttachments } from "../services/dailyReportAttachmentService";
 import {
   getFatigueScore,
   getPainScore,
@@ -551,6 +553,9 @@ const CalendarScreen = ({
   const [clubAttachmentDate, setClubAttachmentDate] = useState(selectedDate);
   const [removedClubAttachments, setRemovedClubAttachments] = useState([]);
   const [viewingClubAttachment, setViewingClubAttachment] = useState(null);
+  const [viewingReportAttachment, setViewingReportAttachment] = useState(null);
+  const [isReportAttachmentZoomed, setIsReportAttachmentZoomed] =
+    useState(false);
 
   // === 個人の予定ステート ===
   const [editingPersonalEventId, setEditingPersonalEventId] = useState(null);
@@ -873,6 +878,15 @@ const CalendarScreen = ({
     } catch (error) {
       Alert.alert("表示エラー", "PDFを開けませんでした。");
     }
+  };
+
+  const openDailyReportAttachment = async (attachment) => {
+    if (attachment?.type === "image") {
+      setIsReportAttachmentZoomed(false);
+      setViewingReportAttachment(attachment);
+      return;
+    }
+    await openClubAttachment(attachment);
   };
 
   const activeAbsenceEvent = selectedAbsenceEvent
@@ -2368,6 +2382,12 @@ const CalendarScreen = ({
                     <Text style={styles.eventSub} numberOfLines={1}>
                       {report.reflection || "振り返り未記入"}
                     </Text>
+                    {getActiveDailyReportAttachments(report).length > 0 ? (
+                      <Text style={styles.eventSub}>
+                        📎 添付資料{" "}
+                        {getActiveDailyReportAttachments(report).length}件
+                      </Text>
+                    ) : null}
                   </View>
                   <Text style={{ fontSize: 20 }}>🔍</Text>
                 </TouchableOpacity>
@@ -2441,6 +2461,50 @@ const CalendarScreen = ({
                     </>
                   ) : null}
 
+                  {getActiveDailyReportAttachments(viewingReport).length > 0 ? (
+                    <>
+                      <Text style={styles.label}>📎 写真・PDF</Text>
+                      <Text style={styles.attachmentTapHint}>
+                        画像をタップして拡大
+                      </Text>
+                      <ScrollView
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                      >
+                        {getActiveDailyReportAttachments(viewingReport).map(
+                          (attachment) => (
+                            <TouchableOpacity
+                              key={attachment.id}
+                              style={styles.attachmentSummaryItem}
+                              onPress={() =>
+                                openDailyReportAttachment(attachment)
+                              }
+                            >
+                              {attachment.type === "image" ? (
+                                <Image
+                                  source={{ uri: attachment.downloadUrl }}
+                                  style={styles.attachmentSummaryImage}
+                                />
+                              ) : (
+                                <View style={styles.attachmentSummaryPdf}>
+                                  <Text style={styles.attachmentSummaryPdfText}>
+                                    PDF
+                                  </Text>
+                                </View>
+                              )}
+                              <Text
+                                style={styles.attachmentSummaryName}
+                                numberOfLines={1}
+                              >
+                                {attachment.name}
+                              </Text>
+                            </TouchableOpacity>
+                          ),
+                        )}
+                      </ScrollView>
+                    </>
+                  ) : null}
+
                   {viewingReport.comments &&
                     viewingReport.comments.length > 0 && (
                       <>
@@ -2464,13 +2528,48 @@ const CalendarScreen = ({
               <View style={styles.modalButtons}>
                 <TouchableOpacity
                   style={styles.submitBtn}
-                  onPress={() => setViewingReport(null)}
+                  onPress={() => {
+                    setViewingReportAttachment(null);
+                    setIsReportAttachmentZoomed(false);
+                    setViewingReport(null);
+                  }}
                 >
                   <Text style={styles.submitBtnText}>閉じる</Text>
                 </TouchableOpacity>
               </View>
             </ScrollView>
           </View>
+          {viewingReportAttachment ? (
+            <View style={styles.attachmentInlineViewerOverlay}>
+              <TouchableOpacity
+                style={styles.attachmentViewerCloseBtn}
+                onPress={() => {
+                  setViewingReportAttachment(null);
+                  setIsReportAttachmentZoomed(false);
+                }}
+              >
+                <Text style={styles.attachmentViewerCloseText}>閉じる</Text>
+              </TouchableOpacity>
+              <ZoomableImage
+                uri={
+                  viewingReportAttachment.downloadUrl ||
+                  viewingReportAttachment.localUri
+                }
+                style={styles.attachmentViewerImage}
+                onZoomChange={setIsReportAttachmentZoomed}
+              />
+              {!isReportAttachmentZoomed ? (
+                <>
+                  <Text style={styles.attachmentViewerHint}>
+                    2本指で拡大・縮小、拡大後は1本指で移動できます
+                  </Text>
+                  <Text style={styles.attachmentViewerName} numberOfLines={2}>
+                    {viewingReportAttachment.name || ""}
+                  </Text>
+                </>
+              ) : null}
+            </View>
+          ) : null}
         </View>
       </Modal>
 
@@ -3487,6 +3586,15 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
   },
+  attachmentInlineViewerOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.94)",
+    padding: 20,
+    justifyContent: "center",
+    alignItems: "center",
+    zIndex: 10000,
+    elevation: 10000,
+  },
   attachmentViewerCloseBtn: {
     position: "absolute",
     top: 50,
@@ -3503,6 +3611,13 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
   },
   attachmentViewerImage: { width: "100%", height: "75%" },
+  attachmentTapHint: { color: "#777777", fontSize: 11, marginBottom: 8 },
+  attachmentViewerHint: {
+    color: "#dddddd",
+    fontSize: 12,
+    textAlign: "center",
+    marginTop: 10,
+  },
   attachmentViewerName: {
     color: "#ffffff",
     fontSize: 13,
