@@ -18,14 +18,6 @@ dotenvExpand.expand(
   })
 );
 
-// 開発中の確認用。本番提出前には削除推奨
-console.log("========== 環境変数のチェック ==========");
-console.log(
-  "APIキーは入ってる？: ",
-  process.env.EXPO_PUBLIC_FIREBASE_API_KEY ? "YES" : "NO"
-);
-console.log("=======================================");
-
 module.exports = ({ config }) => {
   const androidMapsApiKey =
     process.env.EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_API_KEY ||
@@ -68,6 +60,35 @@ module.exports = ({ config }) => {
       },
     },
   ]);
+  if (
+    !expoPlugins.some((plugin) =>
+      Array.isArray(plugin)
+        ? plugin[0] === "expo-image-picker"
+        : plugin === "expo-image-picker",
+    )
+  ) {
+    expoPlugins.push([
+      "expo-image-picker",
+      {
+        photosPermission:
+          "日誌や予定に添付する画像を選択するため、写真へのアクセスを許可してください。",
+        cameraPermission: false,
+        microphonePermission: false,
+      },
+    ]);
+  }
+  if (
+    !expoPlugins.some((plugin) =>
+      Array.isArray(plugin) ? plugin[0] === "expo-av" : plugin === "expo-av",
+    )
+  ) {
+    expoPlugins.push([
+      "expo-av",
+      {
+        microphonePermission: false,
+      },
+    ]);
+  }
   if (
     !expoPlugins.some((plugin) =>
       Array.isArray(plugin) ? plugin[0] === "expo-location" : plugin === "expo-location",
