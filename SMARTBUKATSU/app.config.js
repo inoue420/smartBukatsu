@@ -99,6 +99,22 @@ module.exports = ({ config }) => {
       { locationWhenInUsePermission: locationPermissionMessage },
     ]);
   }
+  if (
+    !expoPlugins.some((plugin) =>
+      Array.isArray(plugin)
+        ? plugin[0] === "expo-notifications"
+        : plugin === "expo-notifications",
+    )
+  ) {
+    expoPlugins.push([
+      "expo-notifications",
+      {
+        icon: "./assets/notification-icon.png",
+        color: "#0077cc",
+        defaultChannel: "smartbukatsu-notifications",
+      },
+    ]);
+  }
   const iosConfig = {
     ...(appJson.expo.ios?.config || {}),
   };

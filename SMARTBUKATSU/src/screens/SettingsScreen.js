@@ -2011,6 +2011,22 @@ const SettingsScreen = ({
           )}
 
           <SectionCard
+            isExp={expanded.notifications}
+            onToggle={() => toggleSection("notifications")}
+            title="🔔 プッシュ通知"
+          >
+            <Text style={styles.subText}>
+              通知する項目とチームを選択できます。プッシュ通知をOFFにしても、アプリ内の通知センターには通知が残ります。
+            </Text>
+            <TouchableOpacity
+              style={styles.saveBtn}
+              onPress={() => navigation.navigate("NotificationSettings")}
+            >
+              <Text style={styles.saveBtnText}>通知設定を開く</Text>
+            </TouchableOpacity>
+          </SectionCard>
+
+          <SectionCard
             isExp={expanded.blockedUsers}
             onToggle={() => toggleSection("blockedUsers")}
             title={`🚫 ブロック中のユーザー（${blockedUsersDetails.length}）`}

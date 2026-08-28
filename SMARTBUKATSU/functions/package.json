@@ -6,7 +6,8 @@
     "node": "22"
   },
   "scripts": {
-    "lint": "node --check index.js"
+    "lint": "node --check index.js && node --check notifications.js",
+    "test": "node --test notificationCore.test.js"
   },
   "dependencies": {
     "firebase-admin": "^13.10.0",

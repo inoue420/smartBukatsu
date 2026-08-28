@@ -22,6 +22,7 @@ import {
   serverTimestamp,
   setDoc,
 } from "firebase/firestore";
+import { unregisterPushTokenForCurrentDevice } from "./services/notificationService";
 import { auth, db } from "./firebase";
 import {
   executeRegistration,
@@ -224,6 +225,11 @@ export function AuthProvider({ children }) {
       await sendPasswordResetEmail(auth, email.trim());
     };
     const signOut = async () => {
+      try {
+        await unregisterPushTokenForCurrentDevice();
+      } catch (error) {
+        console.log("ログアウト前の通知端末解除エラー:", error?.message);
+      }
       await fbSignOut(auth);
     };
     const resendVerificationEmail = async () => {

@@ -1,0 +1,133 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function uid() { return request.auth.uid; }
+
+    function isMember(teamId) {
+      return signedIn() && (
+        exists(/databases/$(database)/documents/teams/$(teamId)/members/$(uid())) ||
+        get(/databases/$(database)/documents/users/$(uid())).data.activeTeamId == teamId
+      );
+    }
+
+    function getRole(teamId) {
+      return get(/databases/$(database)/documents/teams/$(teamId)/members/$(uid())).data.role;
+    }
+
+    function isManager(teamId) {
+      return isMember(teamId) && getRole(teamId) in ['owner', 'admin', 'staff'];
+    }
+
+    function inviteOk(code, teamId) {
+      return code is string
+        && exists(/databases/$(database)/documents/invites/$(code))
+        && get(/databases/$(database)/documents/invites/$(code)).data.teamId == teamId
+        && get(/databases/$(database)/documents/invites/$(code)).data.active == true;
+    }
+
+    match /users/{userId} {
+      allow read: if signedIn();
+      allow create, update: if signedIn() && userId == uid();
+      allow delete: if false;
+
+      match /personalEvents/{eventId} {
+        allow read, write: if signedIn() && userId == uid();
+      }
+
+      match /notifications/{notificationId} {
+        allow read: if signedIn() && userId == uid();
+        allow write: if false;
+      }
+
+      match /notificationState/{stateId} {
+        allow read: if signedIn() && userId == uid();
+        allow write: if false;
+      }
+
+      match /notificationPreferences/{preferenceId} {
+        allow read: if signedIn() && userId == uid();
+        allow write: if false;
+      }
+
+      match /pushTokens/{tokenId} {
+        allow read, write: if false;
+      }
+    }
+
+    match /invites/{code} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn() && request.resource.data.createdBy == uid();
+      allow update, delete: if signedIn() && isManager(resource.data.teamId);
+    }
+
+    match /notificationPushTokens/{tokenHash} {
+      allow read, write: if false;
+    }
+
+    match /teams/{teamId} {
+      allow get: if isMember(teamId);
+      allow list: if false;
+
+      allow create: if signedIn() && request.resource.data.createdBy == uid();
+      allow update, delete: if isManager(teamId);
+
+      match /members/{memberId} {
+        allow get, list: if isMember(teamId);
+
+        allow create: if signedIn() && memberId == uid() && (
+          (get(/databases/$(database)/documents/teams/$(teamId)).data.createdBy == uid()
+            && request.resource.data.role == 'admin')
+          ||
+          (inviteOk(request.resource.data.inviteCode, teamId)
+            && request.resource.data.role == 'member')
+        );
+
+        allow update, delete: if isMember(teamId) && (memberId == uid() || isManager(teamId));
+      }
+
+      match /clubEvents/{eventId} {
+        allow read, write: if isMember(teamId);
+      }
+
+      match /notices/{noticeId} {
+        allow read, write: if isMember(teamId);
+      }
+
+      match /workspacePosts/{postId} {
+        allow read, write: if isMember(teamId);
+      }
+
+      match /dailyReports/{reportId} {
+        allow read, write: if isMember(teamId);
+      }
+
+      match /projects/{projectId} {
+        allow read, write: if isMember(teamId);
+
+        match /videos/{videoId} {
+          allow read, write: if isMember(teamId);
+
+          match /events/{videoEventId} {
+            allow read, write: if isMember(teamId);
+          }
+        }
+      }
+
+      match /highlightProjects/{highlightProjectId} {
+        allow read, write: if isMember(teamId);
+      }
+
+      match /tagGroups/{tagGroupId} {
+        allow read, write: if isMember(teamId);
+      }
+
+      match /tags/{tagId} {
+        allow read, write: if isMember(teamId);
+      }
+    }
+  }
+}

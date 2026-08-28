@@ -463,6 +463,7 @@ const TimePickerOverlay = ({
 
 const CalendarScreen = ({
   navigation,
+  route,
   isAdmin,
   currentUser,
   currentUserUid = "",
@@ -571,6 +572,13 @@ const CalendarScreen = ({
   const [personalTimeSchedules, setPersonalTimeSchedules] = useState({});
 
   const [viewingReport, setViewingReport] = useState(null);
+
+  useEffect(() => {
+    const targetDate = route?.params?.date;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(targetDate || "")) return;
+    setSelectedDate(targetDate);
+    navigation.setParams({ eventId: undefined, date: undefined });
+  }, [navigation, route?.params?.date]);
 
   const [isTimePickerVisible, setIsTimePickerVisible] = useState(false);
   const [timePickerTarget, setTimePickerTarget] = useState("");

@@ -17,6 +17,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { useAuth } from "../AuthContext";
+import { useNotifications } from "../NotificationContext";
 import {
   appendWorkspacePostReply,
   createNotice,
@@ -125,6 +126,7 @@ const defaultChannels = [
 
 const WorkspaceHomeScreen = ({
   navigation,
+  route,
   isAdmin,
   currentUser,
   currentUserUid = "",
@@ -139,6 +141,7 @@ const WorkspaceHomeScreen = ({
   userProfiles = {},
 }) => {
   const { activeTeamId, blockedUserUids = [] } = useAuth();
+  const { unreadTotal } = useNotifications();
   const currentUserProfile =
     Object.values(userProfiles).find(
       (profile) => profile?.uid === currentUserUid,
@@ -197,6 +200,30 @@ const WorkspaceHomeScreen = ({
       Object.entries(userProfiles).filter(([, profile]) => profile?.uid),
     [userProfiles],
   );
+  const getMentionedUids = (text) => {
+    const content = String(text || "");
+    return [
+      ...new Set(
+        memberEntries
+          .filter(([profileKey, profile]) => {
+            const aliases = new Set([
+              profileKey,
+              profile.name,
+              profile.role === "owner" ? "管理者(監督)" : "",
+              profile.role === "admin" ? "管理者" : "",
+              profile.role === "staff" ? "コーチ(スタッフ)" : "",
+              profile.role === "captain"
+                ? `${profile.name || profileKey}(キャプテン)`
+                : "",
+            ]);
+            return [...aliases]
+              .filter(Boolean)
+              .some((alias) => content.includes(`@${alias}`));
+          })
+          .map(([, profile]) => profile.uid),
+      ),
+    ];
+  };
   const readEligibleProfiles = useMemo(
     () =>
       memberEntries
@@ -893,6 +920,20 @@ const WorkspaceHomeScreen = ({
   const unreadNotifCount = notifications.filter((n) => !n.isRead).length;
 
   useEffect(() => {
+    const targetPostId = route?.params?.postId;
+    if (!targetPostId) return;
+    const targetPost = posts.find((post) => post.id === targetPostId);
+    if (!targetPost) return;
+    const targetChannel = channels.find(
+      (channel) =>
+        channel.id === targetPost.channelId || channel.name === targetPost.channel,
+    );
+    if (targetChannel) setActiveChannelId(targetChannel.id);
+    setExpandedPostId(targetPostId);
+    navigation.setParams({ postId: undefined, replyId: undefined });
+  }, [channels, navigation, posts, route?.params?.postId]);
+
+  useEffect(() => {
     if (!isOffline) {
       const pendingPosts = posts.filter((p) => p.status === "pending");
       if (pendingPosts.length > 0) {
@@ -1066,6 +1107,7 @@ const WorkspaceHomeScreen = ({
       readTargetUids,
       user: displayUserName,
       authorUid: currentUserUid,
+      mentionedUids: getMentionedUids(contentToPost),
       content: contentToPost,
       time: "たった今",
       replyTo: currentReplyTo,
@@ -1122,6 +1164,7 @@ const WorkspaceHomeScreen = ({
         id: Date.now().toString(),
         user: displayUserName,
         authorUid: currentUserUid,
+        mentionedUids: getMentionedUids(currentReplyText),
         content: currentReplyText,
         time: "たった今",
         createdAt: Date.now(),
@@ -2071,13 +2114,13 @@ const WorkspaceHomeScreen = ({
           <View style={styles.headerRight}>
             <TouchableOpacity
               style={styles.headerIconBtn}
-              onPress={() => setIsNotifModalVisible(true)}
+              onPress={() => navigation.navigate("NotificationCenter")}
             >
               <Text style={styles.headerIcon}>🔔</Text>
-              {unreadNotifCount > 0 && (
+              {unreadTotal > 0 && (
                 <View style={styles.badge}>
                   <Text style={styles.badgeText}>
-                    {unreadNotifCount > 99 ? "99+" : unreadNotifCount}
+                    {unreadTotal > 99 ? "99+" : unreadTotal}
                   </Text>
                 </View>
               )}
