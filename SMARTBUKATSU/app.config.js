@@ -25,6 +25,7 @@ module.exports = ({ config }) => {
   const iosMapsApiKey =
     process.env.EXPO_PUBLIC_GOOGLE_MAPS_IOS_API_KEY ||
     process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY;
+  const androidGoogleServicesFile = process.env.GOOGLE_SERVICES_JSON;
   const locationPermissionMessage =
     "場所検索とピン調整のために位置情報の利用を許可してください。";
   const expoPlugins = [...(appJson.expo.plugins || [])];
@@ -155,6 +156,9 @@ module.exports = ({ config }) => {
     },
     android: {
       ...(appJson.expo.android || {}),
+      ...(androidGoogleServicesFile
+        ? { googleServicesFile: androidGoogleServicesFile }
+        : {}),
       icon: isDevelopmentBuild
         ? "./assets/icon_android_dev.png"
         : appJson.expo.android?.icon,
