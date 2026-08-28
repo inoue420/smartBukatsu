@@ -16,6 +16,17 @@ import { useNotifications } from "../NotificationContext";
 import { NOTIFICATION_CATEGORIES } from "../notifications/notificationConfig";
 import { getUserTeams } from "../services/firestoreService";
 
+const DEFAULT_ABSENCE_DEADLINE_DAYS_BEFORE = 3;
+
+function getScheduleNotificationWindowDays(value) {
+  const daysBefore = Number(value);
+  const normalizedDaysBefore =
+    Number.isInteger(daysBefore) && daysBefore >= 0 && daysBefore <= 365
+      ? daysBefore
+      : DEFAULT_ABSENCE_DEADLINE_DAYS_BEFORE;
+  return normalizedDaysBefore + 1;
+}
+
 export default function NotificationSettingsScreen({ navigation }) {
   const { user } = useAuth();
   const {
@@ -26,6 +37,21 @@ export default function NotificationSettingsScreen({ navigation }) {
     enablePushNotifications,
   } = useNotifications();
   const [teams, setTeams] = useState([]);
+
+  const getCategoryDescription = (key, category) => {
+    if (key !== "schedule") return category.description;
+    if (teams.length === 0) {
+      return `直近${getScheduleNotificationWindowDays()}日以内の変更`;
+    }
+    return teams
+      .map(
+        (team) =>
+          `${team.name}: 直近${getScheduleNotificationWindowDays(
+            team.absenceDeadlineDaysBefore,
+          )}日以内の変更`,
+      )
+      .join("\n");
+  };
 
   useEffect(() => {
     if (!user?.uid) return;
@@ -120,7 +146,9 @@ export default function NotificationSettingsScreen({ navigation }) {
               <Text style={styles.categoryIcon}>{category.icon}</Text>
               <View style={styles.settingTextBox}>
                 <Text style={styles.settingTitle}>{category.label}</Text>
-                <Text style={styles.settingDescription}>{category.description}</Text>
+                <Text style={styles.settingDescription}>
+                  {getCategoryDescription(key, category)}
+                </Text>
               </View>
               <Switch
                 value={preferences.categories[key] !== false}

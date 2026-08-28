@@ -6,6 +6,10 @@ const {
   shouldSendPush,
   getAddedItems,
   getScheduleFingerprint,
+  normalizeAbsenceDeadlineDaysBefore,
+  getScheduleNotificationWindowDays,
+  addDaysToIsoDate,
+  scheduleOverlapsDateWindow,
 } = require("./notificationCore");
 
 test("push is disabled until the user opts in", () => {
@@ -54,5 +58,72 @@ test("schedule fingerprint ignores absence comments", () => {
   assert.notEqual(
     getScheduleFingerprint(base),
     getScheduleFingerprint({ ...base, startTime: "19:00" }),
+  );
+});
+
+test("schedule notification window uses absence deadline plus one day", () => {
+  assert.equal(normalizeAbsenceDeadlineDaysBefore(3), 3);
+  assert.equal(getScheduleNotificationWindowDays(3), 4);
+  assert.equal(getScheduleNotificationWindowDays(0), 1);
+  assert.equal(getScheduleNotificationWindowDays(undefined), 4);
+  assert.equal(getScheduleNotificationWindowDays(366), 4);
+});
+
+test("addDaysToIsoDate handles month boundaries", () => {
+  assert.equal(addDaysToIsoDate("2026-08-28", 4), "2026-09-01");
+  assert.equal(addDaysToIsoDate("invalid", 4), "");
+});
+
+test("schedule overlap includes both notification window boundaries", () => {
+  const windowStart = "2026-08-28";
+  const windowEnd = "2026-09-01";
+  assert.equal(
+    scheduleOverlapsDateWindow({ date: "2026-08-28" }, windowStart, windowEnd),
+    true,
+  );
+  assert.equal(
+    scheduleOverlapsDateWindow({ date: "2026-09-01" }, windowStart, windowEnd),
+    true,
+  );
+  assert.equal(
+    scheduleOverlapsDateWindow({ date: "2026-09-02" }, windowStart, windowEnd),
+    false,
+  );
+  assert.equal(
+    scheduleOverlapsDateWindow({ date: "2026-08-27" }, windowStart, windowEnd),
+    false,
+  );
+});
+
+test("schedule overlap supports ranges and selected dates", () => {
+  const windowStart = "2026-08-28";
+  const windowEnd = "2026-09-01";
+  assert.equal(
+    scheduleOverlapsDateWindow(
+      { date: "2026-08-25", endDate: "2026-08-29" },
+      windowStart,
+      windowEnd,
+    ),
+    true,
+  );
+  assert.equal(
+    scheduleOverlapsDateWindow(
+      {
+        date: "2026-08-25",
+        endDate: "2026-09-05",
+        selectedDates: ["2026-08-27", "2026-09-02"],
+      },
+      windowStart,
+      windowEnd,
+    ),
+    false,
+  );
+  assert.equal(
+    scheduleOverlapsDateWindow(
+      { selectedDates: ["2026-08-27", "2026-08-30"] },
+      windowStart,
+      windowEnd,
+    ),
+    true,
   );
 });

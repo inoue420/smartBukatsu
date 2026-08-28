@@ -8,6 +8,9 @@ const NOTIFICATION_CATEGORIES = Object.freeze({
   SYSTEM: "system",
 });
 
+const DEFAULT_ABSENCE_DEADLINE_DAYS_BEFORE = 3;
+const MAX_ABSENCE_DEADLINE_DAYS_BEFORE = 365;
+
 const DEFAULT_CATEGORY_PREFERENCES = Object.freeze(
   Object.values(NOTIFICATION_CATEGORIES).reduce((result, category) => {
     result[category] = true;
@@ -97,6 +100,65 @@ function getScheduleFingerprint(event = {}) {
   );
 }
 
+function normalizeAbsenceDeadlineDaysBefore(value) {
+  const daysBefore = Number(value);
+  return Number.isInteger(daysBefore) &&
+    daysBefore >= 0 &&
+    daysBefore <= MAX_ABSENCE_DEADLINE_DAYS_BEFORE
+    ? daysBefore
+    : DEFAULT_ABSENCE_DEADLINE_DAYS_BEFORE;
+}
+
+function getScheduleNotificationWindowDays(absenceDeadlineDaysBefore) {
+  return normalizeAbsenceDeadlineDaysBefore(absenceDeadlineDaysBefore) + 1;
+}
+
+function parseIsoDateString(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value || "")) return null;
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return date;
+}
+
+function addDaysToIsoDate(dateString, days) {
+  const date = parseIsoDateString(dateString);
+  if (!date || !Number.isInteger(days)) return "";
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function scheduleOverlapsDateWindow(event = {}, windowStart, windowEnd) {
+  if (!parseIsoDateString(windowStart) || !parseIsoDateString(windowEnd)) {
+    return false;
+  }
+  if (windowStart > windowEnd) return false;
+
+  const selectedDates = (Array.isArray(event.selectedDates)
+    ? event.selectedDates
+    : []
+  ).filter((date) => parseIsoDateString(date));
+  if (selectedDates.length > 0) {
+    return selectedDates.some(
+      (date) => date >= windowStart && date <= windowEnd,
+    );
+  }
+
+  const eventStart = parseIsoDateString(event.date) ? event.date : "";
+  if (!eventStart) return false;
+  const configuredEnd = parseIsoDateString(event.endDate)
+    ? event.endDate
+    : eventStart;
+  const eventEnd = configuredEnd >= eventStart ? configuredEnd : eventStart;
+  return eventStart <= windowEnd && eventEnd >= windowStart;
+}
+
 function getNoticeFingerprint(notice = {}) {
   return JSON.stringify({
     title: notice.title || "",
@@ -113,5 +175,9 @@ module.exports = {
   shouldSendPush,
   getAddedItems,
   getScheduleFingerprint,
+  normalizeAbsenceDeadlineDaysBefore,
+  getScheduleNotificationWindowDays,
+  addDaysToIsoDate,
+  scheduleOverlapsDateWindow,
   getNoticeFingerprint,
 };

@@ -11,6 +11,9 @@ const {
   shouldSendPush,
   getAddedItems,
   getScheduleFingerprint,
+  getScheduleNotificationWindowDays,
+  addDaysToIsoDate,
+  scheduleOverlapsDateWindow,
   getNoticeFingerprint,
 } = require("./notificationCore");
 
@@ -355,6 +358,19 @@ const notifyClubEventWritten = onDocumentWritten(
     }
 
     const { teamId, eventId } = event.params;
+    const teamSnapshot = await firestore.collection("teams").doc(teamId).get();
+    const notificationWindowDays = getScheduleNotificationWindowDays(
+      teamSnapshot.data()?.absenceDeadlineDaysBefore,
+    );
+    const windowStart = getJstDateString(new Date());
+    const windowEnd = addDaysToIsoDate(windowStart, notificationWindowDays);
+    if (
+      !scheduleOverlapsDateWindow(beforeData || {}, windowStart, windowEnd) &&
+      !scheduleOverlapsDateWindow(afterData, windowStart, windowEnd)
+    ) {
+      return;
+    }
+
     const isDeleted = afterData.status === "deleted";
     const isUpdate = Boolean(beforeData);
     await fanOutToTeam({
