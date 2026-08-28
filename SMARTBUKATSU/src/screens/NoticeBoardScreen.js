@@ -21,6 +21,7 @@ import { createNotice, updateNotice } from "../services/firestoreService";
 
 const NoticeBoardScreen = ({
   navigation,
+  route,
   isAdmin,
   currentUser,
   currentUserUid = "",
@@ -108,6 +109,15 @@ const NoticeBoardScreen = ({
 
   const [readByListVisible, setReadByListVisible] = useState(false);
   const [currentReadByList, setCurrentReadByList] = useState([]);
+
+  useEffect(() => {
+    const noticeId = route?.params?.noticeId;
+    if (!noticeId) return;
+    const targetNotice = notices.find((notice) => notice.id === noticeId);
+    if (!targetNotice) return;
+    setSelectedNotice(targetNotice);
+    navigation.setParams({ noticeId: undefined });
+  }, [navigation, notices, route?.params?.noticeId]);
 
   let filteredNotices = notices.filter((n) => {
     if (n.status === "deleted") return false;

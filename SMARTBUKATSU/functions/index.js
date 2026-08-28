@@ -380,6 +380,20 @@ const removeAccountFromBlockLists = async (uid) => {
   return usersSnapshot.size;
 };
 
+const removeNotificationPushTokenRegistrations = async (uid) => {
+  const registrationsSnapshot = await firestore
+    .collection("notificationPushTokens")
+    .where("uid", "==", uid)
+    .get();
+  if (registrationsSnapshot.empty) return 0;
+  const writer = firestore.bulkWriter();
+  registrationsSnapshot.docs.forEach((registrationSnapshot) => {
+    writer.delete(registrationSnapshot.ref);
+  });
+  await writer.close();
+  return registrationsSnapshot.size;
+};
+
 const isValidCoordinate = (latitude, longitude) => {
   const lat = Number(latitude);
   const lng = Number(longitude);
@@ -1707,6 +1721,7 @@ exports.deleteUserAccount = onCall(
       });
       await membershipWriter.close();
 
+      await removeNotificationPushTokenRegistrations(uid);
       await firestore.recursiveDelete(context.userRef);
 
       await getAuth().deleteUser(uid);
@@ -2249,3 +2264,5 @@ exports.deleteExpiredCalendarAttachments = onSchedule(
     });
   },
 );
+
+Object.assign(exports, require("./notifications"));

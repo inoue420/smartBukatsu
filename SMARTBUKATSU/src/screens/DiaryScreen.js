@@ -164,6 +164,7 @@ const REPORT_REASONS = [
 
 const DiaryScreen = ({
   navigation,
+  route,
   isAdmin,
   currentUser,
   currentUserUid = "",
@@ -203,6 +204,15 @@ const DiaryScreen = ({
 
   const [isCreateModalVisible, setIsCreateModalVisible] = useState(false);
   const [selectedReport, setSelectedReport] = useState(null);
+
+  useEffect(() => {
+    const reportId = route?.params?.reportId;
+    if (!reportId) return;
+    const targetReport = dailyReports.find((report) => report.id === reportId);
+    if (!targetReport) return;
+    setSelectedReport(targetReport);
+    navigation.setParams({ reportId: undefined });
+  }, [dailyReports, navigation, route?.params?.reportId]);
   const [commentText, setCommentText] = useState("");
   const [editingReportId, setEditingReportId] = useState(null);
   const [isReportModalVisible, setIsReportModalVisible] = useState(false);

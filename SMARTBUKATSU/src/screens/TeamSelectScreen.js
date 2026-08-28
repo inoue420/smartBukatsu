@@ -20,6 +20,7 @@ import {
   reauthenticateWithCredential,
 } from "firebase/auth";
 import { useAuth } from "../AuthContext";
+import { useNotifications } from "../NotificationContext";
 import { auth } from "../firebase";
 import {
   checkAccountDeletionEligibility,
@@ -42,6 +43,7 @@ const roleLabels = {
 
 const TeamSelectScreen = ({ navigation }) => {
   const { user, userName, activeTeamId, teamIds, selectTeam, signOut } = useAuth();
+  const { unreadByTeam } = useNotifications();
   const [teams, setTeams] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [busyTeamId, setBusyTeamId] = useState(null);
@@ -453,6 +455,10 @@ const TeamSelectScreen = ({ navigation }) => {
               <Text style={styles.sectionTitle}>所属チーム</Text>
               {teams.map((team) => {
                 const isActive = team.id === activeTeamId;
+                const unreadCount = Math.max(
+                  0,
+                  Number(unreadByTeam[team.id]) || 0,
+                );
                 return (
                   <TouchableOpacity
                     key={team.id}
@@ -468,6 +474,13 @@ const TeamSelectScreen = ({ navigation }) => {
                       <Text style={styles.teamRole} numberOfLines={1}>
                         {roleLabels[team.role] || "部員"}
                       </Text>
+                      {unreadCount > 0 && (
+                        <View style={styles.notificationBadge}>
+                          <Text style={styles.notificationBadgeText}>
+                            🔔 {unreadCount > 99 ? "99+" : unreadCount}件
+                          </Text>
+                        </View>
+                      )}
                     </View>
                     {busyTeamId === team.id ? (
                       <ActivityIndicator color="#0077cc" />
@@ -715,6 +728,15 @@ const styles = StyleSheet.create({
   teamTextBox: { flex: 1, marginRight: 12 },
   teamName: { fontSize: 16, fontWeight: "bold", color: "#222" },
   teamRole: { fontSize: 12, color: "#667085", marginTop: 4 },
+  notificationBadge: {
+    alignSelf: "flex-start",
+    marginTop: 7,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 10,
+    backgroundColor: "#e74c3c",
+  },
+  notificationBadgeText: { color: "#fff", fontSize: 10, fontWeight: "bold" },
   statusText: { fontSize: 13, fontWeight: "bold", color: "#0077cc" },
   statusTextActive: { color: "#1f7a3f" },
   emptyBox: { paddingVertical: 12 },

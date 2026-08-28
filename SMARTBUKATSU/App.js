@@ -19,6 +19,10 @@ import { DEFAULT_ALERT_THRESHOLDS } from "./src/utils/medicalScale";
 // コンテキストとサービス
 import { AuthProvider, useAuth } from "./src/AuthContext";
 import {
+  NotificationProvider,
+  useNotifications,
+} from "./src/NotificationContext";
+import {
   subscribeProjects,
   subscribeHighlightProjects,
   subscribeDailyReports,
@@ -44,6 +48,8 @@ import ProjectDetailScreen from "./src/screens/ProjectDetailScreen";
 import TagGroupEditScreen from "./src/screens/TagGroupEditScreen";
 import CalendarScreen from "./src/screens/CalendarScreen";
 import RosterScreen from "./src/screens/RosterScreen";
+import NotificationCenterScreen from "./src/screens/NotificationCenterScreen";
+import NotificationSettingsScreen from "./src/screens/NotificationSettingsScreen";
 
 LogBox.ignoreLogs(["[expo-av]"]);
 const Stack = createNativeStackNavigator();
@@ -62,7 +68,9 @@ function AppContent() {
     teamSelectionRequired,
     isAdmin: authIsAdmin,
     loading: authLoading,
+    selectTeam,
   } = useAuth();
+  const { setNavigationHandler } = useNotifications();
 
   const [projects, setProjects] = useState([]);
   const [highlightProjects, setHighlightProjects] = useState([]);
@@ -106,6 +114,44 @@ function AppContent() {
   useEffect(() => {
     configureInterstitial(interstitialSettings);
   }, [configureInterstitial, interstitialSettings]);
+
+  useEffect(() => {
+    const allowedScreens = new Set([
+      "WorkspaceHome",
+      "NoticeBoard",
+      "Calendar",
+      "Diary",
+      "NotificationCenter",
+    ]);
+    return setNavigationHandler(async (notification) => {
+      const requestedScreen = notification?.target?.screen || "WorkspaceHome";
+      const screen = allowedScreens.has(requestedScreen)
+        ? requestedScreen
+        : "WorkspaceHome";
+      const params = notification?.target?.params || {};
+      try {
+        if (notification?.teamId && notification.teamId !== activeTeamId) {
+          await selectTeam(notification.teamId);
+        }
+        let attempts = 0;
+        const navigateToTarget = () => {
+          const routeNames = navigationRef.getRootState()?.routeNames || [];
+          if (navigationRef.isReady() && routeNames.includes(screen)) {
+            navigationRef.navigate(screen, params);
+            return;
+          }
+          attempts += 1;
+          if (attempts < 20) setTimeout(navigateToTarget, 100);
+        };
+        setTimeout(navigateToTarget, notification?.teamId !== activeTeamId ? 300 : 0);
+      } catch (error) {
+        Alert.alert(
+          "通知を開けませんでした",
+          error?.message || "対象チームへの切り替えを確認してください。",
+        );
+      }
+    });
+  }, [activeTeamId, navigationRef, selectTeam, setNavigationHandler]);
 
   // Firestore同期
   useEffect(() => {
@@ -453,6 +499,15 @@ function AppContent() {
                 />
               )}
             </Stack.Screen>
+
+            <Stack.Screen
+              name="NotificationCenter"
+              component={NotificationCenterScreen}
+            />
+            <Stack.Screen
+              name="NotificationSettings"
+              component={NotificationSettingsScreen}
+            />
           </>
         )}
         </Stack.Navigator>
@@ -467,7 +522,9 @@ export default function App() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <AdsProvider>
         <AuthProvider>
-          <AppContent />
+          <NotificationProvider>
+            <AppContent />
+          </NotificationProvider>
         </AuthProvider>
       </AdsProvider>
     </GestureHandlerRootView>

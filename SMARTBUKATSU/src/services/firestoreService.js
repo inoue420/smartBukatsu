@@ -127,6 +127,7 @@ export async function getUserTeams(uid) {
         name: teamData.name || "名称未設定のチーム",
         role: memberData.role || "member",
         inviteCode: teamData.inviteCode || "",
+        absenceDeadlineDaysBefore: teamData.absenceDeadlineDaysBefore,
       };
     }),
   );
