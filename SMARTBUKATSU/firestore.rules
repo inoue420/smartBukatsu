@@ -28,6 +28,11 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/invites/$(code)).data.active == true;
     }
 
+    match /appConfig/{documentId} {
+      allow get: if documentId == 'versionPolicy';
+      allow list, create, update, delete: if false;
+    }
+
     match /users/{userId} {
       allow read: if signedIn();
       allow create, update: if signedIn() && userId == uid();

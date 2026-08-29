@@ -10,6 +10,7 @@ import NetInfo from "@react-native-community/netinfo";
 
 import { AdsProvider, useAds } from "./src/ads/AdManager";
 import AppBannerAd from "./src/ads/AppBannerAd";
+import AppUpdateGate from "./src/components/AppUpdateGate";
 import {
   DEFAULT_INTERSTITIAL_SETTINGS,
   getInterstitialSettingsFromTeamData,
@@ -527,6 +528,7 @@ export default function App() {
           </NotificationProvider>
         </AuthProvider>
       </AdsProvider>
+      <AppUpdateGate />
     </GestureHandlerRootView>
   );
 }
