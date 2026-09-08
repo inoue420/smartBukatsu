@@ -45,6 +45,29 @@ module.exports = ({ config }) => {
     );
   }
 
+  if (
+    isProductionBuild &&
+    process.env.EXPO_PUBLIC_ADMOB_USE_TEST_ADS !== "true"
+  ) {
+    const buildPlatform = process.env.EAS_BUILD_PLATFORM;
+    const platforms = ["android", "ios"].includes(buildPlatform)
+      ? [buildPlatform]
+      : ["android", "ios"];
+    for (const platform of platforms) {
+      const variableName =
+        `EXPO_PUBLIC_ADMOB_${platform.toUpperCase()}_BANNER_UNIT_ID`;
+      const unitId = process.env[variableName] || "";
+      if (
+        !/^ca-app-pub-\d{16}\/\d{10}$/.test(unitId) ||
+        unitId.startsWith("ca-app-pub-3940256099942544/")
+      ) {
+        throw new Error(
+          `Production ads require a real banner ad unit ID in ${variableName}. Check the EAS production environment (use an ad unit ID with '/', not an app ID with '~').`,
+        );
+      }
+    }
+  }
+
   expoPlugins.push([
     "react-native-google-mobile-ads",
     {
