@@ -12,11 +12,11 @@ import {
   BannerAdSize,
 } from "react-native-google-mobile-ads";
 
-import { useAds } from "./AdManager";
+import { logAdFailure, useAds } from "./AdManager";
 import { NON_PERSONALIZED_AD_REQUEST_OPTIONS } from "./adSettings";
 
 const AppBannerAd = () => {
-  const { adsInitialized, bannerAdUnitId } = useAds();
+  const { adsInitialized, bannerAdUnitId, recordDiagnostic } = useAds();
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
 
   useEffect(() => {
@@ -37,6 +37,13 @@ const AppBannerAd = () => {
     };
   }, []);
 
+  useEffect(() => {
+    if (!adsInitialized || !bannerAdUnitId) return;
+    recordDiagnostic(
+      isKeyboardVisible ? "banner-keyboard-hidden" : "banner-loading",
+    );
+  }, [adsInitialized, bannerAdUnitId, isKeyboardVisible, recordDiagnostic]);
+
   if (!adsInitialized || !bannerAdUnitId || isKeyboardVisible) {
     return null;
   }
@@ -51,10 +58,10 @@ const AppBannerAd = () => {
           unitId={bannerAdUnitId}
           size={BannerAdSize.ANCHORED_ADAPTIVE_BANNER}
           requestOptions={NON_PERSONALIZED_AD_REQUEST_OPTIONS}
+          onAdLoaded={() => recordDiagnostic("banner-loaded")}
           onAdFailedToLoad={(error) => {
-            if (__DEV__) {
-              console.warn("バナー広告を読み込めませんでした。", error);
-            }
+            logAdFailure("banner-load", error);
+            recordDiagnostic("banner-error", error);
           }}
         />
       </View>

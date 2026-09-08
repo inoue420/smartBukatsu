@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
+import { useFocusEffect } from "@react-navigation/native";
 import {
   View,
   Text,
@@ -16,6 +17,10 @@ import {
   Linking,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import * as Application from "expo-application";
+import * as ExpoClipboard from "expo-clipboard";
+import { useAds } from "../ads/AdManager";
+import { formatAdDiagnostics } from "../ads/adDiagnostics";
 import { useAuth } from "../AuthContext";
 import MedicalSafetyNotice from "../components/MedicalSafetyNotice";
 import { auth, db } from "../firebase";
@@ -29,6 +34,8 @@ import {
 
 import {
   getTeamInviteCode,
+  getUserTeams,
+  SHARP_RISE_INVITE_CODE,
   subscribeTeamData,
   addTeamArrayItem,
   removeTeamArrayItem,
@@ -142,7 +149,51 @@ const SettingsScreen = ({
   posts = [],
   setPosts,
 }) => {
-  const { activeTeamId, blockedUserUids = [], signOut, user } = useAuth();
+  const { activeTeamId, teamIds = [], blockedUserUids = [], signOut, user } = useAuth();
+  const { diagnostics } = useAds();
+  const [isAdDiagnosticsExpanded, setIsAdDiagnosticsExpanded] = useState(false);
+  const [adDiagnosticsAccess, setAdDiagnosticsAccess] = useState(null);
+  const adMembershipKey = JSON.stringify([user?.uid, teamIds]);
+  const canViewAdDiagnostics = Boolean(
+    user?.uid &&
+    adDiagnosticsAccess?.key === adMembershipKey &&
+    adDiagnosticsAccess?.allowed,
+  );
+
+  useFocusEffect(useCallback(() => {
+    let active = true;
+    setAdDiagnosticsAccess(null);
+    setIsAdDiagnosticsExpanded(false);
+    if (!user?.uid || Platform.OS === "web") return;
+
+    void getUserTeams(user.uid).then((teams) => {
+      if (!active) return;
+      setAdDiagnosticsAccess({
+        key: adMembershipKey,
+        allowed: teams.some((team) => team?.inviteCode === SHARP_RISE_INVITE_CODE),
+      });
+    }).catch(() => {
+      if (active) setAdDiagnosticsAccess(null);
+    });
+
+    return () => { active = false; };
+  }, [user?.uid, adMembershipKey]));
+
+  const adDiagnosticsText = useMemo(() => formatAdDiagnostics(diagnostics, {
+    platform: Platform.OS,
+    version: Application.nativeApplicationVersion,
+    build: Application.nativeBuildVersion,
+  }), [diagnostics]);
+  const copyAdDiagnostics = async () => {
+    if (!canViewAdDiagnostics) return;
+    try {
+      const copied = await ExpoClipboard.setStringAsync(adDiagnosticsText);
+      if (!copied) throw new Error("Clipboard unavailable");
+      Alert.alert("コピー完了", "広告の診断情報をコピーしました。相談先に貼り付けて共有できます。");
+    } catch {
+      Alert.alert("コピーできませんでした", "診断情報のテキストを長押ししてコピーしてください。");
+    }
+  };
   const [inviteCode, setInviteCode] = useState("読み込み中...");
 
   const currentUserUid =
@@ -2088,6 +2139,30 @@ const SettingsScreen = ({
             </SectionCard>
           )}
 
+          {Platform.OS !== "web" && canViewAdDiagnostics && diagnostics && (
+            <SectionCard
+              isExp={isAdDiagnosticsExpanded}
+              onToggle={() => setIsAdDiagnosticsExpanded((value) => !value)}
+              title="広告の診断情報"
+            >
+              <Text style={styles.subText}>
+                広告が表示されないときに、状態をコピーして相談先へ共有できます。
+                アプリ起動後の情報のみ表示し、再起動すると履歴はリセットされます。
+                広告IDや個人情報は含みません。
+              </Text>
+              <TouchableOpacity
+                style={styles.saveBtn}
+                onPress={copyAdDiagnostics}
+                accessibilityRole="button"
+              >
+                <Text style={styles.saveBtnText}>診断情報をコピー</Text>
+              </TouchableOpacity>
+              <Text selectable style={styles.adDiagnosticsText}>
+                {adDiagnosticsText}
+              </Text>
+            </SectionCard>
+          )}
+
           <View style={styles.legalContainer}>
             <Text style={styles.legalTitle}>法務・サポート</Text>
             <TouchableOpacity
@@ -2560,6 +2635,7 @@ const styles = StyleSheet.create({
   cardContent: { padding: 20, paddingTop: 15 },
 
   subText: { fontSize: 12, color: "#666", marginBottom: 15 },
+  adDiagnosticsText: { fontSize: 12, lineHeight: 19, color: "#333", marginTop: 15 },
   label: { fontSize: 14, fontWeight: "bold", color: "#555", marginBottom: 5 },
   input: {
     backgroundColor: "#f9f9f9",

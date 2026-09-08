@@ -24,7 +24,18 @@ import {
   NON_PERSONALIZED_AD_REQUEST_OPTIONS,
   normalizeInterstitialSettings,
 } from "./adSettings";
+import {
+  createAdDiagnostics,
+  getAdErrorCode,
+  recordAdDiagnostic,
+} from "./adDiagnostics";
 const DAILY_COUNT_STORAGE_KEY = "admob_interstitial_daily_count_v1";
+const INITIALIZATION_RETRY_DELAYS = [30000, 60000];
+
+// Only known SDK codes are logged; messages can contain IDs or request details.
+export const logAdFailure = (stage, error) => {
+  console.warn("[AdMob]", stage, getAdErrorCode(error));
+};
 
 const getLocalDateKey = () => {
   const now = new Date();
@@ -60,6 +71,8 @@ const interstitialAdUnitId = INTERSTITIAL_ADS_ENABLED
 const defaultAdsContext = {
   adsInitialized: false,
   bannerAdUnitId: null,
+  diagnostics: null,
+  recordDiagnostic: () => {},
   recordScreenTransition: () => {},
   showAfterDiarySubmission: () => {},
   configureInterstitial: () => {},
@@ -69,6 +82,12 @@ const AdsContext = createContext(defaultAdsContext);
 
 export const AdsProvider = ({ children }) => {
   const [adsInitialized, setAdsInitialized] = useState(false);
+  const [diagnostics, setDiagnostics] = useState(() =>
+    createAdDiagnostics(useTestAds, bannerAdUnitId),
+  );
+  const recordDiagnostic = useCallback((event, error) => {
+    setDiagnostics((previous) => recordAdDiagnostic(previous, event, error));
+  }, []);
   const adsInitializedRef = useRef(false);
   const dailyStateRef = useRef({ date: getLocalDateKey(), count: 0 });
   const dailyStateLoadedRef = useRef(false);
@@ -184,6 +203,8 @@ export const AdsProvider = ({ children }) => {
   useEffect(() => {
     let active = true;
     let retryTimer = null;
+    let initializationRetryTimer = null;
+    let initializationAttempts = 0;
     const subscriptions = [];
 
     const loadDailyState = async () => {
@@ -282,39 +303,57 @@ export const AdsProvider = ({ children }) => {
             ADS_REQUEST_CONFIGURATION.tagForUnderAgeOfConsent,
         });
       } catch (error) {
-        if (__DEV__) {
-          console.warn(
-            "Google UMPの同意状態を更新できませんでした。保存済み状態を確認します。",
-            error,
-          );
-        }
+        if (!active) return null;
+        logAdFailure("consent-update", error);
+        recordDiagnostic("consent-error", error);
 
         try {
           return await AdsConsent.getConsentInfo();
         } catch (fallbackError) {
-          if (__DEV__) {
-            console.warn(
-              "Google UMPの保存済み同意状態を確認できませんでした。",
-              fallbackError,
-            );
+          if (active) {
+            logAdFailure("consent-cache", fallbackError);
+            recordDiagnostic("consent-cache-error", fallbackError);
           }
           return null;
         }
       }
     };
 
+    const scheduleInitializationRetry = () => {
+      const delay = INITIALIZATION_RETRY_DELAYS[initializationAttempts - 1];
+      if (!active) return;
+      if (delay === undefined) {
+        recordDiagnostic("retry-exhausted");
+        return;
+      }
+      recordDiagnostic("retry-scheduled");
+      initializationRetryTimer = setTimeout(() => {
+        initializationRetryTimer = null;
+        void initializeAds();
+      }, delay);
+    };
+
     const initializeAds = async () => {
+      if (!active || adsInitializedRef.current) return;
+      if (!bannerAdUnitId && !interstitialAdUnitId) {
+        console.warn("[AdMob] configuration: missing-ad-unit-id");
+        recordDiagnostic("missing-id");
+        return;
+      }
+      initializationAttempts += 1;
+      recordDiagnostic("consent-start");
       const consentInfo = await getConsentInfo();
-      if (!active || !consentInfo?.canRequestAds) {
-        if (__DEV__ && active) {
-          console.warn(
-            "Google UMPで広告リクエストが許可されていないため、AdMobを初期化しません。",
-          );
-        }
+      if (!active) return;
+      if (!consentInfo?.canRequestAds) {
+        console.warn("[AdMob] consent: cannot-request-ads");
+        recordDiagnostic("consent-blocked");
+        scheduleInitializationRetry();
         return;
       }
 
       try {
+        recordDiagnostic("consent-allowed");
+        recordDiagnostic("sdk-start");
         await mobileAds().setRequestConfiguration({
           ...ADS_REQUEST_CONFIGURATION,
           maxAdContentRating: MaxAdContentRating.G,
@@ -326,11 +365,13 @@ export const AdsProvider = ({ children }) => {
 
         adsInitializedRef.current = true;
         setAdsInitialized(true);
+        recordDiagnostic("sdk-ready");
         loadInterstitialRef.current();
       } catch (error) {
-        if (__DEV__) {
-          console.warn("Google Mobile Ads SDKを初期化できませんでした。", error);
-        }
+        if (!active) return;
+        logAdFailure("sdk-initialization", error);
+        recordDiagnostic("sdk-error", error);
+        scheduleInitializationRetry();
       }
     };
 
@@ -339,23 +380,28 @@ export const AdsProvider = ({ children }) => {
     return () => {
       active = false;
       if (retryTimer) clearTimeout(retryTimer);
+      if (initializationRetryTimer) clearTimeout(initializationRetryTimer);
       subscriptions.forEach((unsubscribe) => unsubscribe());
       loadInterstitialRef.current = () => {};
       interstitialRef.current = null;
       if (Platform.OS === "ios") StatusBar.setHidden(false);
     };
-  }, []);
+  }, [recordDiagnostic]);
 
   const contextValue = useMemo(
     () => ({
       adsInitialized,
       bannerAdUnitId,
+      diagnostics,
+      recordDiagnostic,
       recordScreenTransition,
       showAfterDiarySubmission,
       configureInterstitial,
     }),
     [
       adsInitialized,
+      diagnostics,
+      recordDiagnostic,
       configureInterstitial,
       recordScreenTransition,
       showAfterDiarySubmission,
