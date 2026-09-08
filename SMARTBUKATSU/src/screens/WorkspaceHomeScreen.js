@@ -85,6 +85,21 @@ const ROLE_GROUP_OPTIONS = [
   },
 ];
 
+const formatRelativeTime = (createdAt, fallbackTime, now) => {
+  const timestamp = Number(createdAt);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return fallbackTime || "";
+
+  const elapsedMilliseconds = Math.max(0, now - timestamp);
+  const elapsedMinutes = Math.floor(elapsedMilliseconds / (60 * 1000));
+  if (elapsedMinutes < 1) return "たった今";
+  if (elapsedMinutes < 60) return `${elapsedMinutes}分前`;
+
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  if (elapsedHours < 24) return `${elapsedHours}時間前`;
+
+  return `${Math.floor(elapsedHours / 24)}日前`;
+};
+
 const getRoleGroup = (role) => {
   if (MANAGER_ROLES.includes(role)) return "staff";
   if (role === "captain") return "captain";
@@ -381,6 +396,12 @@ const WorkspaceHomeScreen = ({
   const audienceSyncKeyRef = useRef(null);
 
   const [isLoading, setIsLoading] = useState(false);
+  const [currentTime, setCurrentTime] = useState(() => Date.now());
+
+  useEffect(() => {
+    const intervalId = setInterval(() => setCurrentTime(Date.now()), 60 * 1000);
+    return () => clearInterval(intervalId);
+  }, []);
 
   useEffect(() => {
     setChannels(defaultChannels);
@@ -1587,7 +1608,7 @@ const WorkspaceHomeScreen = ({
           <Text style={styles.postTime}>
             {isPending
               ? "送信待機中..."
-              : `${post.time}${post.editedAt ? "・編集済み" : ""}`}
+              : `${formatRelativeTime(post.createdAt, post.time, currentTime)}${post.editedAt ? "・編集済み" : ""}`}
           </Text>
         </View>
 
@@ -1888,7 +1909,7 @@ const WorkspaceHomeScreen = ({
                     <Text style={styles.postTime}>
                       {isReplyPending
                         ? "待機中..."
-                        : `${reply.time}${reply.editedAt ? "・編集済み" : ""}`}
+                        : `${formatRelativeTime(reply.createdAt, reply.time, currentTime)}${reply.editedAt ? "・編集済み" : ""}`}
                     </Text>
                   </View>
                   <Text style={styles.replyContent}>
