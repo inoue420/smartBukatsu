@@ -2164,20 +2164,19 @@ const WorkspaceHomeScreen = ({
           >
             {!isGuardian && (
             <TouchableOpacity
-              style={styles.menuItem}
-              onPress={() => navigation.navigate("NoticeBoard")}
+              style={[styles.menuItem, styles.menuItemDisabled]}
+              disabled={true}
+              accessibilityLabel="戦術ノートは現在整備中です"
+              accessibilityState={{ disabled: true }}
             >
               <View style={styles.menuIconContainer}>
                 <Text style={styles.menuIconText}>📋</Text>
-                {!isStaffOrAbove && unreadNoticeCount > 0 && (
-                  <View style={styles.menuBadge}>
-                    <Text style={styles.menuBadgeText}>
-                      {unreadNoticeCount}
-                    </Text>
-                  </View>
-                )}
+                <View style={styles.menuLockOverlay}>
+                  <Text style={styles.menuLockIcon}>🔗</Text>
+                </View>
               </View>
-              <Text style={styles.menuLabel}>掲示板</Text>
+              <Text style={styles.menuLabel}>戦術ノート</Text>
+              <Text style={styles.menuMaintenanceLabel}>整備中</Text>
             </TouchableOpacity>
             )}
 
@@ -2992,11 +2991,32 @@ const styles = StyleSheet.create({
     position: "relative",
   },
   menuIconText: { fontSize: 24 },
+  menuItemDisabled: { opacity: 0.55 },
+  menuLockOverlay: {
+    position: "absolute",
+    right: -4,
+    bottom: -4,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: "#64748b",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 2,
+    borderColor: "#fff",
+  },
+  menuLockIcon: { fontSize: 13 },
   menuLabel: {
     fontSize: 11,
     color: COLORS.textSub,
     fontWeight: "bold",
     textAlign: "center",
+  },
+  menuMaintenanceLabel: {
+    fontSize: 10,
+    color: COLORS.textSub,
+    fontWeight: "bold",
+    marginTop: 1,
   },
   menuBadge: {
     position: "absolute",

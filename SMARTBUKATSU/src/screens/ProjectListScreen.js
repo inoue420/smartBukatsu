@@ -1820,8 +1820,8 @@ const ProjectListScreen = ({
       {!isLandscape && (
         <View style={styles.tabContainer}>
           {[
-            { id: "list", label: "動画一覧" },
-            { id: "summary", label: "プロジェクトまとめ" },
+            { id: "list", label: "動画編集（タグ付け）" },
+            { id: "summary", label: "動画閲覧" },
           ].map((tab) => (
             <TouchableOpacity
               key={tab.id}
