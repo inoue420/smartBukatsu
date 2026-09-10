@@ -213,7 +213,7 @@ const DiaryScreen = ({
     setSelectedReport(targetReport);
     navigation.setParams({ reportId: undefined });
   }, [dailyReports, navigation, route?.params?.reportId]);
-  const [commentText, setCommentText] = useState("");
+  const [commentDraftsByReportId, setCommentDraftsByReportId] = useState({});
   const [editingReportId, setEditingReportId] = useState(null);
   const [isReportModalVisible, setIsReportModalVisible] = useState(false);
   const [reportingComment, setReportingComment] = useState(null);
@@ -1009,6 +1009,7 @@ const DiaryScreen = ({
   };
 
   const handleSendComment = async () => {
+    const commentText = commentDraftsByReportId[selectedReport?.id] || "";
     if (commentText.trim() === "") return;
     const contentToSend = commentText.trim();
     const canSubmit = await confirmContentForSubmission(
@@ -1049,7 +1050,10 @@ const DiaryScreen = ({
         comments: newComments,
       }));
 
-      setCommentText("");
+      setCommentDraftsByReportId((drafts) => {
+        const { [selectedReport.id]: _sentDraft, ...remainingDrafts } = drafts;
+        return remainingDrafts;
+      });
       Keyboard.dismiss();
 
       const safeTeamId = activeTeamId || "test_team";
@@ -1981,7 +1985,11 @@ const DiaryScreen = ({
                         key={idx}
                         style={styles.templateBtn}
                         onPress={() =>
-                          setCommentText((prev) => prev + tmp.text)
+                            setCommentDraftsByReportId((drafts) => ({
+                              ...drafts,
+                              [selectedReport.id]:
+                                (drafts[selectedReport.id] || "") + tmp.text,
+                            }))
                         }
                       >
                         <Text style={styles.templateBtnText}>{tmp.label}</Text>
@@ -1993,8 +2001,13 @@ const DiaryScreen = ({
                   <TextInput
                     style={styles.commentInput}
                     placeholder="メッセージを入力..."
-                    value={commentText}
-                    onChangeText={setCommentText}
+                    value={commentDraftsByReportId[selectedReport.id] || ""}
+                    onChangeText={(text) =>
+                      setCommentDraftsByReportId((drafts) => ({
+                        ...drafts,
+                        [selectedReport.id]: text,
+                      }))
+                    }
                     multiline
                   />
                   <TouchableOpacity

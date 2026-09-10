@@ -13,6 +13,7 @@ import {
   Keyboard,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useAuth } from "../AuthContext";
 import MedicalSafetyNotice from "../components/MedicalSafetyNotice";
 import {
@@ -100,7 +101,7 @@ const MedicalScreen = ({
 
   const [isCreateModalVisible, setIsCreateModalVisible] = useState(false);
   const [selectedRecord, setSelectedRecord] = useState(null);
-  const [commentText, setCommentText] = useState("");
+  const [commentDraftsByRecordId, setCommentDraftsByRecordId] = useState({});
 
   const [editingRecordId, setEditingRecordId] = useState(null);
 
@@ -115,12 +116,76 @@ const MedicalScreen = ({
   const [sinceWhen, setSinceWhen] = useState("");
   const [treatment, setTreatment] = useState("");
   const [memo, setMemo] = useState("");
+  const [isDraftLoaded, setIsDraftLoaded] = useState(false);
+  const MEDICAL_DRAFT_KEY = `medical_draft_${user?.uid || currentUser}`;
 
   const [activeTab, setActiveTab] = useState("danger");
   const [searchQuery, setSearchQuery] = useState("");
   const [activeTagFilter, setActiveTagFilter] = useState(null);
 
   const [expandedDates, setExpandedDates] = useState({});
+
+  useEffect(() => {
+    setIsDraftLoaded(false);
+    const loadDraft = async () => {
+      try {
+        const draftText = await AsyncStorage.getItem(MEDICAL_DRAFT_KEY);
+        if (draftText) {
+          const draft = JSON.parse(draftText);
+          setCondition(draft.condition || "良い");
+          setFatigue(draft.fatigue ?? MEDICAL_SCALE_DEFAULT);
+          setSleep(draft.sleep || "7h");
+          setIsParticipating(draft.isParticipating || "通常");
+          setHasPain(draft.hasPain || false);
+          setPainPart(draft.painPart || "");
+          setPainLevel(draft.painLevel ?? MEDICAL_SCALE_DEFAULT);
+          setSinceWhen(draft.sinceWhen || "");
+          setTreatment(draft.treatment || "");
+          setMemo(draft.memo || "");
+        }
+      } catch (error) {
+        console.log("メディカル下書き読み込みエラー:", error);
+      } finally {
+        setIsDraftLoaded(true);
+      }
+    };
+    loadDraft();
+  }, [MEDICAL_DRAFT_KEY]);
+
+  useEffect(() => {
+    if (!isDraftLoaded || editingRecordId || !isCreateModalVisible) return;
+
+    AsyncStorage.setItem(
+      MEDICAL_DRAFT_KEY,
+      JSON.stringify({
+        condition,
+        fatigue,
+        sleep,
+        isParticipating,
+        hasPain,
+        painPart,
+        painLevel,
+        sinceWhen,
+        treatment,
+        memo,
+      }),
+    ).catch((error) => console.log("メディカル下書き保存エラー:", error));
+  }, [
+    MEDICAL_DRAFT_KEY,
+    condition,
+    editingRecordId,
+    fatigue,
+    hasPain,
+    isDraftLoaded,
+    isCreateModalVisible,
+    isParticipating,
+    memo,
+    painLevel,
+    painPart,
+    sinceWhen,
+    sleep,
+    treatment,
+  ]);
 
   const MANAGEMENT_TAGS = [
     "🚩 要フォロー",
@@ -282,6 +347,9 @@ const MedicalScreen = ({
           setMemo("");
           setEditingRecordId(null);
           setIsCreateModalVisible(false);
+          AsyncStorage.removeItem(MEDICAL_DRAFT_KEY).catch((error) =>
+            console.log("メディカル下書き削除エラー:", error),
+          );
         },
       },
     ]);
@@ -293,6 +361,7 @@ const MedicalScreen = ({
       return;
     }
 
+    const isEditingRecord = Boolean(editingRecordId);
     if (editingRecordId) {
       const updatedRecords = medicalRecords.map((r) => {
         if (r.id === editingRecordId) {
@@ -377,9 +446,15 @@ const MedicalScreen = ({
     setSinceWhen("");
     setTreatment("");
     setMemo("");
+    if (!isEditingRecord) {
+      AsyncStorage.removeItem(MEDICAL_DRAFT_KEY).catch((error) =>
+        console.log("メディカル下書き削除エラー:", error),
+      );
+    }
   };
 
   const handleSendComment = () => {
+    const commentText = commentDraftsByRecordId[selectedRecord?.id] || "";
     if (commentText.trim() === "") return;
 
     const isStaffComment = isStaffOrAbove;
@@ -433,7 +508,10 @@ const MedicalScreen = ({
         ],
       }));
     }
-    setCommentText("");
+    setCommentDraftsByRecordId((drafts) => {
+      const { [selectedRecord.id]: _sentDraft, ...remainingDrafts } = drafts;
+      return remainingDrafts;
+    });
     Keyboard.dismiss();
   };
 
@@ -1034,8 +1112,13 @@ const MedicalScreen = ({
               <View style={styles.commentInputArea}>
                 <TextInput
                   style={styles.commentInput}
-                  value={commentText}
-                  onChangeText={setCommentText}
+                  value={commentDraftsByRecordId[selectedRecord.id] || ""}
+                  onChangeText={(text) =>
+                    setCommentDraftsByRecordId((drafts) => ({
+                      ...drafts,
+                      [selectedRecord.id]: text,
+                    }))
+                  }
                   placeholder="メッセージを入力..."
                 />
                 <TouchableOpacity

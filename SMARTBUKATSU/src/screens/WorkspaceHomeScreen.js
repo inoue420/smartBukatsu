@@ -525,7 +525,7 @@ const WorkspaceHomeScreen = ({
 
   const [newPostText, setNewPostText] = useState("");
   const [expandedPostId, setExpandedPostId] = useState(null);
-  const [replyText, setReplyText] = useState("");
+  const [replyDraftsByPostId, setReplyDraftsByPostId] = useState({});
 
   const [activeReactionPostId, setActiveReactionPostId] = useState(null);
   const [activeLongPressPostId, setActiveLongPressPostId] = useState(null);
@@ -1156,6 +1156,7 @@ const WorkspaceHomeScreen = ({
   };
 
   const handleSendReply = async (postId) => {
+    const replyText = replyDraftsByPostId[postId] || "";
     if (replyText.trim() === "") return;
 
     const currentReplyText = replyText.trim();
@@ -1165,7 +1166,10 @@ const WorkspaceHomeScreen = ({
     );
     if (!canSubmit) return;
 
-    setReplyText("");
+    setReplyDraftsByPostId((drafts) => {
+      const { [postId]: _sentDraft, ...remainingDrafts } = drafts;
+      return remainingDrafts;
+    });
     if (replyInputRef.current) {
       replyInputRef.current.clear();
     }
@@ -1471,7 +1475,6 @@ const WorkspaceHomeScreen = ({
   const toggleThread = (postId) => {
     setExpandedPostId(expandedPostId === postId ? null : postId);
     if (expandedPostId !== postId) {
-      setReplyText("");
       setIsReplyFocused(false);
       setActiveLongPressReply(null);
     }
@@ -1856,8 +1859,13 @@ const WorkspaceHomeScreen = ({
                 ref={replyInputRef}
                 style={styles.replyInput}
                 placeholder="返信を追加..."
-                value={replyText}
-                onChangeText={setReplyText}
+                value={replyDraftsByPostId[post.id] || ""}
+                onChangeText={(text) =>
+                  setReplyDraftsByPostId((drafts) => ({
+                    ...drafts,
+                    [post.id]: text,
+                  }))
+                }
                 multiline
                 onFocus={() => setIsReplyFocused(true)}
                 onBlur={() => setIsReplyFocused(false)}
