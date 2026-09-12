@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
   View,
   Text,
@@ -214,6 +214,7 @@ const DiaryScreen = ({
     navigation.setParams({ reportId: undefined });
   }, [dailyReports, navigation, route?.params?.reportId]);
   const [commentDraftsByReportId, setCommentDraftsByReportId] = useState({});
+  const isSendingCommentRef = useRef(false);
   const [editingReportId, setEditingReportId] = useState(null);
   const [isReportModalVisible, setIsReportModalVisible] = useState(false);
   const [reportingComment, setReportingComment] = useState(null);
@@ -1009,63 +1010,67 @@ const DiaryScreen = ({
   };
 
   const handleSendComment = async () => {
-    const commentText = commentDraftsByReportId[selectedReport?.id] || "";
+    const reportId = selectedReport?.id;
+    if (!reportId || isSendingCommentRef.current) return;
+    const commentText = commentDraftsByReportId[reportId] || "";
     if (commentText.trim() === "") return;
-    const contentToSend = commentText.trim();
-    const canSubmit = await confirmContentForSubmission(
-      contentToSend,
-      "daily_report_comment",
-    );
-    if (!canSubmit) return;
-    setIsLoading(true);
+    if (isOffline || !activeTeamId) {
+      Alert.alert("送信できません", "オンライン状態とチーム選択を確認してください。入力内容は保持しています。");
+      return;
+    }
 
+    isSendingCommentRef.current = true;
     try {
+      const contentToSend = commentText.trim();
+      const canSubmit = await confirmContentForSubmission(
+        contentToSend,
+        "daily_report_comment",
+      );
+      if (!canSubmit) return;
+      setIsLoading(true);
+
       const newComment = {
         id: "c_" + Date.now().toString(),
         user: displayUserName,
         uid: currentUserUid,
         text: contentToSend,
         time: "たった今",
-        status: isOffline ? "pending" : "sent",
+        status: "sent",
       };
-
       const isStaffComment = isStaffOrAbove;
-      const newComments = [...selectedReport.comments, newComment];
-
-      const updated = dailyReports.map((r) => {
-        if (r.id === selectedReport.id) {
-          return {
-            ...r,
-            comments: newComments,
-            isReviewed: isStaffComment ? true : r.isReviewed,
-          };
-        }
-        return r;
-      });
-      setDailyReports(updated);
-
-      setSelectedReport((prev) => ({
-        ...prev,
-        isReviewed: isStaffComment ? true : prev.isReviewed,
+      const newComments = [...(selectedReport.comments || []), newComment];
+      await updateDailyReport(activeTeamId, reportId, {
         comments: newComments,
-      }));
+        isReviewed: isStaffComment ? true : selectedReport.isReviewed,
+      });
 
+      const applyComment = (report) => ({
+        ...report,
+        comments: (report.comments || []).some((comment) => comment.id === newComment.id)
+          ? report.comments
+          : [...(report.comments || []), newComment],
+        isReviewed: isStaffComment ? true : report.isReviewed,
+      });
+      setDailyReports((reports) =>
+        reports.map((report) => report.id === reportId ? applyComment(report) : report),
+      );
+      setSelectedReport((report) =>
+        report?.id === reportId ? applyComment(report) : report,
+      );
       setCommentDraftsByReportId((drafts) => {
-        const { [selectedReport.id]: _sentDraft, ...remainingDrafts } = drafts;
+        // 確認・通信待ちの間に変更された入力は残す。
+        if (drafts[reportId] !== commentText) return drafts;
+        const { [reportId]: _sentDraft, ...remainingDrafts } = drafts;
         return remainingDrafts;
       });
-      Keyboard.dismiss();
-
-      const safeTeamId = activeTeamId || "test_team";
-      if (!isOffline) {
-        await updateDailyReport(safeTeamId, selectedReport.id, {
-          comments: newComments,
-          isReviewed: isStaffComment ? true : selectedReport.isReviewed,
-        });
-      }
-    } catch (e) {
-      console.log("コメント送信エラー:", e);
+    } catch (error) {
+      console.log("コメント送信エラー:", error);
+      Alert.alert(
+        "送信エラー",
+        "コメントを送信できませんでした。入力内容は保持しています。通信状態を確認して再度お試しください。",
+      );
     } finally {
+      isSendingCommentRef.current = false;
       setIsLoading(false);
     }
   };
@@ -1966,6 +1971,7 @@ const DiaryScreen = ({
                   );
                 })()}
 
+              {selectedReport?.id && (
               <View
                 style={{
                   backgroundColor: "#fff",
@@ -1984,13 +1990,14 @@ const DiaryScreen = ({
                       <TouchableOpacity
                         key={idx}
                         style={styles.templateBtn}
-                        onPress={() =>
+                        onPress={() => {
+                          if (!selectedReport?.id) return;
                             setCommentDraftsByReportId((drafts) => ({
                               ...drafts,
                               [selectedReport.id]:
                                 (drafts[selectedReport.id] || "") + tmp.text,
-                            }))
-                        }
+                            }));
+                        }}
                       >
                         <Text style={styles.templateBtnText}>{tmp.label}</Text>
                       </TouchableOpacity>
@@ -2002,12 +2009,13 @@ const DiaryScreen = ({
                     style={styles.commentInput}
                     placeholder="メッセージを入力..."
                     value={commentDraftsByReportId[selectedReport.id] || ""}
-                    onChangeText={(text) =>
+                    onChangeText={(text) => {
+                      if (!selectedReport?.id) return;
                       setCommentDraftsByReportId((drafts) => ({
                         ...drafts,
                         [selectedReport.id]: text,
-                      }))
-                    }
+                      }));
+                    }}
                     multiline
                   />
                   <TouchableOpacity
@@ -2018,6 +2026,7 @@ const DiaryScreen = ({
                   </TouchableOpacity>
                 </View>
               </View>
+              )}
             </View>
           </KeyboardAvoidingView>
           <AttachmentViewerOverlay

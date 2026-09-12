@@ -526,6 +526,7 @@ const WorkspaceHomeScreen = ({
   const [newPostText, setNewPostText] = useState("");
   const [expandedPostId, setExpandedPostId] = useState(null);
   const [replyDraftsByPostId, setReplyDraftsByPostId] = useState({});
+  const isSendingReplyRef = useRef(false);
 
   const [activeReactionPostId, setActiveReactionPostId] = useState(null);
   const [activeLongPressPostId, setActiveLongPressPostId] = useState(null);
@@ -1156,36 +1157,29 @@ const WorkspaceHomeScreen = ({
   };
 
   const handleSendReply = async (postId) => {
+    if (!postId || isSendingReplyRef.current) return;
     const replyText = replyDraftsByPostId[postId] || "";
     if (replyText.trim() === "") return;
-
-    const currentReplyText = replyText.trim();
-    const canSubmit = await confirmContentForSubmission(
-      currentReplyText,
-      "workspace_reply",
-    );
-    if (!canSubmit) return;
-
-    setReplyDraftsByPostId((drafts) => {
-      const { [postId]: _sentDraft, ...remainingDrafts } = drafts;
-      return remainingDrafts;
-    });
-    if (replyInputRef.current) {
-      replyInputRef.current.clear();
+    if (!posts.some((post) => post.id === postId)) {
+      Alert.alert("送信できません", "対象の投稿が見つかりません。入力内容は保持しています。");
+      return;
     }
-    Keyboard.dismiss();
-    setIsReplyFocused(false);
-    setIsLoading(true);
-
-    const targetPost = posts.find((post) => post.id === postId);
-    if (!targetPost) {
-      setIsLoading(false);
+    if (isOffline || !activeTeamId) {
+      Alert.alert("送信できません", "オンライン状態とチーム選択を確認してください。入力内容は保持しています。");
       return;
     }
 
-    const nextReplies = [
-      ...(targetPost.replies || []),
-      {
+    isSendingReplyRef.current = true;
+    try {
+      const currentReplyText = replyText.trim();
+      const canSubmit = await confirmContentForSubmission(
+        currentReplyText,
+        "workspace_reply",
+      );
+      if (!canSubmit) return;
+      setIsLoading(true);
+
+      const newReply = {
         id: Date.now().toString(),
         user: displayUserName,
         authorUid: currentUserUid,
@@ -1193,24 +1187,38 @@ const WorkspaceHomeScreen = ({
         content: currentReplyText,
         time: "たった今",
         createdAt: Date.now(),
-        status: isOffline ? "pending" : "sent",
-      },
-    ];
-    setPosts((prevPosts) =>
-      prevPosts.map((post) =>
-        post.id === postId ? { ...post, replies: nextReplies } : post,
-      ),
-    );
-    if (activeTeamId) {
-      appendWorkspacePostReply(
-        activeTeamId,
-        postId,
-        nextReplies[nextReplies.length - 1],
-      ).catch((error) => {
-        console.log("掲示板返信エラー:", error);
+        status: "sent",
+      };
+      await appendWorkspacePostReply(activeTeamId, postId, newReply);
+
+      setPosts((prevPosts) =>
+        prevPosts.map((post) =>
+          post.id === postId
+            ? {
+                ...post,
+                replies: (post.replies || []).some((reply) => reply.id === newReply.id)
+                  ? post.replies
+                  : [...(post.replies || []), newReply],
+              }
+            : post,
+        ),
+      );
+      setReplyDraftsByPostId((drafts) => {
+        // 他スレッドや、送信開始後に編集した下書きは変更しない。
+        if (drafts[postId] !== replyText) return drafts;
+        const { [postId]: _sentDraft, ...remainingDrafts } = drafts;
+        return remainingDrafts;
       });
+    } catch (error) {
+      console.log("掲示板返信エラー:", error);
+      Alert.alert(
+        "送信エラー",
+        "返信を送信できませんでした。入力内容は保持しています。通信状態を確認して再度お試しください。",
+      );
+    } finally {
+      isSendingReplyRef.current = false;
+      setIsLoading(false);
     }
-    setIsLoading(false);
   };
 
   const closeReportModal = () => {
