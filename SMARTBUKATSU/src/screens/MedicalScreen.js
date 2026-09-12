@@ -454,6 +454,7 @@ const MedicalScreen = ({
   };
 
   const handleSendComment = () => {
+    if (!selectedRecord?.id) return;
     const commentText = commentDraftsByRecordId[selectedRecord?.id] || "";
     if (commentText.trim() === "") return;
 
@@ -1109,16 +1110,18 @@ const MedicalScreen = ({
                     </ScrollView>
                   );
                 })()}
+              {selectedRecord?.id && (
               <View style={styles.commentInputArea}>
                 <TextInput
                   style={styles.commentInput}
                   value={commentDraftsByRecordId[selectedRecord.id] || ""}
-                  onChangeText={(text) =>
+                  onChangeText={(text) => {
+                    if (!selectedRecord?.id) return;
                     setCommentDraftsByRecordId((drafts) => ({
                       ...drafts,
                       [selectedRecord.id]: text,
-                    }))
-                  }
+                    }));
+                  }}
                   placeholder="メッセージを入力..."
                 />
                 <TouchableOpacity
@@ -1128,6 +1131,7 @@ const MedicalScreen = ({
                   <Text style={styles.sendButtonText}>送信</Text>
                 </TouchableOpacity>
               </View>
+              )}
             </View>
           </KeyboardAvoidingView>
         </SafeAreaView>
