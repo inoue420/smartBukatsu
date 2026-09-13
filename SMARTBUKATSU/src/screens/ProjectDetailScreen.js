@@ -134,7 +134,9 @@ const ProjectDetailScreen = ({
   const toastTimeoutRef = useRef(null);
 
   const canDeleteAnyTag = ["owner", "admin", "staff"].includes(userRole);
-  const canEditVideoTags = userRole !== "guardian" || Boolean(canEditTags);
+  const canEditVideoTags =
+    ["owner", "admin", "staff", "captain"].includes(userRole) ||
+    (["guardian", "member"].includes(userRole) && Boolean(canEditTags));
 
   const roleNameMap = {
     owner: `${currentUser}(監督)`,

@@ -46,7 +46,8 @@ export default function TagGroupEditScreen({
     (isAdmin ? "owner" : currentUserProfile.role || "member");
   const canEditTagGroups =
     ["owner", "admin", "staff"].includes(userRole) ||
-    (userRole === "guardian" && Boolean(currentUserProfile.canEditTags));
+    (["guardian", "member"].includes(userRole) &&
+      Boolean(currentUserProfile.canEditTags));
   const [editingGroupId, setEditingGroupId] = useState(null);
   const [name, setName] = useState("");
   const [tagsText, setTagsText] = useState(DEFAULT_TAGS.join("、"));

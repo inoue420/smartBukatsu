@@ -220,11 +220,11 @@ const ProjectListScreen = ({
   const canEditTags = Boolean(currentUserProfile.canEditTags);
   const canCreateProject =
     ["owner", "admin", "staff", "captain"].includes(userRole) ||
-    (userRole === "guardian" && canUploadVideos);
+    (["guardian", "member"].includes(userRole) && canUploadVideos);
   const canManageProject = ["owner", "admin", "staff"].includes(userRole);
   const canEditTagGroups =
     ["owner", "admin", "staff"].includes(userRole) ||
-    (userRole === "guardian" && canEditTags);
+    (["guardian", "member"].includes(userRole) && canEditTags);
 
   const { user, activeTeamId } = useAuth();
   const [isOffline, setIsOffline] = useState(false);

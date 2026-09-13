@@ -206,7 +206,7 @@ const SettingsScreen = ({
   const userRole = global.TEST_ROLE || currentMemberRole;
   const isSupervisor = ["owner", "admin"].includes(userRole);
   const isStaffOrAbove = ["owner", "staff", "admin"].includes(userRole);
-  const canManageGuardianPermissions = isStaffOrAbove;
+  const canManageMemberVideoPermissions = isStaffOrAbove;
   const blockedUsersDetails = useMemo(
     () =>
       blockedUserUids.map((uid) => {
@@ -968,8 +968,8 @@ const SettingsScreen = ({
     }
   };
 
-  const handleToggleGuardianPermission = async (targetUid, field, value) => {
-    if (!canManageGuardianPermissions || !activeTeamId || !targetUid) return;
+  const handleToggleMemberVideoPermission = async (targetUid, field, value) => {
+    if (!canManageMemberVideoPermissions || !activeTeamId || !targetUid) return;
 
     try {
       await updateMemberRoleConfig(activeTeamId, targetUid, { [field]: value });
@@ -1897,17 +1897,17 @@ const SettingsScreen = ({
                             </TouchableOpacity>
                           )}
 
-                          {memberRole === "guardian" && (
+                          {["guardian", "member"].includes(memberRole) && (
                             <>
                               <TouchableOpacity
                                 style={[
                                   styles.subSettingBadge,
                                   canUploadVideos && styles.subSettingBadgeActive,
-                                  !canManageGuardianPermissions && { opacity: 0.45 },
+                                  !canManageMemberVideoPermissions && { opacity: 0.45 },
                                 ]}
-                                disabled={!canManageGuardianPermissions}
+                                disabled={!canManageMemberVideoPermissions}
                                 onPress={() =>
-                                  handleToggleGuardianPermission(
+                                  handleToggleMemberVideoPermission(
                                     profile.uid,
                                     "canUploadVideos",
                                     !canUploadVideos,
@@ -1927,11 +1927,11 @@ const SettingsScreen = ({
                                 style={[
                                   styles.subSettingBadge,
                                   canEditTags && styles.subSettingBadgeActive,
-                                  !canManageGuardianPermissions && { opacity: 0.45 },
+                                  !canManageMemberVideoPermissions && { opacity: 0.45 },
                                 ]}
-                                disabled={!canManageGuardianPermissions}
+                                disabled={!canManageMemberVideoPermissions}
                                 onPress={() =>
-                                  handleToggleGuardianPermission(
+                                  handleToggleMemberVideoPermission(
                                     profile.uid,
                                     "canEditTags",
                                     !canEditTags,
