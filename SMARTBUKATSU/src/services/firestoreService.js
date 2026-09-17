@@ -146,10 +146,17 @@ export async function switchActiveTeam(uid, teamId) {
   await rememberTeamMembership(uid, teamId);
 }
 
-export async function createTeam(uid, teamName, userName = "ゲスト") {
+export async function createTeam(uid, teamName, userName = "ゲスト", sport = {}) {
   if (!uid) throw new Error("ユーザー情報を確認できませんでした。");
   const trimmedTeamName = (teamName || "").trim();
   if (!trimmedTeamName) throw new Error("チーム名を入力してください。");
+  const sportCategory = typeof sport.category === "string" ? sport.category : "";
+  const sportName = typeof sport.name === "string" ? sport.name : "";
+  const customSportName = typeof sport.customName === "string" ? sport.customName.trim() : "";
+  if (!sportCategory || !sportName) throw new Error("スポーツの分類と競技を選択してください。");
+  if (["その他スポーツ", "その他文化部"].includes(sportName) && !customSportName) {
+    throw new Error("競技名を入力してください。");
+  }
 
   await assertCanAddTeam(uid);
 
@@ -164,6 +171,9 @@ export async function createTeam(uid, teamName, userName = "ゲスト") {
     createdAt: serverTimestamp(),
     grades: ["1年生", "2年生", "3年生"],
     positions: ["GK", "CP", "マネージャー"],
+    sportCategory,
+    sportName,
+    ...(customSportName ? { customSportName } : {}),
   });
 
   await setDoc(doc(db, "teams", teamId, "members", uid), {

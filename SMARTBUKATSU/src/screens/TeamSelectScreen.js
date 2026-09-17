@@ -22,6 +22,7 @@ import {
 import { useAuth } from "../AuthContext";
 import { useNotifications } from "../NotificationContext";
 import { auth } from "../firebase";
+import { CUSTOM_SPORT_OPTIONS, SPORT_CATEGORIES, getSportsForCategory } from "../constants/sportsCategories";
 import {
   checkAccountDeletionEligibility,
   createTeam,
@@ -48,6 +49,9 @@ const TeamSelectScreen = ({ navigation }) => {
   const [isLoading, setIsLoading] = useState(true);
   const [busyTeamId, setBusyTeamId] = useState(null);
   const [teamName, setTeamName] = useState("");
+  const [sportCategory, setSportCategory] = useState("");
+  const [sportName, setSportName] = useState("");
+  const [customSportName, setCustomSportName] = useState("");
   const [inviteCode, setInviteCode] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [isJoining, setIsJoining] = useState(false);
@@ -149,12 +153,25 @@ const TeamSelectScreen = ({ navigation }) => {
     if (!teamName.trim()) {
       return Alert.alert("エラー", "チーム名を入力してください。");
     }
+    if (!sportCategory || !sportName) {
+      return Alert.alert("エラー", "スポーツの分類と競技を選択してください。");
+    }
+    if (CUSTOM_SPORT_OPTIONS.has(sportName) && !customSportName.trim()) {
+      return Alert.alert("エラー", "競技名を入力してください。");
+    }
 
     setIsCreating(true);
     try {
-      const result = await createTeam(user.uid, teamName, userName);
+      const result = await createTeam(user.uid, teamName, userName, {
+        category: sportCategory,
+        name: sportName,
+        customName: customSportName,
+      });
       await selectTeam(result.teamId);
       setTeamName("");
+      setSportCategory("");
+      setSportName("");
+      setCustomSportName("");
       await loadTeams();
       Alert.alert(
         "チームを作成しました",
@@ -534,6 +551,16 @@ const TeamSelectScreen = ({ navigation }) => {
               onChangeText={setTeamName}
               editable={canCreateTeam && !isCreating}
             />
+            <Text style={styles.fieldLabel}>スポーツ分類</Text>
+            <View style={styles.choiceWrap}>
+              {SPORT_CATEGORIES.map((category) => (
+                <TouchableOpacity key={category.id} style={[styles.choiceBtn, sportCategory === category.id && styles.choiceBtnActive]} onPress={() => { setSportCategory(category.id); setSportName(""); setCustomSportName(""); }} disabled={!canCreateTeam || isCreating}>
+                  <Text style={[styles.choiceText, sportCategory === category.id && styles.choiceTextActive]}>{category.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            {sportCategory && <><Text style={styles.fieldLabel}>競技</Text><View style={styles.choiceWrap}>{getSportsForCategory(sportCategory).map((sport) => <TouchableOpacity key={sport} style={[styles.choiceBtn, sportName === sport && styles.choiceBtnActive]} onPress={() => { setSportName(sport); setCustomSportName(""); }} disabled={!canCreateTeam || isCreating}><Text style={[styles.choiceText, sportName === sport && styles.choiceTextActive]}>{sport}</Text></TouchableOpacity>)}</View></>}
+            {CUSTOM_SPORT_OPTIONS.has(sportName) && <TextInput style={styles.input} placeholder="競技名を入力" value={customSportName} onChangeText={setCustomSportName} editable={canCreateTeam && !isCreating} />}
             <TouchableOpacity
               style={[styles.secondaryBtn, (!canCreateTeam || isCreating) && styles.btnDisabled]}
               onPress={handleCreateTeam}
@@ -751,6 +778,12 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     color: "#222",
   },
+  fieldLabel: { fontSize: 14, fontWeight: "bold", color: "#333", marginBottom: 8 },
+  choiceWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 12 },
+  choiceBtn: { borderWidth: 1, borderColor: "#dce2e8", borderRadius: 16, paddingHorizontal: 10, paddingVertical: 7, backgroundColor: "#fff" },
+  choiceBtnActive: { borderColor: "#1f7a3f", backgroundColor: "#e9f7ef" },
+  choiceText: { fontSize: 13, color: "#344054" },
+  choiceTextActive: { color: "#166534", fontWeight: "bold" },
   primaryBtn: {
     backgroundColor: "#0077cc",
     borderRadius: 8,

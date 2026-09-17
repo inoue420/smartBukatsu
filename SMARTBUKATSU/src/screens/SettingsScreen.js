@@ -60,6 +60,7 @@ import {
   normalizeInterstitialSettings,
 } from "../ads/adSettings";
 import { MEDICAL_SCALE_MAX } from "../utils/medicalScale";
+import { CUSTOM_SPORT_OPTIONS, SPORT_CATEGORIES, getCategoryLabel, getSportsForCategory } from "../constants/sportsCategories";
 import {
   SMARTBUKATSU_PRIVACY_URL,
   SMARTBUKATSU_SUPPORT_URL,
@@ -327,6 +328,10 @@ const SettingsScreen = ({
 
   const [inputTeamName, setInputTeamName] = useState("読み込み中...");
   const [teamCreatedBy, setTeamCreatedBy] = useState("");
+  const [teamSportCategory, setTeamSportCategory] = useState("");
+  const [teamSportName, setTeamSportName] = useState("");
+  const [teamCustomSportName, setTeamCustomSportName] = useState("");
+  const [isEditingTeamSport, setIsEditingTeamSport] = useState(false);
   useEffect(() => {
     if (activeTeamId) {
       const fetchTeamName = async () => {
@@ -337,6 +342,9 @@ const SettingsScreen = ({
             const data = teamSnap.data();
             setInputTeamName(data.teamName || data.name || "");
             setTeamCreatedBy(data.createdBy || "");
+            setTeamSportCategory(data.sportCategory || "ball_sports");
+            setTeamSportName(data.sportName || "ハンドボール");
+            setTeamCustomSportName(data.customSportName || "");
           }
         } catch (error) {
           console.log("チーム名取得エラー", error);
@@ -805,6 +813,23 @@ const SettingsScreen = ({
     } catch (error) {
       console.log("チーム名更新エラー:", error);
       Alert.alert("エラー", "チーム名の更新に失敗しました。");
+    }
+  };
+
+  const handleSaveTeamSport = async () => {
+    if (!teamSportCategory || !teamSportName) return Alert.alert("エラー", "スポーツの分類と競技を選択してください。");
+    if (CUSTOM_SPORT_OPTIONS.has(teamSportName) && !teamCustomSportName.trim()) return Alert.alert("エラー", "競技名を入力してください。");
+    try {
+      await updateDoc(doc(db, "teams", activeTeamId), {
+        sportCategory: teamSportCategory,
+        sportName: teamSportName,
+        ...(teamCustomSportName.trim() ? { customSportName: teamCustomSportName.trim() } : { customSportName: "" }),
+      });
+      setIsEditingTeamSport(false);
+      Alert.alert("保存完了", "スポーツカテゴリを更新しました。");
+    } catch (error) {
+      console.log("スポーツカテゴリ更新エラー:", error);
+      Alert.alert("エラー", "スポーツカテゴリの更新に失敗しました。");
     }
   };
 
@@ -1481,6 +1506,34 @@ const SettingsScreen = ({
                     </Text>
                   </TouchableOpacity>
                 </View>
+                {isStaffOrAbove && (
+                  <View style={styles.teamSportBox}>
+                    <Text style={styles.label}>スポーツ分類</Text>
+                    {!isEditingTeamSport ? (
+                      <>
+                        <Text style={styles.teamSportValue}>{getCategoryLabel(teamSportCategory) || "未設定"}</Text>
+                        <Text style={styles.label}>競技</Text>
+                        <Text style={styles.teamSportValue}>{teamCustomSportName || teamSportName || "未設定"}</Text>
+                        <TouchableOpacity style={styles.teamSportEditBtn} onPress={() => setIsEditingTeamSport(true)}>
+                          <Text style={styles.teamSportEditBtnText}>スポーツカテゴリを変更</Text>
+                        </TouchableOpacity>
+                      </>
+                    ) : (
+                      <>
+                        <View style={styles.optionGroup}>
+                          {SPORT_CATEGORIES.map((category) => (
+                            <TouchableOpacity key={category.id} style={[styles.optionButton, teamSportCategory === category.id && styles.optionButtonActive]} onPress={() => { setTeamSportCategory(category.id); setTeamSportName(""); setTeamCustomSportName(""); }}>
+                              <Text style={[styles.optionText, teamSportCategory === category.id && styles.optionTextActive]}>{category.label}</Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                        {teamSportCategory && <><Text style={styles.label}>競技</Text><View style={styles.optionGroup}>{getSportsForCategory(teamSportCategory).map((sport) => <TouchableOpacity key={sport} style={[styles.optionButton, teamSportName === sport && styles.optionButtonActive]} onPress={() => { setTeamSportName(sport); setTeamCustomSportName(""); }}><Text style={[styles.optionText, teamSportName === sport && styles.optionTextActive]}>{sport}</Text></TouchableOpacity>)}</View></>}
+                        {CUSTOM_SPORT_OPTIONS.has(teamSportName) && <TextInput style={styles.input} value={teamCustomSportName} onChangeText={setTeamCustomSportName} placeholder="競技名を入力" />}
+                        <TouchableOpacity style={styles.saveBtn} onPress={handleSaveTeamSport}><Text style={styles.saveBtnText}>スポーツカテゴリを保存</Text></TouchableOpacity>
+                      </>
+                    )}
+                  </View>
+                )}
                 <View
                   style={[
                     styles.idInfoBox,
@@ -2699,6 +2752,9 @@ const styles = StyleSheet.create({
   },
   optionText: { fontSize: 13, color: "#555" },
   optionTextActive: { color: "#27ae60", fontWeight: "bold" },
+  optionGroup: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 12 },
+  optionButton: { borderWidth: 1, borderColor: "#ddd", borderRadius: 16, paddingHorizontal: 10, paddingVertical: 7, backgroundColor: "#fff" },
+  optionButtonActive: { borderColor: "#27ae60", backgroundColor: "#ecfdf3" },
 
   thresholdRow: {
     flexDirection: "row",
@@ -2767,6 +2823,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginTop: 15,
   },
+  teamSportBox: { borderTopWidth: 1, borderTopColor: "#eee", marginTop: 15, paddingTop: 15 },
+  teamSportValue: { color: "#344054", fontSize: 15, marginBottom: 14 },
+  teamSportEditBtn: { alignSelf: "flex-start", borderWidth: 1, borderColor: "#1677c8", borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10 },
+  teamSportEditBtnText: { color: "#1677c8", fontSize: 14, fontWeight: "bold" },
   saveBtnText: { color: "#fff", fontSize: 16, fontWeight: "bold" },
   addMemberRow: { flexDirection: "row", marginBottom: 15 },
   addMemberBtn: {
