@@ -1074,9 +1074,11 @@ const SettingsScreen = ({
       setAbsenceDeadlineDaysBefore?.(nextValue);
       Alert.alert(
         "保存完了",
-        "不参加連絡は予定日の" +
-          nextValue +
-          "日前の午前0時から送信できなくなります。",
+        nextValue === 0
+          ? "不参加連絡は予定日の開始時刻から送信できなくなります。"
+          : "不参加連絡は予定日の" +
+            nextValue +
+            "日前の午前0時から送信できなくなります。",
       );
     } catch (error) {
       console.log("不参加連絡期限の保存エラー:", error);
@@ -1722,7 +1724,7 @@ const SettingsScreen = ({
                 title="📅 不参加連絡期限"
               >
                 <Text style={styles.subText}>
-                  予定日の何日前から不参加連絡を送信できなくするか設定します。0日は予定日当日の午前0時から送信不可です。
+                  予定日の何日前から不参加連絡を送信できなくするか設定します。0日は予定の開始時刻から送信不可です。
                 </Text>
                 <Text style={styles.label}>送信を締め切る日数（0～365日）</Text>
                 <TextInput

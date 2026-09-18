@@ -262,7 +262,7 @@ const getLocalDateStart = (dateStr) => {
   return date;
 };
 
-const isAbsenceDeadlineReached = (dateStr, daysBefore) => {
+const isAbsenceDeadlineReached = (dateStr, daysBefore, startTime = "") => {
   const eventDate = getLocalDateStart(dateStr);
   if (!eventDate) return false;
 
@@ -276,8 +276,12 @@ const isAbsenceDeadlineReached = (dateStr, daysBefore) => {
   const deadline = new Date(eventDate);
   deadline.setDate(deadline.getDate() - safeDays);
 
+  if (safeDays === 0 && /^([01]\d|2[0-3]):[0-5]\d$/.test(startTime)) {
+    const [hours, minutes] = startTime.split(":").map(Number);
+    deadline.setHours(hours, minutes, 0, 0);
+  }
+
   const today = new Date();
-  today.setHours(0, 0, 0, 0);
   return today >= deadline;
 };
 
@@ -908,6 +912,7 @@ const CalendarScreen = ({
   const isActiveAbsenceDeadlineReached = isAbsenceDeadlineReached(
     selectedDate,
     safeAbsenceDeadlineDays,
+    activeAbsenceEvent?.startTime,
   );
 
   const canCancelAbsenceComment = (comment) =>
