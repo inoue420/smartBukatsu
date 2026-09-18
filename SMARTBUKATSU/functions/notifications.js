@@ -88,6 +88,9 @@ async function getTeamContext(teamId) {
   ]);
   return {
     teamName: teamSnapshot.data()?.name || "所属チーム",
+    channels: Array.isArray(teamSnapshot.data()?.channels)
+      ? teamSnapshot.data().channels
+      : [],
     members: membersSnapshot.docs.map((memberDocument) => ({
       uid: memberDocument.id,
       ...(memberDocument.data() || {}),
@@ -440,8 +443,38 @@ const notifyWorkspacePostWritten = onDocumentWritten(
     if (!afterData || afterData.status === "deleted") return;
 
     const { teamId, postId } = event.params;
-    const teamSnapshot = await firestore.collection("teams").doc(teamId).get();
-    const teamName = teamSnapshot.data()?.name || "所属チーム";
+    const { teamName, channels, members } = await getTeamContext(teamId);
+    const channel = channels.find(
+      (item) =>
+        item?.id === afterData.channelId ||
+        (item?.name && item.name === afterData.channel),
+    );
+    const isNewPost = !event.data?.before.exists;
+    if (isNewPost && channel) {
+      const managerUidSet = new Set(
+        members
+          .filter((member) => STAFF_NOTIFICATION_ROLES.has(member.role))
+          .map((member) => member.uid),
+      );
+      const recipientUids = uniqueUids(
+        channel.notificationRecipientUids,
+      ).filter(
+        (uid) => uid !== actorUid(afterData) && managerUidSet.has(uid),
+      );
+      if (recipientUids.length > 0) {
+        await fanOutToUids(recipientUids, {
+          id: `workspace_post_${teamId}_${postId}`,
+          category: NOTIFICATION_CATEGORIES.WORKSPACE_POST,
+          teamId,
+          teamName,
+          actorUid: actorUid(afterData),
+          title: `${channel.name || "チャンネル"}に新しい投稿があります`,
+          body: afterData.content || "投稿を確認してください。",
+          target: notificationTarget("WorkspaceHome", { postId }),
+          source: { collection: "workspacePosts", documentId: postId },
+        });
+      }
+    }
     const visibleUidSet = new Set(uniqueUids(afterData.visibleToUids));
     const beforeMentions = new Set(uniqueUids(beforeData.mentionedUids));
     const addedPostMentions = uniqueUids(afterData.mentionedUids).filter(

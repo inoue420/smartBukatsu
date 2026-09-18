@@ -215,6 +215,13 @@ const WorkspaceHomeScreen = ({
       Object.entries(userProfiles).filter(([, profile]) => profile?.uid),
     [userProfiles],
   );
+  const notificationRecipientProfiles = useMemo(
+    () =>
+      memberEntries
+        .map(([, profile]) => profile)
+        .filter((profile) => MANAGER_ROLES.includes(profile.role)),
+    [memberEntries],
+  );
   const getMentionedUids = (text) => {
     const content = String(text || "");
     return [
@@ -522,6 +529,8 @@ const WorkspaceHomeScreen = ({
   const [selectedRoleGroups, setSelectedRoleGroups] = useState(
     DEFAULT_ALLOWED_ROLE_GROUPS,
   );
+  const [selectedNotificationRecipientUids, setSelectedNotificationRecipientUids] =
+    useState([]);
 
   const [newPostText, setNewPostText] = useState("");
   const [expandedPostId, setExpandedPostId] = useState(null);
@@ -985,6 +994,7 @@ const WorkspaceHomeScreen = ({
     setNewChannelName("");
     setNewChannelIsReadOnly(false);
     setSelectedRoleGroups(DEFAULT_ALLOWED_ROLE_GROUPS);
+    setSelectedNotificationRecipientUids([]);
   };
 
   const openAddChannelModal = () => {
@@ -992,6 +1002,7 @@ const WorkspaceHomeScreen = ({
     setNewChannelName("");
     setNewChannelIsReadOnly(false);
     setSelectedRoleGroups(DEFAULT_ALLOWED_ROLE_GROUPS);
+    setSelectedNotificationRecipientUids([]);
     setIsAddChannelModalVisible(true);
   };
 
@@ -1001,6 +1012,11 @@ const WorkspaceHomeScreen = ({
     setNewChannelName(channel.name);
     setNewChannelIsReadOnly(Boolean(channel.isReadOnly));
     setSelectedRoleGroups(getChannelAllowedRoleGroups(channel));
+    setSelectedNotificationRecipientUids(
+      Array.isArray(channel.notificationRecipientUids)
+        ? channel.notificationRecipientUids
+        : [],
+    );
     setIsAddChannelModalVisible(true);
   };
 
@@ -1023,6 +1039,7 @@ const WorkspaceHomeScreen = ({
       allowedRoleGroups: selectedRoleGroups,
       allowedMembers: [],
       allowedMemberUids: [],
+      notificationRecipientUids: selectedNotificationRecipientUids,
     };
     const updatedChannels = editingChannel
       ? channels.map((channel) =>
@@ -1087,6 +1104,14 @@ const WorkspaceHomeScreen = ({
       current.includes(roleGroup)
         ? current.filter((item) => item !== roleGroup)
         : [...current, roleGroup],
+    );
+  };
+
+  const toggleNotificationRecipient = (uid) => {
+    setSelectedNotificationRecipientUids((current) =>
+      current.includes(uid)
+        ? current.filter((item) => item !== uid)
+        : [...current, uid],
     );
   };
 
@@ -2293,11 +2318,7 @@ const WorkspaceHomeScreen = ({
                 }}
                 onLongPress={() => {
                   if (!isStaffOrAbove) return;
-                  if (channel.id === "ch_1" || channel.id === "ch_diary") {
-                    openEditChannelModal(channel);
-                  } else {
-                    handleDeleteChannel(channel);
-                  }
+                  openEditChannelModal(channel);
                 }}
               >
                 <Text
@@ -2769,6 +2790,75 @@ const WorkspaceHomeScreen = ({
                 <Text style={styles.guardianDefaultNote}>
                   ※保護者は新規作成時、デフォルトでOFFです。
                 </Text>
+
+                <Text style={styles.inputLabel}>新規投稿の通知先（複数選択可）</Text>
+                <Text style={styles.switchSubLabel}>
+                  選択した管理者・スタッフへ、このチャンネルの新規投稿を通知します。
+                </Text>
+                <View style={styles.memberSelectorWrapper}>
+                  {notificationRecipientProfiles.length === 0 ? (
+                    <Text style={styles.guardianDefaultNote}>
+                      通知先に指定できる管理者・スタッフがいません。
+                    </Text>
+                  ) : (
+                    notificationRecipientProfiles.map((profile) => {
+                      const isSelected = selectedNotificationRecipientUids.includes(
+                        profile.uid,
+                      );
+                      return (
+                        <TouchableOpacity
+                          key={profile.uid}
+                          style={[
+                            styles.memberOption,
+                            isSelected && styles.memberOptionSelected,
+                          ]}
+                          onPress={() => toggleNotificationRecipient(profile.uid)}
+                        >
+                          <View style={styles.roleOptionTextContainer}>
+                            <Text
+                              style={[
+                                styles.memberOptionText,
+                                isSelected && styles.memberOptionTextSelected,
+                              ]}
+                            >
+                              {profile.name || "名称未設定"}
+                            </Text>
+                            <Text style={styles.roleOptionDescription}>
+                              {profile.role === "owner"
+                                ? "監督"
+                                : profile.role === "admin"
+                                  ? "管理者"
+                                  : "スタッフ"}
+                            </Text>
+                          </View>
+                          <Text
+                            style={[
+                              styles.roleOptionStatus,
+                              isSelected && styles.roleOptionStatusSelected,
+                            ]}
+                          >
+                            {isSelected ? "ON ✓" : "OFF"}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })
+                  )}
+                </View>
+                {editingChannel &&
+                  editingChannel.id !== "ch_1" &&
+                  editingChannel.id !== "ch_diary" && (
+                    <TouchableOpacity
+                      style={styles.deleteChannelButton}
+                      onPress={() => {
+                        resetChannelForm();
+                        handleDeleteChannel(editingChannel);
+                      }}
+                    >
+                      <Text style={styles.deleteChannelButtonText}>
+                        このチャンネルを削除
+                      </Text>
+                    </TouchableOpacity>
+                  )}
               </ScrollView>
 
               <View
@@ -3562,6 +3652,16 @@ const styles = StyleSheet.create({
     marginTop: -8,
     marginBottom: 15,
   },
+  deleteChannelButton: {
+    marginTop: 24,
+    minHeight: 46,
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: COLORS.danger,
+    borderRadius: 8,
+  },
+  deleteChannelButtonText: { color: COLORS.danger, fontWeight: "bold" },
 
   memberSelectorWrapper: {
     borderWidth: 1,

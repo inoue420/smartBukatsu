@@ -24,6 +24,11 @@ export const NOTIFICATION_CATEGORIES = {
     description: "自分の投稿に届いた返信",
     icon: "💬",
   },
+  workspacePost: {
+    label: "チャンネルの新規投稿",
+    description: "通知先に指定されたチャンネルへの新しい投稿",
+    icon: "📣",
+  },
   mention: {
     label: "メンション",
     description: "投稿や返信でのメンション",

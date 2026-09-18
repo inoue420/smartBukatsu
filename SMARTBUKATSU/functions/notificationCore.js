@@ -4,6 +4,7 @@ const NOTIFICATION_CATEGORIES = Object.freeze({
   SCHEDULE_REMINDER: "scheduleReminder",
   DIARY_REPLY: "diaryReply",
   WORKSPACE_REPLY: "workspaceReply",
+  WORKSPACE_POST: "workspacePost",
   MENTION: "mention",
   MEMBER_JOIN: "memberJoin",
   SYSTEM: "system",

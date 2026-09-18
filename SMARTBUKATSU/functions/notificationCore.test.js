@@ -52,6 +52,18 @@ test("member join notifications honor the category preference", () => {
   );
 });
 
+test("channel post notifications honor the category preference", () => {
+  const preferences = normalizePreferences({
+    masterEnabled: true,
+    categories: { workspacePost: false },
+  });
+
+  assert.equal(
+    shouldSendPush(preferences, NOTIFICATION_CATEGORIES.WORKSPACE_POST, "team-a"),
+    false,
+  );
+});
+
 test("added reply detection is idempotent", () => {
   const before = [{ id: "a" }];
   const after = [{ id: "a" }, { id: "b" }, { id: "c" }];
