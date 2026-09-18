@@ -22,6 +22,7 @@ const REGION = "asia-northeast1";
 const NOTIFICATION_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 const EXPO_PUSH_ENDPOINT = "https://exp.host/--/api/v2/push/send";
 const EXPO_PUSH_TOKEN_PATTERN = /^(ExponentPushToken|ExpoPushToken)\[[^\]]+\]$/;
+const STAFF_NOTIFICATION_ROLES = new Set(["owner", "admin", "staff"]);
 
 function requireAuthenticatedUid(request) {
   const uid = request.auth?.uid;
@@ -302,6 +303,37 @@ function actorUid(data = {}) {
 function actorName(data = {}) {
   return data.user || data.author || data.displayName || "チームメンバー";
 }
+
+const notifyTeamMemberCreated = onDocumentWritten(
+  {
+    document: "teams/{teamId}/members/{memberUid}",
+    region: REGION,
+    timeoutSeconds: 60,
+    memory: "256MiB",
+  },
+  async (event) => {
+    if (event.data?.before.exists || !event.data?.after.exists) return;
+
+    const { teamId, memberUid } = event.params;
+    const member = event.data.after.data() || {};
+    const { teamName, members } = await getTeamContext(teamId);
+    const recipientUids = members
+      .filter((teamMember) => STAFF_NOTIFICATION_ROLES.has(teamMember.role))
+      .map((teamMember) => teamMember.uid);
+
+    await fanOutToUids(recipientUids, {
+      id: `member_join_${teamId}_${memberUid}`,
+      category: NOTIFICATION_CATEGORIES.MEMBER_JOIN,
+      teamId,
+      teamName,
+      actorUid: memberUid,
+      title: "メンバーが追加されました",
+      body: `${truncate(member.name || "新しいメンバー", 100)}さんがチームに参加しました。`,
+      target: notificationTarget("Roster"),
+      source: { collection: "members", documentId: memberUid },
+    });
+  },
+);
 
 const notifyNoticeWritten = onDocumentWritten(
   {
@@ -834,6 +866,7 @@ const deleteExpiredNotifications = onSchedule(
 );
 
 module.exports = {
+  notifyTeamMemberCreated,
   notifyNoticeWritten,
   notifyClubEventWritten,
   notifyWorkspacePostWritten,

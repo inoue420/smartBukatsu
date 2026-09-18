@@ -40,6 +40,18 @@ test("category and team overrides only affect push delivery", () => {
   );
 });
 
+test("member join notifications honor the category preference", () => {
+  const preferences = normalizePreferences({
+    masterEnabled: true,
+    categories: { memberJoin: false },
+  });
+
+  assert.equal(
+    shouldSendPush(preferences, NOTIFICATION_CATEGORIES.MEMBER_JOIN, "team-a"),
+    false,
+  );
+});
+
 test("added reply detection is idempotent", () => {
   const before = [{ id: "a" }];
   const after = [{ id: "a" }, { id: "b" }, { id: "c" }];

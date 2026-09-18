@@ -29,6 +29,11 @@ export const NOTIFICATION_CATEGORIES = {
     description: "投稿や返信でのメンション",
     icon: "🗣️",
   },
+  memberJoin: {
+    label: "メンバーの追加",
+    description: "新しいメンバーがチームに参加したとき",
+    icon: "👤",
+  },
   system: {
     label: "システム通知",
     description: "SMARTBUKATSUからの重要なお知らせ",
