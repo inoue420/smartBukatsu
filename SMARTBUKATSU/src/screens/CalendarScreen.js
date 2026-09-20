@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   View,
   Text,
@@ -322,8 +322,8 @@ const getClubScheduleForDate = (event, date) => {
 };
 
 const getDefaultClubSchedule = () => ({
-  start: "09:00",
-  end: "12:00",
+  start: "",
+  end: "",
   isAllDay: false,
 });
 
@@ -375,8 +375,31 @@ const TimePickerOverlay = ({
   currentMin,
   title,
   minTime = "",
+  initialScrollTime = "",
 }) => {
+  const hourScrollRef = useRef(null);
+  const hasScrolledToMinTime = useRef(false);
   const minMinutes = minTime ? getMinutesFromTime(minTime) : null;
+
+  useEffect(() => {
+    hasScrolledToMinTime.current = false;
+  }, [minTime, initialScrollTime]);
+
+  const scrollToMinTime = () => {
+    const scrollTime = minTime || initialScrollTime;
+    if (!scrollTime || hasScrolledToMinTime.current) return;
+
+    const [minHour] = scrollTime.split(":");
+    const hourIndex = HOUR_OPTIONS.indexOf(minHour);
+    if (hourIndex < 0) return;
+
+    hourScrollRef.current?.scrollTo({
+      y: hourIndex * 51,
+      animated: false,
+    });
+    hasScrolledToMinTime.current = true;
+  };
+
   return (
   <View
     style={[
@@ -393,8 +416,10 @@ const TimePickerOverlay = ({
       <Text style={styles.timePickerTitle}>{title}</Text>
       <View style={styles.timePickerRow}>
         <ScrollView
+          ref={hourScrollRef}
           style={styles.timeScroll}
           showsVerticalScrollIndicator={false}
+          onContentSizeChange={scrollToMinTime}
         >
           {HOUR_OPTIONS.map((h) => {
             const hourDisabled =
@@ -531,8 +556,8 @@ const CalendarScreen = ({
   const [endDate, setEndDate] = useState("");
   const [clubSelectedDates, setClubSelectedDates] = useState([]);
   const [showEndDatePicker, setShowEndDatePicker] = useState(false);
-  const [clubStartTime, setClubStartTime] = useState("09:00");
-  const [clubEndTime, setClubEndTime] = useState("12:00");
+  const [clubStartTime, setClubStartTime] = useState("");
+  const [clubEndTime, setClubEndTime] = useState("");
   const [isClubAllDay, setIsClubAllDay] = useState(false);
   const [clubTimeSchedules, setClubTimeSchedules] = useState({});
   const [clubLocationName, setClubLocationName] = useState("");
@@ -1642,8 +1667,8 @@ const CalendarScreen = ({
     setEndDate("");
     setClubSelectedDates([selectedDate]);
     setShowEndDatePicker(false);
-    setClubStartTime("09:00");
-    setClubEndTime("12:00");
+    setClubStartTime("");
+    setClubEndTime("");
     setIsClubAllDay(false);
     setClubTimeSchedules({});
     setClubAttachmentsByDate({});
@@ -1967,27 +1992,26 @@ const CalendarScreen = ({
   let pickerMinTime = "";
 
   if (timePickerTarget === "club_single_start") {
-    [currentPickerHour, currentPickerMin] = clubStartTime.split(":");
+    [currentPickerHour, currentPickerMin] = (clubStartTime || "08:00").split(":");
     pickerTitle = "開始時間を選択";
   } else if (timePickerTarget === "club_single_end") {
     pickerMinTime = clubStartTime;
-    [currentPickerHour, currentPickerMin] = getTimeAtOrAfter(
-      clubEndTime,
-      pickerMinTime,
-    ).split(":");
+    const t = clubEndTime
+      ? getTimeAtOrAfter(clubEndTime, pickerMinTime)
+      : pickerMinTime || "00:00";
+    [currentPickerHour, currentPickerMin] = t.split(":");
     pickerTitle = "終了時間を選択";
   } else if (timePickerTarget.startsWith("club_multi_start_")) {
     const d = timePickerTarget.replace("club_multi_start_", "");
-    const t = clubTimeSchedules[d]?.start || "09:00";
+    const t = clubTimeSchedules[d]?.start || "08:00";
     [currentPickerHour, currentPickerMin] = t.split(":");
     pickerTitle = `${d.substring(5).replace("-", "/")} の開始時間`;
   } else if (timePickerTarget.startsWith("club_multi_end_")) {
     const d = timePickerTarget.replace("club_multi_end_", "");
-    pickerMinTime = clubTimeSchedules[d]?.start || "09:00";
-    const t = getTimeAtOrAfter(
-      clubTimeSchedules[d]?.end || "12:00",
-      pickerMinTime,
-    );
+    pickerMinTime = clubTimeSchedules[d]?.start || "";
+    const t = clubTimeSchedules[d]?.end
+      ? getTimeAtOrAfter(clubTimeSchedules[d].end, pickerMinTime)
+      : pickerMinTime || "00:00";
     [currentPickerHour, currentPickerMin] = t.split(":");
     pickerTitle = `${d.substring(5).replace("-", "/")} の終了時間`;
   } else if (timePickerTarget === "personal_single_start") {
@@ -2020,7 +2044,7 @@ const CalendarScreen = ({
     const timeStr = `${h}:${m}`;
     if (timePickerTarget === "club_single_start") {
       setClubStartTime(timeStr);
-      setClubEndTime((prev) => getAdjustedEndTime(timeStr, prev));
+      setClubEndTime((prev) => (prev ? getAdjustedEndTime(timeStr, prev) : ""));
     } else if (timePickerTarget === "club_single_end") {
       setClubEndTime(getTimeAtOrAfter(timeStr, clubStartTime));
     }
@@ -2032,10 +2056,9 @@ const CalendarScreen = ({
           ...getDefaultClubSchedule(),
           ...prev[d],
           start: timeStr,
-          end: getAdjustedEndTime(
-            timeStr,
-            prev[d]?.end || getDefaultClubSchedule().end,
-          ),
+          end: prev[d]?.end
+            ? getAdjustedEndTime(timeStr, prev[d].end)
+            : "",
         },
       }));
     } else if (timePickerTarget.startsWith("club_multi_end_")) {
@@ -2926,6 +2949,9 @@ const CalendarScreen = ({
               currentMin={currentPickerMin}
               onSelect={handleTimeSelect}
               minTime={pickerMinTime}
+              initialScrollTime={
+                timePickerTarget.includes("_start") ? "08:00" : ""
+              }
             />
           )}
 
@@ -3289,6 +3315,9 @@ const CalendarScreen = ({
               currentMin={currentPickerMin}
               onSelect={handleTimeSelect}
               minTime={pickerMinTime}
+              initialScrollTime={
+                timePickerTarget.includes("_start") ? "08:00" : ""
+              }
             />
           )}
         </View>
