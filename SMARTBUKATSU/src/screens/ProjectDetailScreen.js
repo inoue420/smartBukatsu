@@ -556,6 +556,45 @@ const ProjectDetailScreen = ({
     } catch (error) {}
   };
 
+  const handleDeleteRecordedTag = () => {
+    if (!canEditVideoTags || !editingRecordedTag) return;
+
+    Alert.alert(
+      "切り抜きの削除",
+      "この切り抜きを削除しますか？この操作は元に戻せません。",
+      [
+        { text: "キャンセル", style: "cancel" },
+        {
+          text: "削除する",
+          style: "destructive",
+          onPress: async () => {
+            const newTags = localTags.filter(
+              (tag) => tag.id !== editingRecordedTag.id,
+            );
+
+            try {
+              const safeTeamId = activeTeamId || "test_team";
+              await updateProject(safeTeamId, project.id, { tags: newTags });
+              setLocalTags(newTags);
+              setProjects?.((prev) =>
+                prev.map((item) =>
+                  item.id === project.id ? { ...item, tags: newTags } : item,
+                ),
+              );
+              handleCloseRecordedTagEditor();
+              showToast("切り抜きを削除しました");
+            } catch (error) {
+              Alert.alert(
+                "削除エラー",
+                "切り抜きを削除できませんでした。通信状態を確認して、もう一度お試しください。",
+              );
+            }
+          },
+        },
+      ],
+    );
+  };
+
   const handleCreateQuickTag = async () => {
     if (!canEditVideoTags) return;
     if (usesTagGroup) {
@@ -1118,6 +1157,15 @@ const ProjectDetailScreen = ({
               )}
             </View>
 
+            <TouchableOpacity
+              style={styles.deleteRecordedTagButton}
+              onPress={handleDeleteRecordedTag}
+            >
+              <Text style={styles.deleteRecordedTagButtonText}>
+                この切り抜きを削除
+              </Text>
+            </TouchableOpacity>
+
             <View style={styles.modalButtonsRow}>
               <TouchableOpacity
                 style={styles.cancelBtn}
@@ -1675,6 +1723,17 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     marginTop: 12,
+  },
+  deleteRecordedTagButton: {
+    alignSelf: "flex-start",
+    marginTop: 16,
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+  },
+  deleteRecordedTagButtonText: {
+    color: "#c0392b",
+    fontSize: 13,
+    fontWeight: "bold",
   },
   modalButtonsRow: {
     flexDirection: "row",
