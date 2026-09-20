@@ -761,19 +761,17 @@ const ProjectDetailScreen = ({
     const privateTagsCount = localTags.filter(
       (t) => t.status === "private" && t.user === displayUserName,
     ).length;
-    const TaggingContainer = isLandscape ? ScrollView : View;
-    const RecordedTagsContainer = isLandscape ? View : ScrollView;
+    const TaggingContainer = ScrollView;
+    const RecordedTagsContainer = View;
 
     return (
       <TaggingContainer
         style={isLandscape ? styles.fsTagScroll : styles.taggingRoot}
-        {...(isLandscape
-          ? {
-              contentContainerStyle: styles.fsTagScrollContent,
-              keyboardShouldPersistTaps: "handled",
-              showsVerticalScrollIndicator: false,
-            }
-          : {})}
+        contentContainerStyle={
+          isLandscape ? styles.fsTagScrollContent : styles.taggingScrollContent
+        }
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
       >
         <View style={isLandscape ? styles.fsTagArea : styles.quickTagArea}>
           <Text style={isLandscape ? styles.fsTagTitle : styles.quickTagTitle}>
@@ -904,12 +902,6 @@ const ProjectDetailScreen = ({
 
         <RecordedTagsContainer
           style={isLandscape ? styles.fsRecordedTags : styles.listScroll}
-          {...(!isLandscape
-            ? {
-                keyboardShouldPersistTaps: "handled",
-                showsVerticalScrollIndicator: false,
-              }
-            : {})}
         >
           {visibleTags.length === 0 ? (
             <Text style={styles.emptyText}>タグがありません。</Text>
@@ -1321,6 +1313,7 @@ const styles = StyleSheet.create({
     paddingTop: 10,
   },
   taggingRoot: { flex: 1 },
+  taggingScrollContent: { paddingBottom: 20 },
   fsTagScroll: { flex: 1 },
   fsTagScrollContent: { paddingBottom: 20 },
   fsRecordedTags: { padding: 15 },
@@ -1440,7 +1433,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
 
-  listScroll: { flex: 1, padding: 15 },
+  listScroll: { padding: 15 },
   listItemCard: {
     flexDirection: "row",
     backgroundColor: "#fff",
