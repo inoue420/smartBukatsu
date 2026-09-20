@@ -649,7 +649,7 @@ export async function executeRegistration(
   userName,
   teamName,
   inviteCodeInput,
-  { emailVerificationRequired = false, legalConsent = {} } = {},
+  { emailVerificationRequired = false, legalConsent = {}, sport = {} } = {},
 ) {
   if (
     legalConsent.minimumAgeConfirmed !== true ||
@@ -680,7 +680,7 @@ export async function executeRegistration(
   );
 
   if (role === "admin") {
-    return createTeam(uid, teamName, userName);
+    return createTeam(uid, teamName, userName, sport);
   }
 
   return joinTeamWithInvite(uid, inviteCodeInput, userName);

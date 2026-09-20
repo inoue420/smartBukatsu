@@ -185,6 +185,7 @@ export function AuthProvider({ children }) {
         role: registrationRole,
         userName: registrationUserName,
         teamName,
+        sport,
         inviteCode,
         legalConsent,
       },
@@ -206,7 +207,7 @@ export function AuthProvider({ children }) {
           registrationUserName,
           teamName,
           inviteCode,
-          { emailVerificationRequired: true, legalConsent },
+          { emailVerificationRequired: true, legalConsent, sport },
         );
         await sendEmailVerification(userCredential.user);
         return userCredential;

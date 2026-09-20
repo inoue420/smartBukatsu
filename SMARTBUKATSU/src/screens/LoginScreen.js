@@ -16,6 +16,11 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../AuthContext";
 import {
+  CUSTOM_SPORT_OPTIONS,
+  SPORT_CATEGORIES,
+  getSportsForCategory,
+} from "../constants/sportsCategories";
+import {
   MINIMUM_USER_AGE,
   SMARTBUKATSU_PRIVACY_URL,
   SMARTBUKATSU_TERMS_URL,
@@ -34,6 +39,9 @@ const LoginScreen = () => {
   const [userName, setUserName] = useState("");
   const [role, setRole] = useState("member"); // "admin" or "member"
   const [teamName, setTeamName] = useState(""); // 管理者用
+  const [sportCategory, setSportCategory] = useState("");
+  const [sportName, setSportName] = useState("");
+  const [customSportName, setCustomSportName] = useState("");
   const [inviteCode, setInviteCode] = useState(""); // 部員用
   const [eligibilityConfirmed, setEligibilityConfirmed] = useState(false);
   const [legalAccepted, setLegalAccepted] = useState(false);
@@ -57,6 +65,16 @@ const LoginScreen = () => {
       }
       if (role === "admin" && !teamName.trim()) {
         return Alert.alert("エラー", "作成するチーム名を入力してください。");
+      }
+      if (role === "admin" && (!sportCategory || !sportName)) {
+        return Alert.alert("エラー", "スポーツの分類と競技を選択してください。");
+      }
+      if (
+        role === "admin" &&
+        CUSTOM_SPORT_OPTIONS.has(sportName) &&
+        !customSportName.trim()
+      ) {
+        return Alert.alert("エラー", "競技名を入力してください。");
       }
       if (role === "member" && !inviteCode.trim()) {
         return Alert.alert("エラー", "招待コードを入力してください。");
@@ -89,6 +107,11 @@ const LoginScreen = () => {
             role,
             userName: userName.trim(),
             teamName: teamName.trim(),
+            sport: {
+              category: sportCategory,
+              name: sportName,
+              customName: customSportName.trim(),
+            },
             inviteCode: inviteCode.trim(),
             legalConsent: {
               minimumAgeConfirmed: true,
@@ -157,6 +180,9 @@ const LoginScreen = () => {
     setPassword("");
     setUserName("");
     setTeamName("");
+    setSportCategory("");
+    setSportName("");
+    setCustomSportName("");
     setInviteCode("");
     setEligibilityConfirmed(false);
     setLegalAccepted(false);
@@ -271,6 +297,72 @@ const LoginScreen = () => {
                       value={teamName}
                       onChangeText={setTeamName}
                     />
+                    <Text style={styles.label}>スポーツカテゴリ</Text>
+                    <View style={styles.choiceWrap}>
+                      {SPORT_CATEGORIES.map((category) => (
+                        <TouchableOpacity
+                          key={category.id}
+                          style={[
+                            styles.choiceBtn,
+                            sportCategory === category.id &&
+                              styles.choiceBtnActive,
+                          ]}
+                          onPress={() => {
+                            setSportCategory(category.id);
+                            setSportName("");
+                            setCustomSportName("");
+                          }}
+                        >
+                          <Text
+                            style={[
+                              styles.choiceText,
+                              sportCategory === category.id &&
+                                styles.choiceTextActive,
+                            ]}
+                          >
+                            {category.label}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                    {sportCategory && (
+                      <>
+                        <Text style={styles.label}>競技</Text>
+                        <View style={styles.choiceWrap}>
+                          {getSportsForCategory(sportCategory).map((sport) => (
+                            <TouchableOpacity
+                              key={sport}
+                              style={[
+                                styles.choiceBtn,
+                                sportName === sport && styles.choiceBtnActive,
+                              ]}
+                              onPress={() => {
+                                setSportName(sport);
+                                setCustomSportName("");
+                              }}
+                            >
+                              <Text
+                                style={[
+                                  styles.choiceText,
+                                  sportName === sport &&
+                                    styles.choiceTextActive,
+                                ]}
+                              >
+                                {sport}
+                              </Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                      </>
+                    )}
+                    {CUSTOM_SPORT_OPTIONS.has(sportName) && (
+                      <TextInput
+                        style={styles.input}
+                        placeholder="競技名を入力"
+                        value={customSportName}
+                        onChangeText={setCustomSportName}
+                      />
+                    )}
                   </>
                 ) : (
                   <>
@@ -543,6 +635,32 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "bold",
     color: "#666",
+  },
+  choiceWrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 15,
+  },
+  choiceBtn: {
+    borderWidth: 1,
+    borderColor: "#ddd",
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: "#f9f9f9",
+  },
+  choiceBtnActive: {
+    backgroundColor: "#27ae60",
+    borderColor: "#27ae60",
+  },
+  choiceText: {
+    fontSize: 13,
+    color: "#666",
+  },
+  choiceTextActive: {
+    color: "#fff",
+    fontWeight: "bold",
   },
 
   label: {
