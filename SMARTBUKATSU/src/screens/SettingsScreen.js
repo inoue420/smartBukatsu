@@ -21,6 +21,10 @@ import * as Application from "expo-application";
 import * as ExpoClipboard from "expo-clipboard";
 import { useAds } from "../ads/AdManager";
 import { formatAdDiagnostics } from "../ads/adDiagnostics";
+import {
+  firestoreDiagnosticsEnabled,
+  getFirestoreDiagnosticsText,
+} from "../services/firestoreSubscription";
 import { useAuth } from "../AuthContext";
 import MedicalSafetyNotice from "../components/MedicalSafetyNotice";
 import { auth, db } from "../firebase";
@@ -152,6 +156,8 @@ const SettingsScreen = ({
 }) => {
   const { activeTeamId, teamIds = [], blockedUserUids = [], signOut, user } = useAuth();
   const { diagnostics } = useAds();
+  const [isFirestoreDiagnosticsExpanded, setIsFirestoreDiagnosticsExpanded] = useState(false);
+  const [firestoreDiagnosticsText, setFirestoreDiagnosticsText] = useState("");
   const [isAdDiagnosticsExpanded, setIsAdDiagnosticsExpanded] = useState(false);
   const [adDiagnosticsAccess, setAdDiagnosticsAccess] = useState(null);
   const adMembershipKey = JSON.stringify([user?.uid, teamIds]);
@@ -179,6 +185,35 @@ const SettingsScreen = ({
 
     return () => { active = false; };
   }, [user?.uid, adMembershipKey]));
+
+  // Reuse the verified membership result; do not add Firestore reads for diagnostics.
+  const canViewFirestoreDiagnostics = firestoreDiagnosticsEnabled && canViewAdDiagnostics;
+  const refreshFirestoreDiagnostics = () => {
+    if (!canViewFirestoreDiagnostics) return "";
+    const text = getFirestoreDiagnosticsText();
+    setFirestoreDiagnosticsText(text);
+    return text;
+  };
+  const copyFirestoreDiagnostics = async () => {
+    if (!canViewFirestoreDiagnostics) return;
+    const text = refreshFirestoreDiagnostics();
+    try {
+      const copied = await ExpoClipboard.setStringAsync(text);
+      if (!copied) throw new Error("Clipboard unavailable");
+      Alert.alert("コピー完了", "Firestore購読の計測結果をコピーしました。");
+    } catch {
+      Alert.alert("コピーできませんでした", "計測結果のテキストを長押ししてコピーしてください。");
+    }
+  };
+
+  useFocusEffect(useCallback(() => {
+    if (canViewFirestoreDiagnostics) {
+      setFirestoreDiagnosticsText(getFirestoreDiagnosticsText());
+    } else {
+      setFirestoreDiagnosticsText("");
+      setIsFirestoreDiagnosticsExpanded(false);
+    }
+  }, [canViewFirestoreDiagnostics]));
 
   const adDiagnosticsText = useMemo(() => formatAdDiagnostics(diagnostics, {
     platform: Platform.OS,
@@ -2191,6 +2226,40 @@ const SettingsScreen = ({
                   </View>
                 ))
               )}
+            </SectionCard>
+          )}
+
+          {canViewFirestoreDiagnostics && (
+            <SectionCard
+              isExp={isFirestoreDiagnosticsExpanded}
+              onToggle={() => {
+                if (!isFirestoreDiagnosticsExpanded) refreshFirestoreDiagnostics();
+                setIsFirestoreDiagnosticsExpanded((value) => !value);
+              }}
+              title="Firestore購読の計測（開発用）"
+            >
+              <Text style={styles.subText}>
+                起動後の累計です。更新ボタンで現在値を確認できます。
+                再起動するとリセットされます。個人情報・文書内容は記録せず、外部へ送信しません。
+                計測値はFirestoreの課金読取り数とは一致しません。
+              </Text>
+              <TouchableOpacity
+                style={styles.saveBtn}
+                onPress={refreshFirestoreDiagnostics}
+                accessibilityRole="button"
+              >
+                <Text style={styles.saveBtnText}>計測結果を更新</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.saveBtn}
+                onPress={copyFirestoreDiagnostics}
+                accessibilityRole="button"
+              >
+                <Text style={styles.saveBtnText}>計測結果をコピー</Text>
+              </TouchableOpacity>
+              <Text selectable style={styles.adDiagnosticsText}>
+                {firestoreDiagnosticsText}
+              </Text>
             </SectionCard>
           )}
 

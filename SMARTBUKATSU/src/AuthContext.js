@@ -18,11 +18,11 @@ import {
 import {
   doc,
   getDoc,
-  onSnapshot,
   serverTimestamp,
   setDoc,
 } from "firebase/firestore";
 import { unregisterPushTokenForCurrentDevice } from "./services/notificationService";
+import { measuredOnSnapshot } from "./services/firestoreSubscription";
 import { auth, db } from "./firebase";
 import {
   executeRegistration,
@@ -105,7 +105,7 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     if (!user?.uid) return;
     const ref = doc(db, "users", user.uid);
-    const unsub = onSnapshot(ref, (snap) => {
+    const unsub = measuredOnSnapshot("authUser", ref, (snap) => {
       const data = snap.data() || {};
       if (snap.exists()) {
         setEmailVerificationRequired(
@@ -153,7 +153,8 @@ export function AuthProvider({ children }) {
       setHasSelectedTeam(false);
       setTeamAccessRevoked(true);
     };
-    const unsub = onSnapshot(
+    const unsub = measuredOnSnapshot(
+      "authMembership",
       ref,
       (snap) => {
         if (!snap.exists()) {
