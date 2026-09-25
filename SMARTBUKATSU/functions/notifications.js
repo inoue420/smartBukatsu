@@ -80,12 +80,20 @@ async function deletePushTokenDocument(tokenDocument) {
   });
 }
 
-async function getTeamContext(teamId) {
+async function getTeamContext(teamId, onMembersRead) {
   const teamRef = firestore.collection("teams").doc(teamId);
-  const [teamSnapshot, membersSnapshot] = await Promise.all([
+  // Wait for both reads so invocation metrics also include a member query that
+  // finishes after the team-document read fails.
+  const results = await Promise.allSettled([
     teamRef.get(),
-    teamRef.collection("members").get(),
+    teamRef.collection("members").get().then((snapshot) => {
+      onMembersRead?.(snapshot.docs.length);
+      return snapshot;
+    }),
   ]);
+  const failure = results.find((result) => result.status === "rejected");
+  if (failure) throw failure.reason;
+  const [teamSnapshot, membersSnapshot] = results.map((result) => result.value);
   return {
     teamName: teamSnapshot.data()?.name || "所属チーム",
     channels: Array.isArray(teamSnapshot.data()?.channels)
@@ -438,111 +446,141 @@ const notifyWorkspacePostWritten = onDocumentWritten(
     memory: "256MiB",
   },
   async (event) => {
-    const beforeData = event.data?.before.exists ? event.data.before.data() : {};
-    const afterData = event.data?.after.exists ? event.data.after.data() : null;
-    if (!afterData || afterData.status === "deleted") return;
+    // One aggregate record per invocation, without user or document identifiers.
+    // This counts collection results, not membership checks during fan-out.
+    const metrics = {
+      invocations: 1,
+      memberFetchSkipped: 1,
+      memberDocumentsFetched: 0,
+    };
+    try {
+      const beforeData = event.data?.before.exists ? event.data.before.data() : {};
+      const afterData = event.data?.after.exists ? event.data.after.data() : null;
+      if (!afterData || afterData.status === "deleted") return;
 
-    const { teamId, postId } = event.params;
-    const { teamName, channels, members } = await getTeamContext(teamId);
-    const channel = channels.find(
-      (item) =>
-        item?.id === afterData.channelId ||
-        (item?.name && item.name === afterData.channel),
-    );
-    const isNewPost = !event.data?.before.exists;
-    if (isNewPost && channel) {
-      const managerUidSet = new Set(
-        members
-          .filter((member) => STAFF_NOTIFICATION_ROLES.has(member.role))
-          .map((member) => member.uid),
+      const isNewPost = !event.data?.before.exists;
+      const visibleUidSet = new Set(uniqueUids(afterData.visibleToUids));
+      const beforeMentions = new Set(uniqueUids(beforeData.mentionedUids));
+      const addedPostMentions = uniqueUids(afterData.mentionedUids).filter(
+        (uid) =>
+          !beforeMentions.has(uid) &&
+          uid !== actorUid(afterData) &&
+          (visibleUidSet.size === 0 || visibleUidSet.has(uid)),
       );
-      const recipientUids = uniqueUids(
-        channel.notificationRecipientUids,
-      ).filter(
-        (uid) => uid !== actorUid(afterData) && managerUidSet.has(uid),
+      const addedReplies = getAddedItems(beforeData.replies, afterData.replies);
+      const hasNotifiableReply = addedReplies.some((reply) => {
+        const senderUid = actorUid(reply);
+        return (
+          (actorUid(afterData) && actorUid(afterData) !== senderUid) ||
+          uniqueUids(reply.mentionedUids).some(
+            (uid) => uid !== senderUid &&
+              (visibleUidSet.size === 0 || visibleUidSet.has(uid)),
+          )
+        );
+      });
+      // Inspect notification-producing differences, not read/reaction fields:
+      // a single write can contain both kinds of changes.
+      if (!isNewPost && addedPostMentions.length === 0 && !hasNotifiableReply) {
+        return;
+      }
+
+      const { teamId, postId } = event.params;
+      metrics.memberFetchSkipped = 0;
+      const { teamName, channels, members } = await getTeamContext(teamId, (count) => {
+        metrics.memberDocumentsFetched = count;
+      });
+      const channel = channels.find(
+        (item) =>
+          item?.id === afterData.channelId ||
+          (item?.name && item.name === afterData.channel),
       );
-      if (recipientUids.length > 0) {
-        await fanOutToUids(recipientUids, {
-          id: `workspace_post_${teamId}_${postId}`,
-          category: NOTIFICATION_CATEGORIES.WORKSPACE_POST,
+      if (isNewPost && channel) {
+        const managerUidSet = new Set(
+          members
+            .filter((member) => STAFF_NOTIFICATION_ROLES.has(member.role))
+            .map((member) => member.uid),
+        );
+        const recipientUids = uniqueUids(
+          channel.notificationRecipientUids,
+        ).filter(
+          (uid) => uid !== actorUid(afterData) && managerUidSet.has(uid),
+        );
+        if (recipientUids.length > 0) {
+          await fanOutToUids(recipientUids, {
+            id: `workspace_post_${teamId}_${postId}`,
+            category: NOTIFICATION_CATEGORIES.WORKSPACE_POST,
+            teamId,
+            teamName,
+            actorUid: actorUid(afterData),
+            title: `${channel.name || "チャンネル"}に新しい投稿があります`,
+            body: afterData.content || "投稿を確認してください。",
+            target: notificationTarget("WorkspaceHome", { postId }),
+            source: { collection: "workspacePosts", documentId: postId },
+          });
+        }
+      }
+      if (addedPostMentions.length > 0) {
+        await fanOutToUids(addedPostMentions, {
+          id: `mention_${event.id}`,
+          category: NOTIFICATION_CATEGORIES.MENTION,
           teamId,
           teamName,
           actorUid: actorUid(afterData),
-          title: `${channel.name || "チャンネル"}に新しい投稿があります`,
+          title: `${actorName(afterData)}さんがあなたをメンションしました`,
           body: afterData.content || "投稿を確認してください。",
           target: notificationTarget("WorkspaceHome", { postId }),
           source: { collection: "workspacePosts", documentId: postId },
         });
       }
-    }
-    const visibleUidSet = new Set(uniqueUids(afterData.visibleToUids));
-    const beforeMentions = new Set(uniqueUids(beforeData.mentionedUids));
-    const addedPostMentions = uniqueUids(afterData.mentionedUids).filter(
-      (uid) =>
-        !beforeMentions.has(uid) &&
-        uid !== actorUid(afterData) &&
-        (visibleUidSet.size === 0 || visibleUidSet.has(uid)),
-    );
-    if (addedPostMentions.length > 0) {
-      await fanOutToUids(addedPostMentions, {
-        id: `mention_${event.id}`,
-        category: NOTIFICATION_CATEGORIES.MENTION,
-        teamId,
-        teamName,
-        actorUid: actorUid(afterData),
-        title: `${actorName(afterData)}さんがあなたをメンションしました`,
-        body: afterData.content || "投稿を確認してください。",
-        target: notificationTarget("WorkspaceHome", { postId }),
-        source: { collection: "workspacePosts", documentId: postId },
-      });
-    }
 
-    const addedReplies = getAddedItems(beforeData.replies, afterData.replies);
-    for (const reply of addedReplies) {
-      const senderUid = actorUid(reply);
-      const mentionedUids = uniqueUids(reply.mentionedUids).filter(
-        (uid) =>
-          uid !== senderUid &&
-          (visibleUidSet.size === 0 || visibleUidSet.has(uid)),
-      );
-      if (mentionedUids.length > 0) {
-        await fanOutToUids(mentionedUids, {
-          id: `reply_mention_${teamId}_${postId}_${reply.id}`,
-          category: NOTIFICATION_CATEGORIES.MENTION,
-          teamId,
-          teamName,
-          actorUid: senderUid,
-          title: `${actorName(reply)}さんが返信であなたをメンションしました`,
-          body: reply.content || "返信を確認してください。",
-          target: notificationTarget("WorkspaceHome", {
-            postId,
-            replyId: reply.id,
-          }),
-          source: { collection: "workspacePosts", documentId: postId },
-        });
-      }
+      for (const reply of addedReplies) {
+        const senderUid = actorUid(reply);
+        const mentionedUids = uniqueUids(reply.mentionedUids).filter(
+          (uid) =>
+            uid !== senderUid &&
+            (visibleUidSet.size === 0 || visibleUidSet.has(uid)),
+        );
+        if (mentionedUids.length > 0) {
+          await fanOutToUids(mentionedUids, {
+            id: `reply_mention_${teamId}_${postId}_${reply.id}`,
+            category: NOTIFICATION_CATEGORIES.MENTION,
+            teamId,
+            teamName,
+            actorUid: senderUid,
+            title: `${actorName(reply)}さんが返信であなたをメンションしました`,
+            body: reply.content || "返信を確認してください。",
+            target: notificationTarget("WorkspaceHome", {
+              postId,
+              replyId: reply.id,
+            }),
+            source: { collection: "workspacePosts", documentId: postId },
+          });
+        }
 
-      const postAuthorUid = actorUid(afterData);
-      if (
-        postAuthorUid &&
-        postAuthorUid !== senderUid &&
-        !mentionedUids.includes(postAuthorUid)
-      ) {
-        await fanOutToUids([postAuthorUid], {
-          id: `workspace_reply_${teamId}_${postId}_${reply.id}`,
-          category: NOTIFICATION_CATEGORIES.WORKSPACE_REPLY,
-          teamId,
-          teamName,
-          actorUid: senderUid,
-          title: `${actorName(reply)}さんがあなたの投稿に返信しました`,
-          body: reply.content || "返信を確認してください。",
-          target: notificationTarget("WorkspaceHome", {
-            postId,
-            replyId: reply.id,
-          }),
-          source: { collection: "workspacePosts", documentId: postId },
-        });
+        const postAuthorUid = actorUid(afterData);
+        if (
+          postAuthorUid &&
+          postAuthorUid !== senderUid &&
+          !mentionedUids.includes(postAuthorUid)
+        ) {
+          await fanOutToUids([postAuthorUid], {
+            id: `workspace_reply_${teamId}_${postId}_${reply.id}`,
+            category: NOTIFICATION_CATEGORIES.WORKSPACE_REPLY,
+            teamId,
+            teamName,
+            actorUid: senderUid,
+            title: `${actorName(reply)}さんがあなたの投稿に返信しました`,
+            body: reply.content || "返信を確認してください。",
+            target: notificationTarget("WorkspaceHome", {
+              postId,
+              replyId: reply.id,
+            }),
+            source: { collection: "workspacePosts", documentId: postId },
+          });
+        }
       }
+    } finally {
+      logger.info("workspace_post_notification_metrics", metrics);
     }
   },
 );
