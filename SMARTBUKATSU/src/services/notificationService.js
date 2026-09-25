@@ -5,11 +5,11 @@ import {
   collection,
   doc,
   limit,
-  onSnapshot,
   orderBy,
   query,
 } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
+import { measuredOnSnapshot } from "./firestoreSubscription";
 import { cloudFunctions, db } from "../firebase";
 import { normalizeNotificationPreferences } from "../notifications/notificationConfig";
 
@@ -40,7 +40,8 @@ export function subscribeNotifications(uid, onValue, onError) {
     orderBy("createdAt", "desc"),
     limit(100),
   );
-  return onSnapshot(
+  return measuredOnSnapshot(
+    "notifications",
     notificationsQuery,
     (snapshot) => {
       onValue(
@@ -65,7 +66,8 @@ export function subscribeNotifications(uid, onValue, onError) {
 
 export function subscribeNotificationSummary(uid, onValue, onError) {
   if (!uid) return () => {};
-  return onSnapshot(
+  return measuredOnSnapshot(
+    "notificationSummary",
     doc(db, "users", uid, "notificationState", "summary"),
     (snapshot) => {
       const data = snapshot.data() || {};
@@ -80,7 +82,8 @@ export function subscribeNotificationSummary(uid, onValue, onError) {
 
 export function subscribeNotificationPreferences(uid, onValue, onError) {
   if (!uid) return () => {};
-  return onSnapshot(
+  return measuredOnSnapshot(
+    "notificationPreferences",
     doc(db, "users", uid, "notificationPreferences", "default"),
     (snapshot) => {
       onValue(normalizeNotificationPreferences(snapshot.data() || {}));

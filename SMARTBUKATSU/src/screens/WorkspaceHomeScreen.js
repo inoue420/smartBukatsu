@@ -44,7 +44,8 @@ import {
 
 // ★ 追加：Firestoreの直接操作用
 import { db } from "../firebase";
-import { doc, updateDoc, onSnapshot } from "firebase/firestore";
+import { doc, updateDoc } from "firebase/firestore";
+import { measuredOnSnapshot } from "../services/firestoreSubscription";
 
 const COLORS = {
   primary: "#0077cc",
@@ -421,7 +422,7 @@ const WorkspaceHomeScreen = ({
     if (!activeTeamId || isOffline) return;
 
     const teamRef = doc(db, "teams", activeTeamId);
-    const unsubscribe = onSnapshot(teamRef, (docSnap) => {
+    const unsubscribe = measuredOnSnapshot("workspaceTeam", teamRef, (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
         if (

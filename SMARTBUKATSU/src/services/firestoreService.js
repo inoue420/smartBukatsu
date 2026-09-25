@@ -5,7 +5,6 @@ import {
   doc,
   query,
   orderBy,
-  onSnapshot,
   setDoc,
   getDoc,
   updateDoc,
@@ -20,6 +19,7 @@ import {
   writeBatch,
 } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
+import { measuredOnSnapshot } from "./firestoreSubscription";
 import { auth, db, cloudFunctions } from "../firebase";
 import { LEGAL_POLICY_VERSION, MINIMUM_USER_AGE } from "../legal";
 export const DEFAULT_MAX_TEAMS_PER_USER = 5;
@@ -54,8 +54,8 @@ function generateInviteCode() {
   return candidate;
 }
 
-function subscribeToTeamData(reference, callback) {
-  return onSnapshot(reference, callback, (error) => {
+function subscribeToTeamData(name, reference, callback) {
+  return measuredOnSnapshot(name, reference, callback, (error) => {
     if (error?.code === "permission-denied") {
       return;
     }
@@ -216,7 +216,7 @@ export function subscribeProjects(teamId, callback) {
   if (!teamId) return () => {};
   const projectsRef = collection(db, "teams", teamId, "projects");
   const q = query(projectsRef, orderBy("createdAt", "desc"));
-  return subscribeToTeamData(q, (snapshot) => {
+  return subscribeToTeamData("projects", q, (snapshot) => {
     const projectsData = snapshot.docs.map((doc) => ({
       id: doc.id,
       ...doc.data(),
@@ -271,7 +271,7 @@ export function subscribeTagGroups(teamId, callback) {
   if (!teamId) return () => {};
   const ref = collection(db, "teams", teamId, "tagGroups");
   const q = query(ref, orderBy("createdAt", "asc"));
-  return subscribeToTeamData(q, (snapshot) => {
+  return subscribeToTeamData("tagGroups", q, (snapshot) => {
     const data = snapshot.docs.map((doc) => ({
       id: doc.id,
       ...doc.data(),
@@ -318,7 +318,7 @@ export function subscribeHighlightProjects(teamId, callback) {
   if (!teamId) return () => {};
   const ref = collection(db, "teams", teamId, "highlightProjects");
   const q = query(ref, orderBy("createdAt", "desc"));
-  return subscribeToTeamData(q, (snapshot) => {
+  return subscribeToTeamData("highlightProjects", q, (snapshot) => {
     const data = snapshot.docs.map((doc) => ({
       id: doc.id,
       ...doc.data(),
@@ -364,7 +364,7 @@ export function subscribeClubEvents(teamId, callback) {
   if (!teamId) return () => {};
   const ref = collection(db, "teams", teamId, "clubEvents");
   const q = query(ref, orderBy("createdAt", "desc"));
-  return subscribeToTeamData(q, (snapshot) => {
+  return subscribeToTeamData("clubEvents", q, (snapshot) => {
     const data = snapshot.docs.map((doc) => ({
       id: doc.id,
       ...doc.data(),
@@ -423,7 +423,8 @@ export function subscribePersonalEvents(uid, callback) {
   if (!uid) return () => {};
   const eventsRef = collection(db, "users", uid, "personalEvents");
   const q = query(eventsRef, orderBy("date", "asc"));
-  return onSnapshot(
+  return measuredOnSnapshot(
+    "personalEvents",
     q,
     (snapshot) => {
       const events = snapshot.docs.map((doc) => ({
@@ -467,7 +468,7 @@ export async function deletePersonalEvent(uid, eventId) {
 export function subscribeTeamMembers(teamId, callback) {
   if (!teamId) return () => {};
   const membersRef = collection(db, "teams", teamId, "members");
-  return subscribeToTeamData(membersRef, async (snapshot) => {
+  return subscribeToTeamData("teamMembers", membersRef, async (snapshot) => {
     const promises = snapshot.docs.map(async (docSnap) => {
       const uid = docSnap.id;
       const data = docSnap.data();
@@ -608,7 +609,7 @@ export async function getTeamInviteCode(teamId) {
 
 export function subscribeTeamData(teamId, callback) {
   if (!teamId) return () => {};
-  return subscribeToTeamData(doc(db, "teams", teamId), (docSnap) => {
+  return subscribeToTeamData("teamData", doc(db, "teams", teamId), (docSnap) => {
     if (docSnap.exists()) callback(docSnap.data());
   });
 }
@@ -721,7 +722,7 @@ export function subscribeNotices(teamId, callback) {
     collection(db, "teams", teamId, "notices"),
     orderBy("createdAt", "desc"),
   );
-  return subscribeToTeamData(q, (snapshot) => {
+  return subscribeToTeamData("notices", q, (snapshot) => {
     callback(
       snapshot.docs.map((doc) => ({
         id: doc.id,
@@ -915,7 +916,7 @@ export function subscribeWorkspacePosts(teamId, userUid, callback) {
     collection(db, "teams", teamId, "workspacePosts"),
     where("visibleToUids", "array-contains", userUid),
   );
-  return subscribeToTeamData(q, (snapshot) => {
+  return subscribeToTeamData("workspacePosts", q, (snapshot) => {
     const posts = snapshot.docs
       .map((postDoc) => ({
         id: postDoc.id,
@@ -936,7 +937,7 @@ export function subscribeDailyReports(teamId, callback) {
     collection(db, "teams", teamId, "dailyReports"),
     orderBy("createdAt", "desc"),
   );
-  return subscribeToTeamData(q, (snapshot) => {
+  return subscribeToTeamData("dailyReports", q, (snapshot) => {
     callback(
       snapshot.docs.map((doc) => ({
         id: doc.id,
