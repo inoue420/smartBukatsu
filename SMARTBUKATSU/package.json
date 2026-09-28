@@ -1,6 +1,6 @@
 {
   "name": "smrtbukatsu",
-  "version": "1.0.16",
+  "version": "1.0.17",
   "main": "index.js",
   "scripts": {
     "dev": "set APP_VARIANT=development&& expo start",
