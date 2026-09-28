@@ -26,6 +26,11 @@ import * as ScreenOrientation from "expo-screen-orientation";
 import { useAuth } from "../AuthContext";
 import { auth } from "../firebase";
 import { updateProject } from "../services/firestoreService";
+import {
+  isRecordedTagOwner,
+  canViewRecordedTag,
+  canEditRecordedTag,
+} from "../utils/recordedTagPermissions";
 
 const DEFAULT_TAGS = ["得点", "罰則", "2min", "ナイス"];
 const DEFAULT_CLIP_PRE_SECONDS = 5;
@@ -133,7 +138,6 @@ const ProjectDetailScreen = ({
   const [toastMessage, setToastMessage] = useState(null);
   const toastTimeoutRef = useRef(null);
 
-  const canDeleteAnyTag = ["owner", "admin", "staff"].includes(userRole);
   const canEditVideoTags =
     ["owner", "admin", "staff", "captain"].includes(userRole) ||
     (["guardian", "member"].includes(userRole) && Boolean(canEditTags));
@@ -147,6 +151,16 @@ const ProjectDetailScreen = ({
     member: currentUser,
   };
   const displayUserName = roleNameMap[userRole] || currentUser;
+  const tagViewer = { userRole, canEditTags, currentUserUid, displayUserName };
+  const recordedTagStateRef = useRef(null);
+  recordedTagStateRef.current = { tags: localTags, viewer: tagViewer };
+
+  const getEditableRecordedTag = (id) => {
+    if (!id) return null;
+    const { tags, viewer } = recordedTagStateRef.current;
+    const tag = tags.find((item) => item.id === id);
+    return canEditRecordedTag(tag, viewer) ? tag : null;
+  };
 
   const [videoUri, setVideoUri] = useState(null);
   const [youtubeVideoId, setYoutubeVideoId] = useState(null);
@@ -448,7 +462,7 @@ const ProjectDetailScreen = ({
   const handleBulkShareTags = async () => {
     if (!canEditVideoTags) return;
     const privateTagsCount = localTags.filter(
-      (t) => t.status === "private" && t.user === displayUserName,
+      (t) => t.status === "private" && isRecordedTagOwner(t, tagViewer),
     ).length;
     if (privateTagsCount === 0) return;
 
@@ -461,7 +475,7 @@ const ProjectDetailScreen = ({
           text: "公開する",
           onPress: async () => {
             const newTags = localTags.map((t) =>
-              t.status === "private" && t.user === displayUserName
+              t.status === "private" && isRecordedTagOwner(t, tagViewer)
                 ? { ...t, status: "shared" }
                 : t,
             );
@@ -487,7 +501,7 @@ const ProjectDetailScreen = ({
   };
 
   const handleOpenRecordedTagEditor = (tag) => {
-    if (!canEditVideoTags) return;
+    if (!getEditableRecordedTag(tag.id)) return;
     setEditingRecordedTag(tag);
     setEditingRecordedTags(splitTagLabel(tag.label));
     setEditingUseCustomClipDuration(tag.useCustomClipDuration === true);
@@ -502,7 +516,7 @@ const ProjectDetailScreen = ({
   };
 
   const toggleEditingRecordedTag = (label) => {
-    if (!canEditVideoTags) return;
+    if (!getEditableRecordedTag(editingRecordedTag?.id)) return;
     setEditingRecordedTags((prev) =>
       prev.includes(label)
         ? prev.filter((tag) => tag !== label)
@@ -511,8 +525,7 @@ const ProjectDetailScreen = ({
   };
 
   const handleSaveRecordedTagLabels = async () => {
-    if (!canEditVideoTags) return;
-    if (!editingRecordedTag) return;
+    if (!getEditableRecordedTag(editingRecordedTag?.id)) return;
     if (editingRecordedTags.length === 0) {
       return Alert.alert("未選択", "タグを1件以上選択してください。");
     }
@@ -540,24 +553,25 @@ const ProjectDetailScreen = ({
       return globalTag;
     });
 
-    setLocalTags(newTags);
-    handleCloseRecordedTagEditor();
-
-    if (setProjects) {
-      setProjects((prev) =>
-        prev.map((p) => (p.id === project.id ? { ...p, tags: newTags } : p)),
-      );
-    }
-
     try {
       const safeTeamId = activeTeamId || "test_team";
       await updateProject(safeTeamId, project.id, { tags: newTags });
+      setLocalTags(newTags);
+      handleCloseRecordedTagEditor();
+      setProjects?.((prev) =>
+        prev.map((p) => (p.id === project.id ? { ...p, tags: newTags } : p)),
+      );
       showToast("タグを更新しました");
-    } catch (error) {}
+    } catch (error) {
+      Alert.alert(
+        "保存エラー",
+        "タグを更新できませんでした。通信状態を確認して、もう一度お試しください。",
+      );
+    }
   };
 
   const handleDeleteRecordedTag = () => {
-    if (!canEditVideoTags || !editingRecordedTag) return;
+    if (!getEditableRecordedTag(editingRecordedTag?.id)) return;
 
     Alert.alert(
       "切り抜きの削除",
@@ -568,7 +582,8 @@ const ProjectDetailScreen = ({
           text: "削除する",
           style: "destructive",
           onPress: async () => {
-            const newTags = localTags.filter(
+            if (!getEditableRecordedTag(editingRecordedTag.id)) return;
+            const newTags = recordedTagStateRef.current.tags.filter(
               (tag) => tag.id !== editingRecordedTag.id,
             );
 
@@ -756,10 +771,10 @@ const ProjectDetailScreen = ({
 
   const renderTaggingContent = () => {
     const visibleTags = localTags.filter(
-      (t) => t.status === "shared" || t.user === displayUserName,
+      (t) => canViewRecordedTag(t, tagViewer),
     );
     const privateTagsCount = localTags.filter(
-      (t) => t.status === "private" && t.user === displayUserName,
+      (t) => t.status === "private" && isRecordedTagOwner(t, tagViewer),
     ).length;
     const TaggingContainer = ScrollView;
     const RecordedTagsContainer = View;
@@ -909,8 +924,7 @@ const ProjectDetailScreen = ({
             visibleTags.map((tag) => {
               const labelParts = splitTagLabel(tag.label);
               const unregisteredTags = getUnregisteredTags(tag);
-              const canEditTag =
-                canEditVideoTags && (canDeleteAnyTag || tag.user === displayUserName);
+              const canEditTag = canEditRecordedTag(tag, tagViewer);
 
               return (
                 <View key={tag.id} style={styles.listItemCard}>
@@ -1045,6 +1059,7 @@ const ProjectDetailScreen = ({
 
       <Modal
         visible={Boolean(editingRecordedTag)}
+        onRequestClose={handleCloseRecordedTagEditor}
         transparent={true}
         animationType="fade"
         supportedOrientations={[
@@ -1054,10 +1069,15 @@ const ProjectDetailScreen = ({
           "landscape-right",
         ]}
       >
-        <View style={styles.modalOverlay}>
-          <KeyboardAvoidingView
-            behavior={Platform.OS === "ios" ? "padding" : "height"}
-            style={styles.modalContent}
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          style={styles.modalOverlay}
+        >
+          <ScrollView
+            style={styles.recordedTagModalContent}
+            contentContainerStyle={styles.recordedTagModalBody}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
           >
             <Text style={styles.modalTitle}>切り取りタグを編集</Text>
             <Text style={styles.modalSubText}>
@@ -1127,7 +1147,7 @@ const ProjectDetailScreen = ({
                         setEditingPreSec(normalizeClipSeconds(value))
                       }
                       selectTextOnFocus
-                      inputAccessoryViewID="doneAccessory"
+                      inputAccessoryViewID="recordedTagDoneAccessory"
                     />
                     <Text style={styles.clipSettingsText}>秒</Text>
                   </View>
@@ -1141,7 +1161,7 @@ const ProjectDetailScreen = ({
                         setEditingPostSec(normalizeClipSeconds(value))
                       }
                       selectTextOnFocus
-                      inputAccessoryViewID="doneAccessory"
+                      inputAccessoryViewID="recordedTagDoneAccessory"
                     />
                     <Text style={styles.clipSettingsText}>秒</Text>
                   </View>
@@ -1172,8 +1192,15 @@ const ProjectDetailScreen = ({
                 <Text style={styles.addBtnText}>保存</Text>
               </TouchableOpacity>
             </View>
-          </KeyboardAvoidingView>
-        </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
+        {Platform.OS === "ios" && (
+          <InputAccessoryView nativeID="recordedTagDoneAccessory">
+            <View style={styles.accessoryBar}>
+              <Button onPress={() => Keyboard.dismiss()} title="完了" />
+            </View>
+          </InputAccessoryView>
+        )}
       </Modal>
       <Modal
         visible={isAddQuickTagModalVisible}
@@ -1655,6 +1682,16 @@ const styles = StyleSheet.create({
     padding: 20,
     borderRadius: 12,
     maxHeight: "80%",
+  },
+  recordedTagModalContent: {
+    width: "85%",
+    maxHeight: "80%",
+    flexGrow: 0,
+    backgroundColor: "#fff",
+    borderRadius: 12,
+  },
+  recordedTagModalBody: {
+    padding: 20,
   },
   modalTitle: {
     fontSize: 18,
