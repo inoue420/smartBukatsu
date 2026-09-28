@@ -55,6 +55,7 @@ import NotificationSettingsScreen from "./src/screens/NotificationSettingsScreen
 LogBox.ignoreLogs(["[expo-av]"]);
 const Stack = createNativeStackNavigator();
 const DEFAULT_ABSENCE_DEADLINE_DAYS_BEFORE = 3;
+const DEFAULT_ABSENCE_DETAILS_VISIBLE = true;
 
 function AppContent() {
   const navigationRef = useNavigationContainerRef();
@@ -96,6 +97,9 @@ function AppContent() {
   });
   const [absenceDeadlineDaysBefore, setAbsenceDeadlineDaysBefore] = useState(
     DEFAULT_ABSENCE_DEADLINE_DAYS_BEFORE,
+  );
+  const [absenceDetailsVisible, setAbsenceDetailsVisible] = useState(
+    DEFAULT_ABSENCE_DETAILS_VISIBLE,
   );
   const [isOffline, setIsOffline] = useState(false);
   const [posts, setPosts] = useState([]);
@@ -160,6 +164,7 @@ function AppContent() {
       setPosts([]);
       setInterstitialSettings({ ...DEFAULT_INTERSTITIAL_SETTINGS });
       setAbsenceDeadlineDaysBefore(DEFAULT_ABSENCE_DEADLINE_DAYS_BEFORE);
+      setAbsenceDetailsVisible(DEFAULT_ABSENCE_DETAILS_VISIBLE);
       const unsubProjects = subscribeProjects(activeTeamId, setProjects);
       const unsubHighlightProjects = subscribeHighlightProjects(
         activeTeamId,
@@ -197,6 +202,7 @@ function AppContent() {
               ? configuredAbsenceDeadline
               : DEFAULT_ABSENCE_DEADLINE_DAYS_BEFORE,
           );
+          setAbsenceDetailsVisible(data.absenceDetailsVisible !== false);
         }
       });
 
@@ -404,6 +410,7 @@ function AppContent() {
                   personalEvents={personalEvents}
                   setPersonalEvents={setPersonalEvents}
                   absenceDeadlineDaysBefore={absenceDeadlineDaysBefore}
+                  absenceDetailsVisible={absenceDetailsVisible}
                 />
               )}
             </Stack.Screen>
@@ -494,6 +501,8 @@ function AppContent() {
                   setInterstitialSettings={setInterstitialSettings}
                   absenceDeadlineDaysBefore={absenceDeadlineDaysBefore}
                   setAbsenceDeadlineDaysBefore={setAbsenceDeadlineDaysBefore}
+                  absenceDetailsVisible={absenceDetailsVisible}
+                  setAbsenceDetailsVisible={setAbsenceDetailsVisible}
                   setUserProfiles={setUserProfiles}
                   posts={posts}
                   setPosts={setPosts}

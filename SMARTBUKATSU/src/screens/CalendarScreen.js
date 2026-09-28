@@ -502,6 +502,7 @@ const CalendarScreen = ({
   userProfiles = {},
   isOffline = false,
   absenceDeadlineDaysBefore = 3,
+  absenceDetailsVisible = true,
 }) => {
   const {
     activeTeamId,
@@ -2201,10 +2202,19 @@ const CalendarScreen = ({
                         {getDisplayTime(item, selectedDate)}
                       </Text>
                       <TouchableOpacity
-                        onPress={() => openAbsenceListModal(item)}
+                        onPress={
+                          absenceDetailsVisible
+                            ? () => openAbsenceListModal(item)
+                            : undefined
+                        }
                         style={styles.absenceCountBtn}
-                        accessibilityRole="button"
-                        accessibilityLabel={`不参加 ${absenceCount}件の一覧を確認`}
+                        disabled={!absenceDetailsVisible}
+                        accessibilityRole={absenceDetailsVisible ? "button" : "text"}
+                        accessibilityLabel={
+                          absenceDetailsVisible
+                            ? `不参加 ${absenceCount}件の一覧を確認`
+                            : `不参加 ${absenceCount}件`
+                        }
                       >
                         <Text style={styles.absenceCountBtnText}>
                           不参加 {absenceCount}件

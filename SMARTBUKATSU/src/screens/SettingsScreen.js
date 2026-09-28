@@ -150,6 +150,8 @@ const SettingsScreen = ({
   setInterstitialSettings,
   absenceDeadlineDaysBefore = 3,
   setAbsenceDeadlineDaysBefore,
+  absenceDetailsVisible = true,
+  setAbsenceDetailsVisible,
   setUserProfiles,
   posts = [],
   setPosts,
@@ -345,6 +347,9 @@ const SettingsScreen = ({
     String(absenceDeadlineDaysBefore),
   );
   const [isSavingAbsenceDeadline, setIsSavingAbsenceDeadline] = useState(false);
+  const [absenceDetailsVisibleDraft, setAbsenceDetailsVisibleDraft] = useState(
+    absenceDetailsVisible,
+  );
 
   useEffect(() => {
     setAdSettingsDraft(normalizeInterstitialSettings(interstitialSettings));
@@ -356,6 +361,10 @@ const SettingsScreen = ({
   useEffect(() => {
     setAbsenceDeadlineDraft(String(absenceDeadlineDaysBefore));
   }, [absenceDeadlineDaysBefore]);
+
+  useEffect(() => {
+    setAbsenceDetailsVisibleDraft(absenceDetailsVisible);
+  }, [absenceDetailsVisible]);
 
   useEffect(() => {
     setMyNewName(currentUser);
@@ -1126,6 +1135,32 @@ const SettingsScreen = ({
     }
   };
 
+  const handleSaveAbsenceDetailsVisibility = async () => {
+    if (!isStaffOrAbove || !activeTeamId || isSavingAbsenceDeadline) return;
+
+    setIsSavingAbsenceDeadline(true);
+    try {
+      await updateDoc(doc(db, "teams", activeTeamId), {
+        absenceDetailsVisible: absenceDetailsVisibleDraft,
+      });
+      setAbsenceDetailsVisible?.(absenceDetailsVisibleDraft);
+      Alert.alert(
+        "保存完了",
+        absenceDetailsVisibleDraft
+          ? "不参加者の詳細を表示します。"
+          : "不参加者の詳細を非表示にしました。件数のみ表示されます。",
+      );
+    } catch (error) {
+      console.log("不参加者詳細表示の保存エラー:", error);
+      Alert.alert(
+        "エラー",
+        "不参加者詳細の表示設定を保存できませんでした。権限と通信状態を確認してください。",
+      );
+    } finally {
+      setIsSavingAbsenceDeadline(false);
+    }
+  };
+
   const copyToClipboard = (text, label) => {
     Clipboard.setString(text);
     Alert.alert(
@@ -1783,6 +1818,35 @@ const SettingsScreen = ({
                     <ActivityIndicator color="#fff" />
                   ) : (
                     <Text style={styles.saveBtnText}>不参加連絡期限を保存</Text>
+                  )}
+                </TouchableOpacity>
+                <View style={styles.switchRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.thresholdLabel}>不参加者詳細を表示</Text>
+                    <Text style={styles.switchSubLabel}>
+                      オフにすると、不参加者の氏名・コメントは表示されず、件数のみ確認できます。
+                    </Text>
+                  </View>
+                  <Switch
+                    value={absenceDetailsVisibleDraft}
+                    onValueChange={setAbsenceDetailsVisibleDraft}
+                    disabled={isSavingAbsenceDeadline}
+                    trackColor={{ false: "#d9d9d9", true: "#3498db" }}
+                  />
+                </View>
+                <TouchableOpacity
+                  style={[
+                    styles.saveBtn,
+                    { backgroundColor: "#3498db", marginTop: 12 },
+                    isSavingAbsenceDeadline && { opacity: 0.7 },
+                  ]}
+                  onPress={handleSaveAbsenceDetailsVisibility}
+                  disabled={isSavingAbsenceDeadline}
+                >
+                  {isSavingAbsenceDeadline ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text style={styles.saveBtnText}>不参加者詳細の表示設定を保存</Text>
                   )}
                 </TouchableOpacity>
               </SectionCard>
