@@ -121,6 +121,7 @@ function effectSource(dependency) {
 function harness(overrides = {}) {
   const events = { playing: [], times: [], indexes: [], alerts: [], intervals: [], timeouts: [] };
   const context = vm.createContext({
+    playbackModeRef: { current: "stop" }, setPlaybackMode: () => {},
     transition: createClipPlaybackTransition(), currentClip: clip,
     clipPlaybackKey: "tag", currentClipIndex: 0, currentClips: [clip, clip, clip],
     isClipEditing: false, isClipEditingRef: { current: false },
@@ -140,7 +141,7 @@ function harness(overrides = {}) {
     clearInterval() {}, console: { log() {} },
     ...overrides,
   });
-  for (const name of ["requestClipTransition", "stopAtClipEnd", "playNextClip",
+  for (const name of ["handleCyclePlaybackMode", "requestClipTransition", "stopAtClipEnd", "playNextClip",
     "handleSelectClip", "handlePlaybackStatusUpdate", "onYoutubeStateChange"]) {
     context[name] = vm.runInContext(`(${functionSource(name)})`, context);
   }
@@ -304,4 +305,106 @@ test("switching YouTube sources waits for the new player even if old readiness w
   h.context.youtubeReadyPlayer = h.context.youtubeRef.current;
   h.start();
   assert.equal(seeks, 1);
+});
+
+
+for (const player of ["native", "youtube"]) {
+  for (const scenario of [
+    { mode: "single", index: 1, count: 3, next: 1 },
+    { mode: "single", index: 0, count: 1, next: 0 },
+    { mode: "all", index: 0, count: 3, next: 1 },
+    { mode: "all", index: 2, count: 3, next: 0 },
+    { mode: "all", index: 0, count: 1, next: 0 },
+    { mode: "stop", index: 2, count: 3, next: null },
+  ]) {
+    test(player + " end applies " + JSON.stringify(scenario) + " exactly once", () => {
+      const h = harness({
+        ytId: player === "youtube" ? "youtube" : null,
+        playbackModeRef: { current: scenario.mode },
+        currentClipIndex: scenario.index,
+        currentClips: Array(scenario.count).fill(clip),
+      });
+      const token = h.context.transition.begin("tag", clip);
+      h.context.transition.markSeekIssued(token);
+      h.context.transition.confirm(token, 10);
+      const end = () => player === "youtube"
+        ? h.context.onYoutubeStateChange("ended")
+        : h.context.handlePlaybackStatusUpdate({ isLoaded: true, positionMillis: 15000, didJustFinish: true });
+      end(); end();
+      assert.deepEqual(h.events.indexes, scenario.next === null ? [] : [scenario.next]);
+      assert.equal(h.context.hasReachedPlaylistEndRef.current, scenario.next === null);
+      if (scenario.next !== null) assert.equal(h.context.transition.current(), null);
+    });
+  }
+}
+
+test("mode cycling preserves position, pause state and transition until the next end", () => {
+  const modes = [];
+  const h = harness({ setPlaybackMode: (mode) => modes.push(mode) });
+  const token = h.context.transition.begin("tag", clip);
+  h.context.transition.markSeekIssued(token);
+  h.context.transition.confirm(token, 10);
+  for (let i = 0; i < 4; i++) h.context.handleCyclePlaybackMode();
+  assert.deepEqual(modes, ["single", "all", "stop", "single"]);
+  assert.equal(h.context.transition.current(), token);
+  assert.deepEqual(h.events.playing, []);
+  assert.deepEqual(h.events.times, []);
+  assert.deepEqual(h.events.indexes, []);
+  h.context.handlePlaybackStatusUpdate({ isLoaded: true, positionMillis: 18000 });
+  assert.deepEqual(h.events.indexes, [0]);
+});
+
+test("changing mode after completion does not restart; selecting a tag does", () => {
+  const h = harness({ ytId: "youtube", currentClipIndex: 2 });
+  const token = h.context.transition.begin("tag", clip);
+  h.context.transition.markSeekIssued(token);
+  h.context.transition.confirm(token, 10);
+  h.context.onYoutubeStateChange("ended");
+  h.context.handleCyclePlaybackMode();
+  h.context.onYoutubeStateChange("ended");
+  assert.equal(h.context.hasReachedPlaylistEndRef.current, true);
+  assert.deepEqual(h.events.indexes, []);
+  h.context.handleSelectClip(1);
+  assert.equal(h.context.hasReachedPlaylistEndRef.current, false);
+  assert.deepEqual(h.events.indexes, [1]);
+});
+
+test("single repeat issues another seek before playback, and a manual selection wins", async () => {
+  const h = harness({ playbackModeRef: { current: "single" } });
+  const seeks = [];
+  h.context.videoRef.current = {
+    getStatusAsync: async () => ({ isLoaded: true }),
+    setStatusAsync: async (status) => { seeks.push(status.positionMillis); return { isLoaded: true, positionMillis: status.positionMillis }; },
+    playAsync: async () => ({ isLoaded: true }),
+  };
+  h.start(); await flush();
+  h.context.handlePlaybackStatusUpdate({ isLoaded: true, positionMillis: 18000 });
+  h.start(); await flush();
+  assert.deepEqual(seeks, [10000, 10000]);
+  h.context.handlePlaybackStatusUpdate({ isLoaded: true, positionMillis: 18000 });
+  h.context.handleSelectClip(2);
+  h.context.handlePlaybackStatusUpdate({ isLoaded: true, positionMillis: 19000 });
+  assert.deepEqual(h.events.indexes, [0, 0, 2]);
+});
+
+
+test("all repeat uses the filtered playlist bounds", () => {
+  const h = harness({ playbackModeRef: { current: "all" }, currentClipIndex: 1,
+    currentClips: [clip, { ...clip, id: "filtered-last" }] });
+  const token = h.context.transition.begin("tag", clip);
+  h.context.transition.markSeekIssued(token);
+  h.context.transition.confirm(token, 10);
+  h.context.handlePlaybackStatusUpdate({ isLoaded: true, positionMillis: 18000 });
+  assert.deepEqual(h.events.indexes, [0]);
+});
+
+test("editing blocks repeat until a tag is explicitly selected on return", () => {
+  const h = harness({ playbackModeRef: { current: "all" },
+    isClipEditingRef: { current: true }, ytId: "youtube" });
+  h.context.onYoutubeStateChange("ended");
+  h.context.handleCyclePlaybackMode();
+  assert.deepEqual(h.events.indexes, []);
+  h.context.handleSelectClip(1);
+  assert.equal(h.context.isClipEditingRef.current, false);
+  assert.deepEqual(h.events.indexes, [1]);
 });
