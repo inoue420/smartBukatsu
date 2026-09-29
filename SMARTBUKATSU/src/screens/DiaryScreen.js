@@ -1682,21 +1682,6 @@ const DiaryScreen = ({
                         : "🚩 要フォロー"}
                     </Text>
                   </TouchableOpacity>
-                  <TouchableOpacity
-                    onPress={() => handleChangeShareScope(selectedReport.id)}
-                    style={[
-                      styles.actionBtn,
-                      selectedReport.sharedWith === "all" &&
-                        styles.actionBtnActive,
-                    ]}
-                  >
-                    <Text style={styles.actionBtnText}>
-                      👁️ 共有:{" "}
-                      {selectedReport.sharedWith === "all"
-                        ? "全体"
-                        : "スタッフのみ"}
-                    </Text>
-                  </TouchableOpacity>
                 </View>
               )}
 

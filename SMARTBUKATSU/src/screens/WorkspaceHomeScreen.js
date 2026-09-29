@@ -124,20 +124,6 @@ const defaultChannels = [
     shareScope: "roles",
     allowedRoleGroups: DEFAULT_ALLOWED_ROLE_GROUPS,
   },
-  {
-    id: "ch_diary",
-    name: "共有日記",
-    isReadOnly: true,
-    shareScope: "roles",
-    allowedRoleGroups: DEFAULT_ALLOWED_ROLE_GROUPS,
-  },
-  {
-    id: "ch_2",
-    name: "トレーニング",
-    isReadOnly: false,
-    shareScope: "roles",
-    allowedRoleGroups: DEFAULT_ALLOWED_ROLE_GROUPS,
-  },
 ];
 
 const WorkspaceHomeScreen = ({
@@ -1315,26 +1301,38 @@ const WorkspaceHomeScreen = ({
     }
   };
 
-  const handleReaction = (postId, emoji) => {
-    if (isOffline) return;
+  const handleReaction = async (postId, emoji) => {
+    if (isOffline || !activeTeamId || !currentUserUid) return;
     const targetPost = posts.find((post) => post.id === postId);
-    if (!targetPost) return;
-    const currentCount = targetPost.reactions?.[emoji] || 0;
-    const reactions = {
-      ...(targetPost.reactions || {}),
-      [emoji]: currentCount + 1,
-    };
-    setPosts((prevPosts) =>
-      prevPosts.map((post) =>
-        post.id === postId ? { ...post, reactions } : post,
-      ),
-    );
-    if (activeTeamId) {
-      incrementWorkspacePostReaction(activeTeamId, postId, emoji).catch(
-        (error) => {
-          console.log("掲示板リアクション更新エラー:", error);
-        },
+    if (!targetPost || targetPost.reactionUserUids?.[currentUserUid]) return;
+
+    try {
+      const added = await incrementWorkspacePostReaction(
+        activeTeamId,
+        postId,
+        emoji,
+        currentUserUid,
       );
+      if (!added) return;
+      setPosts((prevPosts) =>
+        prevPosts.map((post) =>
+          post.id === postId
+            ? {
+                ...post,
+                reactions: {
+                  ...(post.reactions || {}),
+                  [emoji]: (post.reactions?.[emoji] || 0) + 1,
+                },
+                reactionUserUids: {
+                  ...(post.reactionUserUids || {}),
+                  [currentUserUid]: emoji,
+                },
+              }
+            : post,
+        ),
+      );
+    } catch (error) {
+      console.log("掲示板リアクション更新エラー:", error);
     }
     setActiveReactionPostId(null);
   };
@@ -1711,39 +1709,52 @@ const WorkspaceHomeScreen = ({
                 </Text>
               </TouchableOpacity>
               <View style={styles.reactionsContainer}>
-                {Object.entries(post.reactions || {}).map(([emoji, count]) => (
+                {(() => {
+                  const hasReacted = Boolean(
+                    post.reactionUserUids?.[currentUserUid],
+                  );
+                  return (
+                    <>
+                      {Object.entries(post.reactions || {}).map(
+                        ([emoji, count]) => (
+                          <TouchableOpacity
+                            key={emoji}
+                            style={styles.reactionBadge}
+                            disabled={hasReacted}
+                            onPress={() => handleReaction(post.id, emoji)}
+                          >
+                            <Text style={styles.reactionText}>
+                              {emoji} {count}
+                            </Text>
+                          </TouchableOpacity>
+                        ),
+                      )}
                   <TouchableOpacity
-                    key={emoji}
-                    style={styles.reactionBadge}
-                    onPress={() => handleReaction(post.id, emoji)}
+                    style={styles.addReactionBadge}
+                    disabled={hasReacted}
+                    onPress={() =>
+                      setActiveReactionPostId(
+                        activeReactionPostId === post.id ? null : post.id,
+                      )
+                    }
                   >
-                    <Text style={styles.reactionText}>
-                      {emoji} {count}
-                    </Text>
+                    <Text style={styles.addReactionText}>+</Text>
                   </TouchableOpacity>
-                ))}
-                <TouchableOpacity
-                  style={styles.addReactionBadge}
-                  onPress={() =>
-                    setActiveReactionPostId(
-                      activeReactionPostId === post.id ? null : post.id,
-                    )
-                  }
-                >
-                  <Text style={styles.addReactionText}>+</Text>
-                </TouchableOpacity>
-                {activeReactionPostId === post.id && (
-                  <View style={styles.reactionPicker}>
-                    {REACTION_EMOJIS.map((emoji) => (
-                      <TouchableOpacity
-                        key={emoji}
-                        onPress={() => handleReaction(post.id, emoji)}
-                      >
-                        <Text style={styles.reactionPickerEmoji}>{emoji}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                )}
+                  {activeReactionPostId === post.id && !hasReacted && (
+                    <View style={styles.reactionPicker}>
+                      {REACTION_EMOJIS.map((emoji) => (
+                        <TouchableOpacity
+                          key={emoji}
+                          onPress={() => handleReaction(post.id, emoji)}
+                        >
+                          <Text style={styles.reactionPickerEmoji}>{emoji}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  )}
+                    </>
+                  );
+                })()}
               </View>
             </View>
           </View>

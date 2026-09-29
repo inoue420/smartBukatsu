@@ -11,9 +11,7 @@ import {
   deleteDoc,
   arrayUnion,
   arrayRemove,
-  FieldPath,
   getDocs,
-  increment,
   runTransaction,
   where,
   writeBatch,
@@ -855,15 +853,33 @@ export async function incrementWorkspacePostReaction(
   teamId,
   postId,
   emoji,
+  userUid,
 ) {
-  if (!teamId || !postId || !emoji) throw new Error("IDが不足しています");
-  await updateDoc(
-    doc(db, "teams", teamId, "workspacePosts", postId),
-    new FieldPath("reactions", emoji),
-    increment(1),
-    "updatedAt",
-    serverTimestamp(),
-  );
+  if (!teamId || !postId || !emoji || !userUid) {
+    throw new Error("IDが不足しています");
+  }
+
+  const postRef = doc(db, "teams", teamId, "workspacePosts", postId);
+  return runTransaction(db, async (transaction) => {
+    const postSnapshot = await transaction.get(postRef);
+    if (!postSnapshot.exists()) throw new Error("投稿が見つかりません");
+
+    const post = postSnapshot.data();
+    if (post.reactionUserUids?.[userUid]) return false;
+
+    transaction.update(postRef, {
+      reactions: {
+        ...(post.reactions || {}),
+        [emoji]: (post.reactions?.[emoji] || 0) + 1,
+      },
+      reactionUserUids: {
+        ...(post.reactionUserUids || {}),
+        [userUid]: emoji,
+      },
+      updatedAt: serverTimestamp(),
+    });
+    return true;
+  });
 }
 
 export async function markWorkspacePostRead(
