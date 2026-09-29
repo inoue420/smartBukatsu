@@ -27,6 +27,7 @@ import YoutubePlayer from "react-native-youtube-iframe";
 import * as ScreenOrientation from "expo-screen-orientation";
 
 import { useAuth } from "../AuthContext";
+import { canEditRecordedTag } from "../utils/recordedTagPermissions";
 import {
   createProject,
   createHighlightProject,
@@ -482,6 +483,8 @@ const ProjectListScreen = ({
 
   const [videoTime, setVideoTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isClipEditing, setIsClipEditing] = useState(false);
+  const isClipEditingRef = useRef(false);
   const [hasReachedPlaylistEnd, setHasReachedPlaylistEnd] = useState(false);
 
   const videoRef = useRef(null);
@@ -677,6 +680,8 @@ const ProjectListScreen = ({
 
   const handleToggleTag = (tag) => {
     Keyboard.dismiss();
+    isClipEditingRef.current = false;
+    setIsClipEditing(false);
     hasReachedPlaylistEndRef.current = false;
     setHasReachedPlaylistEnd(false);
     setSelectedHighlightTags((prev) => {
@@ -692,13 +697,40 @@ const ProjectListScreen = ({
 
   const handleSelectClip = (index) => {
     Keyboard.dismiss();
+    isClipEditingRef.current = false;
+    setIsClipEditing(false);
     hasReachedPlaylistEndRef.current = false;
     setHasReachedPlaylistEnd(false);
     setCurrentClipIndex(index);
     setIsPlaying(true);
   };
 
+  const getEditableClipProject = (clip) => {
+    const sourceProject = projects.find((item) => item.id === clip.projectId);
+    if (!sourceProject || sourceProject.status === "deleted") return null;
+    const tag = sourceProject.tags?.find((item) => item.id === clip.id);
+    return canEditRecordedTag(tag, {
+      userRole, canEditTags, currentUserUid, displayUserName,
+    }) ? sourceProject : null;
+  };
+
+  const handleEditClip = (clip) => {
+    const sourceProject = getEditableClipProject(clip);
+    if (!sourceProject) return;
+    Keyboard.dismiss();
+    isClipEditingRef.current = true;
+    setIsClipEditing(true);
+    setIsPlaying(false);
+    navigation.navigate("ProjectDetail", {
+      project: sourceProject,
+      userRole,
+      canEditTags,
+      editRecordedTagId: clip.id,
+    });
+  };
+
   const playNextClip = () => {
+    if (isClipEditingRef.current) return;
     if (currentClipIndex < currentClips.length - 1) {
       hasReachedPlaylistEndRef.current = false;
       setHasReachedPlaylistEnd(false);
@@ -712,7 +744,7 @@ const ProjectListScreen = ({
     if (!currentClip) return undefined;
 
     const startTimer = setTimeout(() => {
-      if (hasReachedPlaylistEndRef.current) return;
+      if (hasReachedPlaylistEndRef.current || isClipEditingRef.current) return;
 
       if (ytId) {
         seekYoutubeTo(currentClip.start);
@@ -732,6 +764,7 @@ const ProjectListScreen = ({
     currentClipIndex,
     selectedHighlightTags,
     searchMode,
+    isClipEditing,
     ytId,
     seekYoutubeTo,
   ]);
@@ -743,6 +776,7 @@ const ProjectListScreen = ({
         if (!youtubeRef.current) return;
         try {
           const currentTime = await youtubeRef.current.getCurrentTime();
+          if (isClipEditingRef.current) return;
           setVideoTime(Math.floor(currentTime));
 
           if (currentTime >= currentClip.end) {
@@ -771,6 +805,7 @@ const ProjectListScreen = ({
   ]);
 
   const handlePlaybackStatusUpdate = (status) => {
+    if (isClipEditingRef.current) return;
     if (!status.isLoaded) return;
 
     const positionMillis = status.positionMillis || 0;
@@ -809,6 +844,7 @@ const ProjectListScreen = ({
   };
 
   const onYoutubeStateChange = useCallback((state) => {
+    if (isClipEditingRef.current) return;
     if (state === "playing") {
       if (
         hasReachedPlaylistEndRef.current &&
@@ -915,6 +951,8 @@ const ProjectListScreen = ({
   };
 
   const handleOpenHighlightProject = (projectId) => {
+    isClipEditingRef.current = false;
+    setIsClipEditing(false);
     setSelectedHighlightProjectId(projectId);
     setSelectedHighlightTags([]);
     setCurrentClipIndex(0);
@@ -1520,9 +1558,11 @@ const ProjectListScreen = ({
       style={[styles.videoPlayerArea, isLandscape && styles.fsVideoPlayerArea]}
       onTouchStart={Keyboard.dismiss}
     >
-      {hasReachedPlaylistEnd ? (
+      {isClipEditing || hasReachedPlaylistEnd ? (
         <View style={styles.stoppedVideoPlaceholder}>
-          <Text style={styles.stoppedVideoText}>再生終了</Text>
+          <Text style={styles.stoppedVideoText}>
+            {isClipEditing ? "切り抜きを選択して再生" : "再生終了"}
+          </Text>
         </View>
       ) : ytId ? (
         <View
@@ -1617,6 +1657,8 @@ const ProjectListScreen = ({
               currentClipIndex === index && styles.clipCardActive,
             ]}
             onPress={() => handleSelectClip(index)}
+            onLongPress={getEditableClipProject(clip) ? () => handleEditClip(clip) : undefined}
+            accessibilityHint={getEditableClipProject(clip) ? "長押しで切り取りタグを編集" : undefined}
           >
             <Text
               style={[

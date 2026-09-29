@@ -60,6 +60,7 @@ const ProjectDetailScreen = ({
     project: routeProject,
     userRole = "member",
     canEditTags = false,
+    editRecordedTagId,
   } = route.params || {};
 
   const project =
@@ -508,6 +509,27 @@ const ProjectDetailScreen = ({
     setEditingPreSec(normalizeClipSeconds(tag.preSeconds, preSec));
     setEditingPostSec(normalizeClipSeconds(tag.postSeconds, postSec));
   };
+
+  const openedRecordedTagRequestRef = useRef(null);
+  useEffect(() => {
+    if (!editRecordedTagId) {
+      openedRecordedTagRequestRef.current = null;
+      return;
+    }
+    const requestKey = `${project.id}:${editRecordedTagId}`;
+    if (openedRecordedTagRequestRef.current === requestKey) return;
+    openedRecordedTagRequestRef.current = requestKey;
+    navigation.setParams({ editRecordedTagId: undefined });
+    const sourceProject = projects?.find((item) => item.id === project.id);
+    const tag = sourceProject?.tags?.find((item) => item.id === editRecordedTagId);
+    if (!sourceProject || sourceProject.status === "deleted" ||
+        !canEditRecordedTag(tag, tagViewer)) {
+      Alert.alert("編集できません", "対象のタグが削除されたか、編集権限がありません。");
+      return;
+    }
+    handleOpenRecordedTagEditor(tag);
+  }, [editRecordedTagId, project.id, projects, userRole, canEditTags,
+    currentUserUid, displayUserName, navigation]);
 
   const handleCloseRecordedTagEditor = () => {
     setEditingRecordedTag(null);
