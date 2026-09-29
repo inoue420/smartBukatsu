@@ -229,10 +229,8 @@ const ProjectListScreen = ({
     (["guardian", "member"].includes(userRole) && canEditTags);
 
   const { user, activeTeamId } = useAuth();
-  const [isOffline, setIsOffline] = useState(false);
 
   const [activeTab, setActiveTab] = useState("list");
-  const [summaryTab, setSummaryTab] = useState("playlist");
   const [selectedHighlightProjectId, setSelectedHighlightProjectId] =
     useState(null);
 
@@ -426,15 +424,6 @@ const ProjectListScreen = ({
 
         individualTags.forEach((t) => tagSet.add(t));
 
-        const clipMemos = (p.sharedMemos || []).filter(
-          (m) => m.tagId === tag.id,
-        );
-        const hasUnread = clipMemos.some(
-          (m) =>
-            m.user !== displayUserName &&
-            !(m.readBy || []).includes(currentUser),
-        );
-
         const useCustomClipDuration = tag.useCustomClipDuration === true;
         const pre = useCustomClipDuration
           ? normalizeClipSeconds(tag.preSeconds, projectPreSeconds)
@@ -451,8 +440,6 @@ const ProjectListScreen = ({
           start: Math.max(0, tag.videoTime - pre),
           end: tag.videoTime + post,
           user: tag.user,
-          memos: clipMemos,
-          hasUnread: hasUnread,
           type: p.type,
           date: p.date,
           status: tag.status || "shared",
@@ -464,7 +451,7 @@ const ProjectListScreen = ({
 
     clips.sort((a, b) => a.start - b.start);
     return { allClips: clips, availableTags: Array.from(tagSet).sort() };
-  }, [highlightClipProjects, displayUserName, currentUser, getProjectTagGroup]);
+  }, [highlightClipProjects, displayUserName, getProjectTagGroup]);
 
   const currentClips = useMemo(() => {
     if (selectedHighlightTags.length === 0) {
@@ -479,6 +466,15 @@ const ProjectListScreen = ({
       }
     });
   }, [allClips, selectedHighlightTags, searchMode]);
+
+  const [playbackMode, setPlaybackMode] = useState("stop");
+  const playbackModeRef = useRef("stop");
+  const handleCyclePlaybackMode = () => {
+    const nextMode = { stop: "single", single: "all", all: "stop" }[playbackModeRef.current];
+    // Update synchronously so pending player callbacks see the latest choice.
+    playbackModeRef.current = nextMode;
+    setPlaybackMode(nextMode);
+  };
 
   const [currentClipIndex, setCurrentClipIndex] = useState(0);
   const [clipSelectionVersion, setClipSelectionVersion] = useState(0);
@@ -507,10 +503,6 @@ const ProjectListScreen = ({
     youtubeReadyPlayer === youtubeRef.current;
   const [nativeLoadVersion, setNativeLoadVersion] = useState(0);
   const youtubeTimeRequestRef = useRef(null);
-  const [memoKeyboardInset, setMemoKeyboardInset] = useState(0);
-
-  const [newSharedMemo, setNewSharedMemo] = useState("");
-
   const [isEditModalVisible, setIsEditModalVisible] = useState(false);
   const [editingProject, setEditingProject] = useState(null);
   const [editTitle, setEditTitle] = useState("");
@@ -521,26 +513,6 @@ const ProjectListScreen = ({
       ScreenOrientation.lockAsync(
         ScreenOrientation.OrientationLock.PORTRAIT_UP,
       ).catch(() => {});
-    };
-  }, []);
-
-  useEffect(() => {
-    const showEvent =
-      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
-    const hideEvent =
-      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
-
-    const showSub = Keyboard.addListener(showEvent, (event) => {
-      const height = event.endCoordinates?.height || 0;
-      setMemoKeyboardInset(Math.max(0, height));
-    });
-    const hideSub = Keyboard.addListener(hideEvent, () => {
-      setMemoKeyboardInset(0);
-    });
-
-    return () => {
-      showSub.remove();
-      hideSub.remove();
     };
   }, []);
 
@@ -578,7 +550,7 @@ const ProjectListScreen = ({
   }, [selectedHighlightProject, selectedHighlightProjectId]);
 
   const currentClip = currentClips[currentClipIndex] || null;
-  // Memo/read-state updates should not restart the selected clip.
+  // Unrelated project updates should not restart the selected clip.
   const clipPlaybackKey = JSON.stringify([
     currentClip?.projectId, currentClip?.id, currentClip?.url,
     currentClip?.start, currentClip?.end, clipSelectionVersion,
@@ -595,52 +567,6 @@ const ProjectListScreen = ({
       setClipToastMessage(null);
     }
   }, [currentClip, isLandscape, isSideUiVisible]);
-
-  useEffect(() => {
-    if (activeTab === "summary" && summaryTab === "memo" && currentClip) {
-      const unreadMemos = currentClip.memos.filter(
-        (m) =>
-          m.user !== displayUserName && !(m.readBy || []).includes(currentUser),
-      );
-      if (unreadMemos.length > 0) {
-        const targetProject = projects.find(
-          (p) => p.id === currentClip.projectId,
-        );
-        if (targetProject) {
-          const updatedMemos = (targetProject.sharedMemos || []).map((m) => {
-            if (
-              m.tagId === currentClip.id &&
-              m.user !== displayUserName &&
-              !(m.readBy || []).includes(currentUser)
-            ) {
-              return { ...m, readBy: [...(m.readBy || []), currentUser] };
-            }
-            return m;
-          });
-          setProjects(
-            projects.map((p) =>
-              p.id === targetProject.id
-                ? { ...p, sharedMemos: updatedMemos }
-                : p,
-            ),
-          );
-          if (activeTeamId) {
-            updateProject(activeTeamId, targetProject.id, {
-              sharedMemos: updatedMemos,
-            }).catch(() => {});
-          }
-        }
-      }
-    }
-  }, [
-    activeTab,
-    summaryTab,
-    currentClip,
-    projects,
-    activeTeamId,
-    currentUser,
-    displayUserName,
-  ]);
 
   const extractYoutubeId = (url) => {
     if (!url) return null;
@@ -740,11 +666,15 @@ const ProjectListScreen = ({
 
   const playNextClip = (token) => {
     if (isClipEditingRef.current || !transition.isCurrent(token)) return;
-    if (currentClipIndex < currentClips.length - 1) {
+    const mode = playbackModeRef.current;
+    const nextIndex = mode === "single" ? currentClipIndex
+      : currentClipIndex + 1 < currentClips.length ? currentClipIndex + 1
+      : mode === "all" ? 0 : null;
+    if (nextIndex !== null && currentClips[nextIndex]) {
       requestClipTransition();
       hasReachedPlaylistEndRef.current = false;
       setHasReachedPlaylistEnd(false);
-      setCurrentClipIndex(currentClipIndex + 1);
+      setCurrentClipIndex(nextIndex);
     } else {
       stopAtClipEnd(currentClip, token);
     }
@@ -1014,7 +944,10 @@ const ProjectListScreen = ({
     setSelectedHighlightProjectId(projectId);
     setSelectedHighlightTags([]);
     setCurrentClipIndex(0);
-    setSummaryTab("playlist");
+    playbackModeRef.current = "stop";
+    setPlaybackMode("stop");
+    hasReachedPlaylistEndRef.current = false;
+    setHasReachedPlaylistEnd(false);
     setIsPlaying(false);
   };
 
@@ -1191,42 +1124,6 @@ const ProjectListScreen = ({
         },
       ],
     );
-  };
-
-  const handleSendSharedMemo = async () => {
-    if (newSharedMemo.trim() === "") return;
-    if (!currentClip) return;
-
-    const newMemo = {
-      id: "smemo_" + Date.now().toString(),
-      tagId: currentClip.id,
-      text: newSharedMemo.trim(),
-      user: displayUserName,
-      uid: user?.uid || currentUser,
-      createdAt: Date.now(),
-      readBy: [currentUser],
-      status: isOffline ? "pending" : "sent",
-    };
-
-    const targetProject = projects.find((p) => p.id === currentClip.projectId);
-    if (targetProject) {
-      const updatedMemos = [...(targetProject.sharedMemos || []), newMemo];
-      const updatedProject = { ...targetProject, sharedMemos: updatedMemos };
-
-      setProjects(
-        projects.map((p) => (p.id === targetProject.id ? updatedProject : p)),
-      );
-      setNewSharedMemo("");
-      Keyboard.dismiss();
-
-      try {
-        if (activeTeamId) {
-          await updateProject(activeTeamId, targetProject.id, {
-            sharedMemos: updatedMemos,
-          });
-        }
-      } catch (e) {}
-    }
   };
 
   const renderProjectItem = ({ item }) => {
@@ -1744,7 +1641,6 @@ const ProjectListScreen = ({
                 {clip.status === "private" && (
                   <Text style={styles.privateIcon}>🔒</Text>
                 )}
-                {clip.hasUnread && <View style={styles.unreadDot} />}
               </View>
               <Text style={styles.clipCardSub}>
                 ⏱ {formatTime(clip.start)} 〜 {formatTime(clip.end)} /{" "}
@@ -1761,141 +1657,27 @@ const ProjectListScreen = ({
     </View>
   );
 
-  const renderSharedMemos = () => (
-    <View
-      style={[
-        styles.memoKeyboardAvoiding,
-        memoKeyboardInset > 0 && styles.memoKeyboardActive,
-      ]}
-    >
-      <ScrollView
-        style={[styles.memoScroll, isLandscape && { paddingHorizontal: 0 }]}
-        contentContainerStyle={styles.memoScrollContent}
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
-        automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
-        onTouchStart={Keyboard.dismiss}
-        onScrollBeginDrag={Keyboard.dismiss}
-      >
-        {currentClip?.memos.length === 0 ? (
-          <Text style={[styles.emptyText, isLandscape && { color: "#94a3b8" }]}>
-            このクリップに対する議論はまだありません。
-          </Text>
-        ) : (
-          currentClip?.memos.map((memo) => {
-            const isMyMemo = memo.user === displayUserName;
-            return (
-              <View
-                key={memo.id}
-                style={[
-                  styles.chatBubbleContainer,
-                  isMyMemo ? styles.chatBubbleRight : styles.chatBubbleLeft,
-                ]}
-              >
-                {!isMyMemo && (
-                  <Text
-                    style={[styles.chatUser, isLandscape && { color: "#ccc" }]}
-                  >
-                    {memo.user}
-                  </Text>
-                )}
-                <View
-                  style={[
-                    styles.chatBubble,
-                    isMyMemo ? styles.chatBubbleMe : styles.chatBubbleOther,
-                  ]}
-                >
-                  <Text
-                    style={isMyMemo ? styles.chatTextMe : styles.chatTextOther}
-                  >
-                    {memo.text}
-                  </Text>
-                </View>
-                <Text style={styles.chatTime}>
-                  {new Date(memo.createdAt).toLocaleTimeString("ja-JP", {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
-                </Text>
-              </View>
-            );
-          })
-        )}
-      </ScrollView>
-      <View
-        style={[
-          styles.memoInputContainer,
-          memoKeyboardInset > 0 && {
-            bottom:
-              Platform.OS === "ios"
-                ? Math.max(memoKeyboardInset - 56, 0)
-                : memoKeyboardInset,
-          },
-        ]}
-      >
-        <TextInput
-          style={styles.memoInput}
-          value={newSharedMemo}
-          onChangeText={setNewSharedMemo}
-          placeholder="議論やアドバイスを入力..."
-          multiline
-        />
-        <TouchableOpacity
-          style={styles.memoSendBtn}
-          onPress={handleSendSharedMemo}
-        >
-          <Text style={styles.memoSendBtnText}>送信</Text>
-        </TouchableOpacity>
-      </View>
-    </View>
-  );
-
   const renderSummaryRightPane = () => (
     <View style={{ flex: 1, minHeight: 0, paddingTop: 5 }}>
-      <View
-        style={[styles.summaryTabRow, isLandscape && { marginHorizontal: 0 }]}
-      >
+      <View style={[styles.summaryTabRow, isLandscape && { marginHorizontal: 0 }]}>
+        <View style={styles.summaryTabBtn}>
+          <Text style={styles.summaryTabBtnText}>プレイリスト</Text>
+        </View>
         <TouchableOpacity
-          style={[
-            styles.summaryTabBtn,
-            summaryTab === "playlist" && styles.summaryTabBtnActive,
-          ]}
-          onPress={() => {
-            Keyboard.dismiss();
-            setSummaryTab("playlist");
-          }}
+          style={[styles.summaryTabBtn, styles.summaryTabBtnActive]}
+          onPress={handleCyclePlaybackMode}
+          accessibilityRole="button"
+          accessibilityLabel={
+            "再生モード：" + { single: "1タグリピート", all: "全体リピート", stop: "最後で終了" }[playbackMode]
+          }
+          accessibilityHint="タップすると次の再生モードに切り替わります"
         >
-          <Text
-            style={[
-              styles.summaryTabBtnText,
-              summaryTab === "playlist" && styles.summaryTabBtnTextActive,
-            ]}
-          >
-            プレイリスト
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[
-            styles.summaryTabBtn,
-            summaryTab === "memo" && styles.summaryTabBtnActive,
-          ]}
-          onPress={() => {
-            Keyboard.dismiss();
-            setSummaryTab("memo");
-          }}
-        >
-          <Text
-            style={[
-              styles.summaryTabBtnText,
-              summaryTab === "memo" && styles.summaryTabBtnTextActive,
-            ]}
-          >
-            議論メモ {currentClip && currentClip.hasUnread ? "🔴" : ""}
+          <Text style={[styles.summaryTabBtnText, styles.summaryTabBtnTextActive]}>
+            {{ single: "1タグリピート", all: "全体リピート", stop: "最後で終了" }[playbackMode]}
           </Text>
         </TouchableOpacity>
       </View>
-
-      {summaryTab === "playlist" ? renderPlaylist() : renderSharedMemos()}
+      {renderPlaylist()}
     </View>
   );
 
@@ -2852,76 +2634,6 @@ const styles = StyleSheet.create({
     marginLeft: 10,
   },
   privateIcon: { fontSize: 12, marginRight: 5 },
-  unreadDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: "#e74c3c",
-    marginLeft: 5,
-  },
-
-  memoKeyboardAvoiding: { flex: 1, position: "relative" },
-  memoKeyboardActive: { overflow: "visible" },
-  memoScroll: { flex: 1, paddingHorizontal: 15 },
-  memoScrollContent: { paddingBottom: 74 },
-  chatBubbleContainer: { marginBottom: 15 },
-  chatBubbleLeft: { alignItems: "flex-start" },
-  chatBubbleRight: { alignItems: "flex-end" },
-  chatUser: { fontSize: 11, color: "#555", marginBottom: 2, marginLeft: 5 },
-  chatBubble: {
-    paddingHorizontal: 15,
-    paddingVertical: 10,
-    borderRadius: 15,
-    maxWidth: "80%",
-  },
-  chatBubbleMe: { backgroundColor: "#0077cc", borderBottomRightRadius: 0 },
-  chatBubbleOther: {
-    backgroundColor: "#fff",
-    borderWidth: 1,
-    borderColor: "#eee",
-    borderBottomLeftRadius: 0,
-  },
-  chatTextMe: { color: "#fff", fontSize: 14, lineHeight: 20 },
-  chatTextOther: { color: "#333", fontSize: 14, lineHeight: 20 },
-  chatTime: { fontSize: 10, color: "#aaa", marginTop: 2, marginHorizontal: 5 },
-
-  memoInputContainer: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    flexDirection: "row",
-    alignItems: "flex-end",
-    padding: 10,
-    backgroundColor: "#fff",
-    borderTopWidth: 1,
-    borderTopColor: "#eee",
-    zIndex: 50,
-    elevation: 8,
-  },
-  memoInput: {
-    flex: 1,
-    backgroundColor: "#f9f9f9",
-    borderRadius: 20,
-    paddingHorizontal: 15,
-    paddingTop: 10,
-    paddingBottom: 10,
-    minHeight: 40,
-    maxHeight: 100,
-    fontSize: 14,
-    borderWidth: 1,
-    borderColor: "#ddd",
-  },
-  memoSendBtn: {
-    marginLeft: 10,
-    backgroundColor: "#0077cc",
-    paddingHorizontal: 15,
-    height: 40,
-    justifyContent: "center",
-    borderRadius: 20,
-  },
-  memoSendBtnText: { color: "#fff", fontWeight: "bold", fontSize: 13 },
-
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.5)",
