@@ -28,6 +28,7 @@ import * as ScreenOrientation from "expo-screen-orientation";
 
 import { useAuth } from "../AuthContext";
 import { canEditRecordedTag } from "../utils/recordedTagPermissions";
+import { createClipPlaybackTransition } from "../utils/clipPlaybackTransition";
 import {
   createProject,
   createHighlightProject,
@@ -480,6 +481,17 @@ const ProjectListScreen = ({
   }, [allClips, selectedHighlightTags, searchMode]);
 
   const [currentClipIndex, setCurrentClipIndex] = useState(0);
+  const [clipSelectionVersion, setClipSelectionVersion] = useState(0);
+  const transitionRef = useRef(null);
+  if (!transitionRef.current) {
+    transitionRef.current = createClipPlaybackTransition();
+  }
+  const transition = transitionRef.current;
+  const requestClipTransition = () => {
+    transition.cancel();
+    setClipSelectionVersion((version) => version + 1);
+    setIsPlaying(false);
+  };
 
   const [videoTime, setVideoTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -490,7 +502,11 @@ const ProjectListScreen = ({
   const videoRef = useRef(null);
   const youtubeRef = useRef(null);
   const hasReachedPlaylistEndRef = useRef(false);
-  const [isYoutubeReady, setIsYoutubeReady] = useState(false);
+  const [youtubeReadyPlayer, setYoutubeReadyPlayer] = useState(null);
+  const isYoutubeReady = Boolean(youtubeReadyPlayer) &&
+    youtubeReadyPlayer === youtubeRef.current;
+  const [nativeLoadVersion, setNativeLoadVersion] = useState(0);
+  const youtubeTimeRequestRef = useRef(null);
   const [memoKeyboardInset, setMemoKeyboardInset] = useState(0);
 
   const [newSharedMemo, setNewSharedMemo] = useState("");
@@ -562,6 +578,11 @@ const ProjectListScreen = ({
   }, [selectedHighlightProject, selectedHighlightProjectId]);
 
   const currentClip = currentClips[currentClipIndex] || null;
+  // Memo/read-state updates should not restart the selected clip.
+  const clipPlaybackKey = JSON.stringify([
+    currentClip?.projectId, currentClip?.id, currentClip?.url,
+    currentClip?.start, currentClip?.end, clipSelectionVersion,
+  ]);
 
   useEffect(() => {
     if (currentClip && isLandscape && !isSideUiVisible) {
@@ -630,24 +651,10 @@ const ProjectListScreen = ({
   };
   const ytId = currentClip ? extractYoutubeId(currentClip.url) : null;
 
-  useEffect(() => {
-    setIsYoutubeReady(false);
-  }, [ytId]);
-
-  const seekYoutubeTo = useCallback(
-    (seconds) => {
-      if (!isYoutubeReady || !youtubeRef.current) return;
-      try {
-        youtubeRef.current.seekTo(seconds, true);
-      } catch (error) {
-        console.log("YouTube seek error:", error);
-      }
-    },
-    [isYoutubeReady],
-  );
-
   const stopAtClipEnd = useCallback(
-    async (clip = currentClip) => {
+    async (clip = currentClip, token = transition.current()) => {
+      if (!transition.isCurrent(token)) return;
+      const player = videoRef.current;
       hasReachedPlaylistEndRef.current = true;
       setHasReachedPlaylistEnd(true);
       setIsPlaying(false);
@@ -660,8 +667,8 @@ const ProjectListScreen = ({
           return;
         }
 
-        if (videoRef.current) {
-          await videoRef.current.setStatusAsync({
+        if (player) {
+          await player.setStatusAsync({
             shouldPlay: false,
             ...(endMillis !== null ? { positionMillis: endMillis } : {}),
           });
@@ -669,7 +676,7 @@ const ProjectListScreen = ({
       } catch (error) {
         console.log("Highlight clip stop error:", error);
         try {
-          await videoRef.current?.pauseAsync();
+          if (transition.isCurrent(token)) await player?.pauseAsync();
         } catch (pauseError) {
           console.log("Highlight clip pause fallback error:", pauseError);
         }
@@ -680,6 +687,7 @@ const ProjectListScreen = ({
 
   const handleToggleTag = (tag) => {
     Keyboard.dismiss();
+    requestClipTransition();
     isClipEditingRef.current = false;
     setIsClipEditing(false);
     hasReachedPlaylistEndRef.current = false;
@@ -692,17 +700,17 @@ const ProjectListScreen = ({
       }
     });
     setCurrentClipIndex(0);
-    setIsPlaying(true);
   };
 
   const handleSelectClip = (index) => {
+    if (!currentClips[index]) return;
     Keyboard.dismiss();
+    requestClipTransition();
     isClipEditingRef.current = false;
     setIsClipEditing(false);
     hasReachedPlaylistEndRef.current = false;
     setHasReachedPlaylistEnd(false);
     setCurrentClipIndex(index);
-    setIsPlaying(true);
   };
 
   const getEditableClipProject = (clip) => {
@@ -718,6 +726,7 @@ const ProjectListScreen = ({
     const sourceProject = getEditableClipProject(clip);
     if (!sourceProject) return;
     Keyboard.dismiss();
+    transition.cancel();
     isClipEditingRef.current = true;
     setIsClipEditing(true);
     setIsPlaying(false);
@@ -729,113 +738,157 @@ const ProjectListScreen = ({
     });
   };
 
-  const playNextClip = () => {
-    if (isClipEditingRef.current) return;
+  const playNextClip = (token) => {
+    if (isClipEditingRef.current || !transition.isCurrent(token)) return;
     if (currentClipIndex < currentClips.length - 1) {
+      requestClipTransition();
       hasReachedPlaylistEndRef.current = false;
       setHasReachedPlaylistEnd(false);
-      setCurrentClipIndex((prev) => prev + 1);
+      setCurrentClipIndex(currentClipIndex + 1);
     } else {
-      stopAtClipEnd();
+      stopAtClipEnd(currentClip, token);
     }
   };
 
   useEffect(() => {
-    if (!currentClip) return undefined;
+    if (!currentClip || isClipEditing || hasReachedPlaylistEnd ||
+        activeTab !== "summary" || !selectedHighlightProjectId) return undefined;
 
-    const startTimer = setTimeout(() => {
-      if (hasReachedPlaylistEndRef.current || isClipEditingRef.current) return;
+    const token = transition.begin(clipPlaybackKey, currentClip);
+    setIsPlaying(false);
+    const fail = () => {
+      if (!transition.isCurrent(token)) return;
+      transition.cancel(token);
+      setIsPlaying(false);
+      Alert.alert("再生位置を変更できませんでした", "タグを選択して、もう一度お試しください。");
+    };
+    // A timeout never enables auto-advance with an unconfirmed position.
+    const timeout = setTimeout(() => {
+      if (token.phase === "seeking") fail();
+    }, 15000);
 
-      if (ytId) {
-        seekYoutubeTo(currentClip.start);
-        return;
+    if (ytId) {
+      if (isYoutubeReady && youtubeRef.current && youtubeReadyPlayer === youtubeRef.current) {
+        try {
+          transition.markSeekIssued(token);
+          youtubeRef.current.seekTo(token.start, true);
+        } catch (error) {
+          fail();
+        }
       }
-
-      if (videoRef.current) {
-        videoRef.current.setPositionAsync(currentClip.start * 1000);
-        videoRef.current.playAsync();
+    } else {
+      const player = videoRef.current;
+      transition.runNative(token, async () => {
+        if (!player || player !== videoRef.current) return;
+        const loaded = await player.getStatusAsync();
+        if (!transition.isCurrent(token) || player !== videoRef.current) return;
+        // onLoad reruns this effect once a newly selected source is loaded.
+        if (!loaded.isLoaded) return;
+        transition.markSeekIssued(token);
+        const status = await player.setStatusAsync({
+          positionMillis: Math.max(0, Math.round(token.start * 1000)),
+          shouldPlay: false,
+          seekMillisToleranceBefore: 0,
+          seekMillisToleranceAfter: 0,
+        });
+        if (!transition.isCurrent(token) || player !== videoRef.current) return;
+        if (!status.isLoaded || !Number.isFinite(status.positionMillis) ||
+            Math.abs(status.positionMillis / 1000 - token.start) > 1) {
+          fail();
+          return;
+        }
+        // Keep native status callbacks blocked until both commands complete.
+        const playingStatus = await player.playAsync();
+        if (!transition.isCurrent(token) || player !== videoRef.current) return;
+        if (!playingStatus.isLoaded ||
+            !transition.confirm(token, status.positionMillis / 1000)) {
+          fail();
+          return;
+        }
+        setVideoTime(Math.floor(status.positionMillis / 1000));
         setIsPlaying(true);
-      }
-    }, ytId ? 500 : 300);
+      }).catch(fail);
+    }
 
-    return () => clearTimeout(startTimer);
+    return () => {
+      clearTimeout(timeout);
+      transition.cancel(token);
+    };
   }, [
-    currentClip,
-    currentClipIndex,
-    selectedHighlightTags,
-    searchMode,
+    clipPlaybackKey,
     isClipEditing,
+    hasReachedPlaylistEnd,
+    activeTab,
+    selectedHighlightProjectId,
     ytId,
-    seekYoutubeTo,
+    isYoutubeReady,
+    youtubeReadyPlayer,
+    nativeLoadVersion,
   ]);
 
   useEffect(() => {
-    let interval;
-    if (isPlaying && ytId && currentClip && isYoutubeReady) {
-      interval = setInterval(async () => {
-        if (!youtubeRef.current) return;
+    let cancelled = false;
+    if (ytId && currentClip && isYoutubeReady) {
+      const interval = setInterval(async () => {
+        const player = youtubeRef.current;
+        const token = transition.current();
+        if (!player || !transition.matches(clipPlaybackKey) || !token.seekIssued ||
+            token.phase === "finished" || isClipEditingRef.current ||
+            (!isPlaying && token.phase !== "seeking")) return;
+        // The iframe API has no request IDs. Never overlap reads on one player,
+        // even across effect cleanup/restart when the user selects another tag.
+        if (youtubeTimeRequestRef.current?.player === player) return;
+        const request = { player };
+        youtubeTimeRequestRef.current = request;
         try {
-          const currentTime = await youtubeRef.current.getCurrentTime();
-          if (isClipEditingRef.current) return;
-          setVideoTime(Math.floor(currentTime));
-
-          if (currentTime >= currentClip.end) {
-            if (currentClipIndex < currentClips.length - 1) {
-              hasReachedPlaylistEndRef.current = false;
-              setHasReachedPlaylistEnd(false);
-              setCurrentClipIndex((prev) => prev + 1);
-            } else {
-              stopAtClipEnd();
+          const currentTime = await player.getCurrentTime();
+          if (cancelled || !transition.isCurrent(token) ||
+              player !== youtubeRef.current || isClipEditingRef.current ||
+              !Number.isFinite(currentTime)) return;
+          if (token.phase === "seeking") {
+            if (transition.confirm(token, currentTime)) {
+              setVideoTime(Math.floor(currentTime));
+              setIsPlaying(true);
             }
+            return;
+          }
+          setVideoTime(Math.floor(currentTime));
+          if (transition.consumeEnd(token, currentTime)) {
+            playNextClip(token);
           }
         } catch (error) {
           console.log("YouTube current time error:", error);
+        } finally {
+          if (youtubeTimeRequestRef.current === request) {
+            youtubeTimeRequestRef.current = null;
+          }
         }
       }, 500);
+      return () => {
+        cancelled = true;
+        clearInterval(interval);
+      };
     }
-    return () => clearInterval(interval);
   }, [
     isPlaying,
     ytId,
-    currentClip,
+    clipPlaybackKey,
     currentClipIndex,
     currentClips.length,
     isYoutubeReady,
-    stopAtClipEnd,
   ]);
 
   const handlePlaybackStatusUpdate = (status) => {
     if (isClipEditingRef.current) return;
     if (!status.isLoaded) return;
+    const token = transition.current();
+    if (!transition.matches(clipPlaybackKey) || !transition.canObserve(token)) return;
 
     const positionMillis = status.positionMillis || 0;
-    const clipEndMillis =
-      typeof currentClip?.end === "number"
-        ? Math.max(0, Math.round(currentClip.end * 1000))
-        : null;
     setVideoTime(Math.floor(positionMillis / 1000));
 
-    if (
-      hasReachedPlaylistEndRef.current &&
-      currentClipIndex >= currentClips.length - 1
-    ) {
-      if (status.isPlaying) {
-        videoRef.current?.setStatusAsync({
-          shouldPlay: false,
-          ...(clipEndMillis !== null ? { positionMillis: clipEndMillis } : {}),
-        });
-      }
-      return;
-    }
-
-    if (currentClip && clipEndMillis !== null && positionMillis >= clipEndMillis) {
-      if (currentClipIndex < currentClips.length - 1) {
-        hasReachedPlaylistEndRef.current = false;
-        setHasReachedPlaylistEnd(false);
-        setCurrentClipIndex((prev) => prev + 1);
-      } else {
-        stopAtClipEnd(currentClip);
-      }
+    if (transition.consumeEnd(token, positionMillis / 1000, status.didJustFinish)) {
+      playNextClip(token);
     } else {
       if (isPlaying !== status.isPlaying) {
         setIsPlaying(status.isPlaying);
@@ -845,6 +898,8 @@ const ProjectListScreen = ({
 
   const onYoutubeStateChange = useCallback((state) => {
     if (isClipEditingRef.current) return;
+    const token = transition.current();
+    if (!transition.matches(clipPlaybackKey) || !transition.canObserve(token)) return;
     if (state === "playing") {
       if (
         hasReachedPlaylistEndRef.current &&
@@ -854,10 +909,12 @@ const ProjectListScreen = ({
         return;
       }
       setIsPlaying(true);
-    } else if (state === "paused" || state === "ended") {
+    } else if (state === "ended") {
+      if (transition.consumeEnd(token, token.end, true)) playNextClip(token);
+    } else if (state === "paused") {
       setIsPlaying(false);
     }
-  }, [currentClipIndex, currentClips.length]);
+  }, [clipPlaybackKey, currentClipIndex, currentClips.length]);
 
   const formatTime = (seconds) => {
     const m = Math.floor(seconds / 60)
@@ -951,6 +1008,7 @@ const ProjectListScreen = ({
   };
 
   const handleOpenHighlightProject = (projectId) => {
+    requestClipTransition();
     isClipEditingRef.current = false;
     setIsClipEditing(false);
     setSelectedHighlightProjectId(projectId);
@@ -1466,6 +1524,7 @@ const ProjectListScreen = ({
                   : styles.toggleBtnActive),
             ]}
             onPress={() => {
+              requestClipTransition();
               setSearchMode("OR");
               setCurrentClipIndex(0);
             }}
@@ -1493,6 +1552,7 @@ const ProjectListScreen = ({
                   : styles.toggleBtnActive),
             ]}
             onPress={() => {
+              requestClipTransition();
               setSearchMode("AND");
               setCurrentClipIndex(0);
             }}
@@ -1578,18 +1638,20 @@ const ProjectListScreen = ({
             height={isLandscape ? height : 200}
             play={isPlaying}
             videoId={ytId}
-            onReady={() => setIsYoutubeReady(true)}
+            onReady={() => setYoutubeReadyPlayer(youtubeRef.current)}
             onChangeState={onYoutubeStateChange}
             initialPlayerParams={{ controls: 0, rel: 0 }}
           />
         </View>
       ) : (
         <Video
+          key={currentClip?.url}
           ref={videoRef}
           source={{ uri: currentClip?.url }}
           style={styles.videoComponent}
           resizeMode={ResizeMode.CONTAIN}
           onPlaybackStatusUpdate={handlePlaybackStatusUpdate}
+          onLoad={() => setNativeLoadVersion((version) => version + 1)}
           useNativeControls={true}
           shouldPlay={isPlaying}
         />
