@@ -526,9 +526,9 @@ const CalendarScreen = ({
     (isAdmin ? "owner" : "");
   const userRole = resolvedUserRole || "member";
 
-  const canManageClubEvents = ["owner", "admin", "staff", "captain"].includes(
-    userRole,
-  );
+  const canManageClubEvents =
+    ["owner", "admin", "staff", "captain"].includes(userRole) ||
+    (userRole === "member" && Boolean(currentUserProfile.canEditCalendar));
   const canSubmitAbsence =
     Boolean(resolvedUserRole) && userRole !== "guardian";
   const configuredAbsenceDeadlineDays = Number(absenceDeadlineDaysBefore);
@@ -1467,6 +1467,7 @@ const CalendarScreen = ({
   };
 
   const handleSaveClubEvent = async () => {
+    if (!canManageClubEvents) return;
     const eventTitle = clubEventType;
 
     const locationDraft = getClubLocationDraft();
@@ -1680,6 +1681,7 @@ const CalendarScreen = ({
   };
 
   const openEditClubEvent = (event) => {
+    if (!canManageClubEvents) return;
     setEditingClubEventId(event.id);
     setClubEventTitle(event.title || event.name);
     setClubEventDescription(event.description || "");
@@ -1730,6 +1732,7 @@ const CalendarScreen = ({
   };
 
   const handleDeleteClubEvent = (event, targetDate) => {
+    if (!canManageClubEvents) return;
     Alert.alert("削除", "部活の予定を削除しますか？", [
       { text: "キャンセル" },
       {

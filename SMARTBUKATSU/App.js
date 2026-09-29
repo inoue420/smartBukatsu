@@ -224,6 +224,7 @@ function AppContent() {
             staffScope: m.staffScope || "all",
             canUploadVideos: Boolean(m.canUploadVideos),
             canEditTags: Boolean(m.canEditTags),
+            canEditCalendar: Boolean(m.canEditCalendar),
             grade: m.grade || "",
             position: m.position || "",
           };

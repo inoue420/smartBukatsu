@@ -1991,6 +1991,7 @@ const SettingsScreen = ({
                     const staffScope = profile.staffScope || "all";
                     const canUploadVideos = Boolean(profile.canUploadVideos);
                     const canEditTags = Boolean(profile.canEditTags);
+                    const canEditCalendar = Boolean(profile.canEditCalendar);
 
                     return (
                       <View key={profile.uid || name} style={styles.memberItem}>
@@ -2101,6 +2102,32 @@ const SettingsScreen = ({
                                   タグ編集: {canEditTags ? "ON" : "OFF"}
                                 </Text>
                               </TouchableOpacity>
+                              {memberRole === "member" && (
+                                <TouchableOpacity
+                                  style={[
+                                    styles.subSettingBadge,
+                                    canEditCalendar && styles.subSettingBadgeActive,
+                                    !canManageMemberVideoPermissions && { opacity: 0.45 },
+                                  ]}
+                                  disabled={!canManageMemberVideoPermissions}
+                                  onPress={() =>
+                                    handleToggleMemberVideoPermission(
+                                      profile.uid,
+                                      "canEditCalendar",
+                                      !canEditCalendar,
+                                    )
+                                  }
+                                >
+                                  <Text
+                                    style={[
+                                      styles.subSettingText,
+                                      canEditCalendar && styles.subSettingTextActive,
+                                    ]}
+                                  >
+                                    カレンダー編集: {canEditCalendar ? "ON" : "OFF"}
+                                  </Text>
+                                </TouchableOpacity>
+                              )}
                             </>
                           )}
                         </View>
