@@ -54,11 +54,11 @@ test("Firestore enforces note roles, authorship, team isolation and staff-contro
     await setDoc(note(player, "member-note"), payload("member"));
     await updateDoc(member(staff, "member"), { canPostTacticalNotes: false });
     await denied(setDoc(note(player, "member-note-2"), payload("member")));
-    await updateDoc(note(player, "member-note"), { description: "自分の投稿を編集", updatedAt: serverTimestamp() });
+    await updateDoc(note(player, "member-note"), { description: "自分の投稿を編集", contentVersion: 2, updatedAt: serverTimestamp() });
     await denied(updateDoc(note(staff, "member-note"), { description: "他人の投稿を編集", updatedAt: serverTimestamp() }));
     await denied(updateDoc(note(player, "member-note"), { authorUid: "staff", updatedAt: serverTimestamp() }));
     await denied(setDoc(note(captain, "spoof"), payload("owner")));
-    await updateDoc(note(owner, "member-note"), { title: "管理者の編集", updatedAt: serverTimestamp() });
+    await updateDoc(note(owner, "member-note"), { title: "管理者の編集", contentVersion: 3, updatedAt: serverTimestamp() });
     await denied(deleteDoc(note(guardian, "member-note")));
     await deleteDoc(note(player, "member-note"));
     await deleteDoc(note(owner, "captain-note"));

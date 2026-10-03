@@ -54,5 +54,25 @@ service firebase.storage {
       allow update: if false;
       allow delete: if canDeleteDailyReportAttachment(teamId, authorUid);
     }
+    function noteReader(teamId) {
+      return isTeamMember(teamId) && firestore.get(
+        /databases/(default)/documents/teams/$(teamId)/members/$(request.auth.uid)
+      ).data.role in ['owner', 'admin', 'staff', 'captain', 'member'];
+    }
+    function noteEditor(teamId, noteId) {
+      return noteReader(teamId) && firestore.exists(/databases/(default)/documents/teams/$(teamId)/tacticalNotes/$(noteId)) && (
+        firestore.get(/databases/(default)/documents/teams/$(teamId)/members/$(request.auth.uid)).data.role in ['owner', 'admin'] ||
+        firestore.get(/databases/(default)/documents/teams/$(teamId)/tacticalNotes/$(noteId)).data.authorUid == request.auth.uid
+      );
+    }
+    match /tacticalNoteAttachments/{teamId}/{noteId}/{fileName} {
+      allow read: if noteReader(teamId) && firestore.exists(/databases/(default)/documents/teams/$(teamId)/tacticalNotes/$(noteId));
+      allow create: if noteEditor(teamId, noteId) && request.resource.size <= 10 * 1024 * 1024
+        && request.resource.contentType == 'image/jpeg'
+        && request.resource.metadata.uploaderUid == request.auth.uid
+        && fileName == request.resource.metadata.uploadId + '.jpg';
+      allow update: if false;
+      allow delete: if noteEditor(teamId, noteId);
+    }
   }
 }

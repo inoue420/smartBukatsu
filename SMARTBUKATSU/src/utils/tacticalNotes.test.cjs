@@ -98,23 +98,26 @@ test("OR/AND use public tags, preserve custom intervals and never mutate source"
 const fs = require("node:fs"), path = require("node:path"), vm = require("node:vm");
 const { parse } = require("@babel/parser");
 
-test("inline comment save updates only the description and timestamp", async () => {
+test("inline comment save increments confirmation version only when the description changes", async () => {
   const source = fs.readFileSync(path.join(__dirname, "../services/firestoreService.js"), "utf8");
   const ast = parse(source, { sourceType: "module" });
   const fn = ast.program.body.find((n) => n.declaration?.id?.name === "updateTacticalNoteDescription").declaration;
   const calls = [];
   const save = vm.runInNewContext(`(${source.slice(fn.start, fn.end)})`, {
-    db: {}, doc: (...args) => args.slice(1), serverTimestamp: () => "timestamp",
-    updateDoc: async (ref, payload) => calls.push({ ref, payload }),
+    timestampsEqual: require("./tacticalNotes").timestampsEqual, db: {}, doc: (...args) => args.slice(1), serverTimestamp: () => "timestamp",
+    runTransaction: async (_db, work) => work({ get: async () => ({ data: () => ({ description: "", contentVersion: 3 }) }),
+      update: (ref, payload) => calls.push({ ref, payload }) }),
   });
-  await save("team", "note", "動画を見ながら入力");
+  await save("team", "note", "動画を見ながら入力", { contentVersion: 3 });
   assert.deepEqual(JSON.parse(JSON.stringify(calls[0])), {
     ref: ["teams", "team", "tacticalNotes", "note"],
-    payload: { description: "動画を見ながら入力", updatedAt: "timestamp" },
+    payload: { description: "動画を見ながら入力", updatedAt: "timestamp", contentVersion: 4 },
   });
-  await save("team", "note", "");
+  await save("team", "note", "", { contentVersion: 3 });
   assert.equal(calls[1].payload.description, "");
+  assert.equal(calls[1].payload.contentVersion, 3);
   assert.throws(() => save("team", "note", "a".repeat(5001)));
+  await assert.rejects(save("team", "note", "競合した編集", { contentVersion: 2 }), /他の編集/);
   assert.equal(calls.length, 2);
 });
 
@@ -125,7 +128,7 @@ test("failed inline comment save retains the draft and restores the save button"
   const fn = body.flatMap((n) => n.declarations || []).find((n) => n.id.name === "saveComment").init;
   const busyStates = [], alerts = [];
   const save = vm.runInNewContext(`(${source.slice(fn.start, fn.end)})`, {
-    busy: false, commentEdit: { value: "残す入力" }, selected: { id: "note" },
+    busy: false, selectedLoading: false, selectedError: "", commentEdit: { value: "残す入力" }, selected: { id: "note" },
     profile: {}, currentUserUid: "author", activeTeamId: "team", canManageNote: () => true,
     updateTacticalNoteDescription: async () => { throw { code: "unavailable" }; },
     setBusy: (value) => busyStates.push(value), setCommentEdit: () => assert.fail("draft must survive failure"),

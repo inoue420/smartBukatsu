@@ -15,39 +15,201 @@ import {
   runTransaction,
   where,
   writeBatch,
+  limit,
+  startAfter,
 } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { measuredOnSnapshot } from "./firestoreSubscription";
 import { auth, db, cloudFunctions } from "../firebase";
 import { LEGAL_POLICY_VERSION, MINIMUM_USER_AGE } from "../legal";
-import { validateNote } from "../utils/tacticalNotes";
+import { validateNote, contentFingerprint, validateTasks, noteAcknowledgementId, isNoteSummaryCurrent, timestampsEqual } from "../utils/tacticalNotes";
+import { uploadTacticalNoteImage } from "./tacticalNoteAttachmentService";
 
-export function subscribeTacticalNotes(teamId, callback, onError) {
-  return measuredOnSnapshot("tacticalNotes", collection(db, "teams", teamId, "tacticalNotes"),
-    (snapshot) => callback(snapshot.docs.map((item) => ({ ...item.data(), id: item.id }))
-      .sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0))), onError);
+const TACTICAL_PAGE_SIZE = 30;
+const TACTICAL_HISTORY_PAGE_SIZE = 20;
+const tacticalItems = (snapshot) => snapshot.docs.map((item) => ({ ...item.data(), id: item.id }));
+const tacticalPage = (snapshot, size) => ({ items: tacticalItems(snapshot), cursor: snapshot.docs.at(-1) || null, hasMore: snapshot.size === size });
+function tacticalSummaryQuery(teamId, filter, uid, cursor) {
+  const clauses = [where("draft", "==", false)];
+  const arrayFilters = { mine: "mineUids", unconfirmed: "pendingUids" };
+  const flags = { tasks: "hasTasks", unfinished: "unfinished", completed: "completed" };
+  if (arrayFilters[filter]) clauses.push(where(arrayFilters[filter], "array-contains", uid));
+  if (flags[filter]) clauses.push(where(flags[filter], "==", true));
+  clauses.push(orderBy("createdAt", "desc"));
+  if (cursor) clauses.push(startAfter(cursor));
+  return query(collection(db, "teams", teamId, "tacticalNoteSummaries"), ...clauses, limit(TACTICAL_PAGE_SIZE));
+}
+export function subscribeTacticalNoteSummaries(teamId, filter, uid, callback, onError) {
+  return measuredOnSnapshot("tacticalNoteSummaries", tacticalSummaryQuery(teamId, filter, uid),
+    (snapshot) => callback(tacticalPage(snapshot, TACTICAL_PAGE_SIZE)), onError);
+}
+export async function getTacticalNoteSummaryPage(teamId, filter, uid, cursor) {
+  return tacticalPage(await getDocs(tacticalSummaryQuery(teamId, filter, uid, cursor)), TACTICAL_PAGE_SIZE);
+}
+export async function ensureTacticalNoteSummaries(teamId) {
+  return (await httpsCallable(cloudFunctions, "ensureTacticalNoteSummaries")({ teamId })).data;
+}
+export function subscribeTacticalNote(teamId, noteId, callback, onError) {
+  return measuredOnSnapshot("tacticalNote", doc(db, "teams", teamId, "tacticalNotes", noteId),
+    (snapshot) => callback(snapshot.exists() ? { ...snapshot.data(), id: snapshot.id } : null), onError);
+}
+export function subscribeTacticalNoteSummary(teamId, noteId, callback, onError) {
+  return measuredOnSnapshot("tacticalNoteSummary", doc(db, "teams", teamId, "tacticalNoteSummaries", noteId),
+    (snapshot) => callback(snapshot.exists() ? { ...snapshot.data(), id: snapshot.id } : null), onError);
 }
 
-export async function saveTacticalNote(teamId, noteId, data, authorName) {
+export async function saveTacticalNote(teamId, noteId, data, authorName, memberUids = []) {
   validateNote(data);
-  const payload = { ...data, title: data.title.trim(), updatedAt: serverTimestamp() };
-  if (noteId) return updateDoc(doc(db, "teams", teamId, "tacticalNotes", noteId), payload);
-  return addDoc(collection(db, "teams", teamId, "tacticalNotes"), {
-    ...payload, authorUid: auth.currentUser.uid, authorName, createdAt: serverTimestamp(),
-  });
-}
-
-export function updateTacticalNoteDescription(teamId, noteId, description) {
-  if (typeof description !== "string" || description.length > 5000) {
-    throw new Error("全体コメントは5000文字以内で入力してください。");
+  validateTasks(data.tasks, data.clips, memberUids);
+  if ((data.images || []).length > 6) throw new Error("画像は6枚までです。");
+  const target = noteId ? doc(db, "teams", teamId, "tacticalNotes", noteId) : doc(collection(db, "teams", teamId, "tacticalNotes"));
+  const before = await getDoc(target);
+  const old = before.data();
+  if (noteId && (!old || (data.baseUpdatedAt && !timestampsEqual(old.updatedAt, data.baseUpdatedAt)) || (data.baseContentVersion && (old.contentVersion || 1) !== data.baseContentVersion))) throw new Error("ノートが変更または削除されています。一覧に戻って開き直してください。");
+  // Create the permission anchor before uploading a new note's images.
+  if (!before.exists()) await setDoc(target, { title: data.title.trim(), description: data.description,
+    assigneeUids: data.assigneeUids, clips: data.clips, sourceProjectId: data.sourceProjectId,
+    images: [], tasks: {}, contentVersion: 1, draft: true,
+    authorUid: auth.currentUser.uid, authorName, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+  try {
+    const images = [];
+    for (const image of data.images || []) {
+      if (image.pending) images.push(await uploadTacticalNoteImage(teamId, target.id, image));
+      else images.push(image);
+    }
+    await runTransaction(db, async (transaction) => {
+      const snapshot = await transaction.get(target), current = snapshot.data();
+      if (!snapshot.exists()) throw new Error("ノートが削除されました。");
+      if (old && (!timestampsEqual(current.updatedAt, old.updatedAt) || (current.contentVersion || 1) !== (old.contentVersion || 1))) throw new Error("他の編集が保存されています。一覧に戻って開き直してください。");
+      for (const image of (data.images || []).filter((item) => item.pending)) {
+        const upload = (await transaction.get(doc(target, "attachmentUploads", image.id))).data();
+        if (!upload || upload.cleanupClaimedAt) throw new Error("画像の保存情報が期限切れになりました。画像を選び直してください。");
+      }
+      const tasks = Object.fromEntries(Object.entries(data.tasks || {}).map(([id, task]) => {
+        const previous = current.tasks?.[id];
+        const unchanged = previous && JSON.stringify([previous.text, previous.assigneeUids, previous.dueDate, previous.clipKey]) === JSON.stringify([task.text.trim(), task.assigneeUids, task.dueDate, task.clipKey]);
+        return [id, { ...task, text: task.text.trim(), revision: unchanged ? previous.revision : (previous?.revision || 0) + 1 }];
+      }));
+      const payload = { title: data.title.trim(), description: data.description, assigneeUids: data.assigneeUids,
+        clips: data.clips, sourceProjectId: data.sourceProjectId, images, tasks, draft: false,
+        contentVersion: (current.contentVersion || 1) + (contentFingerprint(current) !== contentFingerprint({ ...data, images }) ? 1 : 0), updatedAt: serverTimestamp() };
+      transaction.update(target, payload);
+    });
+    return { id: target.id, cleanupPending: false };
+  } catch (error) {
+    // Registered uploads survive a failed edit and can be reused on retry.
+    // Deleting only a new draft allows the server to retry all cleanup safely.
+    if (!before.exists()) await runTransaction(db, async (transaction) => {
+      const current = await transaction.get(target);
+      if (current.exists() && current.data().draft === true) transaction.delete(target);
+    }).catch(() => {});
+    throw error;
   }
-  return updateDoc(doc(db, "teams", teamId, "tacticalNotes", noteId), {
-    description, updatedAt: serverTimestamp(),
-  });
 }
 
+export function updateTacticalNoteDescription(teamId, noteId, description, base) {
+  if (typeof description !== "string" || description.length > 5000) throw new Error("全体コメントは5000文字以内で入力してください。");
+  const target = doc(db, "teams", teamId, "tacticalNotes", noteId);
+  return runTransaction(db, async (transaction) => {
+    const note = (await transaction.get(target)).data();
+    if (!note) throw new Error("ノートが削除されました。");
+    if (!base || !timestampsEqual(note.updatedAt, base.updatedAt) || (note.contentVersion || 1) !== (base.contentVersion || 1)) {
+      throw new Error("他の編集が保存されています。開き直して確認してください。");
+    }
+    transaction.update(target, { description, updatedAt: serverTimestamp(),
+      contentVersion: (note.contentVersion || 1) + (note.description !== description ? 1 : 0) });
+  });
+}
 export function deleteTacticalNote(teamId, noteId) {
   return deleteDoc(doc(db, "teams", teamId, "tacticalNotes", noteId));
+}
+export function subscribeTacticalNoteActivity(teamId, note, uid, callback, onError) {
+  const parent = doc(db, "teams", teamId, "tacticalNotes", note.id);
+  const taskIds = Object.keys(note.tasks || {});
+  const state = { responses: [], progress: [] }, ready = new Set(taskIds.length ? [] : ["progress"]);
+  const receive = (name) => (snapshot) => {
+    state[name] = tacticalItems(snapshot); ready.add(name);
+    if (ready.size === 2) callback({ ...state });
+  };
+  const stops = [measuredOnSnapshot("tacticalNote-responses", query(collection(parent, "responses"),
+    where("uid", "==", uid), where("version", "==", note.contentVersion || 1), where("status", "in", ["read", "understood"])), receive("responses"), onError)];
+  if (taskIds.length) stops.push(measuredOnSnapshot("tacticalNote-progress", query(collection(parent, "progress"), where("taskId", "in", taskIds)), receive("progress"), onError));
+  return () => stops.forEach((stop) => stop());
+}
+export async function getTacticalNoteQuestions(teamId, noteId, cursor = null) {
+  const clauses = [where("status", "==", "question"), orderBy("createdAt", "desc")];
+  if (cursor) clauses.push(startAfter(cursor));
+  return tacticalPage(await getDocs(query(collection(db, "teams", teamId, "tacticalNotes", noteId, "responses"), ...clauses, limit(TACTICAL_HISTORY_PAGE_SIZE))), TACTICAL_HISTORY_PAGE_SIZE);
+}
+export async function getTacticalNoteReplies(teamId, noteId, responseId, cursor = null) {
+  const clauses = [where("responseId", "==", responseId), orderBy("createdAt", "desc")];
+  if (cursor) clauses.push(startAfter(cursor));
+  return tacticalPage(await getDocs(query(collection(db, "teams", teamId, "tacticalNotes", noteId, "replies"), ...clauses, limit(TACTICAL_HISTORY_PAGE_SIZE))), TACTICAL_HISTORY_PAGE_SIZE);
+}
+export async function getTacticalNoteHistory(teamId, noteId, { responseCursor, progressCursor } = {}) {
+  const parent = doc(db, "teams", teamId, "tacticalNotes", noteId);
+  const fetchPage = async (name, field, cursor) => {
+    if (cursor === false) return { items: [], cursor: false, hasMore: false };
+    const clauses = [orderBy(field, "desc")];
+    if (cursor) clauses.push(startAfter(cursor));
+    return tacticalPage(await getDocs(query(collection(parent, name), ...clauses, limit(TACTICAL_HISTORY_PAGE_SIZE))), TACTICAL_HISTORY_PAGE_SIZE);
+  };
+  const [responses, progress] = await Promise.all([fetchPage("responses", "createdAt", responseCursor), fetchPage("progressHistory", "updatedAt", progressCursor)]);
+  return { responses: responses.items, progressHistory: progress.items, responseCursor: responses.cursor,
+    progressCursor: progress.cursor, hasMoreResponses: responses.hasMore, hasMoreProgress: progress.hasMore };
+}
+export async function recordTacticalNoteResponse(teamId, note, status, text = "") {
+  if (!["read", "understood", "question"].includes(status) || text.length > 2000 || (status === "question" && !text.trim())) throw new Error("質問本文を入力してください（2000文字以内）。");
+  const uid = auth.currentUser.uid, version = note.contentVersion || 1;
+  const parent = doc(db, "teams", teamId, "tacticalNotes", note.id);
+  const index = doc(db, "teams", teamId, "tacticalNoteSummaries", note.id);
+  const responses = collection(parent, "responses");
+  if (status !== "question") {
+    // Narrowly check legacy auto-ID records without fetching the person's entire history.
+    const existing = await getDocs(query(responses, where("uid", "==", uid), where("version", "==", version), where("status", "==", status), limit(1)));
+    if (existing.docs.length) return;
+  }
+  const target = status === "question" ? doc(responses) : doc(responses, noteAcknowledgementId(note, uid, status));
+  return runTransaction(db, async (transaction) => {
+    const current = (await transaction.get(parent)).data();
+    const summary = (await transaction.get(index)).data();
+    const saved = await transaction.get(target);
+    if (!current || (current.contentVersion || 1) !== version || !current.assigneeUids?.includes(uid) || !isNoteSummaryCurrent(current, summary)) {
+      throw new Error("内容または確認対象者が変更されています。少し待って開き直してください。");
+    }
+    if (saved.exists()) return;
+    transaction.set(target, { uid, version, status, text: status === "question" ? text.trim() : "", createdAt: serverTimestamp(),
+      ...(status === "question" ? { resolved: false, resolvedAt: null, resolvedBy: null } : {}) });
+  });
+}
+export function resolveTacticalNoteQuestion(teamId, noteId, responseId) {
+  const target = doc(db, "teams", teamId, "tacticalNotes", noteId, "responses", responseId);
+  return runTransaction(db, async (transaction) => {
+    const response = (await transaction.get(target)).data();
+    if (!response || response.status !== "question" || response.uid !== auth.currentUser.uid) throw new Error("質問した本人だけが解決済みにできます。");
+    if (response.resolved === true) return;
+    transaction.update(target, { resolved: true, resolvedAt: serverTimestamp(), resolvedBy: auth.currentUser.uid });
+  });
+}
+export function replyTacticalNoteQuestion(teamId, noteId, responseId, text) {
+  if (!text.trim() || text.length > 2000) throw new Error("返信は1〜2000文字で入力してください。");
+  return addDoc(collection(db, "teams", teamId, "tacticalNotes", noteId, "replies"),
+    { responseId, uid: auth.currentUser.uid, text: text.trim(), createdAt: serverTimestamp() });
+}
+export async function recordTacticalTaskProgress(teamId, noteId, taskId, uid, status, comment = "", expectedRevision) {
+  if (!["done", "pending", "returned"].includes(status) || comment.length > 2000 || (status === "returned" && !comment.trim())) throw new Error("差し戻し理由を入力してください（2000文字以内）。");
+  const parent = doc(db, "teams", teamId, "tacticalNotes", noteId);
+  const target = doc(parent, "progress", `${taskId}_${uid}`);
+  const history = doc(collection(parent, "progressHistory"));
+  return runTransaction(db, async (transaction) => {
+    const note = (await transaction.get(parent)).data();
+    const task = note?.tasks?.[taskId];
+    if (!task?.assigneeUids.includes(uid)) throw new Error("担当者またはタスクが変更されました。");
+    if (task.revision !== expectedRevision) throw new Error("タスクが変更されています。新しい内容を確認してから報告してください。");
+    const data = { taskId, uid, taskRevision: task.revision, status, comment: comment.trim(),
+      updatedBy: auth.currentUser.uid, updatedAt: serverTimestamp(), completedAt: status === "done" ? serverTimestamp() : null };
+    transaction.set(target, data); transaction.set(history, { ...data, taskText: task.text });
+  });
 }
 export const DEFAULT_MAX_TEAMS_PER_USER = 5;
 export const SHARP_RISE_MAX_TEAMS_PER_USER = 100;

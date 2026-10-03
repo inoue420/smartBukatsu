@@ -37,11 +37,16 @@ service cloud.firestore {
 
     function validNote() {
       let data = request.resource.data;
-      return data.keys().hasOnly(['title', 'description', 'assigneeUids', 'clips', 'sourceProjectId', 'authorUid', 'authorName', 'createdAt', 'updatedAt'])
+      return data.keys().hasOnly(['title', 'description', 'assigneeUids', 'clips', 'sourceProjectId', 'authorUid', 'authorName', 'createdAt', 'updatedAt', 'images', 'tasks', 'contentVersion', 'draft'])
         && data.title is string && data.title.size() > 0 && data.title.size() <= 120
         && data.description is string && data.description.size() <= 5000
         && data.assigneeUids is list && data.assigneeUids.size() <= 500
-        && data.clips is list && data.clips.size() > 0 && data.clips.size() <= 100
+        && data.clips is list && data.clips.size() <= 100
+        && data.get('images', []) is list && data.get('images', []).size() <= 6
+        && (data.clips.size() > 0 || data.get('images', []).size() > 0 || data.get('draft', false) == true)
+        && data.get('tasks', {}) is map && data.get('tasks', {}).size() <= 30
+        && data.get('contentVersion', 1) is int && data.get('contentVersion', 1) > 0
+        && data.get('draft', false) is bool
         && data.sourceProjectId is string && data.authorName is string
         && data.authorUid is string && data.createdAt is timestamp
         && data.updatedAt == request.time;
@@ -158,15 +163,98 @@ service cloud.firestore {
         allow read, write: if isMember(teamId);
       }
 
+      match /tacticalNoteSummaries/{noteId} {
+        allow read: if noteReader(teamId);
+        allow write: if false;
+      }
+      match /system/{documentId} {
+        allow read, write: if false;
+      }
       match /tacticalNotes/{noteId} {
+        function parentNote() { return get(/databases/$(database)/documents/teams/$(teamId)/tacticalNotes/$(noteId)).data; }
+        function parentEditor() { return noteReader(teamId) && (parentNote().authorUid == uid() || getRole(teamId) in ['owner', 'admin']); }
+        function summaryCurrent() {
+          let index = get(/databases/$(database)/documents/teams/$(teamId)/tacticalNoteSummaries/$(noteId)).data;
+          return index.noteUpdatedAt == parentNote().updatedAt
+            && index.contentVersion == parentNote().get('contentVersion', 1);
+        }
+        function validProgress(history) {
+          let data = request.resource.data;
+          let task = parentNote().get('tasks', {})[data.taskId];
+          return data.keys().hasOnly(['taskId', 'uid', 'taskRevision', 'status', 'comment', 'updatedBy', 'updatedAt', 'completedAt', 'taskText'])
+            && (!data.keys().hasAny(['taskText']) || (history && data.taskText == task.text))
+            && data.taskId is string && data.uid is string && data.uid in task.assigneeUids
+            && data.taskRevision == task.revision
+            && data.comment is string && data.comment.size() <= 2000
+            && data.updatedBy == uid() && data.updatedAt == request.time
+            && ((data.status == 'done' && data.completedAt == request.time)
+              || (data.status in ['pending', 'returned'] && data.completedAt == null))
+            && ((data.uid == uid() && data.status in ['done', 'pending'])
+              || (parentEditor() && data.status == 'returned' && data.comment.size() > 0));
+        }
         allow read: if noteReader(teamId);
         allow create: if notePoster(teamId) && validNote()
+          && request.resource.data.get('contentVersion', 1) == 1
           && request.resource.data.authorUid == uid() && request.resource.data.createdAt == request.time;
         allow update: if noteEditor(teamId) && validNote()
+          && (request.resource.data.get('contentVersion', 1) == resource.data.get('contentVersion', 1)
+            || (request.resource.data.get('contentVersion', 1) == resource.data.get('contentVersion', 1) + 1
+              && request.resource.data.diff(resource.data).affectedKeys().hasAny(['title', 'description', 'assigneeUids', 'clips', 'images'])))
           && request.resource.data.authorUid == resource.data.authorUid
           && request.resource.data.authorName == resource.data.authorName
           && request.resource.data.createdAt == resource.data.createdAt;
         allow delete: if noteEditor(teamId);
+        match /responses/{responseId} {
+          allow read: if noteReader(teamId);
+          allow create: if noteReader(teamId) && uid() in parentNote().assigneeUids && summaryCurrent()
+            && request.resource.data.keys().hasOnly(['uid', 'version', 'status', 'text', 'createdAt', 'resolved', 'resolvedAt', 'resolvedBy'])
+            && request.resource.data.uid == uid() && request.resource.data.version == parentNote().get('contentVersion', 1)
+            && request.resource.data.status in ['read', 'understood', 'question']
+            && request.resource.data.text is string && request.resource.data.text.size() <= 2000
+            && (request.resource.data.status != 'question' || request.resource.data.text.size() > 0)
+            && request.resource.data.get('resolved', false) == false
+            && request.resource.data.get('resolvedAt', null) == null && request.resource.data.get('resolvedBy', null) == null
+            && request.resource.data.createdAt == request.time;
+          allow update: if noteReader(teamId) && resource.data.status == 'question' && resource.data.uid == uid()
+            && resource.data.get('resolved', false) == false
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['resolved', 'resolvedAt', 'resolvedBy'])
+            && request.resource.data.resolved == true && request.resource.data.resolvedAt == request.time
+            && request.resource.data.resolvedBy == uid();
+          allow delete: if parentEditor();
+        }
+        match /attachmentUploads/{uploadId} {
+          allow read: if parentEditor();
+          allow create: if parentEditor() && uploadId.matches('^[a-zA-Z0-9_-]+$')
+            && request.resource.data.keys().hasOnly(['uploaderUid', 'storagePath', 'size', 'createdAt'])
+            && request.resource.data.uploaderUid == uid() && request.resource.data.createdAt == request.time
+            && request.resource.data.size is int && request.resource.data.size > 0 && request.resource.data.size <= 10 * 1024 * 1024
+            && request.resource.data.storagePath == 'tacticalNoteAttachments/' + teamId + '/' + noteId + '/' + uploadId + '.jpg';
+          allow update, delete: if false;
+        }
+        match /replies/{replyId} {
+          allow read: if noteReader(teamId);
+          allow create: if parentEditor()
+            && request.resource.data.keys().hasOnly(['responseId', 'uid', 'text', 'createdAt'])
+            && request.resource.data.uid == uid() && request.resource.data.text is string
+            && request.resource.data.text.size() > 0 && request.resource.data.text.size() <= 2000
+            && get(/databases/$(database)/documents/teams/$(teamId)/tacticalNotes/$(noteId)/responses/$(request.resource.data.responseId)).data.status == 'question'
+            && request.resource.data.createdAt == request.time;
+          allow update: if false;
+          allow delete: if parentEditor();
+        }
+        match /progress/{progressId} {
+          allow read: if noteReader(teamId);
+          allow create, update: if noteReader(teamId) && validProgress(false)
+            && progressId == request.resource.data.taskId + '_' + request.resource.data.uid;
+          allow delete: if parentEditor();
+        }
+        match /progressHistory/{historyId} {
+          allow read: if noteReader(teamId);
+          allow create: if noteReader(teamId) && validProgress(true)
+            && request.resource.data.diff(getAfter(/databases/$(database)/documents/teams/$(teamId)/tacticalNotes/$(noteId)/progress/$(request.resource.data.taskId + '_' + request.resource.data.uid)).data).affectedKeys().hasOnly(['taskText']);
+          allow update: if false;
+          allow delete: if parentEditor();
+        }
       }
 
       match /tagGroups/{tagGroupId} {
