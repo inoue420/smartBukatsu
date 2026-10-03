@@ -208,6 +208,8 @@ const ProjectListScreen = ({
   navigation,
   route,
   notePlayback = null,
+  notePlaybackState = null,
+  onNotePlaybackStateChange,
   noteHeader = null,
   onCloseNotePlayback,
   isAdmin,
@@ -491,8 +493,27 @@ const ProjectListScreen = ({
     });
   }, [allClips, selectedHighlightTags, searchMode]);
 
-  const [playbackMode, setPlaybackMode] = useState("stop");
-  const playbackModeRef = useRef("stop");
+  const initialNotePlayback = useRef(null);
+  if (!initialNotePlayback.current) {
+    const saved = notePlayback && notePlaybackState;
+    const found = saved ? currentClips.findIndex((clip) => noteClipKey(clip) === saved.clipKey) : -1;
+    const index = found >= 0 ? found : 0, clip = currentClips[index];
+    const unchanged = Boolean(saved && found >= 0 && clip?.url && saved.sourceUrl === clip.sourceUrl &&
+      saved.start === clip.start && saved.end === clip.end);
+    const finished = unchanged && saved.finished === true;
+    const validPosition = unchanged && Number.isFinite(saved.positionSeconds) &&
+      saved.positionSeconds >= clip.start && saved.positionSeconds < clip.end;
+    const positionSeconds = finished ? clip.end : validPosition ? saved.positionSeconds : clip?.start || 0;
+    initialNotePlayback.current = { index, positionSeconds, finished,
+      playbackMode: saved && ["stop", "single", "all"].includes(saved.playbackMode) ? saved.playbackMode : "stop",
+      resume: saved && clip ? { clipKey: noteClipKey(clip), sourceUrl: clip.sourceUrl, start: clip.start, end: clip.end,
+        positionSeconds, isPlaying: validPosition && !finished && saved.isPlaying === true } : null };
+  }
+  const noteResumeRef = useRef(initialNotePlayback.current.resume);
+  const notePlaybackCallback = useRef(onNotePlaybackStateChange);
+  notePlaybackCallback.current = onNotePlaybackStateChange;
+  const [playbackMode, setPlaybackMode] = useState(initialNotePlayback.current.playbackMode);
+  const playbackModeRef = useRef(initialNotePlayback.current.playbackMode);
   const handleCyclePlaybackMode = () => {
     const nextMode = { stop: "single", single: "all", all: "stop" }[playbackModeRef.current];
     // Update synchronously so pending player callbacks see the latest choice.
@@ -500,7 +521,7 @@ const ProjectListScreen = ({
     setPlaybackMode(nextMode);
   };
 
-  const [currentClipIndex, setCurrentClipIndex] = useState(0);
+  const [currentClipIndex, setCurrentClipIndex] = useState(initialNotePlayback.current.index);
   const [clipSelectionVersion, setClipSelectionVersion] = useState(0);
   const transitionRef = useRef(null);
   if (!transitionRef.current) {
@@ -508,21 +529,22 @@ const ProjectListScreen = ({
   }
   const transition = transitionRef.current;
   const requestClipTransition = () => {
+    noteResumeRef.current = null;
     transition.cancel();
     setClipSelectionVersion((version) => version + 1);
     setIsPlaying(false);
   };
 
-  const [videoTime, setVideoTime] = useState(0);
+  const [videoTime, setVideoTime] = useState(notePlayback ? initialNotePlayback.current.positionSeconds : 0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [notePlaybackError, setNotePlaybackError] = useState(null);
   const [isClipEditing, setIsClipEditing] = useState(false);
   const isClipEditingRef = useRef(false);
-  const [hasReachedPlaylistEnd, setHasReachedPlaylistEnd] = useState(false);
+  const [hasReachedPlaylistEnd, setHasReachedPlaylistEnd] = useState(initialNotePlayback.current.finished);
 
   const videoRef = useRef(null);
   const youtubeRef = useRef(null);
-  const hasReachedPlaylistEndRef = useRef(false);
+  const hasReachedPlaylistEndRef = useRef(initialNotePlayback.current.finished);
   const [youtubeReadyPlayer, setYoutubeReadyPlayer] = useState(null);
   const isYoutubeReady = Boolean(youtubeReadyPlayer) &&
     youtubeReadyPlayer === youtubeRef.current;
@@ -716,7 +738,11 @@ const ProjectListScreen = ({
     if (!currentClip || isClipEditing || hasReachedPlaylistEnd ||
         activeTab !== "summary" || !selectedHighlightProjectId) return undefined;
 
-    const token = transition.begin(clipPlaybackKey, currentClip);
+    const saved = notePlayback && noteResumeRef.current;
+    const resume = saved && saved.clipKey === noteClipKey(currentClip) && saved.sourceUrl === currentClip.sourceUrl &&
+      saved.start === currentClip.start && saved.end === currentClip.end ? saved : null;
+    const token = transition.begin(clipPlaybackKey, resume ? { ...currentClip, start: resume.positionSeconds } : currentClip);
+    token.shouldPlay = resume ? resume.isPlaying : true;
     setIsPlaying(false);
     const fail = () => {
       if (!transition.isCurrent(token)) return;
@@ -760,15 +786,15 @@ const ProjectListScreen = ({
           return;
         }
         // Keep native status callbacks blocked until both commands complete.
-        const playingStatus = await player.playAsync();
+        const playingStatus = token.shouldPlay ? await player.playAsync() : status;
         if (!transition.isCurrent(token) || player !== videoRef.current) return;
         if (!playingStatus.isLoaded ||
             !transition.confirm(token, status.positionMillis / 1000)) {
           fail();
           return;
         }
-        setVideoTime(Math.floor(status.positionMillis / 1000));
-        setIsPlaying(true);
+        setVideoTime(notePlayback ? status.positionMillis / 1000 : Math.floor(status.positionMillis / 1000));
+        setIsPlaying(token.shouldPlay);
       }).catch(fail);
     }
 
@@ -809,12 +835,12 @@ const ProjectListScreen = ({
               !Number.isFinite(currentTime)) return;
           if (token.phase === "seeking") {
             if (transition.confirm(token, currentTime)) {
-              setVideoTime(Math.floor(currentTime));
-              setIsPlaying(true);
+              setVideoTime(notePlayback ? currentTime : Math.floor(currentTime));
+              setIsPlaying(token.shouldPlay !== false);
             }
             return;
           }
-          setVideoTime(Math.floor(currentTime));
+          setVideoTime(notePlayback ? currentTime : Math.floor(currentTime));
           if (transition.consumeEnd(token, currentTime)) {
             playNextClip(token);
           }
@@ -847,7 +873,7 @@ const ProjectListScreen = ({
     if (!transition.matches(clipPlaybackKey) || !transition.canObserve(token)) return;
 
     const positionMillis = status.positionMillis || 0;
-    setVideoTime(Math.floor(positionMillis / 1000));
+    setVideoTime(notePlayback ? positionMillis / 1000 : Math.floor(positionMillis / 1000));
 
     if (transition.consumeEnd(token, positionMillis / 1000, status.didJustFinish)) {
       playNextClip(token);
@@ -877,6 +903,18 @@ const ProjectListScreen = ({
       setIsPlaying(false);
     }
   }, [clipPlaybackKey, currentClipIndex, currentClips.length]);
+
+  useEffect(() => {
+    if (!notePlayback || !currentClip) return;
+    const token = transition.current();
+    const seeking = transition.matches(clipPlaybackKey) && token.phase === "seeking";
+    const positionSeconds = hasReachedPlaylistEnd ? currentClip.end : seeking ? token.start :
+      Number.isFinite(videoTime) && videoTime >= currentClip.start && videoTime < currentClip.end ? videoTime : currentClip.start;
+    notePlaybackCallback.current?.({ clipKey: noteClipKey(currentClip), sourceUrl: currentClip.sourceUrl,
+      start: currentClip.start, end: currentClip.end, positionSeconds,
+      isPlaying: Boolean(currentClip.url) && !hasReachedPlaylistEnd && (seeking ? token.shouldPlay !== false : isPlaying),
+      playbackMode, finished: hasReachedPlaylistEnd });
+  }, [notePlayback?.id, clipPlaybackKey, videoTime, isPlaying, playbackMode, hasReachedPlaylistEnd]);
 
   const formatTime = (seconds) => {
     const m = Math.floor(seconds / 60)
@@ -1857,14 +1895,7 @@ const ProjectListScreen = ({
       )}
 
       {renderNoteSelectionControls()}
-      {notePlayback && !isLandscape && <ScrollView keyboardShouldPersistTaps="handled" style={{ maxHeight: 180, flexGrow: 0 }} contentContainerStyle={{ paddingHorizontal: 15 }}>{noteHeader}</ScrollView>}
-      {notePlayback && currentClip && (
-        <View style={{ paddingHorizontal: 15, paddingVertical: 6, backgroundColor: COLORS.card }}>
-          <Text accessibilityLiveRegion="off">
-            再生位置 {formatTime(videoTime)}　区間 {formatTime(currentClip.start)}〜{formatTime(currentClip.end)}
-          </Text>
-        </View>
-      )}
+      {notePlayback && !isLandscape && <ScrollView keyboardShouldPersistTaps="handled" style={{ maxHeight: 210, flexGrow: 0 }} contentContainerStyle={{ paddingHorizontal: 15 }}>{noteHeader}</ScrollView>}
       <View style={[styles.content, isLandscape && { padding: 0 }, scrollNotePickerDetail && styles.notePickerFlow]}>
         {activeTab === "summary" ? (
           selectedHighlightProject ? (

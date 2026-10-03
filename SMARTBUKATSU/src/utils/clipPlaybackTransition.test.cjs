@@ -128,6 +128,7 @@ function harness(overrides = {}) {
     hasReachedPlaylistEnd: false, hasReachedPlaylistEndRef: { current: false },
     activeTab: "summary", selectedHighlightProjectId: "project", ytId: null,
     notePlayback: null,
+    noteResumeRef: { current: null }, noteClipKey: require("./tacticalNotes").noteClipKey,
     setNotePlaybackError: (key) => events.alerts.push(key),
     isPlaying: false, isYoutubeReady: false, videoRef: { current: null },
     youtubeRef: { current: null }, youtubeTimeRequestRef: { current: null },
@@ -472,3 +473,54 @@ test("a delayed error from the previous note scene cannot stop the new selection
   assert.equal(h.events.playing.at(-1), false);
   assert.deepEqual(h.events.alerts, ["new-scene"]);
 });
+
+for (const playing of [true, false]) {
+  const restoredClip = { ...clip, tagId: "second", url: "https://example.com/video", sourceUrl: "https://example.com/video", start: 30, end: 38 };
+  const saved = { clipKey: require("./tacticalNotes").noteClipKey(restoredClip), sourceUrl: restoredClip.sourceUrl,
+    start: 30, end: 38, positionSeconds: 31.25, isPlaying: playing };
+
+  test(`native restoration waits for readiness and seek confirmation before restoring ${playing ? "playing" : "paused"} state`, async () => {
+    const h = harness({ notePlayback: { id: "note" }, currentClip: restoredClip, noteResumeRef: { current: saved } });
+    const seeking = deferred(), calls = [];
+    let loaded = false;
+    h.context.videoRef.current = {
+      getStatusAsync: async () => ({ isLoaded: loaded, positionMillis: 80000 }),
+      setStatusAsync: (status) => { calls.push(["seek", status.positionMillis, status.shouldPlay]); return seeking.promise; },
+      playAsync: async () => { calls.push(["play"]); return { isLoaded: true }; },
+    };
+    const stopBeforeLoad = h.start(); await flush();
+    assert.deepEqual(calls, []); assert.equal(h.events.playing.includes(true), false);
+    stopBeforeLoad(); loaded = true; h.start(); await flush();
+    assert.deepEqual(calls, [["seek", 31250, false]]);
+    h.context.handlePlaybackStatusUpdate({ isLoaded: true, positionMillis: 80000, isPlaying: true });
+    assert.deepEqual(h.events.indexes, []); assert.equal(h.events.playing.includes(true), false);
+    seeking.resolve({ isLoaded: true, positionMillis: 31250, isPlaying: false }); await flush();
+    assert.deepEqual(calls, playing ? [["seek", 31250, false], ["play"]] : [["seek", 31250, false]]);
+    assert.equal(h.events.playing.at(-1), playing); assert.equal(h.events.times.at(-1), 31.25);
+    h.context.handlePlaybackStatusUpdate({ isLoaded: true, positionMillis: 38000, isPlaying: playing });
+    assert.deepEqual(h.events.indexes, [1]);
+  });
+
+  test(`YouTube restoration rejects stale position and state callbacks before restoring ${playing ? "playing" : "paused"} state`, async () => {
+    const h = harness({ notePlayback: { id: "note" }, currentClip: restoredClip, noteResumeRef: { current: saved },
+      ytId: "youtube", isYoutubeReady: false });
+    let seconds = 80;
+    const seeks = [], player = { seekTo: (position) => seeks.push(position), getCurrentTime: async () => seconds };
+    h.context.youtubeRef.current = player;
+    const waiting = h.start();
+    assert.deepEqual(seeks, []);
+    h.context.onYoutubeStateChange("playing"); assert.equal(h.events.playing.includes(true), false);
+    waiting(); h.context.isYoutubeReady = true; h.context.youtubeReadyPlayer = player;
+    h.start(); h.poll();
+    assert.deepEqual(seeks, [31.25]);
+    await h.events.intervals.at(-1)();
+    assert.equal(h.events.playing.includes(true), false); assert.deepEqual(h.events.indexes, []);
+    seconds = 31.25; await h.events.intervals.at(-1)();
+    assert.equal(h.events.playing.at(-1), playing); assert.equal(h.events.times.at(-1), 31.25);
+    assert.equal(h.context.transition.current().phase, "playing");
+    if (playing) {
+      h.context.isPlaying = true; seconds = 38; await h.events.intervals.at(-1)();
+      assert.deepEqual(h.events.indexes, [1]);
+    }
+  });
+}

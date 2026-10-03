@@ -11,6 +11,7 @@ const {
   getFirestore,
   FieldValue,
   Timestamp,
+  FieldPath,
 } = require("firebase-admin/firestore");
 const { getAuth } = require("firebase-admin/auth");
 const { getStorage } = require("firebase-admin/storage");
@@ -18,6 +19,21 @@ const { getStorage } = require("firebase-admin/storage");
 initializeApp();
 
 const firestore = getFirestore();
+const { createTacticalNoteBackend } = require("./tacticalNoteBackend");
+const tacticalNotes = createTacticalNoteBackend({ firestore, getStorage, FieldValue, Timestamp, FieldPath, HttpsError });
+exports.cleanupTacticalNoteAttachments = onDocumentWritten({
+  document: "teams/{teamId}/tacticalNotes/{noteId}", region: "asia-northeast1", retry: true,
+}, tacticalNotes.handleNoteWrite);
+exports.updateTacticalNoteResponseSummary = onDocumentWritten({
+  document: "teams/{teamId}/tacticalNotes/{noteId}/responses/{responseId}", region: "asia-northeast1", retry: true,
+}, tacticalNotes.handleResponseWrite);
+exports.updateTacticalNoteProgressSummary = onDocumentWritten({
+  document: "teams/{teamId}/tacticalNotes/{noteId}/progress/{progressId}", region: "asia-northeast1", retry: true,
+}, tacticalNotes.handleProgressWrite);
+exports.ensureTacticalNoteSummaries = onCall({ region: "asia-northeast1", timeoutSeconds: 300 }, tacticalNotes.ensureSummaries);
+exports.cleanupExpiredTacticalNoteUploads = onSchedule({
+  region: "asia-northeast1", schedule: "30 3 * * *", timeZone: "Asia/Tokyo", timeoutSeconds: 540, retryCount: 3,
+}, tacticalNotes.cleanupExpiredUploads);
 const DEFAULT_MAX_TEAMS_PER_USER = 5;
 const SHARP_RISE_MAX_TEAMS_PER_USER = 100;
 const SHARP_RISE_INVITE_CODE = "AWUH95";
@@ -562,15 +578,17 @@ const getAccountDocumentUpdates = (data, context) => {
 
 const getAccountDeletionContext = async (uid) => {
   const userRef = firestore.collection("users").doc(uid);
-  const [userSnap, ownedTeamsSnapshot] = await Promise.all([
+  const [userSnap, ownedTeamsSnapshot, tacticalTeamIds] = await Promise.all([
     userRef.get(),
     firestore.collection("teams").where("createdBy", "==", uid).get(),
+    tacticalNotes.relatedTeamIds(uid),
   ]);
   const userData = userSnap.exists ? userSnap.data() || {} : {};
   const teamIds = [
     ...new Set([
       ...normalizeTeamIds(userData),
       ...ownedTeamsSnapshot.docs.map((teamSnapshot) => teamSnapshot.id),
+      ...tacticalTeamIds,
     ]),
   ];
   const teamEntries = await Promise.all(
@@ -675,7 +693,7 @@ const anonymizeAccountDataInTeam = async ({ uid, teamEntry }) => {
 const anonymizeAccountStorageInTeam = async ({ uid, teamId }) => {
   const bucket = getStorage().bucket();
   const attachmentFileResults = await Promise.all(
-    ["calendarAttachments", "dailyReportAttachments"].map((root) =>
+    ["calendarAttachments", "dailyReportAttachments", "tacticalNoteAttachments"].map((root) =>
       bucket.getFiles({ prefix: `${root}/${teamId}/` }),
     ),
   );
@@ -685,11 +703,12 @@ const anonymizeAccountStorageInTeam = async ({ uid, teamId }) => {
   for (const file of files) {
     const [metadata] = await file.getMetadata();
     const customMetadata = metadata?.metadata || {};
-    if (customMetadata.uploadedBy !== uid) continue;
+    if (customMetadata.uploadedBy !== uid && customMetadata.uploaderUid !== uid) continue;
     await file.setMetadata({
       metadata: {
         ...customMetadata,
-        uploadedBy: DELETED_USER_UID,
+        ...(customMetadata.uploadedBy === uid ? { uploadedBy: DELETED_USER_UID } : {}),
+        ...(customMetadata.uploaderUid === uid ? { uploaderUid: DELETED_USER_UID } : {}),
         ...(customMetadata.authorUid === uid
           ? { authorUid: DELETED_USER_UID }
           : {}),
@@ -1709,6 +1728,7 @@ exports.deleteUserAccount = onCall(
           uid,
           teamEntry,
         });
+        anonymizedDocumentCount += await tacticalNotes.anonymizeTeam(teamEntry.teamRef, uid);
         anonymizedStorageFileCount += await anonymizeAccountStorageInTeam({
           uid,
           teamId: teamEntry.teamId,
@@ -1937,7 +1957,7 @@ exports.deleteTeam = onCall(
 
       const bucket = getStorage().bucket();
       const attachmentFileResults = await Promise.all(
-        ["calendarAttachments", "dailyReportAttachments"].map((root) =>
+        ["calendarAttachments", "dailyReportAttachments", "tacticalNoteAttachments"].map((root) =>
           bucket.getFiles({ prefix: `${root}/${teamId}/` }),
         ),
       );

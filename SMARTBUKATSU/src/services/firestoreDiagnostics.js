@@ -4,6 +4,8 @@ const SUBSCRIPTION_NAMES = new Set([
   "personalEvents", "clubEvents", "tagGroups", "teamData", "teamMembers",
   "authUser", "authMembership", "notifications", "notificationSummary",
   "notificationPreferences", "workspaceTeam",
+  "tacticalNoteSummaries", "tacticalNote", "tacticalNoteSummary",
+  "tacticalNote-responses", "tacticalNote-progress",
 ]);
 const MAX_LIFECYCLE_EVENTS = 60;
 
