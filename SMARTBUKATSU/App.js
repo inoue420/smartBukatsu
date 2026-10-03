@@ -4,9 +4,13 @@ import {
   useNavigationContainerRef,
 } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
-import { Alert, LogBox, ActivityIndicator, View, Text } from "react-native";
+import { Alert, LogBox, ActivityIndicator, View, Text, Platform } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 import NetInfo from "@react-native-community/netinfo";
+
+// On iOS, measure screen insets above the banner instead of reusing its bottom inset.
+const NavigationArea = Platform.OS === "ios" ? SafeAreaProvider : View;
 
 import { AdsProvider, useAds } from "./src/ads/AdManager";
 import AppBannerAd from "./src/ads/AppBannerAd";
@@ -45,6 +49,7 @@ import NoticeBoardScreen from "./src/screens/NoticeBoardScreen";
 import SettingsScreen from "./src/screens/SettingsScreen";
 import DiaryScreen from "./src/screens/DiaryScreen";
 import ProjectListScreen from "./src/screens/ProjectListScreen";
+import TacticalNotesScreen from "./src/screens/TacticalNotesScreen";
 import ProjectDetailScreen from "./src/screens/ProjectDetailScreen";
 import TagGroupEditScreen from "./src/screens/TagGroupEditScreen";
 import CalendarScreen from "./src/screens/CalendarScreen";
@@ -223,6 +228,7 @@ function AppContent() {
             assignedStaff: m.assignedStaff || null,
             staffScope: m.staffScope || "all",
             canUploadVideos: Boolean(m.canUploadVideos),
+            canPostTacticalNotes: Boolean(m.canPostTacticalNotes),
             canEditTags: Boolean(m.canEditTags),
             canEditCalendar: Boolean(m.canEditCalendar),
             grade: m.grade || "",
@@ -301,7 +307,8 @@ function AppContent() {
   };
 
   return (
-    <View style={{ flex: 1 }}>
+    <SafeAreaProvider>
+      <NavigationArea style={{ flex: 1 }}>
       <NavigationContainer
         ref={navigationRef}
         onReady={handleNavigationReady}
@@ -434,6 +441,12 @@ function AppContent() {
               )}
             </Stack.Screen>
 
+            <Stack.Screen name="TacticalNotes">
+              {(props) => <TacticalNotesScreen {...props} key={activeTeamId}
+                currentUser={safeUserName} currentUserUid={currentUserUid}
+                projects={projects} highlightProjects={highlightProjects} userProfiles={userProfiles} />}
+            </Stack.Screen>
+
             <Stack.Screen name="ProjectDetail">
               {(props) => (
                 <ProjectDetailScreen
@@ -523,8 +536,9 @@ function AppContent() {
         )}
         </Stack.Navigator>
       </NavigationContainer>
+      </NavigationArea>
       <AppBannerAd />
-    </View>
+    </SafeAreaProvider>
   );
 }
 
