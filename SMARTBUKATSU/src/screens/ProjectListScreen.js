@@ -29,6 +29,8 @@ import * as ScreenOrientation from "expo-screen-orientation";
 import { useAuth } from "../AuthContext";
 import { canEditRecordedTag } from "../utils/recordedTagPermissions";
 import { createClipPlaybackTransition } from "../utils/clipPlaybackTransition";
+import { CommonActions } from "@react-navigation/native";
+import { canReadNotes, canPostNotes, noteClipKey, toggleNoteClipSelection, buildNoteClips, buildNotePlaybackClips } from "../utils/tacticalNotes";
 import {
   createProject,
   createHighlightProject,
@@ -52,6 +54,7 @@ const COLORS = {
 };
 
 const DEFAULT_TAG_GROUP_ID = "__default_tag_group__";
+const EMPTY_LIST = [];
 const DEFAULT_TAGS = ["得点", "罰則", "2min", "ナイス"];
 const DEFAULT_TAG_GROUP = {
   id: DEFAULT_TAG_GROUP_ID,
@@ -60,6 +63,9 @@ const DEFAULT_TAG_GROUP = {
 };
 const DEFAULT_CLIP_PRE_SECONDS = 5;
 const DEFAULT_CLIP_POST_SECONDS = 3;
+// Set false to restore the previous fixed layout for the note scene picker.
+// Normal video viewing never uses this layout switch.
+const NOTE_PICKER_SCROLL_LAYOUT = true;
 const PROJECT_TYPE_ORDER = ["試合", "練習", "その他"];
 
 const normalizeProjectType = (project) =>
@@ -200,13 +206,17 @@ const normalizeClipSeconds = (value, fallback) => {
 
 const ProjectListScreen = ({
   navigation,
+  route,
+  notePlayback = null,
+  noteHeader = null,
+  onCloseNotePlayback,
   isAdmin,
   currentUser,
   currentUserUid = "",
   projects,
   setProjects,
-  highlightProjects = [],
-  tagGroups = [],
+  highlightProjects = EMPTY_LIST,
+  tagGroups = EMPTY_LIST,
   userProfiles,
 }) => {
   const currentUserProfile =
@@ -230,12 +240,21 @@ const ProjectListScreen = ({
 
   const { user, activeTeamId } = useAuth();
 
-  const [activeTab, setActiveTab] = useState("list");
+  const notePicker = route?.params?.notePicker;
+  const useScrollableNotePicker = Boolean(notePicker) && NOTE_PICKER_SCROLL_LAYOUT;
+  const [noteActionsOpen, setNoteActionsOpen] = useState(false);
+  const [noteSelection, setNoteSelection] = useState([]);
+  const [activeTab, setActiveTab] = useState(notePicker || notePlayback ? "summary" : "list");
   const [selectedHighlightProjectId, setSelectedHighlightProjectId] =
-    useState(null);
+    useState(notePlayback?.id || notePicker?.sourceId || null);
+  const noteSelectionEnabled = notePicker
+    ? canReadNotes(currentUserProfile) && notePicker.teamId === activeTeamId
+    : canPostNotes(currentUserProfile) && noteActionsOpen;
+  const attachedNoteKeys = notePicker?.existingKeys || [];
 
   const { width, height } = useWindowDimensions();
-  const isLandscape = width > height;
+  // The scrolling picker keeps a single column in either device orientation.
+  const isLandscape = width > height && !useScrollableNotePicker;
 
   const [isSideUiVisible, setIsSideUiVisible] = useState(false);
   const [clipToastMessage, setClipToastMessage] = useState(null);
@@ -373,11 +392,15 @@ const ProjectListScreen = ({
   );
 
   const selectedHighlightProject = useMemo(() => {
+    if (notePlayback) return notePlayback;
     return (
       activeHighlightProjects.find((p) => p.id === selectedHighlightProjectId) ||
       null
     );
-  }, [activeHighlightProjects, selectedHighlightProjectId]);
+  }, [activeHighlightProjects, selectedHighlightProjectId, notePlayback]);
+  const scrollNotePickerDetail = useScrollableNotePicker && Boolean(selectedHighlightProject);
+  const ScreenBody = scrollNotePickerDetail ? ScrollView : notePlayback ? KeyboardAvoidingView : View;
+  const PlaylistBody = scrollNotePickerDetail ? View : ScrollView;
 
   const selectedHighlightVideoIds = useMemo(() => {
     return new Set(selectedHighlightProject?.videoIds || []);
@@ -391,10 +414,11 @@ const ProjectListScreen = ({
   // ==========================================
   // プロジェクト（プレイリスト）用ステート
   // ==========================================
-  const [selectedHighlightTags, setSelectedHighlightTags] = useState([]);
-  const [searchMode, setSearchMode] = useState("OR");
+  const [selectedHighlightTags, setSelectedHighlightTags] = useState(notePicker?.tags || []);
+  const [searchMode, setSearchMode] = useState(notePicker?.mode || "OR");
 
   const { allClips, availableTags } = useMemo(() => {
+    if (notePlayback) return { allClips: buildNotePlaybackClips(notePlayback, projects), availableTags: [] };
     const clips = [];
     const tagSet = new Set();
 
@@ -451,7 +475,7 @@ const ProjectListScreen = ({
 
     clips.sort((a, b) => a.start - b.start);
     return { allClips: clips, availableTags: Array.from(tagSet).sort() };
-  }, [highlightClipProjects, displayUserName, getProjectTagGroup]);
+  }, [highlightClipProjects, displayUserName, getProjectTagGroup, notePlayback, projects]);
 
   const currentClips = useMemo(() => {
     if (selectedHighlightTags.length === 0) {
@@ -491,6 +515,7 @@ const ProjectListScreen = ({
 
   const [videoTime, setVideoTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [notePlaybackError, setNotePlaybackError] = useState(null);
   const [isClipEditing, setIsClipEditing] = useState(false);
   const isClipEditingRef = useRef(false);
   const [hasReachedPlaylistEnd, setHasReachedPlaylistEnd] = useState(false);
@@ -537,10 +562,12 @@ const ProjectListScreen = ({
   };
 
   useEffect(() => {
-    setSelectedHighlightTags((prev) =>
-      prev.filter((t) => availableTags.includes(t)),
-    );
-  }, [availableTags]);
+    if (notePlayback) return;
+    setSelectedHighlightTags((prev) => {
+      const next = prev.filter((t) => availableTags.includes(t));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [availableTags, notePlayback]);
 
   useEffect(() => {
     if (selectedHighlightProjectId && !selectedHighlightProject) {
@@ -681,6 +708,11 @@ const ProjectListScreen = ({
   };
 
   useEffect(() => {
+    if (notePlayback && !currentClip?.url) {
+      transition.cancel();
+      setIsPlaying(false);
+      return undefined;
+    }
     if (!currentClip || isClipEditing || hasReachedPlaylistEnd ||
         activeTab !== "summary" || !selectedHighlightProjectId) return undefined;
 
@@ -690,7 +722,7 @@ const ProjectListScreen = ({
       if (!transition.isCurrent(token)) return;
       transition.cancel(token);
       setIsPlaying(false);
-      Alert.alert("再生位置を変更できませんでした", "タグを選択して、もう一度お試しください。");
+      Alert.alert("再生位置を変更できませんでした", notePlayback ? "場面を選択して、もう一度お試しください。" : "タグを選択して、もう一度お試しください。");
     };
     // A timeout never enables auto-advance with an unconfirmed position.
     const timeout = setTimeout(() => {
@@ -1389,6 +1421,65 @@ const ProjectListScreen = ({
     </View>
   );
 
+  const handleToggleNoteClip = (clip) => {
+    try {
+      setNoteSelection(toggleNoteClipSelection(noteSelection, clip, attachedNoteKeys));
+    } catch (error) {
+      Alert.alert("選択上限", error.message);
+    }
+  };
+
+  const handleConfirmNoteSelection = () => {
+    if (!noteSelectionEnabled || !noteSelection.length) return;
+    const available = buildNoteClips(projects, { videoIds: projects.map((p) => p.id) });
+    const clips = noteSelection.filter((clip) => available.some((current) =>
+      noteClipKey(current) === noteClipKey(clip) && current.sourceUrl === clip.sourceUrl));
+    if (clips.length !== noteSelection.length) {
+      setNoteSelection(clips);
+      Alert.alert("場面を確認", "削除・非公開化などで利用できなくなった場面を選択から外しました。内容を確認して再度追加してください。");
+      return;
+    }
+    requestClipTransition();
+    setIsPlaying(false);
+    setHasReachedPlaylistEnd(true);
+    if (notePicker) {
+      navigation.dispatch({ ...CommonActions.setParams({
+        noteAttachmentResult: { clips, sourceId: selectedHighlightProjectId || "", teamId: activeTeamId },
+      }), source: notePicker.returnKey });
+      navigation.goBack();
+    } else {
+      navigation.push("TacticalNotes", { noteSeed: {
+        sourceId: selectedHighlightProjectId, clips,
+        tags: [...selectedHighlightTags], mode: searchMode,
+      } });
+      setNoteSelection([]);
+      setNoteActionsOpen(false);
+    }
+  };
+
+  const renderNoteSelectionControls = () => {
+    if (notePlayback) return null;
+    if (!notePicker && (!canPostNotes(currentUserProfile) || activeTab !== "summary")) return null;
+    return <View style={{ backgroundColor: "#f0f6fc", paddingHorizontal: 10, paddingVertical: 4 }}>
+      {!notePicker && <TouchableOpacity accessibilityRole="button" accessibilityState={{ expanded: noteActionsOpen }}
+        onPress={() => setNoteActionsOpen((open) => !open)} style={{ alignSelf: "flex-end", padding: 6 }}>
+        <Text style={{ color: COLORS.primary, fontSize: 12 }}>戦術ノート {noteActionsOpen ? "▾" : "▸"}</Text>
+      </TouchableOpacity>}
+      {(notePicker || noteActionsOpen) && <>
+        <Text style={{ color: COLORS.textSub, fontSize: 12 }}>左のチェックで場面を選択・カードを押すと再生。絞り込みやプロジェクトを変えても選択は保持されます。</Text>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
+          <TouchableOpacity accessibilityRole="button" disabled={!noteSelectionEnabled || !noteSelection.length}
+            accessibilityState={{ disabled: !noteSelectionEnabled || !noteSelection.length }}
+            onPress={handleConfirmNoteSelection} style={[styles.noteSelectionButton, { opacity: noteSelectionEnabled && noteSelection.length ? 1 : 0.4 }]}>
+            <Text style={styles.noteSelectionButtonText}>{notePicker ? `選択した${noteSelection.length}件を追加` : `選択した${noteSelection.length}件でノートを作成`}</Text>
+          </TouchableOpacity>
+          {!!noteSelection.length && <TouchableOpacity onPress={() => setNoteSelection([])}><Text>選択解除</Text></TouchableOpacity>}
+          {notePicker && <TouchableOpacity onPress={() => navigation.goBack()}><Text>キャンセル</Text></TouchableOpacity>}
+        </View>
+      </>}
+    </View>;
+  };
+
   const renderTagSelector = () => (
     <View
       style={[
@@ -1510,12 +1601,23 @@ const ProjectListScreen = ({
     </View>
   );
 
+  const handleNotePlaybackError = () => {
+    if (!notePlayback || !transition.matches(clipPlaybackKey)) return;
+    transition.cancel();
+    setIsPlaying(false);
+    setNotePlaybackError(clipPlaybackKey);
+  };
+
   const renderVideoPlayer = () => (
     <View
       style={[styles.videoPlayerArea, isLandscape && styles.fsVideoPlayerArea]}
       onTouchStart={Keyboard.dismiss}
     >
-      {isClipEditing || hasReachedPlaylistEnd ? (
+      {notePlayback && (!currentClip?.url || notePlaybackError === clipPlaybackKey) ? (
+        <View style={styles.stoppedVideoPlaceholder}>
+          <Text style={styles.stoppedVideoText}>この場面は再生できません。別の場面を選択してください。</Text>
+        </View>
+      ) : isClipEditing || hasReachedPlaylistEnd ? (
         <View style={styles.stoppedVideoPlaceholder}>
           <Text style={styles.stoppedVideoText}>
             {isClipEditing ? "切り抜きを選択して再生" : "再生終了"}
@@ -1537,6 +1639,7 @@ const ProjectListScreen = ({
             videoId={ytId}
             onReady={() => setYoutubeReadyPlayer(youtubeRef.current)}
             onChangeState={onYoutubeStateChange}
+            onError={notePlayback ? handleNotePlaybackError : undefined}
             initialPlayerParams={{ controls: 0, rel: 0 }}
           />
         </View>
@@ -1549,6 +1652,7 @@ const ProjectListScreen = ({
           resizeMode={ResizeMode.CONTAIN}
           onPlaybackStatusUpdate={handlePlaybackStatusUpdate}
           onLoad={() => setNativeLoadVersion((version) => version + 1)}
+          onError={notePlayback ? handleNotePlaybackError : undefined}
           useNativeControls={true}
           shouldPlay={isPlaying}
         />
@@ -1558,9 +1662,9 @@ const ProjectListScreen = ({
         <Text style={styles.overlayProjectName}>
           {currentClip?.project || ""}
         </Text>
-        <Text style={styles.overlayTag}>
+        {!notePlayback && <Text style={styles.overlayTag}>
           🏷️ {currentClip?.originalLabel || ""}
-        </Text>
+        </Text>}
       </View>
 
       {isLandscape && (
@@ -1582,26 +1686,28 @@ const ProjectListScreen = ({
 
       <View style={[styles.videoControls, { zIndex: 100 }]}>
         <Text style={styles.videoTimeDisplay}>{formatTime(videoTime)}</Text>
-        <TouchableOpacity
+        {!useScrollableNotePicker && <TouchableOpacity
           style={styles.fullscreenBtn}
           onPress={isLandscape ? closeLandscapeMode : openLandscapeMode}
         >
           <Text style={styles.fullscreenBtnText}>
             {isLandscape ? "><" : "[  ]"}
           </Text>
-        </TouchableOpacity>
+        </TouchableOpacity>}
       </View>
     </View>
   );
 
   const renderPlaylist = () => (
-    <View style={{ flex: 1, minHeight: 0 }}>
-      <ScrollView
-        style={[styles.playlistScroll, isLandscape && { paddingHorizontal: 0 }]}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
+    <View style={scrollNotePickerDetail ? undefined : { flex: 1, minHeight: 0 }}>
+      <PlaylistBody
+        style={scrollNotePickerDetail ? styles.notePickerPlaylist : [styles.playlistScroll, isLandscape && { paddingHorizontal: 0 }]}
+        {...(!scrollNotePickerDetail ? {
+          showsVerticalScrollIndicator: false,
+          keyboardShouldPersistTaps: "handled",
+          onScrollBeginDrag: Keyboard.dismiss,
+        } : {})}
         onTouchStart={Keyboard.dismiss}
-        onScrollBeginDrag={Keyboard.dismiss}
       >
         {!isLandscape && (
           <Text style={styles.playlistSub}>
@@ -1609,15 +1715,26 @@ const ProjectListScreen = ({
           </Text>
         )}
         {currentClips.map((clip, index) => (
+          <View key={`${clip.projectId}_${clip.id}`} style={{ flexDirection: "row", alignItems: "center" }}>
+          {noteSelectionEnabled && <TouchableOpacity
+            accessibilityRole="checkbox"
+            accessibilityLabel={`${clip.project} ${formatTime(clip.start)}からの場面${attachedNoteKeys.includes(noteClipKey(clip)) ? "（添付済み）" : ""}`}
+            accessibilityState={{ checked: attachedNoteKeys.includes(noteClipKey(clip)) || noteSelection.some((item) => noteClipKey(item) === noteClipKey(clip)), disabled: clip.status === "private" || attachedNoteKeys.includes(noteClipKey(clip)) }}
+            disabled={clip.status === "private" || attachedNoteKeys.includes(noteClipKey(clip))}
+            onPress={() => handleToggleNoteClip(clip)}
+            style={{ width: 44, minHeight: 44, justifyContent: "center", alignItems: "center", opacity: clip.status === "private" ? 0.3 : 1 }}>
+            <Text style={{ fontSize: 24, color: COLORS.primary }}>{attachedNoteKeys.includes(noteClipKey(clip)) || noteSelection.some((item) => noteClipKey(item) === noteClipKey(clip)) ? "☑" : "☐"}</Text>
+          </TouchableOpacity>}
           <TouchableOpacity
             key={`${clip.projectId}_${clip.id}`}
             style={[
               styles.clipCard,
+              { flex: 1 },
               currentClipIndex === index && styles.clipCardActive,
             ]}
             onPress={() => handleSelectClip(index)}
-            onLongPress={getEditableClipProject(clip) ? () => handleEditClip(clip) : undefined}
-            accessibilityHint={getEditableClipProject(clip) ? "長押しで切り取りタグを編集" : undefined}
+            onLongPress={!notePicker && !notePlayback && getEditableClipProject(clip) ? () => handleEditClip(clip) : undefined}
+            accessibilityHint={!notePlayback && getEditableClipProject(clip) ? "長押しで切り取りタグを編集" : undefined}
           >
             <Text
               style={[
@@ -1643,22 +1760,25 @@ const ProjectListScreen = ({
                 )}
               </View>
               <Text style={styles.clipCardSub}>
-                ⏱ {formatTime(clip.start)} 〜 {formatTime(clip.end)} /{" "}
-                {clip.date} / by {clip.user}
+                ⏱ {formatTime(clip.start)} 〜 {formatTime(clip.end)}
+                {!notePlayback && ` / ${clip.date} / by ${clip.user}`}
               </Text>
+              {notePlayback && <Text style={{ marginTop: 6, color: "#333" }}>{clip.comment || "コメントなし"}</Text>}
+              {notePlayback && !clip.url && <Text style={{ color: COLORS.danger, marginTop: 4 }}>元動画が利用できないため再生できません</Text>}
             </View>
             {currentClipIndex === index && isPlaying ? (
               <Text style={styles.playingIcon}>▶</Text>
             ) : null}
           </TouchableOpacity>
+          </View>
         ))}
         <View style={{ height: 30 }} />
-      </ScrollView>
+      </PlaylistBody>
     </View>
   );
 
   const renderSummaryRightPane = () => (
-    <View style={{ flex: 1, minHeight: 0, paddingTop: 5 }}>
+    <View style={scrollNotePickerDetail ? { paddingTop: 5 } : { flex: 1, minHeight: 0, paddingTop: 5 }}>
       <View style={[styles.summaryTabRow, isLandscape && { marginHorizontal: 0 }]}>
         <View style={styles.summaryTabBtn}>
           <Text style={styles.summaryTabBtnText}>プレイリスト</Text>
@@ -1668,12 +1788,12 @@ const ProjectListScreen = ({
           onPress={handleCyclePlaybackMode}
           accessibilityRole="button"
           accessibilityLabel={
-            "再生モード：" + { single: "1タグリピート", all: "全体リピート", stop: "最後で終了" }[playbackMode]
+            "再生モード：" + { single: notePlayback ? "1場面リピート" : "1タグリピート", all: "全体リピート", stop: "最後で終了" }[playbackMode]
           }
           accessibilityHint="タップすると次の再生モードに切り替わります"
         >
           <Text style={[styles.summaryTabBtnText, styles.summaryTabBtnTextActive]}>
-            {{ single: "1タグリピート", all: "全体リピート", stop: "最後で終了" }[playbackMode]}
+            {{ single: notePlayback ? "1場面リピート" : "1タグリピート", all: "全体リピート", stop: "最後で終了" }[playbackMode]}
           </Text>
         </TouchableOpacity>
       </View>
@@ -1690,20 +1810,26 @@ const ProjectListScreen = ({
     >
       <StatusBar hidden={isLandscape} />
 
+      <ScreenBody style={{ flex: 1 }} {...(notePlayback ? { behavior: Platform.OS === "ios" ? "padding" : undefined } : {})} {...(scrollNotePickerDetail ? {
+        contentContainerStyle: styles.notePickerScrollContent,
+        keyboardShouldPersistTaps: "handled",
+        onScrollBeginDrag: Keyboard.dismiss,
+      } : {})}>
+
       {!isLandscape && (
         <View style={styles.header}>
           <TouchableOpacity
             style={styles.backButton}
-            onPress={() => navigation.goBack()}
+            onPress={() => notePlayback ? onCloseNotePlayback() : navigation.goBack()}
           >
-            <Text style={styles.backButtonText}>◁ ホーム</Text>
+            <Text style={styles.backButtonText}>{notePlayback ? "◁ 一覧" : notePicker ? "◁ ノート" : "◁ ホーム"}</Text>
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>🎬 動画</Text>
+          <Text style={styles.headerTitle}>{notePlayback ? "戦術ノート" : notePicker ? "場面を選択" : "🎬 動画"}</Text>
           <View style={{ width: 60 }} />
         </View>
       )}
 
-      {!isLandscape && (
+      {!isLandscape && !notePicker && !notePlayback && (
         <View style={styles.tabContainer}>
           {[
             { id: "list", label: "動画編集（タグ付け）" },
@@ -1730,14 +1856,24 @@ const ProjectListScreen = ({
         </View>
       )}
 
-      <View style={[styles.content, isLandscape && { padding: 0 }]}>
+      {renderNoteSelectionControls()}
+      {notePlayback && !isLandscape && <ScrollView keyboardShouldPersistTaps="handled" style={{ maxHeight: 180, flexGrow: 0 }} contentContainerStyle={{ paddingHorizontal: 15 }}>{noteHeader}</ScrollView>}
+      {notePlayback && currentClip && (
+        <View style={{ paddingHorizontal: 15, paddingVertical: 6, backgroundColor: COLORS.card }}>
+          <Text accessibilityLiveRegion="off">
+            再生位置 {formatTime(videoTime)}　区間 {formatTime(currentClip.start)}〜{formatTime(currentClip.end)}
+          </Text>
+        </View>
+      )}
+      <View style={[styles.content, isLandscape && { padding: 0 }, scrollNotePickerDetail && styles.notePickerFlow]}>
         {activeTab === "summary" ? (
           selectedHighlightProject ? (
             <>
-              {!isLandscape && renderHighlightProjectDetailHeader()}
+              {!isLandscape && !notePlayback && renderHighlightProjectDetailHeader()}
               <View
                 style={[
                   styles.summaryContainer,
+                  scrollNotePickerDetail && styles.notePickerFlow,
                   isLandscape && { flexDirection: "row", marginHorizontal: 0 },
                 ]}
               >
@@ -1747,7 +1883,7 @@ const ProjectListScreen = ({
                 isLandscape && !isSideUiVisible && { flex: 1 },
               ]}
             >
-              {!isLandscape && renderTagSelector()}
+              {!isLandscape && !notePlayback && renderTagSelector()}
 
               {currentClips.length === 0 ? (
                 <View
@@ -1770,7 +1906,7 @@ const ProjectListScreen = ({
 
             <View
               style={[
-                isLandscape
+                scrollNotePickerDetail ? undefined : isLandscape
                   ? styles.fsUiCol
                   : {
                       flex: 1,
@@ -1779,7 +1915,7 @@ const ProjectListScreen = ({
                 isLandscape && !isSideUiVisible && { display: "none" },
               ]}
             >
-              {isLandscape && renderTagSelector()}
+              {isLandscape && !notePlayback && renderTagSelector()}
               {currentClips.length > 0 && renderSummaryRightPane()}
             </View>
               </View>
@@ -1824,6 +1960,8 @@ const ProjectListScreen = ({
           </>
         )}
       </View>
+      {scrollNotePickerDetail && currentClips.length > 0 && renderNoteSelectionControls()}
+      </ScreenBody>
 
       {/* プロジェクト作成モーダル */}
       <Modal visible={isModalVisible} transparent={true} animationType="slide">
@@ -2235,6 +2373,20 @@ const styles = StyleSheet.create({
   tabText: { fontSize: 14, color: "#666", fontWeight: "bold" },
   activeTabText: { color: "#0077cc" },
   content: { flex: 1, padding: 15 },
+  noteSelectionButton: {
+    backgroundColor: COLORS.primary,
+    borderRadius: 10,
+    minHeight: 48,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    marginVertical: 8,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  noteSelectionButtonText: { color: "#fff", fontSize: 16, fontWeight: "bold" },
+  notePickerScrollContent: { paddingBottom: 24 },
+  notePickerFlow: { flex: 0 },
+  notePickerPlaylist: { paddingHorizontal: 15 },
   topRow: {
     flexDirection: "row",
     justifyContent: "space-between",

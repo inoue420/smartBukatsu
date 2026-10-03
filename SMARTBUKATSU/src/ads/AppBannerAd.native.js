@@ -3,10 +3,10 @@ import {
   Keyboard,
   KeyboardAvoidingView,
   Platform,
-  SafeAreaView,
   StyleSheet,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import {
   BannerAd,
   BannerAdSize,
@@ -52,7 +52,10 @@ const AppBannerAd = () => {
     <KeyboardAvoidingView
       behavior={Platform.OS === "ios" ? "position" : undefined}
     >
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView
+      style={styles.safeArea}
+      edges={Platform.OS === "ios" ? ["right", "bottom", "left"] : []}
+    >
       <View style={styles.container}>
         <BannerAd
           unitId={bannerAdUnitId}

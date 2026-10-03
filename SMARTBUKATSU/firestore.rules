@@ -21,6 +21,32 @@ service cloud.firestore {
       return isMember(teamId) && getRole(teamId) in ['owner', 'admin', 'staff'];
     }
 
+    function noteReader(teamId) {
+      return signedIn() && exists(/databases/$(database)/documents/teams/$(teamId)/members/$(uid()))
+        && getRole(teamId) in ['owner', 'admin', 'staff', 'captain', 'member'];
+    }
+
+    function notePoster(teamId) {
+      return noteReader(teamId) && (getRole(teamId) in ['owner', 'admin', 'staff', 'captain']
+        || get(/databases/$(database)/documents/teams/$(teamId)/members/$(uid())).data.get('canPostTacticalNotes', false) == true);
+    }
+
+    function noteEditor(teamId) {
+      return noteReader(teamId) && (resource.data.authorUid == uid() || getRole(teamId) in ['owner', 'admin']);
+    }
+
+    function validNote() {
+      let data = request.resource.data;
+      return data.keys().hasOnly(['title', 'description', 'assigneeUids', 'clips', 'sourceProjectId', 'authorUid', 'authorName', 'createdAt', 'updatedAt'])
+        && data.title is string && data.title.size() > 0 && data.title.size() <= 120
+        && data.description is string && data.description.size() <= 5000
+        && data.assigneeUids is list && data.assigneeUids.size() <= 500
+        && data.clips is list && data.clips.size() > 0 && data.clips.size() <= 100
+        && data.sourceProjectId is string && data.authorName is string
+        && data.authorUid is string && data.createdAt is timestamp
+        && data.updatedAt == request.time;
+    }
+
     function inviteOk(code, teamId) {
       return code is string
         && exists(/databases/$(database)/documents/invites/$(code))
@@ -88,10 +114,16 @@ service cloud.firestore {
             && request.resource.data.role == 'admin')
           ||
           (inviteOk(request.resource.data.inviteCode, teamId)
-            && request.resource.data.role == 'member')
+            && request.resource.data.role == 'member'
+            && request.resource.data.get('canPostTacticalNotes', false) == false)
         );
 
-        allow update, delete: if isMember(teamId) && (memberId == uid() || isManager(teamId));
+        allow update: if isMember(teamId) && (isManager(teamId) || (memberId == uid()
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'canPostTacticalNotes'])
+            || (get(/databases/$(database)/documents/teams/$(teamId)).data.createdBy == uid()
+              && request.resource.data.role == 'admin'
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role'])))));
+        allow delete: if isMember(teamId) && (memberId == uid() || isManager(teamId));
       }
 
       match /clubEvents/{eventId} {
@@ -124,6 +156,17 @@ service cloud.firestore {
 
       match /highlightProjects/{highlightProjectId} {
         allow read, write: if isMember(teamId);
+      }
+
+      match /tacticalNotes/{noteId} {
+        allow read: if noteReader(teamId);
+        allow create: if notePoster(teamId) && validNote()
+          && request.resource.data.authorUid == uid() && request.resource.data.createdAt == request.time;
+        allow update: if noteEditor(teamId) && validNote()
+          && request.resource.data.authorUid == resource.data.authorUid
+          && request.resource.data.authorName == resource.data.authorName
+          && request.resource.data.createdAt == resource.data.createdAt;
+        allow delete: if noteEditor(teamId);
       }
 
       match /tagGroups/{tagGroupId} {

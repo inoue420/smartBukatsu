@@ -2217,19 +2217,14 @@ const WorkspaceHomeScreen = ({
           >
             {!isGuardian && (
             <TouchableOpacity
-              style={[styles.menuItem, styles.menuItemDisabled]}
-              disabled={true}
-              accessibilityLabel="戦術ノートは現在整備中です"
-              accessibilityState={{ disabled: true }}
+              style={styles.menuItem}
+              onPress={() => navigation.navigate("TacticalNotes")}
+              accessibilityLabel="戦術ノート"
             >
               <View style={styles.menuIconContainer}>
                 <Text style={styles.menuIconText}>📋</Text>
-                <View style={styles.menuLockOverlay}>
-                  <Text style={styles.menuLockIcon}>🔗</Text>
-                </View>
               </View>
               <Text style={styles.menuLabel}>戦術ノート</Text>
-              <Text style={styles.menuMaintenanceLabel}>整備中</Text>
             </TouchableOpacity>
             )}
 

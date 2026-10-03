@@ -127,6 +127,8 @@ function harness(overrides = {}) {
     isClipEditing: false, isClipEditingRef: { current: false },
     hasReachedPlaylistEnd: false, hasReachedPlaylistEndRef: { current: false },
     activeTab: "summary", selectedHighlightProjectId: "project", ytId: null,
+    notePlayback: null,
+    setNotePlaybackError: (key) => events.alerts.push(key),
     isPlaying: false, isYoutubeReady: false, videoRef: { current: null },
     youtubeRef: { current: null }, youtubeTimeRequestRef: { current: null },
     setIsPlaying: (value) => events.playing.push(value),
@@ -142,7 +144,7 @@ function harness(overrides = {}) {
     ...overrides,
   });
   for (const name of ["handleCyclePlaybackMode", "requestClipTransition", "stopAtClipEnd", "playNextClip",
-    "handleSelectClip", "handlePlaybackStatusUpdate", "onYoutubeStateChange"]) {
+    "handleSelectClip", "handlePlaybackStatusUpdate", "onYoutubeStateChange", "handleNotePlaybackError"]) {
     context[name] = vm.runInContext(`(${functionSource(name)})`, context);
   }
   return {
@@ -407,4 +409,66 @@ test("editing blocks repeat until a tag is explicitly selected on return", () =>
   h.context.handleSelectClip(1);
   assert.equal(h.context.isClipEditingRef.current, false);
   assert.deepEqual(h.events.indexes, [1]);
+});
+
+for (const player of ["native", "youtube"]) {
+  for (const scenario of [
+    { mode: "stop", index: 0, next: 1 },
+    { mode: "stop", index: 1, next: null },
+    { mode: "single", index: 1, next: 1 },
+    { mode: "all", index: 1, next: 0 },
+  ]) {
+    test(`note ${player}: ${scenario.mode} at ${scenario.index} uses the shared transition once`, () => {
+      const savedClip = { ...clip, url: "https://example.com/video", comment: "指導" };
+      const h = harness({ notePlayback: { id: "note" }, currentClip: savedClip,
+        currentClips: [savedClip, savedClip], currentClipIndex: scenario.index,
+        ytId: player === "youtube" ? "youtube" : null, playbackModeRef: { current: scenario.mode } });
+      const token = h.context.transition.begin("tag", savedClip);
+      h.context.transition.markSeekIssued(token);
+      h.context.transition.confirm(token, 10);
+      const end = () => player === "youtube" ? h.context.onYoutubeStateChange("ended")
+        : h.context.handlePlaybackStatusUpdate({ isLoaded: true, positionMillis: 18000 });
+      end(); end();
+      assert.deepEqual(h.events.indexes, scenario.next === null ? [] : [scenario.next]);
+      assert.equal(h.context.hasReachedPlaylistEndRef.current, scenario.next === null);
+    });
+  }
+}
+
+test("unavailable note scenes cancel playback and remain selectable without auto-skipping comments", () => {
+  const h = harness({ notePlayback: { id: "note" }, currentClip: { ...clip, url: null } });
+  h.context.transition.begin("old", clip);
+  h.start();
+  assert.equal(h.context.transition.current(), null);
+  assert.equal(h.events.playing.at(-1), false);
+  assert.deepEqual(h.events.indexes, []);
+});
+
+test("leaving note playback cancels pending native seek results", async () => {
+  const pending = deferred();
+  const h = harness({ notePlayback: { id: "note" }, currentClip: { ...clip, url: "https://example.com/video" } });
+  h.context.videoRef.current = {
+    getStatusAsync: async () => ({ isLoaded: true }), setStatusAsync: () => pending.promise,
+    playAsync: () => assert.fail("must not play after unmount"),
+  };
+  const cleanup = h.start();
+  await flush();
+  cleanup();
+  pending.resolve({ isLoaded: true, positionMillis: 10000 });
+  await flush();
+  assert.equal(h.context.transition.current(), null);
+  assert.equal(h.events.playing.includes(true), false);
+});
+
+test("a delayed error from the previous note scene cannot stop the new selection", () => {
+  const h = harness({ notePlayback: { id: "note" } });
+  const next = h.context.transition.begin("new-scene", clip);
+  h.context.handleNotePlaybackError();
+  assert.equal(h.context.transition.current(), next);
+  assert.deepEqual(h.events.alerts, []);
+  h.context.clipPlaybackKey = "new-scene";
+  h.context.handleNotePlaybackError();
+  assert.equal(h.context.transition.current(), null);
+  assert.equal(h.events.playing.at(-1), false);
+  assert.deepEqual(h.events.alerts, ["new-scene"]);
 });

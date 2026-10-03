@@ -20,6 +20,35 @@ import { httpsCallable } from "firebase/functions";
 import { measuredOnSnapshot } from "./firestoreSubscription";
 import { auth, db, cloudFunctions } from "../firebase";
 import { LEGAL_POLICY_VERSION, MINIMUM_USER_AGE } from "../legal";
+import { validateNote } from "../utils/tacticalNotes";
+
+export function subscribeTacticalNotes(teamId, callback, onError) {
+  return measuredOnSnapshot("tacticalNotes", collection(db, "teams", teamId, "tacticalNotes"),
+    (snapshot) => callback(snapshot.docs.map((item) => ({ ...item.data(), id: item.id }))
+      .sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0))), onError);
+}
+
+export async function saveTacticalNote(teamId, noteId, data, authorName) {
+  validateNote(data);
+  const payload = { ...data, title: data.title.trim(), updatedAt: serverTimestamp() };
+  if (noteId) return updateDoc(doc(db, "teams", teamId, "tacticalNotes", noteId), payload);
+  return addDoc(collection(db, "teams", teamId, "tacticalNotes"), {
+    ...payload, authorUid: auth.currentUser.uid, authorName, createdAt: serverTimestamp(),
+  });
+}
+
+export function updateTacticalNoteDescription(teamId, noteId, description) {
+  if (typeof description !== "string" || description.length > 5000) {
+    throw new Error("全体コメントは5000文字以内で入力してください。");
+  }
+  return updateDoc(doc(db, "teams", teamId, "tacticalNotes", noteId), {
+    description, updatedAt: serverTimestamp(),
+  });
+}
+
+export function deleteTacticalNote(teamId, noteId) {
+  return deleteDoc(doc(db, "teams", teamId, "tacticalNotes", noteId));
+}
 export const DEFAULT_MAX_TEAMS_PER_USER = 5;
 export const SHARP_RISE_MAX_TEAMS_PER_USER = 100;
 export const SHARP_RISE_INVITE_CODE = "AWUH95";

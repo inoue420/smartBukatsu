@@ -1992,6 +1992,7 @@ const SettingsScreen = ({
                     const canUploadVideos = Boolean(profile.canUploadVideos);
                     const canEditTags = Boolean(profile.canEditTags);
                     const canEditCalendar = Boolean(profile.canEditCalendar);
+                    const canPostTacticalNotes = Boolean(profile.canPostTacticalNotes);
 
                     return (
                       <View key={profile.uid || name} style={styles.memberItem}>
@@ -2052,6 +2053,16 @@ const SettingsScreen = ({
                             </TouchableOpacity>
                           )}
 
+                          {memberRole === "member" && canManageMemberVideoPermissions && (
+                            <TouchableOpacity
+                              style={[styles.subSettingBadge, canPostTacticalNotes && styles.subSettingBadgeActive]}
+                              onPress={() => handleToggleMemberVideoPermission(profile.uid, "canPostTacticalNotes", !canPostTacticalNotes)}
+                            >
+                              <Text style={[styles.subSettingText, canPostTacticalNotes && styles.subSettingTextActive]}>
+                                戦術ノート投稿: {canPostTacticalNotes ? "ON" : "OFF"}
+                              </Text>
+                            </TouchableOpacity>
+                          )}
                           {["guardian", "member"].includes(memberRole) && (
                             <>
                               <TouchableOpacity
