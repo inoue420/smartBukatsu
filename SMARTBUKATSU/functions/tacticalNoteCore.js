@@ -1,5 +1,5 @@
 // Shared by Metro and Functions; keep this module dependency-free.
-const TACTICAL_NOTE_SUMMARY_SCHEMA_VERSION = 1;
+const TACTICAL_NOTE_SUMMARY_SCHEMA_VERSION = 2;
 const DELETED_TACTICAL_NOTE_UID = 'deleted_user';
 const DELETED_TACTICAL_NOTE_NAME = '削除済みユーザー';
 const noteConfirmationVersion = (note = {}) => note.contentVersion || 1;
@@ -26,7 +26,7 @@ function noteSummary(note, responses = [], progress = [], uid, today = '') {
   const targets = [...new Set(note.assigneeUids || [])], records = new Map(progress.map((item) => [`${item.taskId}_${item.uid}`, item]));
   const items = Object.entries(note.tasks || {}).flatMap(([taskId, task]) => (task.assigneeUids || []).map((person) => {
     const record = records.get(`${taskId}_${person}`), done = record?.taskRevision === task.revision && record.status === 'done';
-    return {taskId, uid: person, dueDate: task.dueDate, done, overdue: !done && task.dueDate < today};
+    return {taskId, uid: person, done};
   }));
   const pending = targets.filter((person) => !seen.has(person));
   return {latest, pending, questions: targets.filter((person) => questions.has(person)), confirmed: targets.length - pending.length, items,
@@ -34,18 +34,14 @@ function noteSummary(note, responses = [], progress = [], uid, today = '') {
     unfinished: items.some((item) => !item.done), completed: items.length > 0 && items.every((item) => item.done)};
 }
 function buildTacticalNoteSummary(note, responses = [], progress = []) {
-  const state = noteSummary(note, responses, progress), taskDueCounts = {};
-  for (const item of state.items) {
-    const entry = taskDueCounts[item.dueDate] || {total: 0, done: 0};
-    entry.total += 1; if (item.done) entry.done += 1; taskDueCounts[item.dueDate] = entry;
-  }
+  const state = noteSummary(note, responses, progress);
   const taskAssigneeUids = [...new Set(state.items.map((item) => item.uid))], assigneeUids = [...new Set(note.assigneeUids || [])];
   return {schemaVersion: TACTICAL_NOTE_SUMMARY_SCHEMA_VERSION, contentVersion: noteConfirmationVersion(note), noteUpdatedAt: note.updatedAt || null,
     title: note.title || '', descriptionPreview: String(note.description || '').slice(0, 300), authorUid: note.authorUid || '', authorName: note.authorName || '',
     createdAt: note.createdAt || null, sourceProjectId: note.sourceProjectId || '', hasClips: !!note.clips?.length, imageCount: note.images?.length || 0,
     assigneeUids, mineUids: [...new Set([...assigneeUids, ...taskAssigneeUids])], confirmedUids: assigneeUids.filter((person) => !state.pending.includes(person)),
     pendingUids: state.pending, questionUids: state.questions, readUids: assigneeUids.filter((person) => responses.some((response) => response.uid === person && response.version === noteConfirmationVersion(note) && response.status === 'read')), understoodUids: assigneeUids.filter((person) => responses.some((response) => response.uid === person && response.version === noteConfirmationVersion(note) && response.status === 'understood')), taskAssigneeUids, taskCount: Object.keys(note.tasks || {}).length, taskTotalCount: state.items.length,
-    taskDoneCount: state.items.filter((item) => item.done).length, taskDueCounts, hasTasks: Object.keys(note.tasks || {}).length > 0,
+    taskDoneCount: state.items.filter((item) => item.done).length, hasTasks: Object.keys(note.tasks || {}).length > 0,
     unfinished: state.unfinished, completed: state.completed, draft: note.draft === true, deleting: false};
 }
 function anonymizeTacticalNote(note, uid) {

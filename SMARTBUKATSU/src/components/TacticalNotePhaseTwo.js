@@ -4,7 +4,7 @@ import * as ImagePicker from "expo-image-picker";
 import { prepareTacticalNoteImage } from "../services/tacticalNoteAttachmentService";
 import { recordTacticalNoteResponse, replyTacticalNoteQuestion, recordTacticalTaskProgress,
   getTacticalNoteQuestions, getTacticalNoteReplies, resolveTacticalNoteQuestion, getTacticalNoteHistory } from "../services/firestoreService";
-import { summaryFromIndex, localDate, noteClipKey, noteAcknowledgementId, hasNoteAcknowledgement } from "../utils/tacticalNotes";
+import { summaryFromIndex, noteAcknowledgementId, hasNoteAcknowledgement } from "../utils/tacticalNotes";
 
 function Action({ title, onPress, disabled, selected }) {
   return <TouchableOpacity accessibilityRole="button" accessibilityState={{ disabled: !!disabled, selected: !!selected }}
@@ -13,12 +13,11 @@ function Action({ title, onPress, disabled, selected }) {
 const stamp = (value) => value?.toDate?.().toLocaleString("ja-JP") || "保存中";
 const statuses = { read: "確認しました", understood: "理解しました", question: "質問があります", done: "完了", pending: "未完了", returned: "差し戻し" };
 const confirmationStatus = (status) => status === "question" ? "質問を送信済み" : statuses[status];
-export function PhaseTwoSummary({ index, uid, today = localDate() }) {
+export function PhaseTwoSummary({ index, uid }) {
   if (!index) return <Text>確認・タスク状況を更新中…</Text>;
-  const summary = summaryFromIndex(index, uid, today);
+  const summary = summaryFromIndex(index, uid);
   return <View style={s.section}><Text>確認 {summary.confirmed}/{(index.assigneeUids || []).length}人 · 質問 {summary.questions.length}人</Text>
-    <Text>{summary.taskCount ? `タスク ${summary.taskCount}件 · 完了 ${summary.done}/${summary.total}人分 · 未完了 ${summary.total - summary.done} · 期限超過 ${summary.overdue}` : "タスクなし"}</Text>
-    {!!summary.taskCount && <Text>期限：{summary.dueDates.join("、")}</Text>}
+    <Text>{summary.taskCount ? `タスク ${summary.taskCount}件 · 完了 ${summary.done}/${summary.total}人分 · 未完了 ${summary.total - summary.done}` : "タスクなし"}</Text>
   </View>;
 }
 
@@ -62,24 +61,17 @@ export function PhaseTwoEditor({ draft, update, members, busy, onBusyChange }) {
     {images.map((image) => <View key={image.id} style={s.section}><NoteImage image={image} />
       <Action title="画像を取り外す" disabled={busy || picking} onPress={() => update({ images: images.filter((item) => item.id !== image.id) })} /></View>)}
     <Text style={s.heading}>行動タスク（任意）</Text>
-    <Text>タスク内容・担当者・期限・対象場面を変更すると、そのタスクは再度完了報告が必要になります。</Text>
+    <Text>タスク内容・担当者を変更すると、そのタスクは再度完了報告が必要になります。</Text>
     {Object.entries(tasks).map(([id, task], index) => <View key={id} style={s.card}>
       <Text style={s.heading}>タスク {index + 1}</Text>
       <TextInput accessibilityLabel={`タスク${index + 1}の実施内容`} style={s.input} multiline maxLength={2000} placeholder="実施内容" value={task.text} editable={!busy} onChangeText={(text) => change(id, { text })} />
       <Text>担当者（進捗は個人別）</Text><View style={s.row}>
         <Action title="全員" disabled={busy} selected={members.length > 0 && members.every((member) => task.assigneeUids.includes(member.uid))} onPress={() => change(id, { assigneeUids: members.every((member) => task.assigneeUids.includes(member.uid)) ? [] : members.map((member) => member.uid) })} />
         {members.map((member) => <Action key={member.uid} title={member.name || "メンバー"} disabled={busy} selected={task.assigneeUids.includes(member.uid)} onPress={() => change(id, { assigneeUids: task.assigneeUids.includes(member.uid) ? task.assigneeUids.filter((uid) => uid !== member.uid) : [...task.assigneeUids, member.uid] })} />)}</View>
-      <Text>期限（日付指定：YYYY-MM-DD）</Text><View style={s.row}>
-        <Action title="今日" disabled={busy} onPress={() => change(id, { dueDate: localDate() })} />
-        <Action title="明日" disabled={busy} onPress={() => { const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1); change(id, { dueDate: localDate(tomorrow) }); }} /></View>
-      <TextInput accessibilityLabel={`タスク${index + 1}の期限`} style={s.input} value={task.dueDate} maxLength={10} placeholder="YYYY-MM-DD" editable={!busy} onChangeText={(dueDate) => change(id, { dueDate })} />
-      <Text>対象</Text><View style={s.row}><Action title="ノート全体" disabled={busy} selected={!task.clipKey} onPress={() => change(id, { clipKey: "" })} />
-        {draft.clips.map((clip, clipIndex) => <Action key={noteClipKey(clip)} title={`場面${clipIndex + 1}：${clip.label}`} disabled={busy} selected={task.clipKey === noteClipKey(clip)} onPress={() => change(id, { clipKey: noteClipKey(clip) })} />)}</View>
-      {!!task.clipKey && !draft.clips.some((clip) => noteClipKey(clip) === task.clipKey) && <Text style={s.error}>対象場面が外されています。対象を選び直してください。</Text>}
       <Action title="タスクを削除" disabled={busy} onPress={() => update({ tasks: Object.fromEntries(Object.entries(tasks).filter(([key]) => key !== id)) })} />
     </View>)}
     <Action title="＋ タスクを追加" disabled={busy || Object.keys(tasks).length >= 30} onPress={() => { const id = `task${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
-      update({ tasks: { ...tasks, [id]: { text: "", assigneeUids: [], dueDate: localDate(), clipKey: "", revision: 1 } } }); }} />
+      update({ tasks: { ...tasks, [id]: { text: "", assigneeUids: [], revision: 1 } } }); }} />
   </View>;
 }
 
@@ -184,12 +176,11 @@ export function PhaseTwoDetail({ teamId, note, summaryIndex, activity = {}, uid,
     {questionsPage.hasMore && <Action title="以前の質問をもっと表示" disabled={busy || questionsPage.loading} onPress={() => loadQuestions(true)} />}
     <Text style={s.heading}>行動タスク</Text>
     {Object.entries(note.tasks || {}).map(([taskId, task]) => <View key={taskId} style={s.card}>
-      <Text style={s.heading}>{task.text}</Text><Text>期限：{task.dueDate}</Text>
-      <Text>対象：{task.clipKey ? `場面 ${note.clips.findIndex((clip) => noteClipKey(clip) === task.clipKey) + 1}` : "ノート全体"}</Text>
+      <Text style={s.heading}>{task.text}</Text>
       {task.assigneeUids.map((person) => {
         const key = `${taskId}_${person}`, record = progressByPerson.get(key), progress = record?.taskRevision === task.revision ? record : null;
         const done = progress?.status === "done";
-        return <View key={person} style={s.section}><Text>{names([person])}：{done ? "完了" : task.dueDate < localDate() ? "期限超過・未完了" : "未完了"}</Text>
+        return <View key={person} style={s.section}><Text>{names([person])}：{done ? "完了" : "未完了"}</Text>
           {done && <Text>完了日時：{stamp(progress.completedAt)}</Text>}
           {!!progress?.comment && <Text>{progress.status === "returned" ? "差し戻し理由" : "コメント"}：{progress.comment}</Text>}
           {(person === uid || (editable && done)) && <View>

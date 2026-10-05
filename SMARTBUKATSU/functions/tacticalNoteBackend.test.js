@@ -11,7 +11,7 @@ test.after(async () => { await db.terminate(); await deleteApp(app); });
 const stamp = () => FieldValue.serverTimestamp();
 const noteData = () => ({title: '指導', description: '説明', authorUid: 'person', authorName: '退会者',
   createdAt: stamp(), updatedAt: stamp(), clips: [], images: [], sourceProjectId: '', draft: false,
-  contentVersion: 1, assigneeUids: ['person', 'peer'], tasks: {task: {text: '練習', assigneeUids: ['person', 'peer'], revision: 1, dueDate: '2026-10-03', clipKey: ''}}});
+  contentVersion: 1, assigneeUids: ['person', 'peer'], tasks: {task: {text: '練習', assigneeUids: ['person', 'peer'], revision: 1}}});
 function environment() {
   const metrics = {queries: 0, reads: 0}, files = new Map(), deleted = [];
   let failDelete = false;
@@ -138,7 +138,7 @@ test('scheduled cleanup expires only stale drafts and leaves referenced uploads 
 
 test('maximum task assignment count still updates progress with a fixed number of document reads', async () => {
   const e = environment(), people = Array.from({length: 500}, (_, index) => 'member' + index);
-  const tasks = Object.fromEntries(Array.from({length: 30}, (_, index) => ['task' + index, {text: '練習', assigneeUids: people, revision: 1, dueDate: '2026-10-03', clipKey: ''}]));
+  const tasks = Object.fromEntries(Array.from({length: 30}, (_, index) => ['task' + index, {text: '練習', assigneeUids: people, revision: 1}]));
   await e.note.set({...noteData(), tasks}); await e.backend.rebuildSummary(e.note);
   const progress = e.note.collection('progress').doc('task0_member0'), data = {taskId: 'task0', uid: 'member0', taskRevision: 1, status: 'done'};
   await progress.set(data); e.metrics.queries = 0; e.metrics.reads = 0;
@@ -156,4 +156,21 @@ test('related teams are found after leaving, including historical actors and tas
   const ids = await e.backend.relatedTeamIds('person');
   for (const team of [e.team.id, historical.id, tasksOnly.id]) assert.ok(ids.includes(team));
   assert.equal(new Set(ids).size, ids.length);
+});
+
+test('legacy deadline summaries rebuild without resetting completed progress', async () => {
+  const e = environment(), data = noteData();
+  data.tasks.task.dueDate = '2020-01-01'; data.tasks.task.clipKey = 'removed-scene';
+  await e.note.set(data);
+  await e.note.collection('progress').doc('task_person').set({taskId: 'task', uid: 'person', taskRevision: 1, status: 'done'});
+  await e.backend.rebuildSummary(e.note);
+  const original = (await e.index.get()).data();
+  await e.index.set({...original, schemaVersion: 1, taskDueCounts: {'2020-01-01': {total: 2, done: 1}}});
+  await e.backend.rebuildSummary(e.note);
+  const rebuilt = (await e.index.get()).data();
+  assert.equal(rebuilt.schemaVersion, 2); assert.equal(rebuilt.taskDoneCount, 1);
+  assert.equal('taskDueCounts' in rebuilt, false);
+  await e.note.update({tasks: {task: {text: data.tasks.task.text, assigneeUids: data.tasks.task.assigneeUids, revision: 1}}, updatedAt: stamp()});
+  await e.backend.rebuildSummary(e.note);
+  assert.equal((await e.index.get()).data().taskDoneCount, 1);
 });

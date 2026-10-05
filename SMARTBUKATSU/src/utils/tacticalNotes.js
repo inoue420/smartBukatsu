@@ -79,11 +79,8 @@ function validateTasks(tasks = {}, clips = [], members = []) {
   for (const [id, task] of Object.entries(tasks)) {
     if (!/^[a-zA-Z0-9_-]+$/.test(id) || !task.text?.trim() || task.text.length > 2000 ||
       !task.assigneeUids?.length || new Set(task.assigneeUids).size !== task.assigneeUids.length ||
-      task.assigneeUids.some((uid) => !members.includes(uid)) ||
-      !/^\d{4}-\d{2}-\d{2}$/.test(task.dueDate) ||
-      localDate(new Date(`${task.dueDate}T12:00:00`)) !== task.dueDate ||
-      (task.clipKey && !clips.some((clip) => noteClipKey(clip) === task.clipKey))) {
-      throw new Error("タスクの実施内容・担当者・期限・対象場面を確認してください。");
+      task.assigneeUids.some((uid) => !members.includes(uid))) {
+      throw new Error("タスクの実施内容・担当者を確認してください。");
     }
   }
 }
@@ -98,13 +95,10 @@ function summaryFromIndex(index, uid, today = localDate()) {
   for (const [field, status] of [["confirmedUids", "question"], ["readUids", "read"], ["understoodUids", "understood"]]) {
     for (const person of index[field] || []) latest[person] = { uid: person, status, version: index.contentVersion };
   }
-  const dueCounts = index.taskDueCounts || {};
   return { latest, pending, questions, confirmed: (index.confirmedUids || []).length,
     mine: (index.mineUids || []).includes(uid), unconfirmed: pending.includes(uid),
     unfinished: index.unfinished === true, completed: index.completed === true,
-    taskCount: index.taskCount || 0, total: index.taskTotalCount || 0, done: index.taskDoneCount || 0,
-    overdue: Object.entries(dueCounts).reduce((sum, [date, count]) => sum + (date < today ? count.total - count.done : 0), 0),
-    dueDates: Object.keys(dueCounts).sort() };
+    taskCount: index.taskCount || 0, total: index.taskTotalCount || 0, done: index.taskDoneCount || 0 };
 }
 module.exports = { canReadNotes, canPostNotes, canManageNote, buildNoteClips, validateNote,
   noteClipKey, snapshotNoteClip, mergeNoteClips, toggleNoteClipSelection, buildNotePlaybackClips,

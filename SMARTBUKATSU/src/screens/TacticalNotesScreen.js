@@ -12,6 +12,27 @@ import { PhaseTwoSummary, PhaseTwoEditor, PhaseTwoDetail } from "../components/T
 
 const emptyDraft = () => ({ title: "", description: "", assigneeUids: [], clips: [], sourceProjectId: "", images: [], tasks: {} });
 const dateText = (date) => date?.toDate?.().toLocaleString("ja-JP") || "保存中";
+// Match the video list's creation-month grouping and newest-month default.
+function groupNotesByMonth(notes) {
+  const months = new Map();
+  for (const note of notes) {
+    const value = note.createdAt;
+    const millis = typeof value?.toMillis === "function" ? value.toMillis()
+      : typeof value?.toDate === "function" ? value.toDate().getTime()
+      : value instanceof Date ? value.getTime()
+      : typeof value?.seconds === "number" ? value.seconds * 1000
+      : typeof value === "number" ? (value < 1000000000000 ? value * 1000 : value)
+      : typeof value === "string" ? new Date(value).getTime() : 0;
+    const date = new Date(millis), known = Boolean(millis) && Number.isFinite(date.getTime());
+    const year = date.getFullYear(), month = date.getMonth() + 1;
+    const key = known ? `${year}-${String(month).padStart(2, "0")}` : "unknown";
+    if (!months.has(key)) months.set(key, { key, label: known ? `${year}年${month}月` : "作成月不明",
+      sortValue: known ? year * 100 + month : Number.MIN_SAFE_INTEGER, notes: [] });
+    months.get(key).notes.push({ note, millis: known ? millis : 0 });
+  }
+  return [...months.values()].sort((a, b) => b.sortValue - a.sortValue)
+    .map((month) => ({ ...month, notes: month.notes.sort((a, b) => b.millis - a.millis).map((item) => item.note) }));
+}
 function Button({ title, onPress, disabled, selected, variant }) {
   return <TouchableOpacity accessibilityRole="button" disabled={disabled} onPress={onPress}
     accessibilityState={{ disabled: Boolean(disabled), ...(selected !== undefined ? { selected } : {}) }}
@@ -44,6 +65,7 @@ export default function TacticalNotesScreen({ route, navigation, projects = [], 
   const [selectedLoading, setSelectedLoading] = useState(false), [selectedError, setSelectedError] = useState("");
   const [activity, setActivity] = useState(null), [activityError, setActivityError] = useState("");
   const [activityView, setActivityView] = useState(false), [filter, setFilter] = useState("all");
+  const [expandedMonths, setExpandedMonths] = useState({});
   const [today, setToday] = useState(localDate());
   useEffect(() => { const timer = setInterval(() => setToday(localDate()), 60000); return () => clearInterval(timer); }, []);
   const [sourceId, setSourceId] = useState(""), [tags, setTags] = useState([]), [mode, setMode] = useState("OR");
@@ -54,6 +76,7 @@ export default function TacticalNotesScreen({ route, navigation, projects = [], 
   const detailOpen = Boolean(selected && !draft && (activityView || !selected.clips.length));
   const summaries = [...new Map((teamMatches ? [...olderPage.items, ...firstPage.items] : []).map((item) => [item.id, item])).values()]
     .sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+  const months = groupNotesByMonth(summaries);
   const hasMore = olderPage.hasMore === null ? firstPage.hasMore : olderPage.hasMore;
   const commentDirty = Boolean(commentEdit && commentEdit.value !== commentEdit.original);
   useEffect(() => {
@@ -68,6 +91,7 @@ export default function TacticalNotesScreen({ route, navigation, projects = [], 
     setScreenTeam(activeTeamId);
     setIndexState({ teamId: activeTeamId, ready: false, loading: true, processed: 0, error: "" });
     setSelectedId(null); setSelectedState(null); setSelectedSummary(null); setDraft(null); setEditingId(null);
+    setExpandedMonths({});
     setActivityView(false); setFilter("all"); setError(""); playbackStates.current = {};
   }, [activeTeamId, readable]);
   const indexPreparation = useRef(null);
@@ -345,11 +369,23 @@ export default function TacticalNotesScreen({ route, navigation, projects = [], 
       <Text style={s.info}>絞り込みはすべてのノートを対象に行い、新しい順に表示します。</Text>
       <Button title="一覧を更新" disabled={loading || paging || !indexReady} onPress={() => setRefresh((value) => value + 1)} />
       {!!pageNotice && <Text style={s.info}>{pageNotice}</Text>}
-      {summaries.map((note) => <TouchableOpacity accessibilityRole="button" key={note.id} style={s.card} onPress={() => { setSelectedState(null); setSelectedSummary(null); setSelectedId(note.id); setActivityView(false); }}>
-        <Text style={s.label}>{note.title}</Text><Text>{note.authorName} · {dateText(note.createdAt)}</Text>
-        <Text numberOfLines={3} style={s.info}>{note.descriptionPreview || "説明なし"}</Text><Text>担当者：{names(note.assigneeUids)}</Text><Text>{note.hasClips ? "動画場面あり" : "動画場面なし"} · 画像 {note.imageCount || 0}枚</Text>
-        <PhaseTwoSummary index={note} uid={currentUserUid} today={today} />
-      </TouchableOpacity>)}
+      {hasMore && <Text style={s.info}>月ごとの件数は読み込み済みの投稿数です。「もっと表示」で追加されます。</Text>}
+      {months.map((month, monthIndex) => {
+        const expanded = expandedMonths[month.key] !== undefined ? expandedMonths[month.key] : monthIndex === 0;
+        return <View key={month.key}>
+          <TouchableOpacity style={s.monthHeader} accessibilityRole="button" accessibilityState={{ expanded }}
+            onPress={() => setExpandedMonths((previous) => ({ ...previous,
+              [month.key]: !(previous[month.key] !== undefined ? previous[month.key] : monthIndex === 0) }))}>
+            <Text style={s.monthHeaderText}>{expanded ? "▼" : "▶"} {month.label}</Text>
+            <Text style={s.monthCount}>{month.notes.length}件</Text>
+          </TouchableOpacity>
+          {expanded && month.notes.map((note) => <TouchableOpacity accessibilityRole="button" key={note.id} style={s.card} onPress={() => { setSelectedState(null); setSelectedSummary(null); setSelectedId(note.id); setActivityView(false); }}>
+            <Text style={s.label}>{note.title}</Text><Text>{note.authorName} · {dateText(note.createdAt)}</Text>
+            <Text numberOfLines={3} style={s.info}>{note.descriptionPreview || "説明なし"}</Text><Text>担当者：{names(note.assigneeUids)}</Text><Text>{note.hasClips ? "動画場面あり" : "動画場面なし"} · 画像 {note.imageCount || 0}枚</Text>
+            <PhaseTwoSummary index={note} uid={currentUserUid} today={today} />
+          </TouchableOpacity>)}
+        </View>;
+      })}
       {hasMore && <Button title={paging ? "読み込み中…" : "以前のノートをもっと表示"} disabled={paging || loading} onPress={loadMore} />}
     </View>}
     </ScrollView>
@@ -372,6 +408,13 @@ const s = StyleSheet.create({
     backgroundColor: "#fff", padding: 15, borderRadius: 12, marginBottom: 15,
     elevation: 2, borderLeftWidth: 4, borderLeftColor: "#3498db",
   },
+  monthHeader: {
+    flexDirection: "row", alignItems: "center", justifyContent: "space-between",
+    backgroundColor: "#fff", borderWidth: 1, borderColor: "#d9e2ec", borderRadius: 8,
+    paddingHorizontal: 12, paddingVertical: 10, marginLeft: 8, marginBottom: 8,
+  },
+  monthHeaderText: { color: "#334e68", fontSize: 14, fontWeight: "bold" },
+  monthCount: { color: "#7b8794", fontSize: 12 },
   input: {
     backgroundColor: "#f0f2f5", borderWidth: 1, borderColor: "#e2e8f0",
     borderRadius: 8, padding: 10, marginVertical: 8, color: "#333", fontSize: 15,
