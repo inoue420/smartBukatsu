@@ -1,5 +1,6 @@
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
+const { onObjectFinalized } = require("firebase-functions/v2/storage");
 const {
   onDocumentUpdated,
   onDocumentWritten,
@@ -19,6 +20,15 @@ const { getStorage } = require("firebase-admin/storage");
 initializeApp();
 
 const firestore = getFirestore();
+const { createAttachmentExpiryBackend } = require("./attachmentExpiryBackend");
+const attachmentExpiry = createAttachmentExpiryBackend({ firestore, getStorage, FieldValue, logger });
+exports.registerAttachmentExpiry = onObjectFinalized({
+  region: "asia-northeast1", retry: true,
+}, attachmentExpiry.handleFinalize);
+exports.trackCalendarAttachmentReferences = onDocumentWritten({
+  document: "teams/{teamId}/clubEvents/{eventId}", region: "asia-northeast1", retry: true,
+}, attachmentExpiry.handleCalendarWrite);
+
 const { createLoadingOptimizationBackend } = require("./loadingOptimizationBackend");
 const loadingOptimization = createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, HttpsError });
 for (const name of ["notices", "dailyReports", "workspacePosts"]) {
@@ -2164,158 +2174,11 @@ exports.deleteExpiredCalendarAttachments = onSchedule(
     timeZone: "Asia/Tokyo",
     timeoutSeconds: 540,
     memory: "512MiB",
+    retryCount: 3,
+    minBackoffSeconds: 3600,
+    maxBackoffSeconds: 3600,
   },
-  async () => {
-    const bucket = getStorage().bucket();
-    const [calendarFileResult, dailyReportFileResult] = await Promise.all([
-      bucket.getFiles({ prefix: "calendarAttachments/" }),
-      bucket.getFiles({ prefix: "dailyReportAttachments/" }),
-    ]);
-    const files = [
-      ...calendarFileResult[0],
-      ...dailyReportFileResult[0],
-    ];
-    const now = Date.now();
-    const expiredFiles = [];
-
-    for (const file of files) {
-      const [metadata] = await file.getMetadata();
-      const customMetadata = metadata.metadata || {};
-      const expiresAt = Date.parse(customMetadata.expiresAt || "");
-      if (!Number.isFinite(expiresAt) || expiresAt > now) continue;
-
-      const pathParts = file.name.split("/");
-      const teamId = customMetadata.teamId || pathParts[1] || "";
-      const attachmentType = pathParts[0];
-      const reportId = customMetadata.reportId || pathParts[3] || "";
-      expiredFiles.push({
-        file,
-        storagePath: file.name,
-        teamId,
-        reportId,
-        attachmentType,
-      });
-    }
-
-    if (expiredFiles.length === 0) {
-      logger.info("No expired attachments found.");
-      return;
-    }
-
-    const calendarExpiredPathsByTeam = new Map();
-    const dailyReportExpiredPathsByDocument = new Map();
-    for (const expiredFile of expiredFiles) {
-      await expiredFile.file.delete({ ignoreNotFound: true });
-      if (!expiredFile.teamId) continue;
-      if (
-        expiredFile.attachmentType === "dailyReportAttachments" &&
-        expiredFile.reportId
-      ) {
-        const documentKey = `${expiredFile.teamId}/${expiredFile.reportId}`;
-        const reportPaths =
-          dailyReportExpiredPathsByDocument.get(documentKey) || new Set();
-        reportPaths.add(expiredFile.storagePath);
-        dailyReportExpiredPathsByDocument.set(documentKey, reportPaths);
-      } else {
-        const teamPaths =
-          calendarExpiredPathsByTeam.get(expiredFile.teamId) || new Set();
-        teamPaths.add(expiredFile.storagePath);
-        calendarExpiredPathsByTeam.set(expiredFile.teamId, teamPaths);
-      }
-    }
-
-    let updatedEventCount = 0;
-    for (const [teamId, expiredPaths] of calendarExpiredPathsByTeam.entries()) {
-      const eventsSnapshot = await firestore
-        .collection("teams")
-        .doc(teamId)
-        .collection("clubEvents")
-        .get();
-
-      for (const eventSnapshot of eventsSnapshot.docs) {
-        const attachmentsByDate = eventSnapshot.data().attachmentsByDate;
-        if (!attachmentsByDate || typeof attachmentsByDate !== "object") {
-          continue;
-        }
-
-        const containsExpiredPath = Object.values(attachmentsByDate).some(
-          (attachments) =>
-            Array.isArray(attachments) &&
-            attachments.some((attachment) =>
-              expiredPaths.has(attachment?.storagePath),
-            ),
-        );
-        if (!containsExpiredPath) continue;
-
-        await firestore.runTransaction(async (transaction) => {
-          const currentSnapshot = await transaction.get(eventSnapshot.ref);
-          if (!currentSnapshot.exists) return;
-
-          const currentAttachments =
-            currentSnapshot.data().attachmentsByDate || {};
-          const nextAttachments = Object.entries(currentAttachments).reduce(
-            (nextByDate, [date, attachments]) => {
-              if (!Array.isArray(attachments)) return nextByDate;
-              const activeAttachments = attachments.filter(
-                (attachment) => !expiredPaths.has(attachment?.storagePath),
-              );
-              if (activeAttachments.length > 0) {
-                nextByDate[date] = activeAttachments;
-              }
-              return nextByDate;
-            },
-            {},
-          );
-
-          transaction.update(eventSnapshot.ref, {
-            attachmentsByDate: nextAttachments,
-            updatedAt: FieldValue.serverTimestamp(),
-          });
-        });
-        updatedEventCount += 1;
-      }
-    }
-
-    let updatedDailyReportCount = 0;
-    for (const [documentKey, expiredPaths] of
-      dailyReportExpiredPathsByDocument.entries()) {
-      const separatorIndex = documentKey.indexOf("/");
-      const teamId = documentKey.slice(0, separatorIndex);
-      const reportId = documentKey.slice(separatorIndex + 1);
-      const reportRef = firestore
-        .collection("teams")
-        .doc(teamId)
-        .collection("dailyReports")
-        .doc(reportId);
-
-      const reportUpdated = await firestore.runTransaction(
-        async (transaction) => {
-          const reportSnapshot = await transaction.get(reportRef);
-          if (!reportSnapshot.exists) return false;
-
-          const attachments = reportSnapshot.data().attachments;
-          if (!Array.isArray(attachments)) return false;
-          const activeAttachments = attachments.filter(
-            (attachment) => !expiredPaths.has(attachment?.storagePath),
-          );
-          if (activeAttachments.length === attachments.length) return false;
-
-          transaction.update(reportRef, {
-            attachments: activeAttachments,
-            updatedAt: FieldValue.serverTimestamp(),
-          });
-          return true;
-        },
-      );
-      if (reportUpdated) updatedDailyReportCount += 1;
-    }
-
-    logger.info("Expired attachments deleted.", {
-      deletedFileCount: expiredFiles.length,
-      updatedEventCount,
-      updatedDailyReportCount,
-    });
-  },
+  () => attachmentExpiry.cleanupExpired(),
 );
 
 Object.assign(exports, require("./notifications"));

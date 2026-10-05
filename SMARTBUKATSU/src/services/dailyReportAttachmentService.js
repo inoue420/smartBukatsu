@@ -162,7 +162,7 @@ export const uploadDailyReportAttachment = async ({
     }
 
     const storageRef = ref(storage, storagePath);
-    await uploadBytes(storageRef, blob, {
+    const uploadResult = await uploadBytes(storageRef, blob, {
       contentType: attachment.mimeType,
       customMetadata: {
         teamId: safeTeamId,
@@ -192,6 +192,7 @@ export const uploadDailyReportAttachment = async ({
       type: attachment.type,
       size: blob.size,
       storagePath,
+      storageGeneration: String(uploadResult.metadata.generation),
       downloadUrl,
       uploadedAt,
       expiresAt,
