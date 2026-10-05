@@ -2,7 +2,7 @@ const {createHash} = require('node:crypto');
 const {TACTICAL_NOTE_SUMMARY_SCHEMA_VERSION, noteConfirmationVersion, timestampMillis, timestampsEqual, contentFingerprint,
   buildTacticalNoteSummary, anonymizeTacticalNote, anonymizeTacticalActivity} = require('./tacticalNoteCore');
 const NOTE_READ_ROLES = ['owner', 'admin', 'staff', 'captain', 'member'];
-const TASK_COUNT_FIELDS = ['taskAssigneeUids', 'taskCount', 'taskTotalCount', 'taskDoneCount', 'taskDueCounts', 'hasTasks', 'unfinished', 'completed'];
+const TASK_COUNT_FIELDS = ['taskAssigneeUids', 'taskCount', 'taskTotalCount', 'taskDoneCount', 'hasTasks', 'unfinished', 'completed'];
 const hashTasks = (note) => createHash('sha256').update(JSON.stringify(note.tasks || {})).digest('hex');
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const summaryCurrent = (note, summary) => summary?.schemaVersion === TACTICAL_NOTE_SUMMARY_SCHEMA_VERSION && summary.contentVersion === noteConfirmationVersion(note) && timestampsEqual(summary.noteUpdatedAt, note.updatedAt);
@@ -119,9 +119,8 @@ function createTacticalNoteBackend({firestore, getStorage, FieldValue, Timestamp
       const wasDone = (state.doneUids || []).includes(data.uid);
       if (done === wasDone) return;
       const delta = done ? 1 : -1, doneCount = summary.taskDoneCount + delta;
-      const due = summary.taskDueCounts[task.dueDate], taskDueCounts = {...summary.taskDueCounts, [task.dueDate]: {...due, done: due.done + delta}};
       transaction.set(taskStateRef(ref, data.taskId), {...state, doneUids: moveUid(state.doneUids, data.uid, done)});
-      transaction.update(summaryRef(ref), {taskDoneCount: doneCount, taskDueCounts, unfinished: doneCount < summary.taskTotalCount, completed: summary.taskTotalCount > 0 && doneCount === summary.taskTotalCount});
+      transaction.update(summaryRef(ref), {taskDoneCount: doneCount, unfinished: doneCount < summary.taskTotalCount, completed: summary.taskTotalCount > 0 && doneCount === summary.taskTotalCount});
     });
   }
 

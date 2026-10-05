@@ -87,8 +87,8 @@ export async function saveTacticalNote(teamId, noteId, data, authorName, memberU
       }
       const tasks = Object.fromEntries(Object.entries(data.tasks || {}).map(([id, task]) => {
         const previous = current.tasks?.[id];
-        const unchanged = previous && JSON.stringify([previous.text, previous.assigneeUids, previous.dueDate, previous.clipKey]) === JSON.stringify([task.text.trim(), task.assigneeUids, task.dueDate, task.clipKey]);
-        return [id, { ...task, text: task.text.trim(), revision: unchanged ? previous.revision : (previous?.revision || 0) + 1 }];
+        const unchanged = previous && JSON.stringify([previous.text, previous.assigneeUids]) === JSON.stringify([task.text.trim(), task.assigneeUids]);
+        return [id, { text: task.text.trim(), assigneeUids: task.assigneeUids, revision: unchanged ? previous.revision : (previous?.revision || 0) + 1 }];
       }));
       const payload = { title: data.title.trim(), description: data.description, assigneeUids: data.assigneeUids,
         clips: data.clips, sourceProjectId: data.sourceProjectId, images, tasks, draft: false,

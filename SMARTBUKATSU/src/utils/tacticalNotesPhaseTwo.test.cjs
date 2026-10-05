@@ -14,12 +14,12 @@ test("reconfirmation excludes earlier versions while preserving question history
   assert.equal(noteSummary({ ...note, contentVersion: 3 }, responses, [], "a").confirmed, 0);
   assert.equal(responses.length, 3);
 });
-test("multiple assignees remain independent, deadline day is not overdue and task revisions reset progress", () => {
+test("multiple assignees remain independent without deadlines and task revisions reset progress", () => {
   const progress = [{ taskId: "task", uid: "a", taskRevision: 2, status: "done" }, { taskId: "task", uid: "b", taskRevision: 1, status: "done" }];
   const summary = noteSummary(note, [], progress, "a", "2026-10-03");
-  assert.equal(summary.items[0].done, true); assert.equal(summary.items[1].overdue, true);
+  assert.equal(summary.items[0].done, true); assert.equal(summary.items[1].done, false);
   assert.equal(summary.unfinished, true); assert.equal(summary.completed, false);
-  assert.equal(noteSummary(note, [], progress, "b", "2026-10-02").items[1].overdue, false);
+  assert.equal("overdue" in summary.items[1], false);
   progress[1] = { ...progress[1], taskRevision: 2 };
   assert.equal(noteSummary(note, [], progress, "a").completed, true);
   progress[0].status = "returned";
@@ -36,10 +36,12 @@ test("content fingerprint ignores task-only edits and detects image, scene, targ
     assert.notEqual(contentFingerprint(note), contentFingerprint({ ...note, ...patch }));
   }
 });
-test("image-only notes and optional tasks are valid; invalid dates, removed scenes and foreign assignees are rejected", () => {
+test("image-only notes and optional tasks are valid; legacy deadline and scene fields are ignored while foreign assignees are rejected", () => {
   assert.doesNotThrow(() => validateNote(note)); assert.doesNotThrow(() => validateTasks({}, [], []));
   assert.doesNotThrow(() => validateTasks({ task }, [], ["a", "b"]));
-  for (const patch of [{ dueDate: "2026-02-30" }, { assigneeUids: ["outsider"] }, { assigneeUids: [] }, { clipKey: "removed" }, { text: " " }]) {
+  assert.doesNotThrow(() => validateTasks({ task: { text: task.text, assigneeUids: task.assigneeUids } }, [], ["a", "b"]));
+  assert.doesNotThrow(() => validateTasks({ task: { ...task, dueDate: "invalid", clipKey: "removed" } }, [], ["a", "b"]));
+  for (const patch of [{ assigneeUids: ["outsider"] }, { assigneeUids: [] }, { text: " " }]) {
     assert.throws(() => validateTasks({ task: { ...task, ...patch } }, [], ["a", "b"]));
   }
 });
@@ -196,6 +198,11 @@ test("note save increments task revisions independently and rejects stale editor
     runTransaction: async (_db, operation) => operation({ get: async () => ({ data: () => current, exists: () => true }), update: (_ref, data) => writes.push(data) }),
     deleteTacticalNoteImages: async () => {},
   });
+  await save("team", "note", { ...note, sourceProjectId: "" }, "投稿者", ["a", "b"]);
+  assert.equal(writes[0].tasks.task.revision, 2);
+  assert.equal("dueDate" in writes[0].tasks.task, false);
+  assert.equal("clipKey" in writes[0].tasks.task, false);
+  writes = [];
   const draft = { ...note, sourceProjectId: "", baseUpdatedAt: time(10), tasks: { task: { ...task, text: "変更した練習" } } };
   await save("team", "note", draft, "投稿者", ["a", "b"]);
   assert.equal(writes[0].contentVersion, 2); assert.equal(writes[0].tasks.task.revision, 3);
