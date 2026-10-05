@@ -91,6 +91,9 @@ service cloud.firestore {
       match /pushTokens/{tokenId} {
         allow read, write: if false;
       }
+      match /loadingReadTeams/{teamId} {
+        allow read, write: if false;
+      }
     }
 
     match /invites/{code} {
@@ -141,6 +144,47 @@ service cloud.firestore {
 
       match /workspacePosts/{postId} {
         allow read, write: if isMember(teamId);
+      }
+
+      match /loadingOptimization/{stateId} {
+        allow read: if isMember(teamId);
+        allow write: if false;
+      }
+      match /loadingSummaries/{memberId} {
+        allow read: if isMember(teamId) && memberId == uid();
+        allow write: if false;
+      }
+      match /latestDailyReports/{memberId} {
+        allow read: if isMember(teamId);
+        allow write: if false;
+      }
+      match /loadingEntries/{entryId} {
+        allow read, write: if false;
+      }
+      match /workspacePostReadStates/{postId} {
+        function ownMap(field) {
+          let before = resource == null ? {} : resource.data.get(field, {});
+          let after = request.resource.data.get(field, {});
+          return after is map && after.diff(before).affectedKeys().hasOnly([uid()]);
+        }
+        function validReadState() {
+          let data = request.resource.data;
+          let parent = get(/databases/$(database)/documents/teams/$(teamId)/workspacePosts/$(postId)).data;
+          let readers = data.get('readers', {});
+          let oldReaders = resource == null ? {} : resource.data.get('readers', {});
+          return data.keys().hasOnly(['readers', 'notificationReads', 'notificationDismissals', 'updatedAt'])
+            && data.updatedAt == request.time
+            && parent.get('status', '') != 'deleted'
+            && uid() in parent.get('visibleToUids', [])
+            && ownMap('readers') && ownMap('notificationReads') && ownMap('notificationDismissals')
+            && (readers.diff(oldReaders).affectedKeys().size() == 0
+              || (getRole(teamId) != 'guardian' && uid() in parent.get('readTargetUids', []) && readers[uid()] == true))
+            && data.get('notificationReads', {}).get(uid(), []) is list
+            && data.get('notificationDismissals', {}).get(uid(), []) is list;
+        }
+        allow read: if isMember(teamId);
+        allow create, update: if isMember(teamId) && validReadState();
+        allow delete: if false;
       }
 
       match /dailyReports/{reportId} {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
   NavigationContainer,
   useNavigationContainerRef,
@@ -20,6 +20,9 @@ import {
   getInterstitialSettingsFromTeamData,
 } from "./src/ads/adSettings";
 import { DEFAULT_ALERT_THRESHOLDS } from "./src/utils/medicalScale";
+import { mergeReadState, monthAgo, monthWindow } from "./src/utils/historyLoading";
+import { useHistoryData } from "./src/hooks/useHistoryData";
+import { subscribeLoadingState, subscribeLoadingSummary, subscribeLatestReports, subscribePostReadStates, subscribePinnedPosts } from "./src/services/historyDataService";
 
 // コンテキストとサービス
 import { AuthProvider, useAuth } from "./src/AuthContext";
@@ -108,6 +111,73 @@ function AppContent() {
   );
   const [isOffline, setIsOffline] = useState(false);
   const [posts, setPosts] = useState([]);
+  const [currentScreen, setCurrentScreen] = useState("WorkspaceHome");
+  const [currentParams, setCurrentParams] = useState({});
+  const [calendarWindow, setCalendarWindow] = useState(() => monthWindow());
+  const [loadingState, setLoadingState] = useState(null);
+  const [loadingSummary, setLoadingSummary] = useState({});
+  const [latestReports, setLatestReports] = useState([]);
+  const [postReads, setPostReads] = useState({});
+  const [workspaceChannel, setWorkspaceChannel] = useState("");
+  const [pinnedPosts, setPinnedPosts] = useState([]);
+  const loadingStateResolved = loadingState?._teamId === activeTeamId;
+  const optimize = Boolean(loadingStateResolved && loadingState.ready && loadingState.enabled && loadingState.schemaVersion === 1);
+  const separateReads = Boolean(optimize && loadingState?.separateReads);
+  const readStateAvailable = Boolean(loadingStateResolved && loadingState.schemaVersion === 1);
+  const authorized = Boolean(user && activeTeamId && !emailVerificationPending);
+  useEffect(() => {
+    let active = true;
+    setLoadingState(null); setLoadingSummary({}); setLatestReports([]); setPostReads({});
+    setProjects([]); setHighlightProjects([]); setPosts([]); setNotices([]); setDailyReports([]); setClubEvents([]); setPersonalEvents([]); setTagGroups([]); setCurrentParams({});
+    setCalendarWindow(monthWindow());
+    setWorkspaceChannel(""); setPinnedPosts([]);
+    if (!authorized) return undefined;
+    const stop = subscribeLoadingState(activeTeamId, (value) => { if (active) setLoadingState({ ...value, _teamId: activeTeamId }); }, () => { if (active) setLoadingState({ _teamId: activeTeamId }); });
+    return () => { active = false; stop(); };
+  }, [activeTeamId, user?.uid, authorized]);
+  useEffect(() => {
+    if (!optimize || !authorized) return undefined;
+    let active = true;
+    const stop = subscribeLoadingSummary(activeTeamId, user.uid, (value) => { if (active) setLoadingSummary(value); }, () => {});
+    return () => { active = false; stop(); };
+  }, [activeTeamId, user?.uid, authorized, optimize]);
+  useEffect(() => {
+    if (!optimize || !authorized || currentScreen !== "Roster") { setLatestReports([]); return undefined; }
+    let active = true;
+    const stop = subscribeLatestReports(activeTeamId, (value) => { if (active) setLatestReports(value); }, () => {});
+    return () => { active = false; stop(); };
+  }, [activeTeamId, authorized, optimize, currentScreen]);
+  useEffect(() => {
+    if (!optimize || !authorized || currentScreen !== "WorkspaceHome" || !workspaceChannel) { setPinnedPosts([]); return undefined; }
+    let active = true;
+    const stop = subscribePinnedPosts(activeTeamId, user.uid, workspaceChannel, (items) => { if (active) setPinnedPosts(items); }, () => {});
+    return () => { active = false; stop(); };
+  }, [activeTeamId, user?.uid, optimize, authorized, currentScreen, workspaceChannel]);
+  const basePosts = useMemo(() => [...new Map([...posts, ...pinnedPosts].map((post) => [post.id, post])).values()], [posts, pinnedPosts]);
+  const postIds = basePosts.map((post) => post.id).sort().join("|");
+  useEffect(() => {
+    if (!readStateAvailable || !authorized || currentScreen !== "WorkspaceHome") { setPostReads({}); return undefined; }
+    let active = true;
+    const stop = subscribePostReadStates(activeTeamId, postIds ? postIds.split("|") : [], (value) => { if (active) setPostReads(value); }, () => {});
+    return () => { active = false; stop(); };
+  }, [activeTeamId, readStateAvailable, authorized, currentScreen, postIds]);
+  const displayedPosts = useMemo(() => readStateAvailable ? basePosts.map((post) => mergeReadState(post, postReads[post.id], userProfiles)) : basePosts, [basePosts, postReads, userProfiles, readStateAvailable]);
+  const historiesActive = optimize && authorized;
+  const postHistory = useHistoryData(activeTeamId, "workspacePosts", historiesActive && currentScreen === "WorkspaceHome" && Boolean(workspaceChannel), { uid: user?.uid, channel: workspaceChannel }, setPosts);
+  const noticeHistory = useHistoryData(activeTeamId, "notices", historiesActive && currentScreen === "NoticeBoard", {}, setNotices);
+  const reportHistory = useHistoryData(activeTeamId, "dailyReports", historiesActive && currentScreen === "Diary", { since: monthAgo() }, setDailyReports);
+  const clubHistory = useHistoryData(activeTeamId, "clubEvents", historiesActive && currentScreen === "Calendar", calendarWindow, setClubEvents);
+  const personalHistory = useHistoryData(activeTeamId, "personalEvents", historiesActive && currentScreen === "Calendar", { ...calendarWindow, uid: user?.uid }, setPersonalEvents);
+  const videoScreen = ["ProjectList", "ProjectDetail", "TacticalNotes"].includes(currentScreen);
+  const projectHistory = useHistoryData(activeTeamId, "projects", historiesActive && videoScreen, {}, setProjects);
+  const highlightHistory = useHistoryData(activeTeamId, "highlightProjects", historiesActive && videoScreen, {}, setHighlightProjects);
+  useHistoryData(activeTeamId, "tagGroups", historiesActive && (videoScreen || currentScreen === "TagGroupEdit"), {}, setTagGroups);
+  useEffect(() => {
+    if (!optimize) return;
+    if (currentScreen === "WorkspaceHome") postHistory.include(currentParams.postId);
+    if (currentScreen === "Diary") reportHistory.include(currentParams.reportId);
+    if (currentScreen === "NoticeBoard") noticeHistory.include(currentParams.noticeId);
+  }, [optimize, currentScreen, workspaceChannel, currentParams.postId, currentParams.reportId, currentParams.noticeId, postHistory.include, reportHistory.include, noticeHistory.include]);
 
   const [isResolvingTeam, setIsResolvingTeam] = useState(false);
 
@@ -165,29 +235,31 @@ function AppContent() {
 
   // Firestore同期
   useEffect(() => {
-    if (user && activeTeamId && !emailVerificationPending) {
+    if (user && activeTeamId && !emailVerificationPending && loadingStateResolved) {
       setPosts([]);
       setInterstitialSettings({ ...DEFAULT_INTERSTITIAL_SETTINGS });
       setAbsenceDeadlineDaysBefore(DEFAULT_ABSENCE_DEADLINE_DAYS_BEFORE);
       setAbsenceDetailsVisible(DEFAULT_ABSENCE_DETAILS_VISIBLE);
-      const unsubProjects = subscribeProjects(activeTeamId, setProjects);
-      const unsubHighlightProjects = subscribeHighlightProjects(
+      const idle = () => {};
+      // Preserve the old client path until server-side preparation and explicit activation.
+      const unsubProjects = optimize ? idle : subscribeProjects(activeTeamId, setProjects);
+      const unsubHighlightProjects = optimize ? idle : subscribeHighlightProjects(
         activeTeamId,
         setHighlightProjects,
       );
-      const unsubReports = subscribeDailyReports(activeTeamId, setDailyReports);
-      const unsubNotices = subscribeNotices(activeTeamId, setNotices);
-      const unsubWorkspacePosts = subscribeWorkspacePosts(
+      const unsubReports = optimize ? idle : subscribeDailyReports(activeTeamId, setDailyReports);
+      const unsubNotices = optimize ? idle : subscribeNotices(activeTeamId, setNotices);
+      const unsubWorkspacePosts = optimize ? idle : subscribeWorkspacePosts(
         activeTeamId,
         user.uid,
         setPosts,
       );
-      const unsubPersonal = subscribePersonalEvents(
+      const unsubPersonal = optimize ? idle : subscribePersonalEvents(
         user.uid,
         setPersonalEvents,
       );
-      const unsubClubEvents = subscribeClubEvents(activeTeamId, setClubEvents); // ★ 追加
-      const unsubTagGroups = subscribeTagGroups(activeTeamId, setTagGroups);
+      const unsubClubEvents = optimize ? idle : subscribeClubEvents(activeTeamId, setClubEvents);
+      const unsubTagGroups = optimize ? idle : subscribeTagGroups(activeTeamId, setTagGroups);
 
       const unsubTeam = subscribeTeamData(activeTeamId, (data) => {
         if (data) {
@@ -259,7 +331,7 @@ function AppContent() {
       setPosts([]);
       setAbsenceDeadlineDaysBefore(DEFAULT_ABSENCE_DEADLINE_DAYS_BEFORE);
     }
-  }, [user, activeTeamId, emailVerificationPending]);
+  }, [user, activeTeamId, emailVerificationPending, optimize, loadingStateResolved]);
 
   useEffect(() => {
     const unsubscribe = NetInfo.addEventListener((state) => {
@@ -287,6 +359,8 @@ function AppContent() {
 
   const handleNavigationReady = () => {
     currentRouteNameRef.current = navigationRef.getCurrentRoute()?.name;
+    setCurrentScreen(currentRouteNameRef.current);
+    setCurrentParams(navigationRef.getCurrentRoute()?.params || {});
   };
 
   const handleNavigationStateChange = () => {
@@ -304,6 +378,8 @@ function AppContent() {
       recordScreenTransition();
     }
     currentRouteNameRef.current = currentRouteName;
+    setCurrentScreen(currentRouteName);
+    setCurrentParams(navigationRef.getCurrentRoute()?.params || {});
   };
 
   return (
@@ -349,13 +425,19 @@ function AppContent() {
               {(props) => (
                 <WorkspaceHomeScreen
                   {...props}
+                  key={activeTeamId}
+                  history={optimize ? postHistory : null}
+                  loadingSummary={optimize ? loadingSummary : null}
+                  optimize={optimize}
+                  separateReads={separateReads}
+                  onChannelChange={setWorkspaceChannel}
                   isAdmin={authIsAdmin}
                   currentUser={safeUserName}
                   currentUserUid={currentUserUid}
                   teamName={teamName}
                   notices={notices}
                   setNotices={setNotices}
-                  posts={posts}
+                  posts={displayedPosts}
                   setPosts={setPosts}
                   isOffline={isOffline}
                   clubMembers={clubMembers}
@@ -372,6 +454,8 @@ function AppContent() {
               {(props) => (
                 <NoticeBoardScreen
                   {...props}
+                  key={activeTeamId}
+                  history={optimize ? noticeHistory : null}
                   isAdmin={authIsAdmin}
                   currentUser={safeUserName}
                   currentUserUid={currentUserUid}
@@ -387,6 +471,8 @@ function AppContent() {
               {(props) => (
                 <DiaryScreen
                   {...props}
+                  key={activeTeamId}
+                  history={optimize ? reportHistory : null}
                   isAdmin={authIsAdmin}
                   currentUser={safeUserName}
                   currentUserUid={currentUserUid}
@@ -409,6 +495,10 @@ function AppContent() {
               {(props) => (
                 <CalendarScreen
                   {...props}
+                  key={activeTeamId}
+                  optimize={optimize}
+                  eventHistory={optimize ? { busy: clubHistory.busy || personalHistory.busy, error: clubHistory.error || personalHistory.error, retry: () => { clubHistory.retry(); personalHistory.retry(); } } : null}
+                  onVisibleMonthChange={optimize ? (date) => setCalendarWindow(monthWindow(date)) : undefined}
                   isAdmin={authIsAdmin}
                   currentUser={safeUserName}
                   currentUserUid={currentUserUid}
@@ -427,6 +517,9 @@ function AppContent() {
               {(props) => (
                 <ProjectListScreen
                   {...props}
+                  key={activeTeamId}
+                  history={optimize ? projectHistory : null}
+                  highlightHistory={optimize ? highlightHistory : null}
                   isAdmin={authIsAdmin}
                   currentUser={safeUserName}
                   currentUserUid={currentUserUid}
@@ -451,6 +544,7 @@ function AppContent() {
               {(props) => (
                 <ProjectDetailScreen
                   {...props}
+                  key={activeTeamId}
                   isAdmin={authIsAdmin}
                   currentUser={safeUserName}
                   currentUserUid={currentUserUid}
@@ -481,13 +575,14 @@ function AppContent() {
               {(props) => (
                 <RosterScreen
                   {...props}
+                  key={activeTeamId}
                   isAdmin={authIsAdmin}
                   currentUser={safeUserName}
                   currentUserUid={currentUserUid}
                   activeTeamId={activeTeamId}
                   clubMembers={clubMembers}
                   userProfiles={userProfiles}
-                  dailyReports={dailyReports}
+                  dailyReports={optimize ? latestReports : dailyReports}
                   grades={grades}
                   positions={positions}
                   alertThresholds={alertThresholds}

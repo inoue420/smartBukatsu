@@ -6,6 +6,8 @@ const SUBSCRIPTION_NAMES = new Set([
   "notificationPreferences", "workspaceTeam",
   "tacticalNoteSummaries", "tacticalNote", "tacticalNoteSummary",
   "tacticalNote-responses", "tacticalNote-progress",
+  "loadingState", "loadingSummary", "latestDailyReports", "workspacePostReads", "projectReferences",
+  "pinnedWorkspacePosts",
 ]);
 const MAX_LIFECYCLE_EVENTS = 60;
 

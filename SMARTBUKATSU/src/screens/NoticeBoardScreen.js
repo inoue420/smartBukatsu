@@ -18,8 +18,10 @@ import { SafeAreaView } from "react-native-safe-area-context";
 // ★ Firestore通信関数をインポート
 import { useAuth } from "../AuthContext";
 import { createNotice, updateNotice } from "../services/firestoreService";
+import HistoryLoadingControls from "../components/HistoryLoadingControls";
 
 const NoticeBoardScreen = ({
+  history = null,
   navigation,
   route,
   isAdmin,
@@ -298,6 +300,7 @@ const NoticeBoardScreen = ({
         <TextInput
           style={styles.searchInput}
           placeholder="お知らせを検索..."
+          onSubmitEditing={() => history?.searchAll()}
           value={searchQuery}
           onChangeText={setSearchQuery}
         />
@@ -307,6 +310,7 @@ const NoticeBoardScreen = ({
         style={styles.listContainer}
         contentContainerStyle={{ paddingBottom: 100 }}
       >
+        <HistoryLoadingControls history={history} search={Boolean(searchQuery.trim())} />
         {filteredNotices.length === 0 ? (
           <Text style={styles.emptyText}>お知らせはありません。</Text>
         ) : (

@@ -18,7 +18,8 @@ import {
   Switch,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { usePreventRemove } from "@react-navigation/native";
+import { usePreventRemove, useIsFocused } from "@react-navigation/native";
+import { subscribeProjectsByIds } from "../services/historyDataService";
 import { Video, ResizeMode } from "expo-av";
 import YoutubePlayer from "react-native-youtube-iframe";
 import * as ScreenOrientation from "expo-screen-orientation";
@@ -52,10 +53,13 @@ const ProjectDetailScreen = ({
   navigation,
   currentUser,
   currentUserUid = "",
-  projects,
+  projects: baseProjects,
   setProjects,
   tagGroups = [],
 }) => {
+  const focused = useIsFocused();
+  const [referencedProjects, setReferencedProjects] = useState([]);
+  const projects = useMemo(() => [...new Map([...referencedProjects, ...(baseProjects || [])].map((item) => [item.id, item])).values()], [baseProjects, referencedProjects]);
   const {
     project: routeProject,
     userRole = "member",
@@ -69,6 +73,13 @@ const ProjectDetailScreen = ({
   const projectVideoUrl = project.videoUrl || "";
 
   const { activeTeamId } = useAuth();
+  useEffect(() => {
+    setReferencedProjects([]);
+    if (!focused || !activeTeamId || !routeProject?.id) return undefined;
+    let active = true;
+    const stop = subscribeProjectsByIds(activeTeamId, [routeProject.id], (items) => { if (active) setReferencedProjects(items); }, () => {});
+    return () => { active = false; stop(); };
+  }, [activeTeamId, focused, routeProject?.id]);
 
   const [localTags, setLocalTags] = useState(project.tags || []);
 

@@ -29,7 +29,9 @@ import * as ScreenOrientation from "expo-screen-orientation";
 import { useAuth } from "../AuthContext";
 import { canEditRecordedTag } from "../utils/recordedTagPermissions";
 import { createClipPlaybackTransition } from "../utils/clipPlaybackTransition";
-import { CommonActions } from "@react-navigation/native";
+import { CommonActions, useIsFocused } from "@react-navigation/native";
+import { subscribeHistoryDocument, subscribeProjectsByIds } from "../services/historyDataService";
+import HistoryLoadingControls from "../components/HistoryLoadingControls";
 import { canReadNotes, canPostNotes, noteClipKey, toggleNoteClipSelection, buildNoteClips, buildNotePlaybackClips } from "../utils/tacticalNotes";
 import {
   createProject,
@@ -215,12 +217,23 @@ const ProjectListScreen = ({
   isAdmin,
   currentUser,
   currentUserUid = "",
-  projects,
+  projects: baseProjects,
+  history = null,
+  highlightHistory = null,
   setProjects,
-  highlightProjects = EMPTY_LIST,
+  highlightProjects: baseHighlightProjects = EMPTY_LIST,
   tagGroups = EMPTY_LIST,
   userProfiles,
 }) => {
+  const focused = useIsFocused();
+  const [referencedProjects, setReferencedProjects] = useState([]);
+  const [loadedReferenceKey, setLoadedReferenceKey] = useState("");
+  const [referenceError, setReferenceError] = useState("");
+  const [referenceRetry, setReferenceRetry] = useState(0);
+  const [referencedHighlight, setReferencedHighlight] = useState(null);
+  const [loadedHighlightId, setLoadedHighlightId] = useState("");
+  const highlightProjects = useMemo(() => [...new Map([...(referencedHighlight ? [referencedHighlight] : []), ...baseHighlightProjects].map((project) => [project.id, project])).values()], [baseHighlightProjects, referencedHighlight]);
+  const projects = useMemo(() => [...new Map([...referencedProjects, ...(baseProjects || [])].map((project) => [project.id, project])).values()], [baseProjects, referencedProjects]);
   const currentUserProfile =
     Object.values(userProfiles).find(
       (profile) => profile?.uid === currentUserUid,
@@ -249,6 +262,16 @@ const ProjectListScreen = ({
   const [activeTab, setActiveTab] = useState(notePicker || notePlayback ? "summary" : "list");
   const [selectedHighlightProjectId, setSelectedHighlightProjectId] =
     useState(notePlayback?.id || notePicker?.sourceId || null);
+  const needsHighlight = Boolean(selectedHighlightProjectId && !notePlayback && !baseHighlightProjects.some((project) => project.id === selectedHighlightProjectId));
+  const highlightPending = needsHighlight && loadedHighlightId !== selectedHighlightProjectId;
+  useEffect(() => {
+    if (!focused || !activeTeamId || !needsHighlight) return undefined;
+    let active = true;
+    const stop = subscribeHistoryDocument(activeTeamId, "highlightProjects", selectedHighlightProjectId, (item) => {
+      if (active) { setReferencedHighlight(item); setLoadedHighlightId(selectedHighlightProjectId); }
+    }, () => { if (active) setReferenceError("プロジェクトを読み込めませんでした。"); });
+    return () => { active = false; stop(); };
+  }, [activeTeamId, focused, needsHighlight, selectedHighlightProjectId, referenceRetry]);
   const noteSelectionEnabled = notePicker
     ? canReadNotes(currentUserProfile) && notePicker.teamId === activeTeamId
     : canPostNotes(currentUserProfile) && noteActionsOpen;
@@ -407,6 +430,16 @@ const ProjectListScreen = ({
   const selectedHighlightVideoIds = useMemo(() => {
     return new Set(selectedHighlightProject?.videoIds || []);
   }, [selectedHighlightProject]);
+  const referenceIds = [...new Set([...(notePlayback ? (notePlayback.clips || []).map((clip) => clip.projectId) : [...selectedHighlightVideoIds]), ...(editingHighlightProject?.videoIds || [])])].sort().join("|");
+  const referenceKey = `${activeTeamId}|${referenceIds}`;
+  const referencesPending = highlightPending || Boolean(referenceIds && loadedReferenceKey !== referenceKey && referenceIds.split("|").some((id) => !projects.some((project) => project.id === id)));
+  useEffect(() => {
+    if (!focused || !activeTeamId || !referenceIds) return undefined;
+    setReferenceError("");
+    let active = true;
+    const stop = subscribeProjectsByIds(activeTeamId, referenceIds.split("|"), (items) => { if (active) { setReferencedProjects(items); setLoadedReferenceKey(referenceKey); } }, () => { if (active) setReferenceError("参照動画を読み込めませんでした。"); });
+    return () => { active = false; stop(); };
+  }, [activeTeamId, focused, referenceIds, referenceRetry]);
 
   const highlightClipProjects = useMemo(() => {
     if (!selectedHighlightProject) return projects;
@@ -498,13 +531,13 @@ const ProjectListScreen = ({
     const saved = notePlayback && notePlaybackState;
     const found = saved ? currentClips.findIndex((clip) => noteClipKey(clip) === saved.clipKey) : -1;
     const index = found >= 0 ? found : 0, clip = currentClips[index];
-    const unchanged = Boolean(saved && found >= 0 && clip?.url && saved.sourceUrl === clip.sourceUrl &&
+    const unchanged = Boolean(saved && found >= 0 && (clip?.url || referencesPending) && saved.sourceUrl === clip.sourceUrl &&
       saved.start === clip.start && saved.end === clip.end);
     const finished = unchanged && saved.finished === true;
     const validPosition = unchanged && Number.isFinite(saved.positionSeconds) &&
       saved.positionSeconds >= clip.start && saved.positionSeconds < clip.end;
     const positionSeconds = finished ? clip.end : validPosition ? saved.positionSeconds : clip?.start || 0;
-    initialNotePlayback.current = { index, positionSeconds, finished,
+    initialNotePlayback.current = { index, positionSeconds, finished, waitingForSource: referencesPending,
       playbackMode: saved && ["stop", "single", "all"].includes(saved.playbackMode) ? saved.playbackMode : "stop",
       resume: saved && clip ? { clipKey: noteClipKey(clip), sourceUrl: clip.sourceUrl, start: clip.start, end: clip.end,
         positionSeconds, isPlaying: validPosition && !finished && saved.isPlaying === true } : null };
@@ -584,19 +617,19 @@ const ProjectListScreen = ({
   };
 
   useEffect(() => {
-    if (notePlayback) return;
+    if (notePlayback || referencesPending) return;
     setSelectedHighlightTags((prev) => {
       const next = prev.filter((t) => availableTags.includes(t));
       return next.length === prev.length ? prev : next;
     });
-  }, [availableTags, notePlayback]);
+  }, [availableTags, notePlayback, referencesPending]);
 
   useEffect(() => {
-    if (selectedHighlightProjectId && !selectedHighlightProject) {
+    if (selectedHighlightProjectId && !selectedHighlightProject && !highlightPending) {
       setSelectedHighlightProjectId(null);
       setIsPlaying(false);
     }
-  }, [selectedHighlightProject, selectedHighlightProjectId]);
+  }, [selectedHighlightProject, selectedHighlightProjectId, highlightPending]);
 
   const currentClip = currentClips[currentClipIndex] || null;
   // Unrelated project updates should not restart the selected clip.
@@ -730,6 +763,11 @@ const ProjectListScreen = ({
   };
 
   useEffect(() => {
+    if (!focused || referencesPending) return undefined;
+    if (initialNotePlayback.current.waitingForSource) {
+      initialNotePlayback.current.waitingForSource = false;
+      if (!currentClip?.url) { noteResumeRef.current = null; setVideoTime(currentClip?.start || 0); setHasReachedPlaylistEnd(false); }
+    }
     if (notePlayback && !currentClip?.url) {
       transition.cancel();
       setIsPlaying(false);
@@ -812,6 +850,8 @@ const ProjectListScreen = ({
     isYoutubeReady,
     youtubeReadyPlayer,
     nativeLoadVersion,
+    focused,
+    referencesPending,
   ]);
 
   useEffect(() => {
@@ -905,7 +945,7 @@ const ProjectListScreen = ({
   }, [clipPlaybackKey, currentClipIndex, currentClips.length]);
 
   useEffect(() => {
-    if (!notePlayback || !currentClip) return;
+    if (!notePlayback || !currentClip || referencesPending || !focused) return;
     const token = transition.current();
     const seeking = transition.matches(clipPlaybackKey) && token.phase === "seeking";
     const positionSeconds = hasReachedPlaylistEnd ? currentClip.end : seeking ? token.start :
@@ -914,7 +954,7 @@ const ProjectListScreen = ({
       start: currentClip.start, end: currentClip.end, positionSeconds,
       isPlaying: Boolean(currentClip.url) && !hasReachedPlaylistEnd && (seeking ? token.shouldPlay !== false : isPlaying),
       playbackMode, finished: hasReachedPlaylistEnd });
-  }, [notePlayback?.id, clipPlaybackKey, videoTime, isPlaying, playbackMode, hasReachedPlaylistEnd]);
+  }, [notePlayback?.id, clipPlaybackKey, videoTime, isPlaying, playbackMode, hasReachedPlaylistEnd, referencesPending, focused]);
 
   const formatTime = (seconds) => {
     const m = Math.floor(seconds / 60)
@@ -1403,10 +1443,10 @@ const ProjectListScreen = ({
           )}
         </View>
         <Text style={styles.highlightProjectMeta}>
-          動画 {selectedVideos.length} 件
+          動画 {videoIdSet.size} 件
         </Text>
         <Text style={styles.cardSub} numberOfLines={2}>
-          {previewTitle || "動画が選択されていません"}
+          {previewTitle || (videoIdSet.size ? "開いて動画を表示" : "動画が選択されていません")}
         </Text>
       </TouchableOpacity>
     );
@@ -1895,6 +1935,7 @@ const ProjectListScreen = ({
       )}
 
       {renderNoteSelectionControls()}
+      {!notePlayback && !isLandscape && <HistoryLoadingControls history={activeTab === "summary" && !selectedHighlightProject ? highlightHistory : history} label="過去の動画を追加読み込み" />}
       {notePlayback && !isLandscape && <ScrollView keyboardShouldPersistTaps="handled" style={{ maxHeight: 210, flexGrow: 0 }} contentContainerStyle={{ paddingHorizontal: 15 }}>{noteHeader}</ScrollView>}
       <View style={[styles.content, isLandscape && { padding: 0 }, scrollNotePickerDetail && styles.notePickerFlow]}>
         {activeTab === "summary" ? (
@@ -1916,7 +1957,7 @@ const ProjectListScreen = ({
             >
               {!isLandscape && !notePlayback && renderTagSelector()}
 
-              {currentClips.length === 0 ? (
+              {referencesPending ? <View style={{ padding: 20 }}><Text>参照動画を読み込み中…</Text>{!!referenceError && <TouchableOpacity onPress={() => setReferenceRetry((value) => value + 1)}><Text>{referenceError} タップして再試行</Text></TouchableOpacity>}</View> : currentClips.length === 0 ? (
                 <View
                   style={{
                     flex: 1,
@@ -2161,6 +2202,7 @@ const ProjectListScreen = ({
                 nestedScrollEnabled={true}
                 keyboardShouldPersistTaps="handled"
               >
+                {isHighlightProjectModalVisible && <HistoryLoadingControls history={history} label="過去の動画を追加読み込み" />}
                 {highlightVideoHierarchyRows.length === 0 ? (
                   <Text style={styles.videoSelectEmptyText}>
                     選択できる動画がありません。
@@ -2235,6 +2277,7 @@ const ProjectListScreen = ({
                 nestedScrollEnabled={true}
                 keyboardShouldPersistTaps="handled"
               >
+                {isHighlightProjectEditModalVisible && <HistoryLoadingControls history={history} label="過去の動画を追加読み込み" />}
                 {highlightEditVideoHierarchyRows.length === 0 ? (
                   <Text style={styles.videoSelectEmptyText}>
                     選択できる動画がありません。

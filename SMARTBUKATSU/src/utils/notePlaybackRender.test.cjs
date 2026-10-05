@@ -47,7 +47,9 @@ function mountNote(os, overrides = {}) {
     "expo-av": { Video: "Video", ResizeMode: { CONTAIN: "contain" } },
     "react-native-youtube-iframe": { __esModule: true, default: "YoutubePlayer" },
     "expo-screen-orientation": { unlockAsync: async () => {}, lockAsync: async () => {}, OrientationLock: {} },
-    "@react-navigation/native": { CommonActions: {} },
+    "@react-navigation/native": { CommonActions: {}, useIsFocused: () => true },
+    "../services/historyDataService": { subscribeHistoryDocument: overrides.highlightLoader || ((_team, _name, _id, next) => { next(null); return () => {}; }), subscribeProjectsByIds: overrides.referenceLoader || ((_team, _ids, next) => { next([]); return () => {}; }) },
+    "../components/HistoryLoadingControls": { __esModule: true, default: "HistoryLoadingControls" },
     "../AuthContext": { useAuth: () => ({ user: { uid: "member" }, activeTeamId: "team" }) },
     "../utils/recordedTagPermissions": require("./recordedTagPermissions"),
     "../utils/clipPlaybackTransition": require("./clipPlaybackTransition"),
@@ -95,6 +97,28 @@ function mountNote(os, overrides = {}) {
       dirty = true;
     },
     get renders() { return renders; } };
+}
+
+for (const os of ["android", "ios"]) {
+  test(`${os}: an older playlist stays selected while loading and yields to newer live page data`, () => {
+    let receive;
+    const screen = mountNote(os, { notePlayback: null, highlightProjects: [], route: { params: { notePicker: { sourceId: "older", teamId: "team" } } },
+      highlightLoader: (_team, _name, _id, next) => { receive = next; return () => {}; } });
+    screen.render(); receive({ id: "older", title: "Older playlist", videoIds: ["video"] }); screen.render();
+    assert.ok(screen.find((node) => node.children?.includes("Older playlist")));
+    screen.updateProps({ highlightProjects: [{ id: "older", title: "Updated playlist", videoIds: ["video"] }] }); screen.render();
+    assert.ok(screen.find((node) => node.children?.includes("Updated playlist")));
+    screen.unmount();
+  });
+  test(`${os}: a lazily fetched older source does not overwrite the saved note position while loading`, () => {
+    const fixture = playbackFixture("youtube"), second = fixture.notePlayback.clips[1], snapshots = [];
+    let receive;
+    const saved = { clipKey: noteClipKey(second), sourceUrl: second.sourceUrl, start: second.start, end: second.end,
+      positionSeconds: 31.25, isPlaying: false, playbackMode: "stop", finished: false };
+    const screen = mountNote(os, { ...fixture, projects: [], notePlaybackState: saved, onNotePlaybackStateChange: (state) => snapshots.push(state), referenceLoader: (_team, _ids, next) => { receive = next; return () => {}; } });
+    screen.render(); assert.equal(snapshots.length, 0); assert.equal(screen.find((node) => node.type === "YoutubePlayer"), null);
+    receive(fixture.projects); screen.render(); assert.equal(snapshots.at(-1).positionSeconds, 31.25); assert.equal(snapshots.at(-1).clipKey, saved.clipKey);
+  });
 }
 
 for (const os of ["ios", "android"]) {

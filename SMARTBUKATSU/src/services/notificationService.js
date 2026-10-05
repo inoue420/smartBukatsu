@@ -33,12 +33,12 @@ async function getDeviceId() {
   return generated;
 }
 
-export function subscribeNotifications(uid, onValue, onError) {
+export function subscribeNotifications(uid, onValue, onError, count = 100) {
   if (!uid) return () => {};
   const notificationsQuery = query(
     collection(db, "users", uid, "notifications"),
     orderBy("createdAt", "desc"),
-    limit(100),
+    limit(count),
   );
   return measuredOnSnapshot(
     "notifications",
@@ -58,6 +58,7 @@ export function subscribeNotifications(uid, onValue, onError) {
             ),
           }))
           .filter((notification) => !notification.dismissedAt),
+        snapshot.size === count,
       );
     },
     onError,
