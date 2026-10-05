@@ -26,6 +26,7 @@ import {
   incrementWorkspacePostReaction,
   manageOwnWorkspaceContent,
   markWorkspacePostRead,
+  markWorkspaceNotificationState,
   moderateWorkspaceContent,
   setUserBlocked,
   submitSafetyReport,
@@ -35,6 +36,8 @@ import {
   validateUserContent,
 } from "../services/firestoreService";
 import { getFatigueScore, getPainScore } from "../utils/medicalScale";
+import { medicalDangerCount } from "../utils/historyLoading";
+import HistoryLoadingControls from "../components/HistoryLoadingControls";
 import {
   getBlockedContentMessage,
   getContentWarningMessage,
@@ -127,6 +130,11 @@ const defaultChannels = [
 ];
 
 const WorkspaceHomeScreen = ({
+  history = null,
+  loadingSummary = null,
+  optimize = false,
+  separateReads = false,
+  onChannelChange,
   navigation,
   route,
   isAdmin,
@@ -341,7 +349,7 @@ const WorkspaceHomeScreen = ({
       (profile) => !isPostReadByProfile(post, profile),
     );
 
-  const unreadNoticeCount = notices.filter(
+  const unreadNoticeCount = loadingSummary ? (loadingSummary.unreadNoticeCount || 0) : notices.filter(
     (n) => n.status !== "deleted" && !(n.readBy || []).includes(currentUser),
   ).length;
 
@@ -367,7 +375,7 @@ const WorkspaceHomeScreen = ({
   // ★修正：「担当の生徒のみ」の権限をバッジのカウントにも反映させる
   const staffScope = currentUserProfile.staffScope || "all";
 
-  const unreadMedicalDangerCount = dailyReports
+  const unreadMedicalDangerCount = loadingSummary ? medicalDangerCount(loadingSummary.medicalHistogram, alertThresholds) : dailyReports
     ? dailyReports.filter((r) => {
         if (r.status === "deleted") return false;
         if (r.isReviewed) return false;
@@ -438,6 +446,7 @@ const WorkspaceHomeScreen = ({
 
   const activeChannelObj =
     visibleChannels.find((c) => c.id === activeChannelId) || visibleChannels[0];
+  useEffect(() => { onChannelChange?.(activeChannelObj?.name || ""); }, [activeChannelObj?.name, onChannelChange]);
 
   const audienceSyncKey = useMemo(
     () =>
@@ -457,6 +466,7 @@ const WorkspaceHomeScreen = ({
   useEffect(() => {
     if (
       !isStaffOrAbove ||
+      optimize ||
       !activeTeamId ||
       !channelsLoaded ||
       memberEntries.length === 0 ||
@@ -506,6 +516,7 @@ const WorkspaceHomeScreen = ({
     channelsLoaded,
     isStaffOrAbove,
     memberEntries,
+    optimize,
   ]);
 
   const [isAddChannelModalVisible, setIsAddChannelModalVisible] =
@@ -935,7 +946,10 @@ const WorkspaceHomeScreen = ({
     userProfiles,
   ]);
 
-  const unreadNotifCount = notifications.filter((n) => !n.isRead).length;
+  const unreadNotifCount = loadingSummary ? (loadingSummary.workspaceNotificationUnreadCount || 0) : notifications.filter((n) => !n.isRead).length;
+  useEffect(() => {
+    if (isNotifModalVisible && history && !history.all) history.searchAll();
+  }, [isNotifModalVisible]);
 
   useEffect(() => {
     const targetPostId = route?.params?.postId;
@@ -1426,6 +1440,12 @@ const WorkspaceHomeScreen = ({
     const targetPost = posts.find((post) => post.id === notif.postId);
     if (!targetPost) return;
 
+    if (separateReads && activeTeamId) {
+      markWorkspaceNotificationState(activeTeamId, targetPost.id, currentUserUid,
+        notif.replyId ? `reply:${notif.replyId}` : "post", action).catch(() => Alert.alert("通知を更新できませんでした", "通信状態を確認して再試行してください。"));
+      return;
+    }
+
     if (notif.replyId) {
       const replies = (targetPost.replies || []).map((reply) => {
         if (reply.id !== notif.replyId) return reply;
@@ -1603,6 +1623,7 @@ const WorkspaceHomeScreen = ({
                   post.id,
                   currentUserUid,
                   currentUser,
+                  separateReads,
                 ).catch((error) => {
                   console.log("掲示板既読更新エラー:", error);
                 });
@@ -2300,6 +2321,7 @@ const WorkspaceHomeScreen = ({
           <TextInput
             style={styles.searchInput}
             placeholder="投稿やメッセージを検索..."
+            onSubmitEditing={() => history?.searchAll()}
             value={searchQuery}
             onChangeText={setSearchQuery}
             editable={!isOffline}
@@ -2307,6 +2329,7 @@ const WorkspaceHomeScreen = ({
         </View>
 
         <View style={styles.channelSection}>
+          <HistoryLoadingControls history={history} search={Boolean(searchQuery.trim())} />
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}

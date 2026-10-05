@@ -128,6 +128,7 @@ function harness(overrides = {}) {
     hasReachedPlaylistEnd: false, hasReachedPlaylistEndRef: { current: false },
     activeTab: "summary", selectedHighlightProjectId: "project", ytId: null,
     notePlayback: null,
+    focused: true, referencesPending: false, initialNotePlayback: { current: { waitingForSource: false } },
     noteResumeRef: { current: null }, noteClipKey: require("./tacticalNotes").noteClipKey,
     setNotePlaybackError: (key) => events.alerts.push(key),
     isPlaying: false, isYoutubeReady: false, videoRef: { current: null },
@@ -154,6 +155,13 @@ function harness(overrides = {}) {
     poll: () => vm.runInContext(`(${effectSource("isPlaying")})`, context)(),
   };
 }
+
+test("source loading and screen blur pause transitions without declaring a saved scene unavailable", () => {
+  for (const boundary of [{ referencesPending: true }, { focused: false }]) {
+    const h = harness({ ...boundary, notePlayback: { id: "old-note" }, currentClip: { ...clip, url: null } });
+    h.start(); assert.deepEqual(h.events.alerts, []); assert.deepEqual(h.events.times, []);
+  }
+});
 
 test("native screen ignores old status during seek, then seeks before playing", async () => {
   const h = harness();

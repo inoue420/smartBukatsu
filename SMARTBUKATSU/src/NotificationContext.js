@@ -50,6 +50,9 @@ function getPushNotificationTarget(data = {}) {
 export function NotificationProvider({ children }) {
   const { user } = useAuth();
   const [notifications, setNotifications] = useState([]);
+  const [notificationListLoading, setNotificationListLoading] = useState(false);
+  const [notificationListError, setNotificationListError] = useState("");
+  const [notificationListHasMore, setNotificationListHasMore] = useState(false);
   const [summary, setSummary] = useState({
     unreadTotal: 0,
     unreadByTeam: {},
@@ -92,26 +95,37 @@ export function NotificationProvider({ children }) {
         console.log(`${label}購読エラー:`, error?.message);
       }
     };
-    const unsubscribeNotifications = subscribeNotifications(
-      user.uid,
-      setNotifications,
-      handleSubscriptionError("通知"),
-    );
+    let active = true;
+    setNotifications([]); setNotificationListHasMore(false);
+    setSummary({ unreadTotal: 0, unreadByTeam: {} });
+    setPreferences(DEFAULT_NOTIFICATION_PREFERENCES);
     const unsubscribeSummary = subscribeNotificationSummary(
       user.uid,
-      setSummary,
+      (value) => { if (active) setSummary(value); },
       handleSubscriptionError("通知集計"),
     );
     const unsubscribePreferences = subscribeNotificationPreferences(
       user.uid,
-      setPreferences,
+      (value) => { if (active) setPreferences(value); },
       handleSubscriptionError("通知設定"),
     );
     return () => {
-      unsubscribeNotifications();
+      active = false;
       unsubscribeSummary();
       unsubscribePreferences();
     };
+  }, [user?.uid]);
+  const startNotificationList = useCallback((count = 100) => {
+    if (!user?.uid) return () => {};
+    let active = true;
+    setNotificationListLoading(true); setNotificationListError("");
+    const stop = subscribeNotifications(user.uid, (items, hasMore) => {
+      if (!active) return;
+      setNotifications(items); setNotificationListHasMore(hasMore); setNotificationListLoading(false);
+    }, () => {
+      if (active) { setNotificationListError("通知を読み込めませんでした。通信状態とログイン状態を確認してください。"); setNotificationListLoading(false); }
+    }, count);
+    return () => { active = false; stop(); setNotifications([]); setNotificationListLoading(false); };
   }, [user?.uid]);
 
   useEffect(() => {
@@ -222,6 +236,10 @@ export function NotificationProvider({ children }) {
   const value = useMemo(
     () => ({
       notifications,
+      startNotificationList,
+      notificationListLoading,
+      notificationListError,
+      notificationListHasMore,
       unreadTotal: summary.unreadTotal,
       unreadByTeam: summary.unreadByTeam,
       preferences,
@@ -235,6 +253,10 @@ export function NotificationProvider({ children }) {
     }),
     [
       notifications,
+      startNotificationList,
+      notificationListLoading,
+      notificationListError,
+      notificationListHasMore,
       summary,
       preferences,
       permissionStatus,

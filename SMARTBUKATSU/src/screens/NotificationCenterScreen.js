@@ -1,6 +1,8 @@
-import React from "react";
+import React, { useCallback, useState } from "react";
+import { useFocusEffect } from "@react-navigation/native";
 import {
   Alert,
+  ActivityIndicator,
   ScrollView,
   StyleSheet,
   Text,
@@ -27,7 +29,13 @@ export default function NotificationCenterScreen({ navigation }) {
     unreadTotal,
     openNotification,
     dismissNotification,
+    startNotificationList,
+    notificationListLoading,
+    notificationListError,
+    notificationListHasMore,
   } = useNotifications();
+  const [count, setCount] = useState(100);
+  useFocusEffect(useCallback(() => startNotificationList(count), [startNotificationList, count]));
 
   const confirmDismiss = (notification) => {
     Alert.alert("通知を削除", "この通知を通知センターから削除しますか？", [
@@ -65,7 +73,9 @@ export default function NotificationCenterScreen({ navigation }) {
       </View>
 
       <ScrollView contentContainerStyle={styles.content}>
-        {notifications.length === 0 ? (
+        {notificationListLoading && <ActivityIndicator color="#0077cc" />}
+        {!!notificationListError && <TouchableOpacity onPress={() => setCount((value) => value + 1)}><Text style={{ color: "#b42318", padding: 12 }}>{notificationListError} タップして再試行</Text></TouchableOpacity>}
+        {!notificationListLoading && !notificationListError && notifications.length === 0 ? (
           <View style={styles.emptyCard}>
             <Text style={styles.emptyIcon}>🔔</Text>
             <Text style={styles.emptyTitle}>通知はありません</Text>
@@ -125,6 +135,7 @@ export default function NotificationCenterScreen({ navigation }) {
             );
           })
         )}
+        {notificationListHasMore && <TouchableOpacity disabled={notificationListLoading} onPress={() => setCount((value) => value + 100)}><Text style={{ color: "#0077cc", padding: 15, textAlign: "center" }}>過去の通知を追加読み込み</Text></TouchableOpacity>}
       </ScrollView>
     </SafeAreaView>
   );

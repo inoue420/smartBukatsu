@@ -1,4 +1,8 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
+import { useIsFocused } from "@react-navigation/native";
+import { useHistoryData } from "../hooks/useHistoryData";
+import { monthWindow } from "../utils/historyLoading";
+import HistoryLoadingControls from "../components/HistoryLoadingControls";
 import {
   View,
   Text,
@@ -497,7 +501,10 @@ const CalendarScreen = ({
   currentUser,
   currentUserUid = "",
   clubEvents = [],
-  dailyReports = [],
+  dailyReports: suppliedReports = [],
+  optimize = false,
+  eventHistory = null,
+  onVisibleMonthChange,
   personalEvents = [],
   userProfiles = {},
   isOffline = false,
@@ -542,6 +549,12 @@ const CalendarScreen = ({
   const [selectedDate, setSelectedDate] = useState(
     new Date().toISOString().split("T")[0],
   );
+  const focused = useIsFocused();
+  const [visibleMonth, setVisibleMonth] = useState(selectedDate.substring(0, 7) + "-01");
+  const [calendarReports, setCalendarReports] = useState([]);
+  const reportHistory = useHistoryData(activeTeamId, "dailyReports", optimize && focused,
+    { ...monthWindow(visibleMonth), authorUid: currentUserUid, author: currentUser }, setCalendarReports);
+  const dailyReports = optimize ? calendarReports : suppliedReports;
 
   const [isClubModalVisible, setIsClubModalVisible] = useState(false);
   const [isPersonalModalVisible, setIsPersonalModalVisible] = useState(false);
@@ -607,6 +620,8 @@ const CalendarScreen = ({
     const targetDate = route?.params?.date;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(targetDate || "")) return;
     setSelectedDate(targetDate);
+    setVisibleMonth(targetDate.substring(0, 7) + "-01");
+    onVisibleMonthChange?.(targetDate);
     navigation.setParams({ eventId: undefined, date: undefined });
   }, [navigation, route?.params?.date]);
 
@@ -2133,6 +2148,9 @@ const CalendarScreen = ({
       )}
 
       <Calendar
+        key={visibleMonth}
+        current={visibleMonth}
+        onMonthChange={(month) => { setVisibleMonth(month.dateString); onVisibleMonthChange?.(month.dateString); }}
         onDayPress={(day) => setSelectedDate(day.dateString)}
         dayComponent={renderCalendarDay}
         theme={{ todayTextColor: COLORS.primary, arrowColor: "#555" }}
@@ -2142,6 +2160,8 @@ const CalendarScreen = ({
         style={styles.scrollContent}
         contentContainerStyle={{ paddingBottom: 100 }}
       >
+        <HistoryLoadingControls history={optimize ? { ...reportHistory, hasMore: false, busy: reportHistory.busy || eventHistory?.busy, error: reportHistory.error || eventHistory?.error,
+          retry: () => { reportHistory.retry(); eventHistory?.retry(); } } : null} />
         <View style={styles.dateHeaderRow}>
           <Text style={styles.selectedDateText}>
             {selectedDate.replace(/-/g, "/")} の予定

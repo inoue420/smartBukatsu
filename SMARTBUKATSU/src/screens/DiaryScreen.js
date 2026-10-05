@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
+import HistoryLoadingControls from "../components/HistoryLoadingControls";
 import {
   View,
   Text,
@@ -174,6 +175,7 @@ const DiaryScreen = ({
   setPosts,
   userProfiles = {},
   dailyReports = [],
+  history = null,
   setDailyReports,
   clubMembers = [],
   onDiarySubmitted,
@@ -1266,10 +1268,12 @@ const DiaryScreen = ({
 
       {isStaffOrAbove && (
         <View style={styles.adminDashboard}>
+          {history && <Text style={{ paddingHorizontal: 15, paddingTop: 8, color: "#666" }}>件数・絞り込みは読み込み済みの日報が対象です。</Text>}
           <View style={styles.searchRow}>
             <TextInput
               style={styles.searchInputFlex}
               placeholder="部員名やキーワードで検索..."
+              onSubmitEditing={() => history?.searchAll()}
               value={searchQuery}
               onChangeText={setSearchQuery}
             />
@@ -1366,6 +1370,7 @@ const DiaryScreen = ({
         style={styles.content}
         contentContainerStyle={{ paddingBottom: 100 }}
       >
+        <HistoryLoadingControls history={history} search={Boolean(searchQuery.trim())} />
         {isStaffOrAbove && activeTab === "danger" && (
           <MedicalSafetyNotice variant="alert" />
         )}

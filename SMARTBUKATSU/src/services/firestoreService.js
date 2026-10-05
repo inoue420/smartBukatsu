@@ -24,6 +24,7 @@ import { auth, db, cloudFunctions } from "../firebase";
 import { LEGAL_POLICY_VERSION, MINIMUM_USER_AGE } from "../legal";
 import { validateNote, contentFingerprint, validateTasks, noteAcknowledgementId, isNoteSummaryCurrent, timestampsEqual } from "../utils/tacticalNotes";
 import { uploadTacticalNoteImage } from "./tacticalNoteAttachmentService";
+const eventLastDate = (data) => [...(data.selectedDates || [])].sort().at(-1) || data.endDate || data.date;
 
 const TACTICAL_PAGE_SIZE = 30;
 const TACTICAL_HISTORY_PAGE_SIZE = 20;
@@ -574,6 +575,7 @@ export async function createClubEvent(teamId, eventData, eventId = null) {
     : doc(collection(db, "teams", teamId, "clubEvents"));
   await setDoc(eventRef, {
     ...eventData,
+    lastEventDate: eventLastDate(eventData),
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
@@ -583,7 +585,8 @@ export async function createClubEvent(teamId, eventData, eventId = null) {
 export async function updateClubEvent(teamId, eventId, updateData) {
   if (!teamId || !eventId) return;
   const ref = doc(db, "teams", teamId, "clubEvents", eventId);
-  await updateDoc(ref, { ...updateData, updatedAt: serverTimestamp() });
+  const end = eventLastDate(updateData);
+  await updateDoc(ref, { ...updateData, ...(end ? { lastEventDate: end } : {}), updatedAt: serverTimestamp() });
 }
 
 export async function removeClubEventAbsenceComment(
@@ -632,17 +635,18 @@ export async function createPersonalEvent(uid, eventData) {
   if (!uid) return;
   if (eventData.id) {
     const docRef = doc(db, "users", uid, "personalEvents", eventData.id);
-    await setDoc(docRef, { ...eventData, createdAt: serverTimestamp() });
+    await setDoc(docRef, { ...eventData, lastEventDate: eventLastDate(eventData), createdAt: serverTimestamp() });
   } else {
     const eventsRef = collection(db, "users", uid, "personalEvents");
-    await addDoc(eventsRef, { ...eventData, createdAt: serverTimestamp() });
+    await addDoc(eventsRef, { ...eventData, lastEventDate: eventLastDate(eventData), createdAt: serverTimestamp() });
   }
 }
 
 export async function updatePersonalEvent(uid, eventId, updateData) {
   if (!uid || !eventId) return;
   const eventRef = doc(db, "users", uid, "personalEvents", eventId);
-  await updateDoc(eventRef, { ...updateData, updatedAt: serverTimestamp() });
+  const end = eventLastDate(updateData);
+  await updateDoc(eventRef, { ...updateData, ...(end ? { lastEventDate: end } : {}), updatedAt: serverTimestamp() });
 }
 
 export async function deletePersonalEvent(uid, eventId) {
@@ -657,7 +661,9 @@ export async function deletePersonalEvent(uid, eventId) {
 export function subscribeTeamMembers(teamId, callback) {
   if (!teamId) return () => {};
   const membersRef = collection(db, "teams", teamId, "members");
-  return subscribeToTeamData("teamMembers", membersRef, async (snapshot) => {
+  let active = true, generation = 0;
+  const stop = subscribeToTeamData("teamMembers", membersRef, async (snapshot) => {
+    const version = ++generation;
     const promises = snapshot.docs.map(async (docSnap) => {
       const uid = docSnap.id;
       const data = docSnap.data();
@@ -675,8 +681,9 @@ export function subscribeTeamMembers(teamId, callback) {
     });
 
     const membersData = await Promise.all(promises);
-    callback(membersData);
+    if (active && version === generation) callback(membersData);
   });
+  return () => { active = false; generation += 1; stop(); };
 }
 
 export async function updateMemberProfile(
@@ -1078,9 +1085,17 @@ export async function markWorkspacePostRead(
   postId,
   userUid,
   userName,
+  separateReads = false,
 ) {
   if (!teamId || !postId) throw new Error("IDが不足しています");
 
+  if (separateReads) {
+    if (!userUid || auth.currentUser?.uid !== userUid) throw new Error("ログイン状態を確認してください。");
+    await setDoc(doc(db, "teams", teamId, "workspacePostReadStates", postId), {
+      readers: { [userUid]: true }, updatedAt: serverTimestamp(),
+    }, { merge: true });
+    return;
+  }
   const updateData = { updatedAt: serverTimestamp() };
   if (userUid) updateData.readByUids = arrayUnion(userUid);
   if (userName) updateData.readBy = arrayUnion(userName);
@@ -1088,6 +1103,14 @@ export async function markWorkspacePostRead(
     doc(db, "teams", teamId, "workspacePosts", postId),
     updateData,
   );
+}
+
+export async function markWorkspaceNotificationState(teamId, postId, uid, key, action) {
+  if (!teamId || !postId || auth.currentUser?.uid !== uid || !["read", "dismiss"].includes(action)) throw new Error("通知の更新対象を確認してください。");
+  const field = action === "read" ? "notificationReads" : "notificationDismissals";
+  await setDoc(doc(db, "teams", teamId, "workspacePostReadStates", postId), {
+    [field]: { [uid]: arrayUnion(key) }, updatedAt: serverTimestamp(),
+  }, { merge: true });
 }
 
 export async function getWorkspacePostsForAudienceSync(teamId) {

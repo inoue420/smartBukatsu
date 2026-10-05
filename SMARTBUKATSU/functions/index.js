@@ -19,6 +19,36 @@ const { getStorage } = require("firebase-admin/storage");
 initializeApp();
 
 const firestore = getFirestore();
+const { createLoadingOptimizationBackend } = require("./loadingOptimizationBackend");
+const loadingOptimization = createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, HttpsError });
+for (const name of ["notices", "dailyReports", "workspacePosts"]) {
+  exports[`updateLoading${name[0].toUpperCase()}${name.slice(1)}`] = onDocumentWritten({
+    document: `teams/{teamId}/${name}/{documentId}`, region: "asia-northeast1", retry: true,
+  }, (event) => loadingOptimization.handleContent(name, event));
+}
+exports.updateWorkspacePostReadSummary = onDocumentWritten({
+  document: "teams/{teamId}/workspacePostReadStates/{postId}", region: "asia-northeast1", retry: true,
+}, loadingOptimization.handleReadState);
+exports.normalizeClubEventDates = onDocumentWritten({
+  document: "teams/{teamId}/clubEvents/{eventId}", region: "asia-northeast1", retry: true,
+}, loadingOptimization.handleEventDate);
+exports.normalizePersonalEventDates = onDocumentWritten({
+  document: "users/{uid}/personalEvents/{eventId}", region: "asia-northeast1", retry: true,
+}, loadingOptimization.handleEventDate);
+exports.updateLoadingMembership = onDocumentWritten({
+  document: "teams/{teamId}/members/{uid}", region: "asia-northeast1", retry: true,
+}, loadingOptimization.handleMembership);
+exports.updateLoadingChannels = onDocumentWritten({
+  document: "teams/{teamId}", region: "asia-northeast1", retry: true,
+}, loadingOptimization.handleTeam);
+exports.updateLoadingUserPreferences = onDocumentWritten({
+  document: "users/{uid}", region: "asia-northeast1", retry: true,
+}, loadingOptimization.handleUser);
+exports.processLoadingPreparation = onDocumentWritten({
+  document: "teams/{teamId}/loadingOptimization/state", region: "asia-northeast1", retry: true, timeoutSeconds: 300,
+}, loadingOptimization.handlePreparation);
+exports.prepareLoadingOptimization = onCall({ region: "asia-northeast1", timeoutSeconds: 300 }, loadingOptimization.prepareCallable);
+exports.configureLoadingOptimization = onCall({ region: "asia-northeast1" }, loadingOptimization.configureCallable);
 const { createTacticalNoteBackend } = require("./tacticalNoteBackend");
 const tacticalNotes = createTacticalNoteBackend({ firestore, getStorage, FieldValue, Timestamp, FieldPath, HttpsError });
 exports.cleanupTacticalNoteAttachments = onDocumentWritten({
@@ -578,10 +608,11 @@ const getAccountDocumentUpdates = (data, context) => {
 
 const getAccountDeletionContext = async (uid) => {
   const userRef = firestore.collection("users").doc(uid);
-  const [userSnap, ownedTeamsSnapshot, tacticalTeamIds] = await Promise.all([
+  const [userSnap, ownedTeamsSnapshot, tacticalTeamIds, loadingReadTeamIds] = await Promise.all([
     userRef.get(),
     firestore.collection("teams").where("createdBy", "==", uid).get(),
     tacticalNotes.relatedTeamIds(uid),
+    loadingOptimization.relatedTeamIds(uid),
   ]);
   const userData = userSnap.exists ? userSnap.data() || {} : {};
   const teamIds = [
@@ -589,6 +620,7 @@ const getAccountDeletionContext = async (uid) => {
       ...normalizeTeamIds(userData),
       ...ownedTeamsSnapshot.docs.map((teamSnapshot) => teamSnapshot.id),
       ...tacticalTeamIds,
+      ...loadingReadTeamIds,
     ]),
   ];
   const teamEntries = await Promise.all(
@@ -1729,6 +1761,7 @@ exports.deleteUserAccount = onCall(
           teamEntry,
         });
         anonymizedDocumentCount += await tacticalNotes.anonymizeTeam(teamEntry.teamRef, uid);
+        anonymizedDocumentCount += await loadingOptimization.anonymizeTeam(teamEntry.teamRef, uid);
         anonymizedStorageFileCount += await anonymizeAccountStorageInTeam({
           uid,
           teamId: teamEntry.teamId,
