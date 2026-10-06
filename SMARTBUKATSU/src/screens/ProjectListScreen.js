@@ -23,6 +23,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Video, ResizeMode } from "expo-av";
+import * as ExpoClipboard from "expo-clipboard";
 import YoutubePlayer from "react-native-youtube-iframe";
 import * as ScreenOrientation from "expo-screen-orientation";
 
@@ -965,6 +966,18 @@ const ProjectListScreen = ({
   };
 
   const [isModalVisible, setIsModalVisible] = useState(false);
+  const createVideoScrollRef = useRef(null);
+  const createVideoUrlRef = useRef(null);
+  const createVideoUrlYRef = useRef(0);
+  const scrollCreateVideoUrlIntoView = useCallback(() => {
+    if (Platform.OS !== "android" || !createVideoUrlRef.current?.isFocused()) {
+      return;
+    }
+    createVideoScrollRef.current?.scrollTo({
+      y: createVideoUrlYRef.current,
+      animated: false,
+    });
+  }, []);
   const [title, setTitle] = useState("");
   const [type, setType] = useState("試合");
   const [participants, setParticipants] = useState("team");
@@ -989,6 +1002,27 @@ const ProjectListScreen = ({
     setVideoUrl("");
     setSelectedTagGroupId(DEFAULT_TAG_GROUP_ID);
     setIsModalVisible(true);
+  };
+
+  const handlePasteVideoUrl = async () => {
+    try {
+      const clipboardText = (await ExpoClipboard.getStringAsync()).trim();
+      if (!clipboardText) {
+        Alert.alert(
+          "貼り付けできませんでした",
+          "URLをコピーしてから、もう一度お試しください。",
+        );
+        return;
+      }
+      setVideoUrl(clipboardText);
+      createVideoUrlRef.current?.focus();
+      scrollCreateVideoUrlIntoView();
+    } catch {
+      Alert.alert(
+        "貼り付けできませんでした",
+        "クリップボードを読み取れませんでした。もう一度お試しください。",
+      );
+    }
   };
 
   const handleCreateProject = async () => {
@@ -2037,15 +2071,27 @@ const ProjectListScreen = ({
 
       {/* プロジェクト作成モーダル */}
       <Modal visible={isModalVisible} transparent={true} animationType="slide">
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView
+          // Measure the full modal so centering the form cannot affect keyboard avoidance.
+          enabled={Platform.OS === "android"}
+          behavior="padding"
+          style={styles.modalOverlay}
+        >
           <KeyboardAvoidingView
+            enabled={Platform.OS !== "android"}
             behavior={Platform.OS === "ios" ? "padding" : "height"}
             style={styles.modalContent}
           >
             <Text style={styles.modalTitle}>新しい動画を追加</Text>
 
             <ScrollView
+              ref={createVideoScrollRef}
+              style={styles.createVideoScroll}
+              onLayout={scrollCreateVideoUrlIntoView}
               showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps={
+                Platform.OS === "android" ? "handled" : undefined
+              }
               contentContainerStyle={{ paddingBottom: 50 }}
             >
               <Text style={styles.label}>動画名</Text>
@@ -2141,14 +2187,45 @@ const ProjectListScreen = ({
                   );
                 })}
               </View>
-              <Text style={styles.label}>動画のURL (YouTubeなど)</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="https://youtu.be/..."
-                value={videoUrl}
-                onChangeText={setVideoUrl}
-                autoCapitalize="none"
-              />
+              <View
+                onLayout={(event) => {
+                  createVideoUrlYRef.current = event.nativeEvent.layout.y;
+                  scrollCreateVideoUrlIntoView();
+                }}
+              >
+                <View
+                  style={Platform.OS === "android" ? styles.videoUrlLabelRow : undefined}
+                >
+                  <Text
+                    style={[
+                      styles.label,
+                      Platform.OS === "android" && styles.videoUrlLabel,
+                    ]}
+                  >
+                    動画のURL (YouTubeなど)
+                  </Text>
+                  {Platform.OS === "android" && (
+                    <TouchableOpacity
+                      style={styles.pasteVideoUrlBtn}
+                      onPress={handlePasteVideoUrl}
+                      disabled={isSaving}
+                      accessibilityRole="button"
+                      accessibilityLabel="コピーした動画URLを貼り付け"
+                    >
+                      <Text style={styles.pasteVideoUrlBtnText}>貼り付け</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+                <TextInput
+                  ref={createVideoUrlRef}
+                  style={styles.input}
+                  placeholder="https://youtu.be/..."
+                  value={videoUrl}
+                  onChangeText={setVideoUrl}
+                  onFocus={scrollCreateVideoUrlIntoView}
+                  autoCapitalize="none"
+                />
+              </View>
 
               <View style={styles.modalButtons}>
                 <TouchableOpacity
@@ -2170,7 +2247,7 @@ const ProjectListScreen = ({
               </View>
             </ScrollView>
           </KeyboardAvoidingView>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
       {/* Highlight project creation modal */}
       <Modal
@@ -2879,6 +2956,19 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     maxHeight: "80%",
   },
+  createVideoScroll: { flexShrink: 1, minHeight: 0 },
+  videoUrlLabelRow: { flexDirection: "row", alignItems: "center" },
+  videoUrlLabel: { flex: 1, marginRight: 8 },
+  pasteVideoUrlBtn: {
+    minHeight: 44,
+    paddingHorizontal: 12,
+    marginVertical: 8,
+    backgroundColor: "#e6f2ff",
+    borderRadius: 8,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  pasteVideoUrlBtnText: { color: "#0077cc", fontWeight: "bold" },
   modalTitle: {
     fontSize: 18,
     fontWeight: "bold",

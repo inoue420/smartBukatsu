@@ -45,6 +45,7 @@ function mountNote(os, overrides = {}) {
     react: { __esModule: true, default: react, ...react }, "react-native": native,
     "react-native-safe-area-context": { SafeAreaView: "SafeAreaView" },
     "expo-av": { Video: "Video", ResizeMode: { CONTAIN: "contain" } },
+    "expo-clipboard": { getStringAsync: async () => "" },
     "react-native-youtube-iframe": { __esModule: true, default: "YoutubePlayer" },
     "expo-screen-orientation": { unlockAsync: async () => {}, lockAsync: async () => {}, OrientationLock: {} },
     "@react-navigation/native": { CommonActions: {}, useIsFocused: () => true },
