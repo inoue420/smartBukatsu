@@ -30,7 +30,7 @@ exports.trackCalendarAttachmentReferences = onDocumentWritten({
 }, attachmentExpiry.handleCalendarWrite);
 
 const { createLoadingOptimizationBackend } = require("./loadingOptimizationBackend");
-const loadingOptimization = createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, HttpsError });
+const loadingOptimization = createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, HttpsError, logger });
 for (const name of ["notices", "dailyReports", "workspacePosts"]) {
   exports[`updateLoading${name[0].toUpperCase()}${name.slice(1)}`] = onDocumentWritten({
     document: `teams/{teamId}/${name}/{documentId}`, region: "asia-northeast1", retry: true,

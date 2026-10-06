@@ -6,42 +6,86 @@ const adminApp = functionRequire("firebase-admin/app"), admin = functionRequire(
 const { createLoadingOptimizationBackend } = require("../../functions/loadingOptimizationBackend");
 if (process.env.FIRESTORE_EMULATOR_HOST !== "127.0.0.1:8189" || process.env.GCLOUD_PROJECT !== "demo-loading-optimization") throw new Error("These tests require the dedicated local demo emulator.");
 const projectId = process.env.GCLOUD_PROJECT;
-test("real emulator: preparation, idempotent summaries, old latest condition, overlap and read rules", async () => {
+test("real emulator: preparation, idempotent summaries, old latest condition, overlap and read rules", async (t) => {
   const response = await fetch(`http://127.0.0.1:8189/emulator/v1/projects/${projectId}:securityRules`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rules: { files: [{ name: "firestore.rules", content: fs.readFileSync("firestore.rules", "utf8") }] } }) });
   assert.equal(response.ok, true, await response.text());
   const serverApp = adminApp.initializeApp({ projectId }, "loading-test"), db = admin.getFirestore(serverApp);
   class HttpsError extends Error { constructor(code, message) { super(message); this.code = code; } }
-  const backend = createLoadingOptimizationBackend({ firestore: db, FieldValue: admin.FieldValue, FieldPath: admin.FieldPath, HttpsError });
+  const metrics = [];
+  const backend = createLoadingOptimizationBackend({ firestore: db, FieldValue: admin.FieldValue, FieldPath: admin.FieldPath, HttpsError,
+    logger: { info: (...args) => metrics.push(args), warn: (...args) => metrics.push(args), error: (...args) => metrics.push(args) } });
   const team = "test-" + Date.now(), ref = db.collection("teams").doc(team), clients = [];
   const client = (uid) => { const app = initializeApp({ projectId, apiKey: "emulator-only", appId: "emulator-only" }, `loading-${uid}`), value = sdk.getFirestore(app); sdk.connectFirestoreEmulator(value, "127.0.0.1", 8189, { mockUserToken: { sub: uid } }); clients.push({ app, db: value }); return value; };
   const denied = (promise) => assert.rejects(promise, (error) => error.code === "permission-denied");
+  const latestMetrics = () => {
+    assert.ok(metrics.length, "the backend must publish anonymous operation metrics");
+    const [label, value] = metrics.at(-1);
+    assert.equal(label, "loading_optimization_metrics");
+    assert.deepEqual(Object.keys(value).sort(), ["operation", "reads", "writes", "queries", "retries", "skipped", "contextRebuilds", "latestSearches", "durationMs"].sort(), "metrics must contain only operation labels and anonymous counts");
+    for (const field of ["reads", "writes", "queries", "retries", "skipped", "contextRebuilds", "latestSearches", "durationMs"]) assert.ok(Number.isFinite(value[field]) && value[field] >= 0, `${field} must be a nonnegative count or duration`);
+    return value;
+  };
+  const stateRef = ref.collection("loadingOptimization").doc("state");
+  const finishPreparation = async () => {
+    let steps = 0;
+    while ((await stateRef.get()).data()?.status === "preparing") {
+      assert.ok(++steps < 60, "preparation did not progress");
+      await backend.handlePreparation({ params: { teamId: team }, data: { after: await stateRef.get() } });
+    }
+    return steps;
+  };
+  const sourceEvent = async (kind, id, change) => {
+    const target = ref.collection(kind).doc(id), before = await target.get();
+    if (change === null) await target.delete();
+    else if (before.exists) await target.update(change);
+    else await target.set(change);
+    const after = await target.get();
+    await backend.handleContent(kind, { params: { teamId: team, documentId: id }, data: { before, after } });
+    return { before, after };
+  };
   try {
     await ref.set({ name: "Synthetic team", channels: [{ id: "general", name: "General", allowedRoleGroups: ["staff", "captain", "member", "guardian"] }] });
     for (const [uid, name, role] of [["owner", "Coach", "owner"], ["a", "A", "member"], ["b", "B", "member"], ["g", "G", "guardian"]]) { await ref.collection("members").doc(uid).set({ name, role }); await db.collection("users").doc(uid).set({ name }); }
     const a = client("a"), b = client("b"), guardian = client("g"), outsider = client("outsider");
-    const writer = db.bulkWriter();
+    const beforeNotice = await ref.collection("notices").doc("old-notice").get(), writer = db.bulkWriter();
     for (let index = 0; index < 110; index++) writer.set(ref.collection("workspacePosts").doc(`p${String(index).padStart(3, "0")}`), { user: "B", authorUid: "b", content: `@A synthetic ${index}`, channel: "General", channelId: "general", readBy: ["B"], readByUids: ["b"], createdAt: admin.Timestamp.fromMillis(index + 1000), replies: [] });
     writer.set(ref.collection("notices").doc("old-notice"), { readBy: [], createdAt: admin.Timestamp.fromMillis(1) });
     writer.set(ref.collection("dailyReports").doc("old-report"), { author: "A", authorUid: "a", date: "2025-01-01", createdAt: admin.Timestamp.fromMillis(1), fatigue: 5, medicalScaleVersion: 2, isReviewed: false });
     writer.set(ref.collection("clubEvents").doc("overlap"), { date: "2026-09-30", endDate: "2026-10-02" });
     writer.set(db.collection("users").doc("a").collection("personalEvents").doc("personal"), { date: "2026-09-29", endDate: "2026-10-03" });
     await writer.close();
+    const unpreparedNotice = await ref.collection("notices").doc("old-notice").get();
+    await backend.handleContent("notices", { params: { teamId: team, documentId: "old-notice" }, data: { before: beforeNotice, after: unpreparedNotice } });
+    assert.equal(latestMetrics().reads, 1); assert.equal(latestMetrics().writes, 0);
+    assert.equal((await ref.collection("loadingEntries").doc("notices_old-notice").get()).exists, false, "an unprepared team must not create aggregate entries");
     await assert.rejects(backend.configureCallable({ auth: { uid: "owner" }, data: { teamId: team, enabled: true } }), { code: "failed-precondition" });
     await assert.rejects(backend.prepareCallable({ auth: { uid: "a" }, data: { teamId: team } }), { code: "permission-denied" });
     await backend.prepareCallable({ auth: { uid: "owner" }, data: { teamId: team } });
-    const stateRef = ref.collection("loadingOptimization").doc("state"); let steps = 0;
+    let steps = 0;
     await stateRef.update({ lease: { token: "expired-test", expiresAt: 0 } });
     await backend.prepareCallable({ auth: { uid: "owner" }, data: { teamId: team } });
     assert.equal((await stateRef.get()).data().lease, null);
-    while ((await stateRef.get()).data().status === "preparing") {
-      assert.ok(++steps < 30, "preparation did not progress");
-      await backend.handlePreparation({ params: { teamId: team }, data: { after: await stateRef.get() } });
-    }
+    steps = await finishPreparation();
     const state = (await stateRef.get()).data(); assert.equal(state.ready, true); assert.equal(state.enabled, false); assert.equal(state.separateReads, false); assert.ok(steps >= 10);
     const summary = () => ref.collection("loadingSummaries").doc("a").get().then((item) => item.data());
     assert.equal((await summary()).workspaceNotificationUnreadCount, 110); assert.equal((await summary()).unreadNoticeCount, 1);
     assert.deepEqual((await summary()).medicalHistogram, { "0:0:5:0": 1 });
     assert.equal((await ref.collection("latestDailyReports").doc("a").get()).data().id, "old-report");
+    assert.equal(await backend.context(team), null, "disabled teams must not load a member reference context");
+    const disabledSummary = await summary();
+    await sourceEvent("notices", "old-notice", { readBy: ["A"] });
+    assert.equal(latestMetrics().reads, 1); assert.equal(latestMetrics().writes, 0);
+    assert.equal(latestMetrics().contextRebuilds, 0);
+    assert.deepEqual(await summary(), disabledSummary, "disabled source events must not update aggregates");
+    await ref.collection("notices").doc("old-notice").update({ readBy: [] });
+    const systemDoc = sdk.doc(a, "teams", team, "system", "loadingContext_0");
+    await denied(sdk.getDoc(systemDoc));
+    await denied(sdk.setDoc(systemDoc, { members: [] }));
+    await denied(sdk.getDoc(sdk.doc(a, "teams", team, "system", "loadingExclusions")));
+    await backend.configureCallable({ auth: { uid: "owner" }, data: { teamId: team, enabled: true, separateReads: true } });
+    assert.equal((await stateRef.get()).data().enabled, false, "activation must wait for its own preparation generation");
+    await finishPreparation();
+    assert.equal((await stateRef.get()).data().enabled, true);
     await Promise.all([backend.process(team, "workspacePosts", "p000"), backend.process(team, "workspacePosts", "p000")]); assert.equal((await summary()).workspaceNotificationUnreadCount, 110);
     const stateDoc = (value, id = "p000") => sdk.doc(value, "teams", team, "workspacePostReadStates", id);
     const postRef = ref.collection("workspacePosts").doc("p000"), before = (await postRef.get()).data();
@@ -74,20 +118,177 @@ test("real emulator: preparation, idempotent summaries, old latest condition, ov
     await ref.collection("dailyReports").doc("new-report").set({ author: "A", authorUid: "a", date: "2026-10-05", createdAt: admin.Timestamp.fromMillis(5000), fatigue: 3, medicalScaleVersion: 2 });
     await backend.process(team, "dailyReports", "new-report"); assert.equal((await ref.collection("latestDailyReports").doc("a").get()).data().id, "new-report");
     await ref.collection("dailyReports").doc("new-report").update({ status: "deleted" }); await backend.process(team, "dailyReports", "new-report"); assert.equal((await ref.collection("latestDailyReports").doc("a").get()).data().id, "old-report");
-    await backend.configureCallable({ auth: { uid: "owner" }, data: { teamId: team, enabled: true, separateReads: true } }); assert.equal((await stateRef.get()).data().enabled, true);
+    await t.test("latest reports use direct events, UID precedence, stable ties and display-only fields", async () => {
+      const latestRef = ref.collection("latestDailyReports").doc("a"), latest = () => latestRef.get().then((item) => item.data());
+      await sourceEvent("dailyReports", "direct-latest", { author: "A", authorUid: "a", date: "2026-10-06", createdAt: admin.Timestamp.fromMillis(9000), isReviewed: true,
+        condition: "良好", fatigue: 3, medicalScaleVersion: 2, sleep: 7, isParticipating: "可", hasPain: true,
+        painDetails: { part: "ankle", level: 2, treatment: "rest", sinceWhen: "synthetic date", privateNote: "synthetic private detail" },
+        comments: [{ text: "synthetic staff comment" }], attachments: [{ storagePath: "synthetic/attachment" }], reflection: "synthetic long reflection", memo: "synthetic memo", isStarred: true, isFollowUp: true });
+      assert.equal(latestMetrics().latestSearches, 0, "a new latest report must not search historical reports");
+      assert.equal(latestMetrics().contextRebuilds, 0, "ordinary content events must reuse the prepared reference");
+      assert.equal((await latest()).id, "direct-latest");
+      assert.deepEqual((await latest()).painDetails, { part: "ankle", level: 2, treatment: "rest" });
+      for (const field of ["comments", "attachments", "reflection", "memo", "isStarred", "isFollowUp", "updatedAt"]) assert.equal(Object.hasOwn(await latest(), field), false, `${field} must stay out of the roster summary`);
+      const unchanged = await latestRef.get();
+      await sourceEvent("dailyReports", "direct-latest", { comments: [{ text: "edited synthetic staff comment" }], attachments: [] });
+      assert.equal(latestMetrics().reads, 0); assert.equal(latestMetrics().writes, 0);
+      assert.equal(latestMetrics().latestSearches, 0); assert.equal(latestMetrics().contextRebuilds, 0);
+      assert.equal((await latestRef.get()).updateTime.isEqual(unchanged.updateTime), true, "staff comments and attachment changes must not rewrite latest condition");
+      await sourceEvent("dailyReports", "direct-latest", { fatigue: 4, sleep: 8 });
+      assert.equal(latestMetrics().latestSearches, 0, "selected report condition edits must update directly");
+      assert.equal((await latest()).fatigue, 4); assert.equal((await latest()).sleep, 8);
+      const beforeOldEdit = await latestRef.get();
+      await sourceEvent("dailyReports", "old-report", { fatigue: 2 });
+      assert.equal(latestMetrics().latestSearches, 0, "an older condition edit must not search the latest report");
+      assert.equal((await latest()).id, "direct-latest");
+      assert.equal((await latestRef.get()).updateTime.isEqual(beforeOldEdit.updateTime), true, "an older condition edit must not rewrite the selected latest report");
+      await sourceEvent("dailyReports", "legacy-new", { author: "A", date: "2026-10-06", createdAt: admin.Timestamp.fromMillis(10000), fatigue: 1, isReviewed: true });
+      assert.equal((await latest()).id, "legacy-new"); assert.equal((await latest()).authorUid, "a");
+      await sourceEvent("dailyReports", "uid-other", { author: "A", authorUid: "b", createdAt: admin.Timestamp.fromMillis(12000), fatigue: 2, isReviewed: true });
+      assert.equal((await latest()).id, "legacy-new", "a matching legacy name must not override another author's UID");
+      assert.equal((await ref.collection("latestDailyReports").doc("b").get()).data().id, "uid-other");
+      for (const id of ["tie-z", "tie-a"]) await sourceEvent("dailyReports", id, { author: "A", authorUid: "a", createdAt: admin.Timestamp.fromMillis(15000), fatigue: 2, isReviewed: true });
+      assert.equal((await latest()).id, "tie-z", "equal timestamps choose the descending document ID");
+      await sourceEvent("dailyReports", "tie-z", null); assert.equal((await latest()).id, "tie-a");
+      assert.ok(latestMetrics().latestSearches > 0, "deleting the selected report must search for a valid predecessor");
+      await sourceEvent("dailyReports", "tie-a", { status: "deleted" }); assert.equal((await latest()).id, "legacy-new");
+      await sourceEvent("dailyReports", "direct-latest", null);
+      const deletedWriter = db.bulkWriter();
+      for (let index = 0; index < 21; index++) deletedWriter.set(ref.collection("dailyReports").doc(`deleted-latest-${index}`), { author: "A", authorUid: "a", status: "deleted", createdAt: admin.Timestamp.fromMillis(20000 + index), isReviewed: true });
+      await deletedWriter.close();
+      await sourceEvent("dailyReports", "legacy-new", null);
+      assert.equal((await latest()).id, "old-report", "deletion fallback must page beyond a full page of deleted candidates");
+    });
+    await t.test("concurrent contributions, delayed events and latest identity/order changes remain consistent", async () => {
+      const baseline = await summary(), latestRef = ref.collection("latestDailyReports").doc("a"), latest = () => latestRef.get().then((item) => item.data());
+      await Promise.all(["concurrent-notice-a", "concurrent-notice-b"].map((id) => sourceEvent("notices", id, { readBy: [], createdAt: admin.Timestamp.fromMillis(25000) })));
+      assert.equal((await summary()).unreadNoticeCount, baseline.unreadNoticeCount + 2, "independent concurrent notices must not lose an increment");
+      await Promise.all(["concurrent-notice-a", "concurrent-notice-b"].map((id) => backend.process(team, "notices", id)));
+      assert.equal((await summary()).unreadNoticeCount, baseline.unreadNoticeCount + 2, "duplicate delivery must not count either notice twice");
+      await Promise.all(["concurrent-notice-a", "concurrent-notice-b"].map((id) => sourceEvent("notices", id, null)));
+      assert.equal((await summary()).unreadNoticeCount, baseline.unreadNoticeCount);
+      const creations = await Promise.all([["concurrent-report-low", 25000], ["concurrent-report-high", 26000]].map(([id, at]) => sourceEvent("dailyReports", id,
+        { authorUid: "a", author: "A", createdAt: admin.Timestamp.fromMillis(at), medicalScaleVersion: 2, fatigue: 3, sleep: 7, isReviewed: true })));
+      assert.equal((await latest()).id, "concurrent-report-high", "competing latest writes must converge on the newer timestamp");
+      await sourceEvent("dailyReports", "concurrent-report-high", { fatigue: 5, sleep: 9, isReviewed: false });
+      const currentSummary = await summary(), currentLatest = await latestRef.get();
+      await backend.handleContent("dailyReports", { params: { teamId: team, documentId: "concurrent-report-high" }, data: creations[1] });
+      assert.deepEqual(await summary(), currentSummary, "a delayed creation snapshot must use the current source medical state");
+      assert.equal((await latest()).fatigue, 5); assert.equal((await latest()).sleep, 9);
+      assert.equal((await latestRef.get()).updateTime.isEqual(currentLatest.updateTime), true, "delayed delivery must not overwrite the current latest condition");
+      await sourceEvent("dailyReports", "concurrent-report-b", { authorUid: "b", author: "B", createdAt: admin.Timestamp.fromMillis(25500), fatigue: 2, isReviewed: true });
+      await sourceEvent("dailyReports", "concurrent-report-high", { authorUid: "b", author: "B" });
+      assert.equal((await latest()).id, "concurrent-report-low", "changing the selected report's author must repair the former author's latest report");
+      assert.equal((await ref.collection("latestDailyReports").doc("b").get()).data().id, "concurrent-report-high");
+      await sourceEvent("dailyReports", "concurrent-report-high", { createdAt: admin.Timestamp.fromMillis(24000) });
+      assert.equal((await ref.collection("latestDailyReports").doc("b").get()).data().id, "concurrent-report-b", "moving the selected timestamp backwards must find its replacement");
+      assert.ok(latestMetrics().latestSearches > 0);
+      await sourceEvent("dailyReports", "concurrent-report-high", null);
+      await sourceEvent("dailyReports", "concurrent-report-b", null);
+      await sourceEvent("dailyReports", "concurrent-report-low", null);
+      assert.equal((await latest()).id, "old-report");
+      assert.equal((await ref.collection("latestDailyReports").doc("b").get()).data().id, "uid-other");
+      assert.deepEqual((await summary()).medicalHistogram, baseline.medicalHistogram);
+      const savedOld = (await ref.collection("dailyReports").doc("old-report").get()).data();
+      await sourceEvent("dailyReports", "numeric-legacy-report", { author: "A", createdAt: 900000, fatigue: 1, isReviewed: true });
+      assert.equal((await latest()).id, "old-report", "legacy numeric time must preserve the SDK's Timestamp-first ordering");
+      await sourceEvent("dailyReports", "old-report", null);
+      assert.equal((await latest()).id, "numeric-legacy-report", "a UID-less numeric legacy report remains available as a fallback");
+      await sourceEvent("dailyReports", "old-report", savedOld);
+      assert.equal((await latest()).id, "old-report");
+      await sourceEvent("dailyReports", "numeric-legacy-report", null);
+      assert.deepEqual((await summary()).medicalHistogram, baseline.medicalHistogram);
+    });
     const oldContext = await backend.context(team);
     const ownerRef = ref.collection("members").doc("owner"), ownerBefore = await ownerRef.get();
     await ownerRef.update({ name: "Coach renamed" });
-    await backend.handleMembership({ params: { teamId: team }, data: { before: ownerBefore, after: await ownerRef.get() } });
+    await backend.handleMembership({ params: { teamId: team, uid: "owner" }, data: { before: ownerBefore, after: await ownerRef.get() } });
     assert.equal((await stateRef.get()).data().ready, false);
     await postRef.update({ content: "no longer mentions anyone" });
     await backend.process(team, "workspacePosts", "p000", oldContext);
     assert.equal((await summary()).workspaceNotificationUnreadCount, 109, "stale preparation context must not overwrite a new revision");
-    steps = 0;
-    while ((await stateRef.get()).data().status === "preparing") {
-      assert.ok(++steps < 30); await backend.handlePreparation({ params: { teamId: team }, data: { after: await stateRef.get() } });
-    }
+    await finishPreparation();
     assert.equal((await stateRef.get()).data().enabled, true); assert.equal((await stateRef.get()).data().separateReads, true);
+    await t.test("disabled source deletions replay on activation and disable wins during preparation", async () => {
+      await backend.configureCallable({ auth: { uid: "owner" }, data: { teamId: team, enabled: false, separateReads: false } });
+      const previous = await summary(), staleLatest = (await ref.collection("latestDailyReports").doc("a").get()).data();
+      await sourceEvent("workspacePosts", "p005", null);
+      assert.equal(latestMetrics().reads, 1); assert.equal(latestMetrics().writes, 0);
+      await sourceEvent("notices", "disabled-notice", { readBy: [], createdAt: admin.Timestamp.fromMillis(40000) });
+      await sourceEvent("dailyReports", "disabled-report", { authorUid: "a", author: "A", createdAt: admin.Timestamp.fromMillis(40000), isReviewed: true, fatigue: 1 });
+      assert.equal(latestMetrics().reads, 1); assert.equal(latestMetrics().writes, 0); assert.equal(latestMetrics().latestSearches, 0);
+      assert.deepEqual(await summary(), previous, "disabled handlers must not apply aggregate writes");
+      assert.deepEqual((await ref.collection("latestDailyReports").doc("a").get()).data(), staleLatest, "disabled handlers must not refresh latest reports");
+      assert.equal(await backend.context(team), null);
+      await backend.configureCallable({ auth: { uid: "owner" }, data: { teamId: team, enabled: true, separateReads: true } });
+      assert.equal((await stateRef.get()).data().enabled, false);
+      // Preparation must continue to accept relevant events before explicit activation.
+      await backend.handlePreparation({ params: { teamId: team }, data: { after: await stateRef.get() } });
+      await sourceEvent("notices", "preparing-notice", { readBy: [], createdAt: admin.Timestamp.fromMillis(41000) });
+      await backend.configureCallable({ auth: { uid: "owner" }, data: { teamId: team, enabled: false, separateReads: false } });
+      await finishPreparation();
+      assert.equal((await stateRef.get()).data().enabled, false, "a later administrative disable must win over the preparation's original desired state");
+      assert.equal((await stateRef.get()).data().separateReads, false);
+      assert.equal((await summary()).workspaceNotificationUnreadCount, previous.workspaceNotificationUnreadCount - 1, "deleted sources must be subtracted from retained entries");
+      assert.equal((await summary()).unreadNoticeCount, previous.unreadNoticeCount + 2);
+      assert.equal((await ref.collection("latestDailyReports").doc("a").get()).data().id, "disabled-report");
+      await backend.configureCallable({ auth: { uid: "owner" }, data: { teamId: team, enabled: true, separateReads: true } });
+      await finishPreparation();
+      assert.equal((await stateRef.get()).data().enabled, true);
+      await sourceEvent("notices", "disabled-notice", null);
+      await sourceEvent("notices", "preparing-notice", null);
+      assert.equal((await summary()).unreadNoticeCount, previous.unreadNoticeCount);
+    });
+    await t.test("member references ignore unrelated fields and rebuild relevant membership, channel and block changes", async () => {
+      const ownerRef = ref.collection("members").doc("owner"), previousState = (await stateRef.get()).data(), beforeGrade = await ownerRef.get();
+      await ownerRef.update({ grade: "synthetic grade" });
+      await backend.handleMembership({ params: { teamId: team, uid: "owner" }, data: { before: beforeGrade, after: await ownerRef.get() } });
+      assert.equal((await stateRef.get()).data().preparationId, previousState.preparationId, "unrelated profile fields must not restart preparation");
+      const userRef = db.collection("users").doc("a"), beforeBlock = await userRef.get(), unreadBeforeBlock = (await summary()).workspaceNotificationUnreadCount;
+      await userRef.update({ blockedUserUids: ["b"], teamIds: [team], activeTeamId: team });
+      await backend.handleUser({ params: { uid: "a" }, data: { before: beforeBlock, after: await userRef.get() } });
+      assert.equal((await stateRef.get()).data().status, "preparing");
+      await finishPreparation(); assert.equal((await summary()).workspaceNotificationUnreadCount, 0);
+      const beforeUnblock = await userRef.get();
+      await userRef.update({ blockedUserUids: [] });
+      await backend.handleUser({ params: { uid: "a" }, data: { before: beforeUnblock, after: await userRef.get() } });
+      await finishPreparation(); assert.equal((await summary()).workspaceNotificationUnreadCount, unreadBeforeBlock);
+      const beforeChannel = await ref.get(), channels = beforeChannel.data().channels;
+      await ref.update({ channels: [{ id: "general", name: "General", allowedRoleGroups: ["staff"] }] });
+      await backend.handleTeam({ params: { teamId: team }, data: { before: beforeChannel, after: await ref.get() } });
+      await finishPreparation(); assert.equal((await summary()).workspaceNotificationUnreadCount, 0);
+      const beforeRestore = await ref.get(); await ref.update({ channels });
+      await backend.handleTeam({ params: { teamId: team }, data: { before: beforeRestore, after: await ref.get() } });
+      await finishPreparation(); assert.equal((await summary()).workspaceNotificationUnreadCount, unreadBeforeBlock);
+      const guardianRef = ref.collection("members").doc("g"), beforeRole = await guardianRef.get();
+      await guardianRef.update({ role: "member" });
+      await backend.handleMembership({ params: { teamId: team, uid: "g" }, data: { before: beforeRole, after: await guardianRef.get() } });
+      await finishPreparation(); assert.ok((await ref.collection("workspacePosts").doc("p001").get()).data().readTargetUids.includes("g"));
+    });
+    await t.test("registration, fallback-name changes and leaving remove cached references without changing account flows", async () => {
+      const memberRef = ref.collection("members").doc("f"), userRef = db.collection("users").doc("f"), beforeJoin = await memberRef.get();
+      await userRef.set({ name: "Fallback", teamIds: [team], activeTeamId: team });
+      await memberRef.set({ role: "member" });
+      await backend.handleMembership({ params: { teamId: team, uid: "f" }, data: { before: beforeJoin, after: await memberRef.get() } });
+      await finishPreparation();
+      assert.equal((await backend.context(team)).members.find((member) => member.uid === "f").profileKey, "Fallback");
+      assert.equal((await ref.collection("loadingSummaries").doc("f").get()).data().unreadNoticeCount, 1);
+      const beforeName = await userRef.get(); await userRef.update({ name: "Fallback renamed" });
+      await backend.handleUser({ params: { uid: "f" }, data: { before: beforeName, after: await userRef.get() } });
+      await finishPreparation();
+      assert.equal((await backend.context(team)).members.find((member) => member.uid === "f").profileKey, "Fallback renamed");
+      await sourceEvent("dailyReports", "fallback-report", { author: "Fallback renamed", createdAt: admin.Timestamp.fromMillis(50000), isReviewed: true, fatigue: 2 });
+      assert.equal((await ref.collection("latestDailyReports").doc("f").get()).data().id, "fallback-report");
+      const beforeLeave = await memberRef.get(); await memberRef.delete();
+      await userRef.update({ teamIds: [], activeTeamId: "" });
+      await backend.handleMembership({ params: { teamId: team, uid: "f" }, data: { before: beforeLeave, after: await memberRef.get() } });
+      await finishPreparation();
+      assert.equal((await backend.context(team)).members.some((member) => member.uid === "f"), false);
+      assert.equal((await ref.collection("loadingSummaries").doc("f").get()).exists, false);
+      assert.equal((await ref.collection("latestDailyReports").doc("f").get()).exists, false);
+      await sourceEvent("dailyReports", "fallback-report", { fatigue: 4 });
+      assert.equal((await ref.collection("latestDailyReports").doc("f").get()).exists, false);
+    });
     await ref.collection("notices").doc("old-notice").delete(); await backend.process(team, "notices", "old-notice");
     assert.equal((await summary()).unreadNoticeCount, 0);
     await backend.anonymizeTeam(ref, "a");
@@ -97,9 +298,19 @@ test("real emulator: preparation, idempotent summaries, old latest condition, ov
     assert.equal((await ref.collection("latestDailyReports").doc("a").get()).exists, false);
     assert.equal((await ref.collection("loadingEntries").where(new admin.FieldPath("contributions", "a"), "!=", null).get()).size, 0);
     assert.equal((await ref.collection("loadingEntries").where("authorUids", "array-contains", "a").get()).size, 0);
+    const cachedMembers = await backend.context(team);
+    assert.equal(cachedMembers?.members.some((member) => member.uid === "a"), false, "account deletion must immediately exclude the UID while membership still exists");
+    await sourceEvent("workspacePosts", "p001", { content: "@A pending deletion" });
+    await sourceEvent("dailyReports", "disabled-report", { fatigue: 5 });
+    assert.equal((await ref.collection("loadingSummaries").doc("a").get()).exists, false, "delayed events must not recreate an excluded account's summary");
+    assert.equal((await ref.collection("latestDailyReports").doc("a").get()).exists, false, "delayed events must not recreate an excluded account's latest report");
     await db.collection("users").doc("a").delete(); await ref.collection("members").doc("a").delete();
     await backend.process(team, "workspacePosts", "p001", await backend.context(team));
     assert.equal((await ref.collection("loadingSummaries").doc("a").get()).exists, false);
+    for (const [label, value] of metrics) {
+      assert.equal(label, "loading_optimization_metrics");
+      assert.deepEqual(Object.keys(value).sort(), ["operation", "reads", "writes", "queries", "retries", "skipped", "contextRebuilds", "latestSearches", "durationMs"].sort());
+    }
   } finally {
     await Promise.all(clients.map(async ({ app, db }) => { await sdk.terminate(db); await deleteApp(app); })); await db.terminate(); await adminApp.deleteApp(serverApp);
   }
