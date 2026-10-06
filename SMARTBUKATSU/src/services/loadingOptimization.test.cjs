@@ -70,6 +70,54 @@ test("team switches, blur, cancelled search, and late snapshots cannot mix data"
   h.change({ teamId: "b" }); old.next({ items: [{ id: "wrong-team" }], hasMore: false }); h.render(); assert.ok(!h.results.flat().some((item) => item.id === "wrong-team"));
   h.change({ active: false }); assert.ok(h.subscriptions.every((sub) => sub.stops === 1)); assert.deepEqual(h.results.at(-1), []);
 });
+function searchRaceHarness() {
+  const pending = [];
+  const h = hookHarness(() => new Promise((resolve, reject) => pending.push({ resolve, reject })));
+  h.subscriptions.at(-1).next({ items: [], hasMore: true }); h.render();
+  return { h, pending, begin() { const result = h.api.searchAll(); h.render(); return result; } };
+}
+
+test("cancel and restart: an old success cannot finish the new history search", async () => {
+  const { h, pending, begin } = searchRaceHarness();
+  const first = begin(); h.api.cancel(); h.render(); const second = begin();
+  pending[0].resolve({ items: Array.from({ length: 50 }, (_, id) => ({ id: String(id) })), hasMore: false });
+  await first; h.render();
+  const oldResult = { all: h.api.all, searching: h.api.searching, count: h.subscriptions.at(-1).options.count };
+  pending[1].resolve({ items: [{ id: "current" }], hasMore: false }); await second; h.render();
+  const currentResult = { all: h.api.all, count: h.subscriptions.at(-1).options.count }; h.unmount();
+  assert.deepEqual(oldResult, { all: false, searching: true, count: 50 });
+  assert.deepEqual(currentResult, { all: true, count: 51 });
+});
+
+test("cancel and restart: an old failure cannot stop or report an error for the new search", async () => {
+  const { h, pending, begin } = searchRaceHarness();
+  const first = begin(); h.api.cancel(); h.render(); const second = begin();
+  pending[0].reject(new Error("obsolete search")); await first; h.render();
+  const oldResult = { error: h.api.error, searching: h.api.searching, busy: h.api.busy };
+  pending[1].resolve({ items: [{ id: "current" }], hasMore: false }); await second; h.render();
+  const all = h.api.all; h.unmount();
+  assert.deepEqual(oldResult, { error: "", searching: true, busy: true }); assert.equal(all, true);
+});
+
+test("a previous team's search failure cannot suppress the new team's successful search", async () => {
+  const { h, pending, begin } = searchRaceHarness();
+  const first = begin(); h.change({ teamId: "b" });
+  h.subscriptions.at(-1).next({ items: [], hasMore: true }); h.render(); const second = begin();
+  pending[0].reject(new Error("obsolete team")); await first; h.render();
+  pending[1].resolve({ items: [{ id: "new-team" }], hasMore: false }); await second; h.render();
+  const all = h.api.all, error = h.api.error; h.unmount();
+  assert.equal(all, true); assert.equal(error, "");
+});
+
+test("cancelling history search keeps the live list subscription usable", async () => {
+  const { h, pending, begin } = searchRaceHarness(), sub = h.subscriptions.at(-1);
+  const search = begin(); h.api.cancel(); h.render();
+  sub.next({ items: [{ id: "live-edit" }], hasMore: false }); h.render();
+  pending[0].resolve({ items: [{ id: "obsolete" }], hasMore: false }); await search; h.render();
+  const items = h.results.at(-1), all = h.api.all; h.unmount();
+  assert.deepEqual(items, [{ id: "live-edit" }]); assert.equal(all, false);
+});
+
 test("inactive history hooks leave the legacy subscription's data intact on option changes", () => {
   const h = hookHarness(); h.change({ active: false }); const calls = h.results.length;
   h.change({ options: { uid: "member", channel: "other" } });
@@ -140,7 +188,8 @@ test("startup waits for the gate; navigation owns bounded listeners; rollback re
   for (const match of fs.readFileSync(appPath, "utf8").matchAll(/from\s+["']([^"']+)["']/g)) modules[match[1]] ||= { __esModule: true, default: match[1] };
   const { AppContent } = load(appPath, modules, "\nexport { AppContent };\n");
   h.mount(AppContent);
-  assert.equal(calls.filter((item) => item.name.startsWith("legacy") || item.name === "history").length, 0);
+  assert.equal(calls.filter((item) => legacyNames.some((name) => item.name === "legacy" + name) || item.name === "history").length, 0);
+  assert.equal(calls.filter((item) => ["legacyTeamData", "legacyTeamMembers"].includes(item.name)).length, 2);
   const gate = calls.find((item) => item.name === "LoadingState");
   gate.args[1]({ ready: true, enabled: true, separateReads: true, schemaVersion: 1 }); h.render();
   assert.equal(calls.filter((item) => legacyNames.some((name) => item.name === "legacy" + name)).length, 0);

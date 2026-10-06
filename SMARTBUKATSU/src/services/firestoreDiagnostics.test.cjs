@@ -36,6 +36,21 @@ function harness(enabled = true) {
   return { diagnostics, subscribe, calls, entry: () => diagnostics.getReport().subscriptions[0] };
 }
 
+test("explicit listen options survive both diagnostics modes and measurement fallback", () => {
+  for (const enabled of [false, true, "fallback"]) {
+    const calls = [], values = [], errors = [], options = { includeMetadataChanges: true };
+    const diagnostics = enabled === "fallback"
+      ? { enabled: true, start() { throw new Error("measurement failure"); }, recordMeasurementError() {} }
+      : createFirestoreDiagnostics({ enabled });
+    const subscribe = createMeasuredOnSnapshot((...args) => { calls.push(args); return () => {}; }, diagnostics);
+    const reference = {}, stop = subscribe("loadingState", reference, value => values.push(value), error => errors.push(error), options);
+    assert.equal(calls[0][0], reference); assert.equal(calls[0][1], options);
+    const snap = documentSnapshot(false), failure = { code: "permission-denied" };
+    calls[0][2](snap); calls[0][3](failure);
+    assert.deepEqual(values, [snap]); assert.deepEqual(errors, [failure]); stop();
+  }
+});
+
 test("disabled diagnostics delegate the original callbacks, reference and unsubscribe", () => {
   const h = harness(false);
   const reference = {};
