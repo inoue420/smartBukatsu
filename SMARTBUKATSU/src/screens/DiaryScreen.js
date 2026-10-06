@@ -180,6 +180,7 @@ const DiaryScreen = ({
   clubMembers = [],
   onDiarySubmitted,
   alertThresholds = DEFAULT_ALERT_THRESHOLDS,
+  dailyReportCommentsEnabled = false,
 }) => {
   const { activeTeamId, blockedUserUids = [] } = useAuth();
   const blockedUserUidSet = useMemo(
@@ -217,6 +218,9 @@ const DiaryScreen = ({
   }, [dailyReports, navigation, route?.params?.reportId]);
   const [commentDraftsByReportId, setCommentDraftsByReportId] = useState({});
   const isSendingCommentRef = useRef(false);
+  const commentContextRef = useRef(null);
+  commentContextRef.current = { teamId: activeTeamId, enabled: dailyReportCommentsEnabled === true };
+  useEffect(() => () => { commentContextRef.current = null; }, []);
   const [editingReportId, setEditingReportId] = useState(null);
   const [isReportModalVisible, setIsReportModalVisible] = useState(false);
   const [reportingComment, setReportingComment] = useState(null);
@@ -314,6 +318,9 @@ const DiaryScreen = ({
   // ========================================
 
   const [activeTab, setActiveTab] = useState("all");
+  useEffect(() => {
+    if (!dailyReportCommentsEnabled && activeTab === "needs_reply") setActiveTab("all");
+  }, [dailyReportCommentsEnabled, activeTab]);
   const [searchQuery, setSearchQuery] = useState("");
   const [expandedDates, setExpandedDates] = useState({});
 
@@ -475,7 +482,7 @@ const DiaryScreen = ({
   if (isStaffOrAbove) {
     if (activeTab === "unread") {
       processedReports = processedReports.filter((d) => !d.isReviewed);
-    } else if (activeTab === "needs_reply") {
+    } else if (dailyReportCommentsEnabled && activeTab === "needs_reply") {
       processedReports = processedReports.filter(
         (d) =>
           d.comments.filter((c) =>
@@ -1012,6 +1019,10 @@ const DiaryScreen = ({
   };
 
   const handleSendComment = async () => {
+    if (!dailyReportCommentsEnabled || !commentContextRef.current?.enabled) {
+      Alert.alert("送信できません", "このチームでは直接コメントがOFFになっています。");
+      return;
+    }
     const reportId = selectedReport?.id;
     if (!reportId || isSendingCommentRef.current) return;
     const commentText = commentDraftsByReportId[reportId] || "";
@@ -1029,6 +1040,11 @@ const DiaryScreen = ({
         "daily_report_comment",
       );
       if (!canSubmit) return;
+      if (commentContextRef.current?.teamId !== activeTeamId) return;
+      if (!commentContextRef.current.enabled) {
+        Alert.alert("送信を中止しました", "コメント設定がOFFに変更されました。入力内容は保持しています。");
+        return;
+      }
       setIsLoading(true);
 
       const newComment = {
@@ -1045,6 +1061,7 @@ const DiaryScreen = ({
         comments: newComments,
         isReviewed: isStaffComment ? true : selectedReport.isReviewed,
       });
+      if (commentContextRef.current?.teamId !== activeTeamId) return;
 
       const applyComment = (report) => ({
         ...report,
@@ -1066,6 +1083,7 @@ const DiaryScreen = ({
         return remainingDrafts;
       });
     } catch (error) {
+      if (commentContextRef.current?.teamId !== activeTeamId) return;
       console.log("コメント送信エラー:", error);
       Alert.alert(
         "送信エラー",
@@ -1073,7 +1091,7 @@ const DiaryScreen = ({
       );
     } finally {
       isSendingCommentRef.current = false;
-      setIsLoading(false);
+      if (commentContextRef.current?.teamId === activeTeamId) setIsLoading(false);
     }
   };
 
@@ -1240,7 +1258,7 @@ const DiaryScreen = ({
   const unreviewedCount = isStaffOrAbove
     ? processedReports.filter((d) => !d.isReviewed).length
     : 0;
-  const needsReplyCount = isStaffOrAbove
+  const needsReplyCount = isStaffOrAbove && dailyReportCommentsEnabled
     ? processedReports.filter(
         (d) =>
           d.comments.filter((c) =>
@@ -1330,7 +1348,7 @@ const DiaryScreen = ({
                 🚨 危険
               </Text>
             </TouchableOpacity>
-            <TouchableOpacity
+            {dailyReportCommentsEnabled && <TouchableOpacity
               onPress={() => setActiveTab("needs_reply")}
               style={[
                 styles.tabBtn,
@@ -1345,7 +1363,7 @@ const DiaryScreen = ({
               >
                 要返信 ({needsReplyCount})
               </Text>
-            </TouchableOpacity>
+            </TouchableOpacity>}
             <TouchableOpacity
               onPress={() => setActiveTab("starred")}
               style={[
@@ -1897,6 +1915,11 @@ const DiaryScreen = ({
                       <Text style={styles.threadTitle}>
                         💬 コーチとのやり取り
                       </Text>
+                      <Text style={{ fontSize: 12, color: "#666", marginBottom: 10 }}>
+                        {dailyReportCommentsEnabled
+                          ? "通報時はコメントと会話部分を証拠として保存し、通報後の関連変更を追跡します。運営が調査・安全対応のため確認し、必要な範囲で情報を開示する場合があります。"
+                          : "直接コメントはOFFです。新規送信と通報用の証拠コピーは停止しています。既存コメントは閲覧・通報でき、通報理由などの受付情報は保存されます。"}
+                      </Text>
                       <View style={styles.threadArea}>
                         {(selectedReport.comments || [])
                           .filter(
@@ -1961,7 +1984,7 @@ const DiaryScreen = ({
                   );
                 })()}
 
-              {selectedReport?.id && (
+              {selectedReport?.id && dailyReportCommentsEnabled && (
               <View
                 style={{
                   backgroundColor: "#fff",
@@ -2406,7 +2429,9 @@ const DiaryScreen = ({
             <ScrollView keyboardShouldPersistTaps="handled">
               <Text style={styles.reportModalTitle}>運営へ通報する</Text>
               <Text style={styles.reportHelpText}>
-                長押ししたコメントと会話部分は、調査と安全対応のため通常データから分離して保全されます。日報の体調・痛みなどの項目は通報証拠へ複製されません。
+                {dailyReportCommentsEnabled
+                  ? "長押ししたコメントと会話部分は、調査と安全対応のため通常データから分離して保全されます。日報の体調・痛みなどの項目は通報証拠へ複製されません。"
+                  : "直接コメントがOFFのため、コメント本文・会話の証拠コピーは保存しません。通報理由などの受付情報だけを保存します。保存の扱いは送信処理時のチーム設定に従います。"}
               </Text>
 
               <Text style={styles.reportSectionLabel}>通報対象</Text>

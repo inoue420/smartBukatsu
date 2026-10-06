@@ -185,6 +185,17 @@ async function sendExpoPushForUser({
   }
 }
 
+function dailyReportCommentEventAllowed(teamData, eventTime) {
+  if (teamData?.dailyReportCommentsEnabled !== true) return false;
+  const changedAt = teamData.dailyReportCommentsUpdatedAt;
+  const millis = Date.parse(eventTime);
+  if (!changedAt || !Number.isFinite(millis)) return true;
+  const seconds = Math.floor(millis / 1000);
+  const fraction = String(eventTime).match(/\.(\d+)(?:Z|[+-]\d{2}:\d{2})$/)?.[1] || "";
+  const nanos = Number(fraction.padEnd(9, "0").slice(0, 9));
+  return seconds > changedAt.seconds || (seconds === changedAt.seconds && nanos >= changedAt.nanoseconds);
+}
+
 async function createNotificationForUser(uid, payload) {
   const notificationId = safeDocumentId(payload.id);
   const userRef = firestore.collection("users").doc(uid);
@@ -210,6 +221,12 @@ async function createNotificationForUser(uid, payload) {
   };
 
   const transactionResult = await firestore.runTransaction(async (transaction) => {
+    if (payload.category === NOTIFICATION_CATEGORIES.DIARY_REPLY) {
+      const teamSnapshot = await transaction.get(firestore.collection("teams").doc(payload.teamId));
+      if (!dailyReportCommentEventAllowed(teamSnapshot.data(), payload.sourceEventTime)) {
+        return { created: false, unreadTotal: 0 };
+      }
+    }
     const userSnapshot = payload.actorUid
       ? await transaction.get(userRef)
       : null;
@@ -601,6 +618,7 @@ const notifyDailyReportWritten = onDocumentWritten(
 
     const { teamId, reportId } = event.params;
     const teamSnapshot = await firestore.collection("teams").doc(teamId).get();
+    if (!dailyReportCommentEventAllowed(teamSnapshot.data(), event.time)) return;
     const teamName = teamSnapshot.data()?.name || "所属チーム";
     for (const comment of addedComments) {
       const senderUid = actorUid(comment);
@@ -614,6 +632,7 @@ const notifyDailyReportWritten = onDocumentWritten(
       await fanOutToUids(recipientUids, {
         id: `diary_reply_${teamId}_${reportId}_${comment.id}`,
         category: NOTIFICATION_CATEGORIES.DIARY_REPLY,
+        sourceEventTime: event.time,
         teamId,
         teamName,
         actorUid: senderUid,

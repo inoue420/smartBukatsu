@@ -110,6 +110,7 @@ function AppContent() {
   const [absenceDetailsVisible, setAbsenceDetailsVisible] = useState(
     DEFAULT_ABSENCE_DETAILS_VISIBLE,
   );
+  const [dailyReportCommentSettings, setDailyReportCommentSettings] = useState(null);
   const [isOffline, setIsOffline] = useState(false);
   const [posts, setPosts] = useState([]);
   const [currentScreen, setCurrentScreen] = useState("WorkspaceHome");
@@ -127,6 +128,11 @@ function AppContent() {
   const separateReads = Boolean(optimize && loadingState?.separateReads);
   const readStateAvailable = Boolean(loadingStateResolved && loadingState.schemaVersion === 1);
   const authorized = Boolean(user && activeTeamId && !emailVerificationPending);
+  const dailyReportCommentSettingsReady = Boolean(authorized &&
+    dailyReportCommentSettings?.teamId === activeTeamId &&
+    dailyReportCommentSettings?.uid === user?.uid);
+  const dailyReportCommentsEnabled = dailyReportCommentSettingsReady &&
+    dailyReportCommentSettings.enabled === true;
   useEffect(() => {
     let active = true;
     setLoadingState(null); setLoadingSummary({}); setLatestReports([]); setPostReads({});
@@ -246,10 +252,13 @@ function AppContent() {
     setInterstitialSettings({ ...DEFAULT_INTERSTITIAL_SETTINGS });
     setAbsenceDeadlineDaysBefore(DEFAULT_ABSENCE_DEADLINE_DAYS_BEFORE);
     setAbsenceDetailsVisible(DEFAULT_ABSENCE_DETAILS_VISIBLE);
+    setDailyReportCommentSettings(null);
     if (authorized) {
       let active = true;
       const unsubTeam = subscribeTeamData(activeTeamId, (data) => {
         if (!active) return;
+        setDailyReportCommentSettings({ teamId: activeTeamId, uid: user.uid,
+          enabled: data?.dailyReportCommentsEnabled === true });
         if (data) {
           setTeamName(data.name || "名称未設定のチーム");
           setGrades(data.grades ?? ["1年生", "2年生", "3年生"]);
@@ -463,6 +472,7 @@ function AppContent() {
             <Stack.Screen name="Diary">
               {(props) => (
                 <DiaryScreen
+                  dailyReportCommentsEnabled={dailyReportCommentsEnabled}
                   {...props}
                   key={activeTeamId}
                   history={optimize ? reportHistory : null}
@@ -586,6 +596,8 @@ function AppContent() {
             <Stack.Screen name="Settings">
               {(props) => (
                 <SettingsScreen
+                  dailyReportCommentsEnabled={dailyReportCommentsEnabled}
+                  dailyReportCommentSettingsReady={dailyReportCommentSettingsReady}
                   {...props}
                   isAdmin={authIsAdmin}
                   currentUser={safeUserName}

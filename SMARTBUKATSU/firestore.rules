@@ -118,8 +118,16 @@ service cloud.firestore {
       allow get: if isMember(teamId);
       allow list: if false;
 
-      allow create: if signedIn() && request.resource.data.createdBy == uid();
-      allow update, delete: if isManager(teamId);
+      allow create: if signedIn() && request.resource.data.createdBy == uid()
+        && request.resource.data.get('dailyReportCommentsEnabled', false) is bool
+        && (request.resource.data.get('dailyReportCommentsEnabled', false) == false
+          || request.resource.data.get('dailyReportCommentsUpdatedAt', null) == request.time);
+      allow update: if isManager(teamId)
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['dailyReportCommentsEnabled', 'dailyReportCommentsUpdatedAt'])
+          || (getRole(teamId) in ['owner', 'admin']
+            && request.resource.data.get('dailyReportCommentsEnabled', false) is bool
+            && request.resource.data.get('dailyReportCommentsUpdatedAt', null) == request.time));
+      allow delete: if isManager(teamId);
 
       match /members/{memberId} {
         allow get, list: if isMember(teamId);
@@ -218,7 +226,15 @@ service cloud.firestore {
       }
 
       match /dailyReports/{reportId} {
-        allow read, write: if isMember(teamId);
+        function commentsEnabled() {
+          return getAfter(/databases/$(database)/documents/teams/$(teamId)).data.get('dailyReportCommentsEnabled', false) == true;
+        }
+        allow read, delete: if isMember(teamId);
+        allow create: if isMember(teamId)
+          && (request.resource.data.get('comments', []) == [] || commentsEnabled());
+        allow update: if isMember(teamId)
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['comments'])
+            || commentsEnabled());
       }
 
       match /projects/{projectId} {
