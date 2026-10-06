@@ -1191,6 +1191,18 @@ export async function updateDailyReport(teamId, reportId, updateData) {
   });
 }
 
+export async function updateDailyReportCommentSettings(teamId, enabled) {
+  if (!teamId || typeof enabled !== "boolean") throw new Error("コメント設定が正しくありません。");
+  const teamRef = doc(db, "teams", teamId);
+  await runTransaction(db, async (transaction) => {
+    const snapshot = await transaction.get(teamRef);
+    if (!snapshot.exists()) throw new Error("チームが見つかりません。");
+    if ((snapshot.data().dailyReportCommentsEnabled === true) === enabled) return;
+    transaction.update(teamRef, { dailyReportCommentsEnabled: enabled,
+      dailyReportCommentsUpdatedAt: serverTimestamp() });
+  });
+}
+
 export async function deleteDailyReport(teamId, reportId) {
   if (!teamId || !reportId) return;
   const reportRef = doc(db, "teams", teamId, "dailyReports", reportId);

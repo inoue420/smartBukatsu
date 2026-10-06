@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useFocusEffect } from "@react-navigation/native";
 import {
   View,
@@ -52,6 +52,7 @@ import {
   transferTeamOwnership,
   moderateWorkspaceContent,
   updateTeamAdSettings,
+  updateDailyReportCommentSettings,
 } from "../services/firestoreService";
 import {
   DEFAULT_INTERSTITIAL_SETTINGS,
@@ -152,6 +153,8 @@ const SettingsScreen = ({
   setAbsenceDeadlineDaysBefore,
   absenceDetailsVisible = true,
   setAbsenceDetailsVisible,
+  dailyReportCommentsEnabled = false,
+  dailyReportCommentSettingsReady = false,
   setUserProfiles,
   posts = [],
   setPosts,
@@ -315,6 +318,7 @@ const SettingsScreen = ({
   const [expanded, setExpanded] = useState({
     teamInfo: false,
     absence: false,
+    dailyReportComments: false,
     alert: false,
     member: false,
     grade: false,
@@ -350,6 +354,20 @@ const SettingsScreen = ({
   const [absenceDetailsVisibleDraft, setAbsenceDetailsVisibleDraft] = useState(
     absenceDetailsVisible,
   );
+  const [dailyReportCommentsDraft, setDailyReportCommentsDraft] = useState(false);
+  const [isSavingDailyReportComments, setIsSavingDailyReportComments] = useState(false);
+  const commentSaveRequestRef = useRef(0);
+  const commentSettingsTeamRef = useRef(activeTeamId);
+  commentSettingsTeamRef.current = activeTeamId;
+
+  useEffect(() => {
+    commentSaveRequestRef.current += 1;
+    setIsSavingDailyReportComments(false);
+    return () => { commentSaveRequestRef.current += 1; };
+  }, [activeTeamId]);
+  useEffect(() => {
+    setDailyReportCommentsDraft(dailyReportCommentsEnabled === true);
+  }, [activeTeamId, dailyReportCommentsEnabled, dailyReportCommentSettingsReady]);
 
   useEffect(() => {
     setAdSettingsDraft(normalizeInterstitialSettings(interstitialSettings));
@@ -1135,6 +1153,25 @@ const SettingsScreen = ({
     }
   };
 
+  const handleSaveDailyReportComments = async () => {
+    if (!isSupervisor || !activeTeamId || !dailyReportCommentSettingsReady || isSavingDailyReportComments) return;
+    const teamId = activeTeamId;
+    const requestId = ++commentSaveRequestRef.current;
+    setIsSavingDailyReportComments(true);
+    try {
+      await updateDailyReportCommentSettings(teamId, dailyReportCommentsDraft);
+      if (commentSaveRequestRef.current !== requestId || commentSettingsTeamRef.current !== teamId) return;
+      Alert.alert("保存完了", dailyReportCommentsDraft
+        ? "直接コメントを有効にしました。通報時の証拠保存と、通報後の変更追跡を行います。"
+        : "直接コメントを無効にしました。新規コメント送信と通報用の証拠コピーを停止します。");
+    } catch (error) {
+      if (commentSaveRequestRef.current !== requestId || commentSettingsTeamRef.current !== teamId) return;
+      Alert.alert("保存できませんでした", error?.message || "権限と通信状態を確認してください。");
+    } finally {
+      if (commentSaveRequestRef.current === requestId) setIsSavingDailyReportComments(false);
+    }
+  };
+
   const handleSaveAbsenceDetailsVisibility = async () => {
     if (!isStaffOrAbove || !activeTeamId || isSavingAbsenceDeadline) return;
 
@@ -1850,6 +1887,39 @@ const SettingsScreen = ({
                   )}
                 </TouchableOpacity>
               </SectionCard>
+
+              {isSupervisor && (
+                <SectionCard
+                  isExp={expanded.dailyReportComments}
+                  onToggle={() => toggleSection("dailyReportComments")}
+                  title="💬 振り返りの直接コメント"
+                >
+                  <View style={styles.switchRow}>
+                    <Text style={[styles.thresholdLabel, { flex: 1 }]}>直接コメントを有効にする</Text>
+                    <Switch
+                      accessibilityLabel="振り返りの直接コメントを有効にする"
+                      value={dailyReportCommentsDraft}
+                      onValueChange={setDailyReportCommentsDraft}
+                      disabled={!dailyReportCommentSettingsReady || isSavingDailyReportComments}
+                      trackColor={{ false: "#d9d9d9", true: "#3498db" }}
+                    />
+                  </View>
+                  <Text style={styles.subText}>
+                    初期設定はOFFです。OFF中は新規コメント送信と通報用の証拠コピーを停止します。既存コメントの閲覧・通報は可能で、通報理由などの受付情報は保存されます。
+                  </Text>
+                  <Text style={styles.subText}>
+                    ON中は、通報時にコメントと会話部分を証拠として保存し、通報後の関連変更を追跡します。調査・安全対応のため運営が確認し、必要な範囲で情報を開示する場合があります。保存済みの証拠はOFFにしても保持期限に従って保管します。
+                  </Text>
+                  <TouchableOpacity
+                    style={[styles.saveBtn, (!dailyReportCommentSettingsReady || isSavingDailyReportComments) && { opacity: 0.7 }]}
+                    onPress={handleSaveDailyReportComments}
+                    disabled={!dailyReportCommentSettingsReady || isSavingDailyReportComments}
+                  >
+                    {isSavingDailyReportComments ? <ActivityIndicator color="#fff" />
+                      : <Text style={styles.saveBtnText}>直接コメント設定を保存</Text>}
+                  </TouchableOpacity>
+                </SectionCard>
+              )}
 
               {INTERSTITIAL_ADS_ENABLED && isSupervisor && (
                 <SectionCard

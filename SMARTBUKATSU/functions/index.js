@@ -390,8 +390,31 @@ const getAuthenticatedTeamMember = async (teamId, uid) => {
   };
 };
 
+const dailyReportCommentEventAllowed = (teamData, eventTime) => {
+  if (teamData?.dailyReportCommentsEnabled !== true) return false;
+  const changedAt = teamData.dailyReportCommentsUpdatedAt;
+  const millis = Date.parse(eventTime);
+  if (!changedAt || !Number.isFinite(millis)) return true;
+  const seconds = Math.floor(millis / 1000);
+  const fraction = String(eventTime).match(/\.(\d+)(?:Z|[+-]\d{2}:\d{2})$/)?.[1] || "";
+  const nanos = Number(fraction.padEnd(9, "0").slice(0, 9));
+  return seconds > changedAt.seconds || (seconds === changedAt.seconds && nanos >= changedAt.nanoseconds);
+};
+
 const createSupportCaseWithEvidence = async ({ caseData, evidence }) => {
   const caseRef = firestore.collection(SUPPORT_CASE_COLLECTION).doc();
+  if (caseData.targetType === "daily_report_comment") {
+    // Read the gate in the same transaction as the evidence write so a
+    // concurrent OFF switch retries the transaction without copying the conversation.
+    const teamRef = firestore.collection("teams").doc(caseData.teamId);
+    await firestore.runTransaction(async (transaction) => {
+      const teamSnapshot = await transaction.get(teamRef);
+      const enabled = teamSnapshot.data()?.dailyReportCommentsEnabled === true;
+      transaction.set(caseRef, { ...caseData, commentEvidenceEnabledAtReport: enabled });
+      if (enabled && evidence) transaction.set(caseRef.collection("evidence").doc(), evidence);
+    });
+    return caseRef.id;
+  }
   const batch = firestore.batch();
   batch.set(caseRef, caseData);
   if (evidence) {
@@ -1400,37 +1423,34 @@ exports.trackReportedDailyReportChanges = onDocumentWritten(
     }
 
     const targetDocumentPath = `teams/${teamId}/dailyReports/${reportId}`;
-    const casesSnapshot = await firestore
-      .collection(SUPPORT_CASE_COLLECTION)
-      .where("targetDocumentPath", "==", targetDocumentPath)
-      .get();
+    const teamRef = firestore.collection("teams").doc(teamId);
+    // OFF returns before querying cases. Transactions also protect in-flight
+    // evidence writes when the owner changes the setting during processing.
+    const teamSnapshot = await teamRef.get();
+    if (!dailyReportCommentEventAllowed(teamSnapshot.data(), event.time)) return;
+    const casesSnapshot = await firestore.collection(SUPPORT_CASE_COLLECTION)
+      .where("targetDocumentPath", "==", targetDocumentPath).get();
     const activeCases = casesSnapshot.docs.filter((caseSnapshot) =>
-      ACTIVE_SUPPORT_CASE_STATUSES.has(caseSnapshot.data()?.status),
-    );
-    if (activeCases.length === 0) return;
-
+      ACTIVE_SUPPORT_CASE_STATUSES.has(caseSnapshot.data()?.status));
     const capturedAt = Timestamp.now();
-    const writer = firestore.bulkWriter();
-    activeCases.forEach((caseSnapshot) => {
-      const caseData = caseSnapshot.data() || {};
-      const evidenceOptions = {
-        reportId,
-        commentId: caseData.targetCommentId || "",
-      };
-      const beforeSnapshot = getDailyReportEvidence(
-        beforeData,
-        evidenceOptions,
-      );
-      const afterSnapshot = getDailyReportEvidence(afterData, evidenceOptions);
-      if (JSON.stringify(beforeSnapshot) === JSON.stringify(afterSnapshot)) return;
-      writer.set(caseSnapshot.ref.collection("evidence").doc(), {
-        eventType: afterData ? "updated" : "deleted",
-        capturedAt,
-        before: beforeSnapshot,
-        after: afterSnapshot,
+    for (const caseSnapshot of activeCases) {
+      const evidenceRef = caseSnapshot.ref.collection("evidence").doc();
+      await firestore.runTransaction(async (transaction) => {
+        const currentTeam = await transaction.get(teamRef);
+        if (!dailyReportCommentEventAllowed(currentTeam.data(), event.time)) return;
+        const currentCase = await transaction.get(caseSnapshot.ref);
+        const caseData = currentCase.data();
+        if (!currentCase.exists || !ACTIVE_SUPPORT_CASE_STATUSES.has(caseData?.status)) return;
+        const evidenceOptions = { reportId, commentId: caseData.targetCommentId || "" };
+        const beforeSnapshot = getDailyReportEvidence(beforeData, evidenceOptions);
+        const afterSnapshot = getDailyReportEvidence(afterData, evidenceOptions);
+        if (JSON.stringify(beforeSnapshot) === JSON.stringify(afterSnapshot)) return;
+        transaction.set(evidenceRef, {
+          eventType: afterData ? "updated" : "deleted", capturedAt,
+          before: beforeSnapshot, after: afterSnapshot,
+        });
       });
-    });
-    await writer.close();
+    }
   },
 );
 
