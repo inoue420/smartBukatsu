@@ -20,6 +20,9 @@ const { getStorage } = require("firebase-admin/storage");
 initializeApp();
 
 const firestore = getFirestore();
+const { createWorkspaceReactionBackend } = require("./workspaceReactionBackend");
+const workspaceReactions = createWorkspaceReactionBackend({ firestore, FieldValue, HttpsError });
+exports.sendWorkspaceReaction = onCall({ region: "asia-northeast1" }, workspaceReactions.submit);
 const { createAttachmentExpiryBackend } = require("./attachmentExpiryBackend");
 const attachmentExpiry = createAttachmentExpiryBackend({ firestore, getStorage, FieldValue, logger });
 exports.registerAttachmentExpiry = onObjectFinalized({
@@ -618,11 +621,12 @@ const getAccountDocumentUpdates = (data, context) => {
 
 const getAccountDeletionContext = async (uid) => {
   const userRef = firestore.collection("users").doc(uid);
-  const [userSnap, ownedTeamsSnapshot, tacticalTeamIds, loadingReadTeamIds] = await Promise.all([
+  const [userSnap, ownedTeamsSnapshot, tacticalTeamIds, loadingReadTeamIds, reactionTeamIds] = await Promise.all([
     userRef.get(),
     firestore.collection("teams").where("createdBy", "==", uid).get(),
     tacticalNotes.relatedTeamIds(uid),
     loadingOptimization.relatedTeamIds(uid),
+    workspaceReactions.relatedTeamIds(uid),
   ]);
   const userData = userSnap.exists ? userSnap.data() || {} : {};
   const teamIds = [
@@ -631,6 +635,7 @@ const getAccountDeletionContext = async (uid) => {
       ...ownedTeamsSnapshot.docs.map((teamSnapshot) => teamSnapshot.id),
       ...tacticalTeamIds,
       ...loadingReadTeamIds,
+      ...reactionTeamIds,
     ]),
   ];
   const teamEntries = await Promise.all(
@@ -1783,6 +1788,12 @@ exports.deleteUserAccount = onCall(
         if (memberSnap.exists) membershipWriter.delete(memberRef);
       });
       await membershipWriter.close();
+
+      // Revoke membership first so an in-flight reaction transaction must retry
+      // against the removed membership before its identity cleanup can finish.
+      for (const teamEntry of context.teamEntries) {
+        anonymizedDocumentCount += await workspaceReactions.anonymizeTeam(teamEntry.teamRef, uid);
+      }
 
       await removeNotificationPushTokenRegistrations(uid);
       await firestore.recursiveDelete(context.userRef);

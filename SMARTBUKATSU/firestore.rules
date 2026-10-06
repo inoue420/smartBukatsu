@@ -94,6 +94,13 @@ service cloud.firestore {
       match /loadingReadTeams/{teamId} {
         allow read, write: if false;
       }
+      match /workspaceReactionReceipts/{receiptId} {
+        allow get: if signedIn() && userId == uid();
+        allow list, write: if false;
+      }
+      match /workspaceReactionTeams/{teamId} {
+        allow read, write: if false;
+      }
     }
 
     match /invites/{code} {
@@ -143,7 +150,30 @@ service cloud.firestore {
       }
 
       match /workspacePosts/{postId} {
-        allow read, write: if isMember(teamId);
+        allow read: if isMember(teamId);
+        allow create: if isMember(teamId)
+          && request.resource.data.get('authorUid', '') == uid()
+          && !request.resource.data.keys().hasAny(['reactionUserUids', 'reactionMigrationPending'])
+          && request.resource.data.get('reactions', {}) == {}
+          && request.resource.data.get('reactionPrivacyVersion', 1) == 1
+          && !exists(/databases/$(database)/documents/teams/$(teamId)/workspacePostReactionDetails/$(postId));
+        allow update: if isMember(teamId)
+          && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+            'authorUid', 'reactions', 'reactionUserUids', 'reactionPrivacyVersion', 'reactionMigrationPending'
+          ]);
+        allow delete: if isMember(teamId) && (isManager(teamId) || resource.data.get('authorUid', '') == uid());
+      }
+      match /workspacePostReactionDetails/{postId} {
+        function visibleParent() {
+          let parent = get(/databases/$(database)/documents/teams/$(teamId)/workspacePosts/$(postId)).data;
+          return parent.get('status', '') != 'deleted' && parent.get('moderationStatus', '') != 'hidden'
+            && (!parent.keys().hasAny(['visibleToUids']) || uid() in parent.visibleToUids);
+        }
+        allow get: if signedIn()
+          && exists(/databases/$(database)/documents/teams/$(teamId)/members/$(uid()))
+          && (getRole(teamId) in ['owner', 'admin', 'staff'] || resource.data.get('authorUid', '') == uid())
+          && visibleParent();
+        allow list, write: if false;
       }
 
       match /loadingOptimization/{stateId} {
