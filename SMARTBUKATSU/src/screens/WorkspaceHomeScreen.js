@@ -23,7 +23,6 @@ import {
   createNotice,
   createWorkspacePost,
   getWorkspacePostsForAudienceSync,
-  incrementWorkspacePostReaction,
   manageOwnWorkspaceContent,
   markWorkspacePostRead,
   markWorkspaceNotificationState,
@@ -38,6 +37,8 @@ import {
 import { getFatigueScore, getPainScore } from "../utils/medicalScale";
 import { medicalDangerCount } from "../utils/historyLoading";
 import HistoryLoadingControls from "../components/HistoryLoadingControls";
+import { useWorkspaceReactions } from "../hooks/useWorkspaceReactions";
+import { WORKSPACE_REACTION_EMOJIS, canViewWorkspaceReactionSenders, workspaceReactionSenders } from "../utils/workspaceReactions";
 import {
   getBlockedContentMessage,
   getContentWarningMessage,
@@ -62,7 +63,7 @@ const COLORS = {
   border: "#e2e8f0",
 };
 
-const REACTION_EMOJIS = ["👍", "❤️", "😂", "🔥", "👀", "🙏"];
+const REACTION_EMOJIS = WORKSPACE_REACTION_EMOJIS;
 const REPORT_REASONS = [
   { value: "harassment_bullying", label: "いじめ・嫌がらせ・誹謗中傷" },
   { value: "threat_violence", label: "脅迫・暴力的な内容" },
@@ -536,6 +537,7 @@ const WorkspaceHomeScreen = ({
   const isSendingReplyRef = useRef(false);
 
   const [activeReactionPostId, setActiveReactionPostId] = useState(null);
+  const reactionPickerRequestRef = useRef(0);
   const [activeLongPressPostId, setActiveLongPressPostId] = useState(null);
   const [activeLongPressReply, setActiveLongPressReply] = useState(null);
   const [editingOwnContent, setEditingOwnContent] = useState(null);
@@ -552,6 +554,10 @@ const WorkspaceHomeScreen = ({
   const [reportDetails, setReportDetails] = useState("");
   const [isSubmittingReport, setIsSubmittingReport] = useState(false);
   const [selectedUnreadPost, setSelectedUnreadPost] = useState(null);
+  const reactionState = useWorkspaceReactions({ teamId: activeTeamId, uid: currentUserUid,
+    role: userRole, channelId: activeChannelId, posts, isOffline });
+
+  useEffect(() => { reactionPickerRequestRef.current++; setActiveReactionPostId(null); }, [activeTeamId, currentUserUid, activeChannelId]);
 
   const mainInputRef = useRef(null);
   const replyInputRef = useRef(null);
@@ -1316,39 +1322,23 @@ const WorkspaceHomeScreen = ({
   };
 
   const handleReaction = async (postId, emoji) => {
-    if (isOffline || !activeTeamId || !currentUserUid) return;
-    const targetPost = posts.find((post) => post.id === postId);
-    if (!targetPost || targetPost.reactionUserUids?.[currentUserUid]) return;
-
     try {
-      const added = await incrementWorkspacePostReaction(
-        activeTeamId,
-        postId,
-        emoji,
-        currentUserUid,
-      );
-      if (!added) return;
-      setPosts((prevPosts) =>
-        prevPosts.map((post) =>
-          post.id === postId
-            ? {
-                ...post,
-                reactions: {
-                  ...(post.reactions || {}),
-                  [emoji]: (post.reactions?.[emoji] || 0) + 1,
-                },
-                reactionUserUids: {
-                  ...(post.reactionUserUids || {}),
-                  [currentUserUid]: emoji,
-                },
-              }
-            : post,
-        ),
-      );
-    } catch (error) {
-      console.log("掲示板リアクション更新エラー:", error);
+      if (await reactionState.submitReaction(postId, emoji)) {
+        setActiveReactionPostId((current) => current === postId ? null : current);
+      }
+    } catch {
+      Alert.alert("スタンプを送れませんでした", "通信状態を確認して再度お試しください。解消しない場合はチーム管理者にお問い合わせください。");
     }
-    setActiveReactionPostId(null);
+  };
+
+  const handleOpenReactionPicker = async (postId) => {
+    const request = ++reactionPickerRequestRef.current;
+    if (activeReactionPostId === postId) { setActiveReactionPostId(null); return; }
+    try {
+      if (await reactionState.prepareReaction(postId) && request === reactionPickerRequestRef.current) setActiveReactionPostId(postId);
+    } catch {
+      Alert.alert("スタンプを確認できませんでした", "通信状態を確認して再度お試しください。");
+    }
   };
 
   const togglePin = (postId) => {
@@ -1684,6 +1674,18 @@ const WorkspaceHomeScreen = ({
           {renderContentWithMentions(post.content)}
         </Text>
 
+        {!isPending && isPinnedArea && (
+          <View style={styles.compactReactions}>
+            {Object.entries(post.reactions || {}).map(([emoji, count]) => (
+              <TouchableOpacity key={emoji} disabled={!canViewWorkspaceReactionSenders(post, currentUserUid, userRole) || isOffline}
+                onPress={(event) => { event.stopPropagation(); reactionState.openDetails(post.id, emoji); }}
+                accessibilityLabel={`${emoji} ${count}件のスタンプ送信者`}>
+                <Text style={styles.compactReactionText}>{emoji}{count}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
+
         {!isPending && !isExpanded && !isPinnedArea && (
           <View style={styles.compactFooter}>
             <Text style={styles.compactFooterText}>
@@ -1693,10 +1695,11 @@ const WorkspaceHomeScreen = ({
             {Object.keys(post.reactions || {}).length > 0 && (
               <View style={styles.compactReactions}>
                 {Object.entries(post.reactions || {}).map(([emoji, count]) => (
-                  <Text key={emoji} style={styles.compactReactionText}>
-                    {emoji}
-                    {count}
-                  </Text>
+                  <TouchableOpacity key={emoji} disabled={!canViewWorkspaceReactionSenders(post, currentUserUid, userRole) || isOffline}
+                    onPress={(event) => { event.stopPropagation(); reactionState.openDetails(post.id, emoji); }}
+                    accessibilityLabel={`${emoji} ${count}件のスタンプ送信者`}>
+                    <Text style={styles.compactReactionText}>{emoji}{count}</Text>
+                  </TouchableOpacity>
                 ))}
               </View>
             )}
@@ -1732,7 +1735,7 @@ const WorkspaceHomeScreen = ({
               <View style={styles.reactionsContainer}>
                 {(() => {
                   const hasReacted = Boolean(
-                    post.reactionUserUids?.[currentUserUid],
+                    reactionState.ownReactions[post.id],
                   );
                   return (
                     <>
@@ -1741,8 +1744,9 @@ const WorkspaceHomeScreen = ({
                           <TouchableOpacity
                             key={emoji}
                             style={styles.reactionBadge}
-                            disabled={hasReacted}
-                            onPress={() => handleReaction(post.id, emoji)}
+                            disabled={!canViewWorkspaceReactionSenders(post, currentUserUid, userRole) || isOffline}
+                            onPress={(event) => { event.stopPropagation(); reactionState.openDetails(post.id, emoji); }}
+                            accessibilityLabel={`${emoji} ${count}件のスタンプ送信者`}
                           >
                             <Text style={styles.reactionText}>
                               {emoji} {count}
@@ -1752,21 +1756,19 @@ const WorkspaceHomeScreen = ({
                       )}
                   <TouchableOpacity
                     style={styles.addReactionBadge}
-                    disabled={hasReacted}
-                    onPress={() =>
-                      setActiveReactionPostId(
-                        activeReactionPostId === post.id ? null : post.id,
-                      )
-                    }
+                    disabled={hasReacted || isOffline || reactionState.busyPostId === post.id}
+                    onPress={(event) => { event.stopPropagation(); handleOpenReactionPicker(post.id); }}
+                    accessibilityLabel={hasReacted ? "スタンプ送信済み" : "スタンプを送る"}
                   >
-                    <Text style={styles.addReactionText}>+</Text>
+                    <Text style={styles.addReactionText}>{hasReacted ? "✓" : "+"}</Text>
                   </TouchableOpacity>
                   {activeReactionPostId === post.id && !hasReacted && (
                     <View style={styles.reactionPicker}>
                       {REACTION_EMOJIS.map((emoji) => (
                         <TouchableOpacity
                           key={emoji}
-                          onPress={() => handleReaction(post.id, emoji)}
+                          disabled={reactionState.busyPostId === post.id}
+                          onPress={(event) => { event.stopPropagation(); handleReaction(post.id, emoji); }}
                         >
                           <Text style={styles.reactionPickerEmoji}>{emoji}</Text>
                         </TouchableOpacity>
@@ -2394,6 +2396,7 @@ const WorkspaceHomeScreen = ({
           contentContainerStyle={{ paddingBottom: 100 }}
           keyboardShouldPersistTaps="handled"
           onScrollBeginDrag={() => {
+            reactionPickerRequestRef.current++;
             setActiveReactionPostId(null);
             setActiveLongPressPostId(null);
             setActiveLongPressReply(null);
@@ -2642,6 +2645,42 @@ const WorkspaceHomeScreen = ({
             )}
           </ScrollView>
         </SafeAreaView>
+      </Modal>
+
+      <Modal visible={Boolean(reactionState.details)} transparent={true} animationType="fade"
+        onRequestClose={reactionState.closeDetails}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, styles.unreadMembersModal]}>
+            <Text style={styles.modalTitle}>{reactionState.details?.emoji} スタンプを送った人</Text>
+            {reactionState.details?.loading ? <ActivityIndicator color={COLORS.primary} /> :
+              reactionState.details?.error ? (
+                <>
+                  <Text style={styles.unreadMembersEmpty}>{reactionState.details.error}</Text>
+                  <TouchableOpacity style={styles.modalCancelBtn} onPress={() => reactionState.openDetails(reactionState.details.postId, reactionState.details.emoji)}>
+                    <Text style={styles.modalCancelText}>再試行</Text>
+                  </TouchableOpacity>
+                </>
+              ) : (() => {
+                const senders = workspaceReactionSenders(reactionState.details?.reactors,
+                  reactionState.details?.emoji, userProfiles);
+                const unknownCount = Math.max(0, (reactionState.details?.count || 0) - senders.length);
+                return (
+                  <ScrollView style={styles.unreadMembersList}>
+                    {senders.map((sender) => (
+                      <View key={sender.uid} style={styles.unreadMemberRow}>
+                        <Text style={styles.unreadMemberName}>{sender.name}</Text>
+                      </View>
+                    ))}
+                    {unknownCount > 0 && <Text style={styles.unreadMembersEmpty}>送信者情報がないスタンプが{unknownCount}件あります。</Text>}
+                    {senders.length === 0 && unknownCount === 0 && <Text style={styles.unreadMembersEmpty}>このスタンプの送信者はいません。</Text>}
+                  </ScrollView>
+                );
+              })()}
+            <TouchableOpacity style={[styles.modalSubmitBtn, styles.unreadMembersCloseButton]} onPress={reactionState.closeDetails}>
+              <Text style={styles.modalSubmitText}>閉じる</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
       </Modal>
 
       <Modal

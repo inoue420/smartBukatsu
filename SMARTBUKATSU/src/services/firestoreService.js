@@ -24,6 +24,7 @@ import { auth, db, cloudFunctions } from "../firebase";
 import { LEGAL_POLICY_VERSION, MINIMUM_USER_AGE } from "../legal";
 import { validateNote, contentFingerprint, validateTasks, noteAcknowledgementId, isNoteSummaryCurrent, timestampsEqual } from "../utils/tacticalNotes";
 import { uploadTacticalNoteImage } from "./tacticalNoteAttachmentService";
+import { sendWorkspaceReaction } from "./workspaceReactionService";
 const eventLastDate = (data) => [...(data.selectedDates || [])].sort().at(-1) || data.endDate || data.date;
 
 const TACTICAL_PAGE_SIZE = 30;
@@ -981,10 +982,15 @@ export async function manageOwnWorkspaceContent(contentData) {
 
 export async function createWorkspacePost(teamId, postData) {
   if (!teamId) throw new Error("チームIDがありません");
+  if (!auth.currentUser?.uid || postData.authorUid !== auth.currentUser.uid) {
+    throw new Error("投稿者のログイン情報を確認してください。");
+  }
+  const { reactionUserUids: _legacyReactions, ...safePost } = postData;
+  const data = { ...safePost, reactions: {}, reactionPrivacyVersion: 1 };
 
   if (postData.id) {
     await setDoc(doc(db, "teams", teamId, "workspacePosts", postData.id), {
-      ...postData,
+      ...data,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
@@ -994,7 +1000,7 @@ export async function createWorkspacePost(teamId, postData) {
   const created = await addDoc(
     collection(db, "teams", teamId, "workspacePosts"),
     {
-      ...postData,
+      ...data,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     },
@@ -1057,27 +1063,8 @@ export async function incrementWorkspacePostReaction(
     throw new Error("IDが不足しています");
   }
 
-  const postRef = doc(db, "teams", teamId, "workspacePosts", postId);
-  return runTransaction(db, async (transaction) => {
-    const postSnapshot = await transaction.get(postRef);
-    if (!postSnapshot.exists()) throw new Error("投稿が見つかりません");
-
-    const post = postSnapshot.data();
-    if (post.reactionUserUids?.[userUid]) return false;
-
-    transaction.update(postRef, {
-      reactions: {
-        ...(post.reactions || {}),
-        [emoji]: (post.reactions?.[emoji] || 0) + 1,
-      },
-      reactionUserUids: {
-        ...(post.reactionUserUids || {}),
-        [userUid]: emoji,
-      },
-      updatedAt: serverTimestamp(),
-    });
-    return true;
-  });
+  if (auth.currentUser?.uid !== userUid) throw new Error("ログイン情報を確認してください。");
+  return (await sendWorkspaceReaction(teamId, postId, emoji)).added;
 }
 
 export async function markWorkspacePostRead(
