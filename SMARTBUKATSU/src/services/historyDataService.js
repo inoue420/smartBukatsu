@@ -38,7 +38,7 @@ export function subscribeLoadingState(teamId, callback, onError) {
     // An empty cache does not prove that the server's feature gate is absent.
     if (!snapshot.exists() && snapshot.metadata.fromCache) return;
     callback(snapshot.data() || {});
-  }, onError);
+  }, onError, { includeMetadataChanges: true });
 }
 export function subscribeLoadingSummary(teamId, uid, callback, onError) {
   return measuredOnSnapshot("loadingSummary", doc(db, "teams", teamId, "loadingSummaries", uid), (snapshot) => callback(snapshot.data() || {}), onError);

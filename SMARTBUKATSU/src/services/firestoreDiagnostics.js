@@ -118,8 +118,11 @@ function createFirestoreDiagnostics({ enabled = false, now = Date.now } = {}) {
 
 // Injection keeps accounting testable without connecting to Firebase.
 function createMeasuredOnSnapshot(onSnapshot, diagnostics) {
-  return (name, reference, onNext, onError) => {
-    if (!diagnostics.enabled) return onSnapshot(reference, onNext, onError);
+  return (name, reference, onNext, onError, options) => {
+    const listen = (next, error) => options
+      ? onSnapshot(reference, options, next, error)
+      : onSnapshot(reference, next, error);
+    if (!diagnostics.enabled) return listen(onNext, onError);
 
     function measure(operation) {
       try { return operation(); } catch {
@@ -129,11 +132,10 @@ function createMeasuredOnSnapshot(onSnapshot, diagnostics) {
     }
 
     const listener = measure(() => diagnostics.start(name));
-    if (!listener) return onSnapshot(reference, onNext, onError);
+    if (!listener) return listen(onNext, onError);
     let unsubscribe;
     try {
-      unsubscribe = onSnapshot(
-        reference,
+      unsubscribe = listen(
         (snapshot) => {
           measure(() => listener.snapshot(snapshot));
           return onNext(snapshot);
@@ -166,7 +168,7 @@ function formatFirestoreDiagnostics(report) {
     "文書数は課金読取り数ではありません。単発のgetDoc/getDocsは対象外です。",
     "初回文書数は各購読の最初の通知。差分は2回目以降の通知です。",
     "サーバー初観測は別指標です。初回・差分と足し合わせないでください。",
-    "キャッシュ→サーバーだけのメタデータ通知は追加していません。未観測は0です。",
+    "設定文書など明示指定した購読はメタデータ通知も含みます。未観測は0です。",
     "書込み未確定の通知を含みます。端末内更新・削除も課金数とは一致しません。",
     "単一文書の変更数は通知回数です。メタデータ由来の通知も含む場合があります。",
     "エラーハンドラのない購読はエラー終了を数えず、解除時まで継続中として扱います。",

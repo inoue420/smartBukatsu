@@ -13,12 +13,12 @@ export function useHistoryData(teamId, name, active, options, receive) {
   const [error, setError] = useState("");
   const [hasMore, setHasMore] = useState(false);
   const [scanned, setScanned] = useState(0);
-  const generation = useRef(0), scanning = useRef(false);
+  const generation = useRef(0), scanning = useRef(false), searchRun = useRef(0);
   const wasActive = useRef(false);
   const base = useRef([]), extras = useRef({}), size = useRef(0);
   const optionKey = JSON.stringify(options);
   useEffect(() => {
-    generation.current += 1; scanning.current = false;
+    generation.current += 1; searchRun.current += 1; scanning.current = false;
     setCount(HISTORY_PAGE_SIZE); setAll(false); setPast(false); base.current = []; size.current = 0;
     setBusy(false); setError(""); setScanned(0);
   }, [teamId, optionKey, active]);
@@ -64,25 +64,26 @@ export function useHistoryData(teamId, name, active, options, receive) {
   }, [name, past]);
   const searchAll = useCallback(async () => {
     if (scanning.current || !active || !teamId) return;
-    const epoch = generation.current;
+    const epoch = generation.current, run = ++searchRun.current;
     scanning.current = true; setBusy(true); setError(""); setScanned(0);
     let cursor = null, total = 0;
     try {
       do {
         const page = await readHistoryPage(teamId, name, { ...options, since: null }, cursor);
-        if (generation.current !== epoch || !scanning.current) return;
+        if (generation.current !== epoch || searchRun.current !== run || !scanning.current) return;
         total += page.items.length; setScanned(total); cursor = page.cursor;
         if (!page.hasMore) break;
       } while (cursor);
       // The final live window supersedes scan results, so stale/deleted rows cannot survive.
       scanning.current = false; setAll(true); setPast(true); setCount(Math.max(HISTORY_PAGE_SIZE, total + HISTORY_PAGE_SIZE));
     } catch {
-      if (generation.current === epoch) { setError("過去履歴の検索に失敗しました。再試行してください。"); setBusy(false); }
+      if (generation.current !== epoch || searchRun.current !== run || !scanning.current) return;
+      setError("過去履歴の検索に失敗しました。再試行してください。"); setBusy(false);
       scanning.current = false;
     }
   }, [active, teamId, name, optionKey]);
-  const cancel = useCallback(() => { scanning.current = false; setBusy(false); }, []);
-  const reset = useCallback(() => { scanning.current = false; setAll(false); setPast(false); setCount(HISTORY_PAGE_SIZE); setScanned(0); }, []);
+  const cancel = useCallback(() => { searchRun.current += 1; scanning.current = false; setBusy(false); }, []);
+  const reset = useCallback(() => { searchRun.current += 1; scanning.current = false; setAll(false); setPast(false); setCount(HISTORY_PAGE_SIZE); setScanned(0); }, []);
   return { busy, searching: scanning.current, error, hasMore, scanned, all, loadMore, searchAll, cancel, reset,
     include, retry: () => setCount((current) => current + 1) };
 }

@@ -45,10 +45,14 @@ export function AuthProvider({ children }) {
     useState(false);
   const [isEmailVerified, setIsEmailVerified] = useState(false);
   const authFlowRef = useRef(null);
+  const teamSwitchRef = useRef(null);
+  const [isTeamSwitching, setIsTeamSwitching] = useState(false);
 
   // Firebaseの認証状態を監視
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
+      teamSwitchRef.current = null;
+      setIsTeamSwitching(false);
       setUser(u || null);
       setIsEmailVerified(Boolean(u?.emailVerified));
       setRole(null);
@@ -105,7 +109,9 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     if (!user?.uid) return;
     const ref = doc(db, "users", user.uid);
+    let active = true;
     const unsub = measuredOnSnapshot("authUser", ref, (snap) => {
+      if (!active) return;
       const data = snap.data() || {};
       if (snap.exists()) {
         setEmailVerificationRequired(
@@ -137,7 +143,7 @@ export function AuthProvider({ children }) {
         setDoc(ref, { activeTeamId: normalizedTeamIds[0] }, { merge: true });
       }
     });
-    return () => unsub();
+    return () => { active = false; unsub(); };
   }, [user?.uid]);
 
   // チーム内での権限（role）を取得
@@ -147,7 +153,10 @@ export function AuthProvider({ children }) {
       return;
     }
     const ref = doc(db, "teams", activeTeamId, "members", user.uid);
+    let active = true;
+    setRole(null);
     const handleAccessRevoked = () => {
+      if (!active) return;
       setRole(null);
       setActiveTeamId(null);
       setHasSelectedTeam(false);
@@ -157,6 +166,7 @@ export function AuthProvider({ children }) {
       "authMembership",
       ref,
       (snap) => {
+        if (!active) return;
         if (!snap.exists()) {
           handleAccessRevoked();
           return;
@@ -172,7 +182,7 @@ export function AuthProvider({ children }) {
         console.log("Team role subscription error:", error);
       },
     );
-    return () => unsub();
+    return () => { active = false; unsub(); };
   }, [user?.uid, activeTeamId]);
 
   const api = useMemo(() => {
@@ -251,15 +261,32 @@ export function AuthProvider({ children }) {
     };
     const selectTeam = async (teamId) => {
       if (!user?.uid) throw new Error("ユーザー情報を確認できませんでした。");
-      await switchActiveTeam(user.uid, teamId);
-      setHasSelectedTeam(true);
-      setTeamAccessRevoked(false);
+      if (teamSwitchRef.current) {
+        throw new Error("チームを切り替え中です。完了するまでお待ちください。");
+      }
+      const request = { uid: user.uid, teamId };
+      teamSwitchRef.current = request;
+      setIsTeamSwitching(true);
+      try {
+        await switchActiveTeam(user.uid, teamId);
+        if (teamSwitchRef.current !== request) return;
+        // Reflect a successful save without waiting for the listener's render.
+        setActiveTeamId(teamId);
+        setHasSelectedTeam(true);
+        setTeamAccessRevoked(false);
+      } finally {
+        if (teamSwitchRef.current === request) {
+          teamSwitchRef.current = null;
+          setIsTeamSwitching(false);
+        }
+      }
     };
     return {
       user,
       userName, // ★追加：Contextで名前を配信
       loading,
       activeTeamId,
+      isTeamSwitching,
       teamIds,
       blockedUserUids,
       role,
@@ -283,6 +310,7 @@ export function AuthProvider({ children }) {
     userName,
     loading,
     activeTeamId,
+    isTeamSwitching,
     teamIds,
     blockedUserUids,
     role,

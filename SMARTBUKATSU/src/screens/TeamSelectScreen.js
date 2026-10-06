@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -43,7 +43,7 @@ const roleLabels = {
 };
 
 const TeamSelectScreen = ({ navigation }) => {
-  const { user, userName, activeTeamId, teamIds, selectTeam, signOut } = useAuth();
+  const { user, userName, activeTeamId, teamIds, selectTeam, signOut, isTeamSwitching } = useAuth();
   const { unreadByTeam } = useNotifications();
   const [teams, setTeams] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -56,7 +56,8 @@ const TeamSelectScreen = ({ navigation }) => {
   const [isCreating, setIsCreating] = useState(false);
   const [isJoining, setIsJoining] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
-  const [shouldReturnHome, setShouldReturnHome] = useState(false);
+  const [returnTeamId, setReturnTeamId] = useState(null);
+  const teamActionRef = useRef(false);
   const [isAccountDeleteModalVisible, setIsAccountDeleteModalVisible] =
     useState(false);
   const [accountDeletePassword, setAccountDeletePassword] = useState("");
@@ -73,6 +74,8 @@ const TeamSelectScreen = ({ navigation }) => {
   const canJoinTeam = teamCount < joinTeamLimit;
   const canEnterInviteCode = teamCount < SHARP_RISE_MAX_TEAMS_PER_USER;
   const canGoBack = navigation.canGoBack();
+  const teamActionsBusy = Boolean(busyTeamId || isCreating || isJoining ||
+    isTeamSwitching || returnTeamId || isSigningOut);
 
   const loadTeams = useCallback(async () => {
     if (!user?.uid) return;
@@ -95,20 +98,22 @@ const TeamSelectScreen = ({ navigation }) => {
   );
 
   useEffect(() => {
-    if (!shouldReturnHome || !activeTeamId) return undefined;
+    if (!returnTeamId || activeTeamId !== returnTeamId || isTeamSwitching) return undefined;
 
     let timer;
     let attempts = 0;
     const returnToWorkspaceHome = () => {
       if (navigation.canGoBack()) {
-        setShouldReturnHome(false);
+        setReturnTeamId(null);
+        teamActionRef.current = false;
         navigation.goBack();
         return;
       }
 
       const routeNames = navigation.getState()?.routeNames || [];
       if (routeNames.includes("WorkspaceHome")) {
-        setShouldReturnHome(false);
+        setReturnTeamId(null);
+        teamActionRef.current = false;
         navigation.reset({
           index: 0,
           routes: [{ name: "WorkspaceHome" }],
@@ -122,28 +127,35 @@ const TeamSelectScreen = ({ navigation }) => {
         return;
       }
 
-      setShouldReturnHome(false);
+      setReturnTeamId(null);
+      teamActionRef.current = false;
     };
 
     timer = setTimeout(returnToWorkspaceHome, 50);
 
     return () => clearTimeout(timer);
-  }, [activeTeamId, navigation, shouldReturnHome]);
+  }, [activeTeamId, navigation, returnTeamId, isTeamSwitching]);
 
   const handleSelectTeam = async (teamId) => {
+    if (teamActionRef.current || teamActionsBusy) return;
+    teamActionRef.current = true;
     setBusyTeamId(teamId);
+    let selected = false;
     try {
       await selectTeam(teamId);
-      setShouldReturnHome(true);
+      setReturnTeamId(teamId);
+      selected = true;
     } catch (error) {
       console.log("チーム切替エラー:", error);
       Alert.alert("エラー", error.message || "チームの切替に失敗しました。");
     } finally {
+      if (!selected) teamActionRef.current = false;
       setBusyTeamId(null);
     }
   };
 
   const handleCreateTeam = async () => {
+    if (teamActionRef.current || teamActionsBusy) return;
     if (!canCreateTeam) {
       return Alert.alert(
         "上限に達しています",
@@ -160,7 +172,9 @@ const TeamSelectScreen = ({ navigation }) => {
       return Alert.alert("エラー", "競技名を入力してください。");
     }
 
+    teamActionRef.current = true;
     setIsCreating(true);
+    let selected = false;
     try {
       const result = await createTeam(user.uid, teamName, userName, {
         category: sportCategory,
@@ -177,16 +191,19 @@ const TeamSelectScreen = ({ navigation }) => {
         "チームを作成しました",
         `招待コード: ${result.inviteCode}`,
       );
-      setShouldReturnHome(true);
+      setReturnTeamId(result.teamId);
+      selected = true;
     } catch (error) {
       console.log("チーム作成エラー:", error);
       Alert.alert("エラー", error.message || "チームの作成に失敗しました。");
     } finally {
+      if (!selected) teamActionRef.current = false;
       setIsCreating(false);
     }
   };
 
   const handleJoinTeam = async () => {
+    if (teamActionRef.current || teamActionsBusy) return;
     if (!canJoinTeam) {
       return Alert.alert(
         "上限に達しています",
@@ -197,18 +214,22 @@ const TeamSelectScreen = ({ navigation }) => {
       return Alert.alert("エラー", "招待コードを入力してください。");
     }
 
+    teamActionRef.current = true;
     setIsJoining(true);
+    let selected = false;
     try {
       const result = await joinTeamWithInvite(user.uid, inviteCode, userName);
       await selectTeam(result.teamId);
       setInviteCode("");
       await loadTeams();
       Alert.alert("チームに参加しました", "選択中のチームを切り替えました。");
-      setShouldReturnHome(true);
+      setReturnTeamId(result.teamId);
+      selected = true;
     } catch (error) {
       console.log("チーム参加エラー:", error);
       Alert.alert("エラー", error.message || "チームへの参加に失敗しました。");
     } finally {
+      if (!selected) teamActionRef.current = false;
       setIsJoining(false);
     }
   };
@@ -242,12 +263,15 @@ const TeamSelectScreen = ({ navigation }) => {
       .join("\n");
 
   const handleOpenBlockingTeamManagement = async (blockingTeam) => {
-    if (!blockingTeam?.teamId || busyTeamId) return;
+    if (!blockingTeam?.teamId || teamActionRef.current || teamActionsBusy) return;
 
+    teamActionRef.current = true;
     setBusyTeamId(blockingTeam.teamId);
+    let selected = false;
     try {
       await selectTeam(blockingTeam.teamId);
-      setShouldReturnHome(true);
+      setReturnTeamId(blockingTeam.teamId);
+      selected = true;
       Alert.alert(
         "対象チームを選択しました",
         `${blockingTeam.teamName || "対象チーム"} のホーム画面から設定を開き、「チーム所有権の移管」を行ってください。`,
@@ -259,6 +283,7 @@ const TeamSelectScreen = ({ navigation }) => {
         "対象チームを選択できませんでした。通信状態を確認してください。",
       );
     } finally {
+      if (!selected) teamActionRef.current = false;
       setBusyTeamId(null);
     }
   };
@@ -441,7 +466,7 @@ const TeamSelectScreen = ({ navigation }) => {
                 <TouchableOpacity
                   style={styles.closeBtn}
                   onPress={() => navigation.goBack()}
-                  disabled={isSigningOut}
+                  disabled={teamActionsBusy}
                 >
                   <Text style={styles.closeBtnText}>閉じる</Text>
                 </TouchableOpacity>
@@ -452,7 +477,7 @@ const TeamSelectScreen = ({ navigation }) => {
                   isSigningOut && styles.signOutBtnDisabled,
                 ]}
                 onPress={handleSignOut}
-                disabled={isSigningOut}
+                disabled={teamActionsBusy}
               >
                 {isSigningOut ? (
                   <ActivityIndicator size="small" color="#b42318" />
@@ -481,7 +506,7 @@ const TeamSelectScreen = ({ navigation }) => {
                     key={team.id}
                     style={[styles.teamItem, isActive && styles.teamItemActive]}
                     onPress={() => handleSelectTeam(team.id)}
-                    disabled={busyTeamId === team.id}
+                    disabled={teamActionsBusy}
                     activeOpacity={0.8}
                   >
                     <View style={styles.teamTextBox}>
@@ -527,12 +552,12 @@ const TeamSelectScreen = ({ navigation }) => {
               onChangeText={setInviteCode}
               autoCapitalize="none"
               autoCorrect={false}
-              editable={canEnterInviteCode && !isJoining}
+              editable={canEnterInviteCode && !teamActionsBusy}
             />
             <TouchableOpacity
-              style={[styles.primaryBtn, (!canJoinTeam || isJoining) && styles.btnDisabled]}
+              style={[styles.primaryBtn, (!canJoinTeam || teamActionsBusy) && styles.btnDisabled]}
               onPress={handleJoinTeam}
-              disabled={!canJoinTeam || isJoining}
+              disabled={!canJoinTeam || teamActionsBusy}
             >
               {isJoining ? (
                 <ActivityIndicator color="#fff" />
@@ -549,22 +574,22 @@ const TeamSelectScreen = ({ navigation }) => {
               placeholder="チーム名"
               value={teamName}
               onChangeText={setTeamName}
-              editable={canCreateTeam && !isCreating}
+              editable={canCreateTeam && !teamActionsBusy}
             />
             <Text style={styles.fieldLabel}>スポーツ分類</Text>
             <View style={styles.choiceWrap}>
               {SPORT_CATEGORIES.map((category) => (
-                <TouchableOpacity key={category.id} style={[styles.choiceBtn, sportCategory === category.id && styles.choiceBtnActive]} onPress={() => { setSportCategory(category.id); setSportName(""); setCustomSportName(""); }} disabled={!canCreateTeam || isCreating}>
+                <TouchableOpacity key={category.id} style={[styles.choiceBtn, sportCategory === category.id && styles.choiceBtnActive]} onPress={() => { setSportCategory(category.id); setSportName(""); setCustomSportName(""); }} disabled={!canCreateTeam || teamActionsBusy}>
                   <Text style={[styles.choiceText, sportCategory === category.id && styles.choiceTextActive]}>{category.label}</Text>
                 </TouchableOpacity>
               ))}
             </View>
-            {sportCategory && <><Text style={styles.fieldLabel}>競技</Text><View style={styles.choiceWrap}>{getSportsForCategory(sportCategory).map((sport) => <TouchableOpacity key={sport} style={[styles.choiceBtn, sportName === sport && styles.choiceBtnActive]} onPress={() => { setSportName(sport); setCustomSportName(""); }} disabled={!canCreateTeam || isCreating}><Text style={[styles.choiceText, sportName === sport && styles.choiceTextActive]}>{sport}</Text></TouchableOpacity>)}</View></>}
-            {CUSTOM_SPORT_OPTIONS.has(sportName) && <TextInput style={styles.input} placeholder="競技名を入力" value={customSportName} onChangeText={setCustomSportName} editable={canCreateTeam && !isCreating} />}
+            {sportCategory && <><Text style={styles.fieldLabel}>競技</Text><View style={styles.choiceWrap}>{getSportsForCategory(sportCategory).map((sport) => <TouchableOpacity key={sport} style={[styles.choiceBtn, sportName === sport && styles.choiceBtnActive]} onPress={() => { setSportName(sport); setCustomSportName(""); }} disabled={!canCreateTeam || teamActionsBusy}><Text style={[styles.choiceText, sportName === sport && styles.choiceTextActive]}>{sport}</Text></TouchableOpacity>)}</View></>}
+            {CUSTOM_SPORT_OPTIONS.has(sportName) && <TextInput style={styles.input} placeholder="競技名を入力" value={customSportName} onChangeText={setCustomSportName} editable={canCreateTeam && !teamActionsBusy} />}
             <TouchableOpacity
-              style={[styles.secondaryBtn, (!canCreateTeam || isCreating) && styles.btnDisabled]}
+              style={[styles.secondaryBtn, (!canCreateTeam || teamActionsBusy) && styles.btnDisabled]}
               onPress={handleCreateTeam}
-              disabled={!canCreateTeam || isCreating}
+              disabled={!canCreateTeam || teamActionsBusy}
             >
               {isCreating ? (
                 <ActivityIndicator color="#fff" />
@@ -587,7 +612,7 @@ const TeamSelectScreen = ({ navigation }) => {
                 },
               ]}
               onPress={handleOpenAccountDeletion}
-              disabled={isCheckingAccountDeletion || isDeletingAccount}
+              disabled={teamActionsBusy || isCheckingAccountDeletion || isDeletingAccount}
             >
               {isCheckingAccountDeletion ? (
                 <ActivityIndicator color="#c0392b" />

@@ -79,6 +79,7 @@ function AppContent() {
     isAdmin: authIsAdmin,
     loading: authLoading,
     selectTeam,
+    isTeamSwitching,
   } = useAuth();
   const { setNavigationHandler } = useNotifications();
 
@@ -120,6 +121,7 @@ function AppContent() {
   const [postReads, setPostReads] = useState({});
   const [workspaceChannel, setWorkspaceChannel] = useState("");
   const [pinnedPosts, setPinnedPosts] = useState([]);
+  const [teamScope, setTeamScope] = useState(null);
   const loadingStateResolved = loadingState?._teamId === activeTeamId;
   const optimize = Boolean(loadingStateResolved && loadingState.ready && loadingState.enabled && loadingState.schemaVersion === 1);
   const separateReads = Boolean(optimize && loadingState?.separateReads);
@@ -233,39 +235,25 @@ function AppContent() {
     });
   }, [activeTeamId, navigationRef, selectTeam, setNavigationHandler]);
 
-  // Firestore同期
+  // Basic team information does not depend on the history optimization gate.
   useEffect(() => {
-    if (user && activeTeamId && !emailVerificationPending && loadingStateResolved) {
-      setPosts([]);
-      setInterstitialSettings({ ...DEFAULT_INTERSTITIAL_SETTINGS });
-      setAbsenceDeadlineDaysBefore(DEFAULT_ABSENCE_DEADLINE_DAYS_BEFORE);
-      setAbsenceDetailsVisible(DEFAULT_ABSENCE_DETAILS_VISIBLE);
-      const idle = () => {};
-      // Preserve the old client path until server-side preparation and explicit activation.
-      const unsubProjects = optimize ? idle : subscribeProjects(activeTeamId, setProjects);
-      const unsubHighlightProjects = optimize ? idle : subscribeHighlightProjects(
-        activeTeamId,
-        setHighlightProjects,
-      );
-      const unsubReports = optimize ? idle : subscribeDailyReports(activeTeamId, setDailyReports);
-      const unsubNotices = optimize ? idle : subscribeNotices(activeTeamId, setNotices);
-      const unsubWorkspacePosts = optimize ? idle : subscribeWorkspacePosts(
-        activeTeamId,
-        user.uid,
-        setPosts,
-      );
-      const unsubPersonal = optimize ? idle : subscribePersonalEvents(
-        user.uid,
-        setPersonalEvents,
-      );
-      const unsubClubEvents = optimize ? idle : subscribeClubEvents(activeTeamId, setClubEvents);
-      const unsubTagGroups = optimize ? idle : subscribeTagGroups(activeTeamId, setTagGroups);
-
+    setTeamScope({ teamId: activeTeamId, uid: user?.uid });
+    setTeamName("チーム情報を読み込み中...");
+    setClubMembers([]);
+    setUserProfiles({});
+    setGrades(["1年生", "2年生", "3年生"]);
+    setPositions(["GK", "CP", "マネージャー"]);
+    setInterstitialSettings({ ...DEFAULT_INTERSTITIAL_SETTINGS });
+    setAbsenceDeadlineDaysBefore(DEFAULT_ABSENCE_DEADLINE_DAYS_BEFORE);
+    setAbsenceDetailsVisible(DEFAULT_ABSENCE_DETAILS_VISIBLE);
+    if (authorized) {
+      let active = true;
       const unsubTeam = subscribeTeamData(activeTeamId, (data) => {
+        if (!active) return;
         if (data) {
-          if (data.name) setTeamName(data.name);
-          if (data.grades !== undefined) setGrades(data.grades);
-          if (data.positions !== undefined) setPositions(data.positions);
+          setTeamName(data.name || "名称未設定のチーム");
+          setGrades(data.grades ?? ["1年生", "2年生", "3年生"]);
+          setPositions(data.positions ?? ["GK", "CP", "マネージャー"]);
           setInterstitialSettings(
             getInterstitialSettingsFromTeamData(data.adSettings),
           );
@@ -284,6 +272,7 @@ function AppContent() {
       });
 
       const unsubMembers = subscribeTeamMembers(activeTeamId, (membersData) => {
+        if (!active) return;
         const names = [];
         const profiles = {};
         membersData.forEach((m) => {
@@ -312,26 +301,30 @@ function AppContent() {
       });
 
       return () => {
-        unsubProjects();
-        unsubHighlightProjects();
-        unsubReports();
-        unsubNotices();
-        unsubWorkspacePosts();
-        unsubPersonal();
+        active = false;
         unsubTeam();
         unsubMembers();
-        unsubClubEvents(); // ★ 追加
-        unsubTagGroups();
       };
-    } else {
-      setClubMembers([]);
-      setHighlightProjects([]);
-      setTagGroups([]);
-      setUserProfiles({});
-      setPosts([]);
-      setAbsenceDeadlineDaysBefore(DEFAULT_ABSENCE_DEADLINE_DAYS_BEFORE);
     }
-  }, [user, activeTeamId, emailVerificationPending, optimize, loadingStateResolved]);
+  }, [user?.uid, activeTeamId, authorized]);
+
+  // Preserve legacy history loading until preparation and explicit activation.
+  useEffect(() => {
+    if (!authorized || !loadingStateResolved || optimize) return undefined;
+    let active = true;
+    const receive = (setter) => (value) => { if (active) setter(value); };
+    const stops = [
+      subscribeProjects(activeTeamId, receive(setProjects)),
+      subscribeHighlightProjects(activeTeamId, receive(setHighlightProjects)),
+      subscribeDailyReports(activeTeamId, receive(setDailyReports)),
+      subscribeNotices(activeTeamId, receive(setNotices)),
+      subscribeWorkspacePosts(activeTeamId, user.uid, receive(setPosts)),
+      subscribePersonalEvents(user.uid, receive(setPersonalEvents)),
+      subscribeClubEvents(activeTeamId, receive(setClubEvents)),
+      subscribeTagGroups(activeTeamId, receive(setTagGroups)),
+    ];
+    return () => { active = false; stops.forEach((stop) => stop()); };
+  }, [user?.uid, activeTeamId, authorized, optimize, loadingStateResolved]);
 
   useEffect(() => {
     const unsubscribe = NetInfo.addEventListener((state) => {
@@ -631,6 +624,17 @@ function AppContent() {
         )}
         </Stack.Navigator>
       </NavigationContainer>
+      {authorized && !teamSelectionRequired && (
+        isTeamSwitching || !loadingStateResolved ||
+        teamScope?.teamId !== activeTeamId || teamScope?.uid !== user?.uid
+      ) && (
+        <View accessibilityRole="progressbar" accessibilityLabel="チームを切り替え中"
+          style={{ position: "absolute", top: 0, right: 0, bottom: 0, left: 0,
+            zIndex: 10, backgroundColor: "#fff", justifyContent: "center", alignItems: "center" }}>
+          <ActivityIndicator size="large" color="#0077cc" />
+          <Text style={{ marginTop: 15 }}>チーム情報を読み込み中...</Text>
+        </View>
+      )}
       </NavigationArea>
       <AppBannerAd />
     </SafeAreaProvider>
