@@ -13,6 +13,7 @@ function harness(source = currentSource, options = {}) {
   const documents = new Map();
   const logs = [];
   const pushes = [];
+  let pushRequests = 0;
   let memberQueries = 0;
   let memberDocuments = 0;
   let teamReads = 0;
@@ -88,18 +89,23 @@ function harness(source = currentSource, options = {}) {
   };
   vm.runInNewContext(source, {
     module,
+    AbortSignal,
+    setTimeout,
     require: (name) => {
       assert.ok(dependencies[name], `Unexpected dependency: ${name}`);
       return dependencies[name];
     },
     fetch: async (_url, request) => {
-      pushes.push(...JSON.parse(request.body));
-      return { ok: true, json: async () => ({ data: [{ status: "ok" }] }) };
+      const messages = JSON.parse(request.body);
+      pushes.push(...messages);
+      pushRequests += 1;
+      return { ok: true, json: async () => ({ data: messages.map((_message, index) => ({ status: "ok", id: `ticket-${index}` })) }) };
     },
   });
   return {
     logs, pushes, documents,
     counts: () => ({ memberQueries, memberDocuments, teamReads }),
+    pushRequestCount: () => pushRequests,
     notifications: () => [...documents.entries()]
       .filter(([key]) => key.includes("/notifications/"))
       .map(([key, value]) => ({ uid: key.split("/")[1], ...JSON.parse(JSON.stringify(value)) })),
@@ -200,6 +206,15 @@ test("same event replay does not duplicate notification documents or pushes", as
   assert.equal(h.notifications().length, 2);
   assert.equal(h.pushes.length, 2);
   assert.equal(h.logs.length, 2);
+});
+
+test("mentions for the same event share one HTTP request with per-user badges", async () => {
+  const h = harness();
+  h.documents.set("users/target/notificationState/summary", { unreadTotal: 7, unreadByTeam: { team: 7 } });
+  await h.run(post, { ...post, mentionedUids: ["target", "manager"] });
+  assert.equal(h.pushRequestCount(), 1);
+  assert.equal(h.pushes.length, 2);
+  assert.deepEqual(h.pushes.map((message) => [message.to, message.badge]), [["ExpoPushToken[target]", 8], ["ExpoPushToken[manager]", 1]]);
 });
 
 test("separate passive and notifying writes work in either order", async () => {

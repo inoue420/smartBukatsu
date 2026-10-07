@@ -22,6 +22,11 @@ const REGION = "asia-northeast1";
 const NOTIFICATION_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 const EXPO_PUSH_ENDPOINT = "https://exp.host/--/api/v2/push/send";
 const EXPO_PUSH_TOKEN_PATTERN = /^(ExponentPushToken|ExpoPushToken)\[[^\]]+\]$/;
+const EXPO_PUSH_BATCH_SIZE = 100;
+const EXPO_PUSH_MAX_ATTEMPTS = 3;
+const EXPO_PUSH_TIMEOUT_MS = 10000;
+const EXPO_PUSH_BATCH_INTERVAL_MS = 200;
+const EXPO_PUSH_SEND_BUDGET_MS = 30000;
 const STAFF_NOTIFICATION_ROLES = new Set(["owner", "admin", "staff"]);
 
 function requireAuthenticatedUid(request) {
@@ -57,17 +62,16 @@ function getPushTokenRegistryRef(token) {
   return firestore.collection("notificationPushTokens").doc(tokenHash);
 }
 
-async function deletePushTokenDocument(tokenDocument) {
+async function deletePushTokenDocument(tokenDocument, expectedToken) {
   const uid = tokenDocument.ref.parent.parent?.id;
   const deviceId = tokenDocument.id;
-  if (!uid) {
-    await tokenDocument.ref.delete();
-    return;
-  }
+  if (!uid) return;
   await firestore.runTransaction(async (transaction) => {
     const currentTokenSnapshot = await transaction.get(tokenDocument.ref);
     if (!currentTokenSnapshot.exists) return;
     const token = String(currentTokenSnapshot.data()?.token || "");
+    // A response for an old token must not remove a newly registered token.
+    if (token !== expectedToken) return;
     const registryRef = token ? getPushTokenRegistryRef(token) : null;
     const registrySnapshot = registryRef
       ? await transaction.get(registryRef)
@@ -106,7 +110,7 @@ async function getTeamContext(teamId, onMembersRead) {
   };
 }
 
-async function sendExpoPushForUser({
+async function collectExpoPushForUser({
   uid,
   notification,
   unreadTotal,
@@ -119,7 +123,7 @@ async function sendExpoPushForUser({
       notification.teamId,
     )
   ) {
-    return;
+    return [];
   }
 
   const tokensSnapshot = await firestore
@@ -127,61 +131,156 @@ async function sendExpoPushForUser({
     .doc(uid)
     .collection("pushTokens")
     .get();
-  const tokenDocuments = tokensSnapshot.docs.filter((tokenDocument) =>
-    EXPO_PUSH_TOKEN_PATTERN.test(tokenDocument.data()?.token || ""),
-  );
-  if (tokenDocuments.length === 0) return;
-
-  const messages = tokenDocuments.map((tokenDocument) => ({
-    to: tokenDocument.data().token,
-    sound: "default",
-    title: notification.title,
-    body: notification.body,
-    badge: Math.max(0, unreadTotal),
-    channelId: "smartbukatsu-notifications",
-    data: {
-      notificationId: notification.id,
-      category: notification.category,
-      teamId: notification.teamId || "",
-      screen: notification.target?.screen || "WorkspaceHome",
-      targetParams: JSON.stringify(notification.target?.params || {}),
+  const documentsByToken = new Map();
+  for (const tokenDocument of tokensSnapshot.docs) {
+    const token = tokenDocument.data()?.token || "";
+    if (!EXPO_PUSH_TOKEN_PATTERN.test(token)) continue;
+    // Retain all matching documents for invalid-token cleanup, but send once
+    // when an older registration left the same token on multiple devices.
+    const documents = documentsByToken.get(token) || [];
+    documents.push(tokenDocument);
+    documentsByToken.set(token, documents);
+  }
+  return [...documentsByToken].map(([token, tokenDocuments]) => ({
+    tokenDocuments,
+    message: {
+      to: token,
+      sound: "default",
+      title: notification.title,
+      body: notification.body,
+      badge: Math.max(0, unreadTotal),
+      channelId: "smartbukatsu-notifications",
+      data: {
+        notificationId: notification.id,
+        category: notification.category,
+        teamId: notification.teamId || "",
+        screen: notification.target?.screen || "WorkspaceHome",
+        targetParams: JSON.stringify(notification.target?.params || {}),
+      },
     },
   }));
+}
 
-  try {
-    const response = await fetch(EXPO_PUSH_ENDPOINT, {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Accept-Encoding": "gzip, deflate",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(messages),
-    });
-    if (!response.ok) {
-      throw new Error(`Expo push request failed: ${response.status}`);
+function waitForPushRetry(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function warnPushBatch(reason, count, httpStatus) {
+  // Never log API bodies, tokens, user IDs, notification content or errors
+  // whose messages might contain a token supplied by the push provider.
+  logger.warn("Expo push batch incomplete.", {
+    reason,
+    count,
+    ...(httpStatus ? { httpStatus } : {}),
+  });
+}
+
+async function sendExpoPushBatch(entries, deadline) {
+  let pending = entries;
+  for (let attempt = 1; attempt <= EXPO_PUSH_MAX_ATTEMPTS; attempt += 1) {
+    const remainingTime = deadline - Date.now();
+    if (remainingTime <= 0) {
+      warnPushBatch("send_budget_exhausted", pending.length);
+      return;
     }
-    const responseBody = await response.json();
-    const tickets = Array.isArray(responseBody?.data)
-      ? responseBody.data
-      : [responseBody?.data];
-    const invalidTokenDeletes = [];
-    tickets.forEach((ticket, index) => {
-      if (
-        ticket?.status === "error" &&
-        ticket?.details?.error === "DeviceNotRegistered" &&
-        tokenDocuments[index]
-      ) {
-        invalidTokenDeletes.push(deletePushTokenDocument(tokenDocuments[index]));
+    let response;
+    try {
+      response = await fetch(EXPO_PUSH_ENDPOINT, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Accept-Encoding": "gzip, deflate",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(pending.map((entry) => entry.message)),
+        signal: AbortSignal.timeout(Math.min(EXPO_PUSH_TIMEOUT_MS, remainingTime)),
+      });
+    } catch {
+      // Expo may have accepted the request before the response was lost.
+      // Replaying it could duplicate pushes; leave the in-app notification.
+      warnPushBatch("unknown_response", pending.length);
+      return;
+    }
+    if (!response.ok) {
+      if (response.status !== 429 && !(response.status >= 500 && response.status < 600)) {
+        warnPushBatch("http_rejected", pending.length, response.status);
+        return;
       }
-    });
-    await Promise.all(invalidTokenDeletes);
-  } catch (error) {
-    logger.warn("Expo push delivery failed.", {
-      uid,
-      notificationId: notification.id,
-      message: error?.message,
-    });
+    } else {
+      let responseBody;
+      try {
+        responseBody = await response.json();
+      } catch {
+        warnPushBatch("unknown_response", pending.length);
+        return;
+      }
+      const requestErrors = responseBody?.errors;
+      if (Array.isArray(requestErrors) && requestErrors.length > 0) {
+        // Retry only an explicit whole-request rate rejection, without tickets.
+        if (responseBody?.data != null || !requestErrors.every((error) => error?.code === "TOO_MANY_REQUESTS")) {
+          warnPushBatch("api_rejected", pending.length);
+          return;
+        }
+      } else {
+        const tickets = Array.isArray(responseBody?.data)
+          ? responseBody.data
+          : [responseBody?.data];
+        if (tickets.length !== pending.length) {
+          // An incomplete or extra result cannot safely be mapped to tokens.
+          warnPushBatch("invalid_ticket_count", pending.length);
+          return;
+        }
+        const retryEntries = [];
+        const invalidTokenDeletes = [];
+        let rejectedCount = 0;
+        let unknownCount = 0;
+        tickets.forEach((ticket, index) => {
+          const entry = pending[index];
+          if (ticket?.status === "ok" && typeof ticket.id === "string" && ticket.id) return;
+          if (ticket?.status !== "error") {
+            unknownCount += 1;
+          } else if (ticket?.details?.error === "DeviceNotRegistered") {
+            for (const document of entry.tokenDocuments) {
+              invalidTokenDeletes.push(deletePushTokenDocument(document, entry.message.to));
+            }
+          } else if (ticket?.details?.error === "MessageRateExceeded") {
+            retryEntries.push(entry);
+          } else {
+            rejectedCount += 1;
+          }
+        });
+        const cleanupResults = await Promise.allSettled(invalidTokenDeletes);
+        const cleanupFailures = cleanupResults.filter((result) => result.status === "rejected").length;
+        if (cleanupFailures) warnPushBatch("token_cleanup_failed", cleanupFailures);
+        if (rejectedCount) warnPushBatch("ticket_rejected", rejectedCount);
+        if (unknownCount) warnPushBatch("unknown_ticket", unknownCount);
+        pending = retryEntries;
+      }
+    }
+    if (pending.length === 0) return;
+    if (attempt === EXPO_PUSH_MAX_ATTEMPTS) {
+      warnPushBatch("retry_exhausted", pending.length);
+      return;
+    }
+    const retryDelay = 1000 * 2 ** (attempt - 1);
+    if (Date.now() + retryDelay >= deadline) {
+      warnPushBatch("send_budget_exhausted", pending.length);
+      return;
+    }
+    await waitForPushRetry(retryDelay);
+  }
+}
+
+async function sendExpoPushBatches(entries) {
+  // Sequential batches also bound concurrent HTTP requests within an event.
+  const deadline = Date.now() + EXPO_PUSH_SEND_BUDGET_MS;
+  for (let start = 0; start < entries.length; start += EXPO_PUSH_BATCH_SIZE) {
+    if (start > 0) await waitForPushRetry(EXPO_PUSH_BATCH_INTERVAL_MS);
+    if (Date.now() >= deadline) {
+      warnPushBatch("send_budget_exhausted", entries.length - start);
+      return;
+    }
+    await sendExpoPushBatch(entries.slice(start, start + EXPO_PUSH_BATCH_SIZE), deadline);
   }
 }
 
@@ -269,30 +368,23 @@ async function createNotificationForUser(uid, payload) {
     return { created: true, unreadTotal };
   });
 
-  if (!transactionResult.created) return false;
+  if (!transactionResult.created) return [];
   const preferencesSnapshot = await preferencesRef.get();
-  await sendExpoPushForUser({
+  return collectExpoPushForUser({
     uid,
     notification,
     unreadTotal: transactionResult.unreadTotal,
     preferences: preferencesSnapshot.data() || {},
   });
-  return true;
 }
 
 async function fanOutToUids(uids, payload) {
   const results = await Promise.allSettled(
     uniqueUids(uids).map((uid) => createNotificationForUser(uid, payload)),
   );
-  results.forEach((result, index) => {
-    if (result.status === "rejected") {
-      logger.error("Notification fan-out failed.", {
-        uid: uniqueUids(uids)[index],
-        notificationId: payload.id,
-        message: result.reason?.message,
-      });
-    }
-  });
+  const failures = results.filter((result) => result.status === "rejected").length;
+  if (failures) logger.error("Notification fan-out failed.", { count: failures });
+  await sendExpoPushBatches(results.flatMap((result) => result.status === "fulfilled" ? result.value : []));
 }
 
 async function fanOutToTeam({
