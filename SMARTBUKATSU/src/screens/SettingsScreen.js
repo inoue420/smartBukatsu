@@ -45,6 +45,9 @@ import {
   removeTeamArrayItem,
   updateMemberProfile,
   updateMemberRoleConfig,
+  setGuardianChildren,
+  createManualAbsenceChildId,
+  subscribeManualAbsenceChildren,
   removeTeamMember,
   setUserBlocked,
   submitSupportRequest,
@@ -248,6 +251,99 @@ const SettingsScreen = ({
   const isSupervisor = ["owner", "admin"].includes(userRole);
   const isStaffOrAbove = ["owner", "staff", "admin"].includes(userRole);
   const canManageMemberVideoPermissions = isStaffOrAbove;
+  const [selectedGuardianUid, setSelectedGuardianUid] = useState(null);
+  const [guardianChildrenDraft, setGuardianChildrenDraft] = useState([]);
+  const [manualChildIdsDraft, setManualChildIdsDraft] = useState([]);
+  const [newManualChildrenDraft, setNewManualChildrenDraft] = useState([]);
+  const [manualChildName, setManualChildName] = useState("");
+  const [manualChildCatalog, setManualChildCatalog] = useState([]);
+  const [manualChildCatalogReady, setManualChildCatalogReady] = useState(false);
+  const [manualChildCatalogError, setManualChildCatalogError] = useState(false);
+  const [isSavingGuardianChildren, setIsSavingGuardianChildren] = useState(false);
+  const guardianSavePending = useRef(false);
+  const guardianContext = useRef(null);
+  const guardianContextKey = JSON.stringify([activeTeamId, currentUserUid, userRole]);
+  if (guardianContext.current?.key !== guardianContextKey) guardianContext.current = { key: guardianContextKey };
+  useEffect(() => {
+    setSelectedGuardianUid(null);
+    setGuardianChildrenDraft([]);
+    setManualChildIdsDraft([]);
+    setNewManualChildrenDraft([]);
+    setManualChildName("");
+    setIsSavingGuardianChildren(false);
+    guardianSavePending.current = false;
+  }, [guardianContextKey]);
+  useEffect(() => () => { guardianContext.current = null; }, []);
+  useEffect(() => {
+    setManualChildCatalog([]);
+    setManualChildCatalogReady(false);
+    setManualChildCatalogError(false);
+    if (!selectedGuardianUid || !activeTeamId || !isStaffOrAbove) return undefined;
+    let active = true;
+    const stop = subscribeManualAbsenceChildren(activeTeamId, (children) => {
+      if (!active) return;
+      setManualChildCatalog(children);
+      setManualChildCatalogReady(true);
+      setManualChildCatalogError(false);
+    }, () => {
+      if (!active) return;
+      setManualChildCatalogReady(false);
+      setManualChildCatalogError(true);
+    });
+    return () => { active = false; stop(); };
+  }, [selectedGuardianUid, guardianContextKey, isStaffOrAbove]);
+  const manualChildOptions = [...manualChildCatalog,
+    ...newManualChildrenDraft.filter((child) => !manualChildCatalog.some((saved) => saved.id === child.id))]
+    .sort((a, b) => a.name.localeCompare(b.name, "ja"));
+  const childCandidates = Object.values(userProfiles)
+    .filter((profile) => profile?.uid && ["member", "captain", "staff"].includes(profile.role))
+    .sort((a, b) => (a.name || "").localeCompare(b.name || "", "ja"));
+  const openGuardianChildren = (profile) => {
+    if (!isStaffOrAbove) return;
+    const candidates = new Set(childCandidates.map((child) => child.uid));
+    setGuardianChildrenDraft((profile.childUids || []).filter((uid) => candidates.has(uid)));
+    setManualChildIdsDraft((profile.manualChildren || []).map((child) => child.id));
+    setNewManualChildrenDraft([]);
+    setManualChildName("");
+    setManualChildCatalogReady(false);
+    setSelectedGuardianUid(profile.uid);
+  };
+  const addManualChild = () => {
+    const name = manualChildName.trim();
+    if (!isStaffOrAbove || !selectedGuardianUid || guardianSavePending.current || !manualChildCatalogReady || !name) return;
+    if (name.length > 100 || guardianChildrenDraft.length + manualChildIdsDraft.length >= 100) {
+      Alert.alert("入力確認", "名前は100文字以内、子供は合計100人まで設定できます。");
+      return;
+    }
+    const id = createManualAbsenceChildId(activeTeamId);
+    setNewManualChildrenDraft((previous) => [...previous, { id, name }]);
+    setManualChildIdsDraft((previous) => [...previous, id]);
+    setManualChildName("");
+  };
+  const saveGuardianChildren = async () => {
+    if (!isStaffOrAbove || !activeTeamId || !selectedGuardianUid || guardianSavePending.current || !manualChildCatalogReady) return;
+    if (manualChildName.trim()) {
+      Alert.alert("名前の追加", "入力中の名前は「名前を追加」を押してから保存してください。");
+      return;
+    }
+    const context = guardianContext.current;
+    guardianSavePending.current = true;
+    setIsSavingGuardianChildren(true);
+    try {
+      await setGuardianChildren(activeTeamId, selectedGuardianUid, guardianChildrenDraft, manualChildIdsDraft,
+        newManualChildrenDraft.filter((child) => manualChildIdsDraft.includes(child.id)));
+      if (guardianContext.current !== context) return;
+      setSelectedGuardianUid(null);
+      Alert.alert("設定完了", "子供の設定を保存しました。");
+    } catch (error) {
+      if (guardianContext.current === context) Alert.alert("エラー", error.message || "子供の設定を保存できませんでした。");
+    } finally {
+      if (guardianContext.current === context) {
+        guardianSavePending.current = false;
+        setIsSavingGuardianChildren(false);
+      }
+    }
+  };
   const blockedUsersDetails = useMemo(
     () =>
       blockedUserUids.map((uid) => {
@@ -2123,6 +2219,19 @@ const SettingsScreen = ({
                             </TouchableOpacity>
                           )}
 
+                          {memberRole === "guardian" && (
+                            <TouchableOpacity
+                              style={[styles.subSettingBadge, { maxWidth: 210 }]}
+                              onPress={() => openGuardianChildren(profile)}
+                              accessibilityLabel={`${displayName}の子供を設定`}
+                            >
+                              <Text style={styles.subSettingText} numberOfLines={2}>
+                                子供: {[...childCandidates.filter((child) => (profile.childUids || []).includes(child.uid)).map((child) => child.name),
+                                  ...(profile.manualChildren || []).map((child) => `${child.name}（未登録）`)].join("、") || "未設定"} ▾
+                              </Text>
+                            </TouchableOpacity>
+                          )}
+
                           {memberRole === "member" && canManageMemberVideoPermissions && (
                             <TouchableOpacity
                               style={[styles.subSettingBadge, canPostTacticalNotes && styles.subSettingBadgeActive]}
@@ -2663,7 +2772,7 @@ const SettingsScreen = ({
             >
               <Text style={styles.roleSelectTitle}>保護者</Text>
               <Text style={styles.roleSelectDesc}>
-                カレンダー・動画の閲覧のみ。個別許可時だけ動画追加・タグ編集ができます。
+                カレンダー・動画の閲覧と、設定された子供の不参加連絡ができます。個別許可時だけ動画追加・タグ編集ができます。
               </Text>
             </TouchableOpacity>
 
@@ -2693,6 +2802,60 @@ const SettingsScreen = ({
               <Text style={styles.cancelBtnText}>キャンセル</Text>
             </TouchableOpacity>
           </View>
+        </View>
+      </Modal>
+
+      <Modal visible={selectedGuardianUid !== null} transparent animationType="fade"
+        onRequestClose={() => { if (!isSavingGuardianChildren) setSelectedGuardianUid(null); }}>
+        <View style={styles.modalOverlay}>
+          <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={[styles.modalContent, { maxHeight: "90%" }]}>
+            <Text style={styles.modalTitle}>{getMemberProfileByUid(selectedGuardianUid).name || "保護者"} の子供を設定</Text>
+            <Text style={styles.hintText}>登録済みの部員と、手入力した未登録の子供から複数選択できます。父母には同じ子供を選択してください。すべて外して保存すると紐づけを解除します。</Text>
+            <ScrollView style={{ maxHeight: 350, marginVertical: 15 }} keyboardShouldPersistTaps="handled">
+              <Text style={styles.label}>登録済みの部員</Text>
+              {childCandidates.length === 0 ? <Text style={styles.emptyText}>選択できるメンバーがいません</Text> : childCandidates.map((child) => {
+                const checked = guardianChildrenDraft.includes(child.uid);
+                return <TouchableOpacity key={child.uid}
+                  style={[styles.optionBtnFull, checked && styles.roleSelectBtnActive]}
+                  accessibilityRole="checkbox" accessibilityState={{ checked, disabled: isSavingGuardianChildren }}
+                  accessibilityLabel={`${child.name}を子供に設定`}
+                  disabled={isSavingGuardianChildren}
+                  onPress={() => setGuardianChildrenDraft((previous) => previous.includes(child.uid) ? previous.filter((uid) => uid !== child.uid) : [...previous, child.uid])}>
+                  <Text style={styles.optionTextFull}>{checked ? "☑" : "☐"} {child.name}（{roleConfig[child.role].label}）</Text>
+                </TouchableOpacity>;
+              })}
+              <Text style={styles.label}>未登録の子供</Text>
+              {!manualChildCatalogReady && <Text style={styles.hintText}>{manualChildCatalogError ? "候補を読み込めませんでした。画面を開き直してください。" : "候補を読み込み中…"}</Text>}
+              {manualChildOptions.map((child) => {
+                const checked = manualChildIdsDraft.includes(child.id);
+                return <TouchableOpacity key={child.id}
+                  style={[styles.optionBtnFull, checked && styles.roleSelectBtnActive]}
+                  accessibilityRole="checkbox" accessibilityState={{ checked, disabled: isSavingGuardianChildren }}
+                  accessibilityLabel={`${child.name}（未登録）を子供に設定`}
+                  disabled={isSavingGuardianChildren || !manualChildCatalogReady}
+                  onPress={() => setManualChildIdsDraft((previous) => previous.includes(child.id) ? previous.filter((id) => id !== child.id) : [...previous, child.id])}>
+                  <Text style={styles.optionTextFull}>{checked ? "☑" : "☐"} {child.name}（{newManualChildrenDraft.some((draft) => draft.id === child.id) ? "新規・未保存" : "未登録"}）</Text>
+                </TouchableOpacity>;
+              })}
+              <Text style={styles.label}>未登録の子供を追加</Text>
+              <Text style={styles.hintText}>部員一覧・人数には追加されず、欠席連絡の対象として使用します。名前の追加と選択内容は、下の「子供の設定を保存」で確定します。</Text>
+              <TextInput style={styles.input} placeholder="子供の名前" accessibilityLabel="未登録の子供の名前"
+                value={manualChildName} onChangeText={setManualChildName} maxLength={100}
+                editable={!isSavingGuardianChildren && manualChildCatalogReady} />
+              {manualChildName.trim() && manualChildOptions.some((child) => child.name === manualChildName.trim()) ?
+                <Text style={styles.hintText}>同じ名前の登録があります。同じ子供なら一覧から選択してください。別の子供なら追加できます。</Text> : null}
+              <TouchableOpacity style={styles.optionBtnFull} onPress={addManualChild}
+                disabled={isSavingGuardianChildren || !manualChildCatalogReady || !manualChildName.trim()}>
+                <Text style={styles.optionTextFull}>名前を追加</Text>
+              </TouchableOpacity>
+            </ScrollView>
+            <TouchableOpacity style={styles.optionBtnFull} onPress={saveGuardianChildren} disabled={isSavingGuardianChildren || !manualChildCatalogReady}>
+              <Text style={styles.optionTextFull}>{isSavingGuardianChildren ? "保存中…" : "子供の設定を保存"}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.cancelBtn} onPress={() => setSelectedGuardianUid(null)} disabled={isSavingGuardianChildren}>
+              <Text style={styles.cancelBtnText}>キャンセル</Text>
+            </TouchableOpacity>
+          </KeyboardAvoidingView>
         </View>
       </Modal>
 

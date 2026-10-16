@@ -34,6 +34,7 @@ import {
   createClubEvent,
   createClubEventId,
   updateClubEvent,
+  submitClubEventAbsence,
   removeClubEventAbsenceComment,
   deleteClubEvent,
   createPersonalEvent,
@@ -536,8 +537,13 @@ const CalendarScreen = ({
   const canManageClubEvents =
     ["owner", "admin", "staff", "captain"].includes(userRole) ||
     (userRole === "member" && Boolean(currentUserProfile.canEditCalendar));
-  const canSubmitAbsence =
-    Boolean(resolvedUserRole) && userRole !== "guardian";
+  const registeredChildren = Object.values(userProfiles).filter((profile) =>
+    profile?.uid && ["member", "captain", "staff"].includes(profile.role) &&
+    (currentUserProfile.childUids || []).includes(profile.uid))
+    .map((profile) => ({ ...profile, selectionKey: `member:${profile.uid}` }));
+  const linkedChildren = [...registeredChildren, ...(currentUserProfile.manualChildren || [])
+    .map((child) => ({ childId: child.id, name: child.name, role: "manual", selectionKey: `manual:${child.id}` }))];
+  const canSubmitAbsence = Boolean(resolvedUserRole) && (userRole !== "guardian" || linkedChildren.length > 0);
   const configuredAbsenceDeadlineDays = Number(absenceDeadlineDaysBefore);
   const safeAbsenceDeadlineDays =
     Number.isInteger(configuredAbsenceDeadlineDays) &&
@@ -593,6 +599,20 @@ const CalendarScreen = ({
   const [selectedAbsenceEvent, setSelectedAbsenceEvent] = useState(null);
   const [absenceModalMode, setAbsenceModalMode] = useState(null);
   const [absenceCommentText, setAbsenceCommentText] = useState("");
+  const [absenceTargetKey, setAbsenceTargetKey] = useState("");
+  const absenceRequestPending = useRef(false);
+  const absenceContext = useRef(null);
+  const absenceContextKey = JSON.stringify([activeTeamId, user?.uid, userRole, selectedDate]);
+  if (absenceContext.current?.key !== absenceContextKey) absenceContext.current = { key: absenceContextKey };
+  useEffect(() => {
+    setSelectedAbsenceEvent(null);
+    setAbsenceModalMode(null);
+    setAbsenceCommentText("");
+    setAbsenceTargetKey("");
+    if (absenceRequestPending.current) setIsLoading(false);
+    absenceRequestPending.current = false;
+  }, [absenceContextKey]);
+  useEffect(() => () => { absenceContext.current = null; }, []);
   const [clubAttachmentsByDate, setClubAttachmentsByDate] = useState({});
   const [clubAttachmentDate, setClubAttachmentDate] = useState(selectedDate);
   const [removedClubAttachments, setRemovedClubAttachments] = useState([]);
@@ -953,11 +973,13 @@ const CalendarScreen = ({
   const isActiveAbsenceDeadlineReached = isAbsenceDeadlineReached(
     selectedDate,
     safeAbsenceDeadlineDays,
-    activeAbsenceEvent?.startTime,
+    (activeAbsenceEvent?.timeSchedules?.[selectedDate]?.isAllDay ?? activeAbsenceEvent?.isAllDay)
+      ? "" : activeAbsenceEvent?.timeSchedules?.[selectedDate]?.start || activeAbsenceEvent?.startTime || "",
   );
 
-  const canCancelAbsenceComment = (comment) =>
-    !!user?.uid && comment?.uid === user.uid;
+  const canCancelAbsenceComment = (comment) => !!user?.uid && (userRole === "guardian"
+    ? linkedChildren.some((child) => comment?.childId ? child.childId === comment.childId : child.uid === comment?.uid)
+    : !comment?.childId && comment?.uid === user.uid);
 
   const getAbsenceCommentsOutsideDate = (event, date) => {
     const normalizedDate = normalizeAbsenceCommentDate(date);
@@ -1604,17 +1626,9 @@ const CalendarScreen = ({
                   attachmentsByDate: uploadedAttachmentsByDate,
                 },
                 createdEventId,
+                { eventId: editingClubEventId, date: splitEditDate, remainingEventData },
               );
               eventWasCreated = true;
-              if (remainingEventData) {
-                await updateClubEvent(
-                  activeTeamId,
-                  editingClubEventId,
-                  remainingEventData,
-                );
-              } else {
-                await deleteClubEvent(activeTeamId, editingClubEventId);
-              }
             } else {
               const uploadedAttachmentsByDate =
                 await uploadPendingClubAttachments(
@@ -1771,6 +1785,7 @@ const CalendarScreen = ({
                   activeTeamId,
                   event.id,
                   remainingEventData,
+                  targetDate,
                 );
               } else {
                 await deleteClubEvent(activeTeamId, event.id);
@@ -1800,6 +1815,7 @@ const CalendarScreen = ({
     setSelectedAbsenceEvent(event);
     setAbsenceModalMode("report");
     setAbsenceCommentText("");
+    setAbsenceTargetKey(userRole === "guardian" && linkedChildren.length === 1 ? linkedChildren[0].selectionKey : "");
   };
 
   const closeAbsenceModal = () => {
@@ -1809,9 +1825,14 @@ const CalendarScreen = ({
   };
 
   const handleSendAbsenceComment = async () => {
-    if (!canSubmitAbsence) return;
+    if (!canSubmitAbsence || absenceRequestPending.current) return;
     const text = absenceCommentText.trim();
     if (!activeAbsenceEvent || !text) return;
+    const target = userRole === "guardian" ? linkedChildren.find((child) => child.selectionKey === absenceTargetKey) : null;
+    if (!user?.uid || (userRole === "guardian" && !target)) {
+      Alert.alert("対象の選択", "不参加連絡をする子供を選んでください。");
+      return;
+    }
     if (isActiveAbsenceDeadlineReached) {
       Alert.alert(
         "受付期限終了",
@@ -1826,33 +1847,30 @@ const CalendarScreen = ({
       return;
     }
 
-    const newComment = {
-      id: `absence_${Date.now()}`,
-      user: currentUser || "名称未設定",
-      uid: user?.uid || "",
-      text,
-      date: selectedDate,
-      time: new Date().toISOString(),
-    };
-    const nextComments = [...getAbsenceComments(activeAbsenceEvent), newComment];
-
+    const context = absenceContext.current;
+    const eventId = activeAbsenceEvent.id;
+    absenceRequestPending.current = true;
     setIsLoading(true);
     try {
-      await updateClubEvent(activeTeamId, activeAbsenceEvent.id, {
-        absenceComments: nextComments,
-      });
+      const result = await submitClubEventAbsence(activeTeamId, eventId, target?.uid || user.uid, selectedDate, text, target?.childId || null);
+      if (absenceContext.current !== context) return;
       setSelectedAbsenceEvent((prev) =>
-        prev ? { ...prev, absenceComments: nextComments } : prev,
+        prev?.id === eventId && result.comment ? { ...prev, absenceComments: [...getAbsenceComments(prev).filter((comment) => comment.id !== result.comment.id), result.comment] } : prev,
       );
       setAbsenceCommentText("");
+      if (!result.added) Alert.alert("登録済み", "この日・この予定の不参加連絡は登録済みです。変更する場合は取り消してから登録してください。");
     } catch (error) {
-      Alert.alert("エラー", "不参加連絡の送信に失敗しました。");
+      if (absenceContext.current === context) Alert.alert("エラー", error.message || "不参加連絡の送信に失敗しました。");
     } finally {
-      setIsLoading(false);
+      if (absenceContext.current === context) {
+        absenceRequestPending.current = false;
+        setIsLoading(false);
+      }
     }
   };
 
   const handleCancelAbsenceComment = (comment) => {
+    const context = absenceContext.current;
     if (
       !activeAbsenceEvent ||
       !comment?.id ||
@@ -1877,6 +1895,8 @@ const CalendarScreen = ({
           text: "取り消す",
           style: "destructive",
           onPress: async () => {
+            if (absenceContext.current !== context || absenceRequestPending.current) return;
+            absenceRequestPending.current = true;
             setIsLoading(true);
             try {
               await removeClubEventAbsenceComment(
@@ -1884,6 +1904,7 @@ const CalendarScreen = ({
                 activeAbsenceEvent.id,
                 comment,
               );
+              if (absenceContext.current !== context) return;
               setSelectedAbsenceEvent((prev) =>
                 prev
                   ? {
@@ -1895,9 +1916,12 @@ const CalendarScreen = ({
                   : prev,
               );
             } catch (error) {
-              Alert.alert("エラー", "不参加連絡の取り消しに失敗しました。");
+              if (absenceContext.current === context) Alert.alert("エラー", error.message || "不参加連絡の取り消しに失敗しました。");
             } finally {
-              setIsLoading(false);
+              if (absenceContext.current === context) {
+                absenceRequestPending.current = false;
+                setIsLoading(false);
+              }
             }
           },
         },
@@ -2643,7 +2667,8 @@ const CalendarScreen = ({
       </Modal>
 
       {/* 不参加者一覧・不参加連絡モーダル */}
-      <Modal visible={activeAbsenceEvent !== null} transparent animationType="slide">
+      <Modal visible={activeAbsenceEvent !== null} transparent animationType="slide"
+        onRequestClose={() => { if (!absenceRequestPending.current) closeAbsenceModal(); }}>
         <View style={styles.modalOverlay}>
           <KeyboardAvoidingView
             behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -2673,6 +2698,9 @@ const CalendarScreen = ({
                     activeAbsenceComments.map((comment) => (
                       <View key={comment.id} style={styles.commentBox}>
                         <Text style={styles.commentUser}>{comment.user}</Text>
+                        {comment.submittedBy?.uid && comment.submittedBy.uid !== comment.uid && (
+                          <Text style={styles.commentText}>保護者 {comment.submittedBy.user} が代理登録</Text>
+                        )}
                         <Text style={styles.commentText}>{comment.text}</Text>
                       </View>
                     ))
@@ -2680,9 +2708,9 @@ const CalendarScreen = ({
                 </>
               ) : (
                 <>
-                  <Text style={styles.label}>自分の不参加連絡</Text>
+                  <Text style={styles.label}>{userRole === "guardian" ? "子供の不参加連絡" : "自分の不参加連絡"}</Text>
                   {activeOwnAbsenceComments.length === 0 ? (
-                    <Text style={styles.emptyText}>自分の不参加連絡はありません</Text>
+                    <Text style={styles.emptyText}>{userRole === "guardian" ? "子供の不参加連絡はありません" : "自分の不参加連絡はありません"}</Text>
                   ) : (
                     activeOwnAbsenceComments.map((comment) => (
                       <View key={comment.id} style={styles.commentBox}>
@@ -2703,6 +2731,9 @@ const CalendarScreen = ({
                             <Text style={styles.absenceCancelBtnText}>取り消す</Text>
                           </TouchableOpacity>
                         </View>
+                        {comment.submittedBy?.uid && comment.submittedBy.uid !== comment.uid && (
+                          <Text style={styles.commentText}>保護者 {comment.submittedBy.user} が代理登録</Text>
+                        )}
                         <Text style={styles.commentText}>{comment.text}</Text>
                       </View>
                     ))
@@ -2718,6 +2749,21 @@ const CalendarScreen = ({
                     </View>
                   ) : (
                     <>
+                      {userRole === "guardian" && (
+                        <>
+                          <Text style={styles.label}>不参加の子供</Text>
+                          {linkedChildren.length === 0 && <Text style={styles.emptyText}>子供が設定されていません。監督・スタッフに確認してください。</Text>}
+                          {linkedChildren.map((child) => (
+                            <TouchableOpacity key={child.selectionKey}
+                              style={[styles.absenceTargetButton, absenceTargetKey === child.selectionKey && styles.absenceTargetSelected]}
+                              accessibilityRole="radio" accessibilityState={{ checked: absenceTargetKey === child.selectionKey }}
+                              accessibilityLabel={`${child.name}${child.childId ? "（未登録）" : ""}の不参加連絡`}
+                              onPress={() => setAbsenceTargetKey(child.selectionKey)} disabled={isLoading}>
+                              <Text>{absenceTargetKey === child.selectionKey ? "●" : "○"} {child.name}{child.grade ? `・${child.grade}` : ""}（{{ member: "一般部員", captain: "キャプテン", staff: "スタッフ", manual: "未登録" }[child.role]}）</Text>
+                            </TouchableOpacity>
+                          ))}
+                        </>
+                      )}
                       <Text style={styles.label}>不参加コメント</Text>
                       <TextInput
                         style={[styles.input, styles.textArea]}
@@ -2725,6 +2771,7 @@ const CalendarScreen = ({
                         onChangeText={setAbsenceCommentText}
                         placeholder="例: 体調不良のため欠席します"
                         multiline
+                        maxLength={2000}
                       />
                     </>
                   )}
@@ -2734,6 +2781,7 @@ const CalendarScreen = ({
                 <TouchableOpacity
                   style={styles.cancelBtn}
                   onPress={closeAbsenceModal}
+                  disabled={isLoading}
                 >
                   <Text style={styles.cancelBtnText}>閉じる</Text>
                 </TouchableOpacity>
@@ -2742,6 +2790,7 @@ const CalendarScreen = ({
                     <TouchableOpacity
                       style={styles.submitBtn}
                       onPress={handleSendAbsenceComment}
+                      disabled={isLoading || !canSubmitAbsence || !absenceCommentText.trim() || (userRole === "guardian" && !linkedChildren.some((child) => child.selectionKey === absenceTargetKey))}
                     >
                       <Text style={styles.submitBtnText}>送信</Text>
                     </TouchableOpacity>
@@ -3574,6 +3623,8 @@ const styles = StyleSheet.create({
     marginLeft: 8,
     backgroundColor: "#fff5f5",
   },
+  absenceTargetButton: { padding: 12, borderWidth: 1, borderColor: "#ddd", borderRadius: 8, marginBottom: 8 },
+  absenceTargetSelected: { borderColor: "#16a085", backgroundColor: "#e8f8f5" },
   absenceCountBtnText: {
     fontSize: 12,
     color: COLORS.danger,

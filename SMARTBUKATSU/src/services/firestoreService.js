@@ -26,6 +26,10 @@ import { validateNote, contentFingerprint, validateTasks, noteAcknowledgementId,
 import { uploadTacticalNoteImage } from "./tacticalNoteAttachmentService";
 import { sendWorkspaceReaction } from "./workspaceReactionService";
 const eventLastDate = (data) => [...(data.selectedDates || [])].sort().at(-1) || data.endDate || data.date;
+const clubAbsenceDate = (value) => {
+  const match = /^(\d{4})[/-](\d{1,2})[/-](\d{1,2})(?:$|T| )/.exec(String(value || "").trim());
+  return match ? `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}` : "";
+};
 
 const TACTICAL_PAGE_SIZE = 30;
 const TACTICAL_HISTORY_PAGE_SIZE = 20;
@@ -569,25 +573,54 @@ export function createClubEventId(teamId) {
   return doc(collection(db, "teams", teamId, "clubEvents")).id;
 }
 
-export async function createClubEvent(teamId, eventData, eventId = null) {
+export async function createClubEvent(teamId, eventData, eventId = null, splitSource = null) {
   if (!teamId) return;
   const eventRef = eventId
     ? doc(db, "teams", teamId, "clubEvents", eventId)
     : doc(collection(db, "teams", teamId, "clubEvents"));
-  await setDoc(eventRef, {
+  const data = {
     ...eventData,
     lastEventDate: eventLastDate(eventData),
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
-  });
+  };
+  if (splitSource) {
+    const sourceRef = doc(db, "teams", teamId, "clubEvents", splitSource.eventId);
+    await runTransaction(db, async (transaction) => {
+      const source = await transaction.get(sourceRef);
+      if (!source.exists() || source.data().status === "deleted") throw new Error("元の予定が見つかりません。予定を開き直してください。");
+      const comments = source.data().absenceComments || [];
+      const onRemovedDate = (comment) => clubAbsenceDate(comment.date) === splitSource.date;
+      transaction.set(eventRef, { ...data, absenceComments: comments.filter(onRemovedDate) });
+      const remaining = splitSource.remainingEventData;
+      transaction.update(sourceRef, remaining ? {
+        ...remaining, absenceComments: comments.filter((comment) => !onRemovedDate(comment)),
+        lastEventDate: eventLastDate(remaining), updatedAt: serverTimestamp(),
+      } : { status: "deleted", updatedAt: serverTimestamp() });
+    });
+  } else {
+    await setDoc(eventRef, data);
+  }
   return eventRef.id;
 }
 
-export async function updateClubEvent(teamId, eventId, updateData) {
+export async function updateClubEvent(teamId, eventId, updateData, removedAbsenceDate = null) {
   if (!teamId || !eventId) return;
   const ref = doc(db, "teams", teamId, "clubEvents", eventId);
   const end = eventLastDate(updateData);
-  await updateDoc(ref, { ...updateData, ...(end ? { lastEventDate: end } : {}), updatedAt: serverTimestamp() });
+  const data = { ...updateData, ...(end ? { lastEventDate: end } : {}), updatedAt: serverTimestamp() };
+  if (Object.hasOwn(updateData, "absenceComments")) {
+    await runTransaction(db, async (transaction) => {
+      const snapshot = await transaction.get(ref);
+      if (!snapshot.exists() || snapshot.data().status === "deleted") throw new Error("予定が見つかりません。予定を開き直してください。");
+      const comments = snapshot.data().absenceComments || [];
+      transaction.update(ref, { ...data, absenceComments: removedAbsenceDate
+        ? comments.filter((comment) => clubAbsenceDate(comment.date) !== removedAbsenceDate)
+        : comments });
+    });
+  } else {
+    await updateDoc(ref, data);
+  }
 }
 
 export async function removeClubEventAbsenceComment(
@@ -596,11 +629,29 @@ export async function removeClubEventAbsenceComment(
   comment,
 ) {
   if (!teamId || !eventId || !comment?.id) return;
-  const ref = doc(db, "teams", teamId, "clubEvents", eventId);
-  await updateDoc(ref, {
-    absenceComments: arrayRemove(comment),
-    updatedAt: serverTimestamp(),
-  });
+  const response = await httpsCallable(cloudFunctions, "cancelClubEventAbsence")({ teamId, eventId, commentId: comment.id });
+  return response.data;
+}
+
+export async function submitClubEventAbsence(teamId, eventId, targetUid, date, text, targetChildId = null) {
+  const response = await httpsCallable(cloudFunctions, "submitClubEventAbsence")({ teamId, eventId, date, text,
+    ...(targetChildId ? { targetChildId } : { targetUid }) });
+  return response.data;
+}
+
+export async function setGuardianChildren(teamId, guardianUid, childUids, manualChildIds, newManualChildren = []) {
+  const response = await httpsCallable(cloudFunctions, "setGuardianChildren")({ teamId, guardianUid, childUids,
+    ...(manualChildIds !== undefined ? { manualChildIds, newManualChildren } : {}) });
+  return response.data;
+}
+
+export function createManualAbsenceChildId(teamId) {
+  return doc(collection(db, "teams", teamId, "absenceChildren")).id;
+}
+
+export function subscribeManualAbsenceChildren(teamId, callback, onError) {
+  return measuredOnSnapshot("absenceChildren", collection(db, "teams", teamId, "absenceChildren"),
+    (snapshot) => callback(snapshot.docs.map((item) => ({ id: item.id, name: item.data().name }))), onError);
 }
 
 export async function deleteClubEvent(teamId, eventId) {
