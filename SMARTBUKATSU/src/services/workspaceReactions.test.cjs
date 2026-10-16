@@ -156,6 +156,9 @@ test("the actual account deletion handler revokes membership before cleaning rea
     anonymizeAccountDataInTeam: () => remove("content"), anonymizeAccountStorageInTeam: () => remove("storage"),
     tacticalNotes: { anonymizeTeam: () => remove("notes") }, loadingOptimization: { anonymizeTeam: () => remove("reads") },
     workspaceReactions: { async anonymizeTeam() { assert.equal(memberExists, false, "reaction writes must be revoked before sender cleanup"); events.push("reactions"); return 1; } },
+    guardianAbsences: { removeLinks: () => remove("guardianLinks"), async anonymizeTeam() {
+      assert.equal(memberExists, false, "proxy writes must be revoked before identity cleanup"); events.push("guardianAbsences"); return 1;
+    } },
     firestore: { bulkWriter: () => ({ delete() { events.push("membershipQueued"); }, async close() { memberExists = false; events.push("membershipRevoked"); } }),
       recursiveDelete: () => remove("userData") },
     removeNotificationPushTokenRegistrations: () => remove("tokens"), getAuth: () => ({ deleteUser: () => remove("auth") }), logger: { error() {} },
@@ -163,6 +166,8 @@ test("the actual account deletion handler revokes membership before cleaning rea
   const result = await fn({ auth: { uid: "synthetic-user" } });
   assert.equal(result.deleted, true); assert.ok(events.indexOf("membershipRevoked") < events.indexOf("reactions"));
   assert.ok(events.indexOf("reactions") < events.indexOf("userData"));
+  assert.ok(events.indexOf("membershipRevoked") < events.indexOf("guardianAbsences"));
+  assert.ok(events.indexOf("guardianAbsences") < events.indexOf("userData"));
 });
 test("service reads an own receipt and a single server-checked detail document, with no list query", async () => {
   const reads = [], sends = [];

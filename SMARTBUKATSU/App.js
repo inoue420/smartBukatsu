@@ -295,6 +295,8 @@ function AppContent() {
             uid: m.uid,
             name: displayName,
             role: m.role || "member",
+            childUids: Array.isArray(m.childUids) ? m.childUids : [],
+            manualChildren: Array.isArray(m.manualChildren) ? m.manualChildren : [],
             assignedStaff: m.assignedStaff || null,
             staffScope: m.staffScope || "all",
             canUploadVideos: Boolean(m.canUploadVideos),

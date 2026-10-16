@@ -20,6 +20,14 @@ const { getStorage } = require("firebase-admin/storage");
 initializeApp();
 
 const firestore = getFirestore();
+const { createGuardianAbsenceBackend } = require("./guardianAbsenceBackend");
+const guardianAbsences = createGuardianAbsenceBackend({ firestore, FieldValue, HttpsError });
+exports.setGuardianChildren = onCall({ region: "asia-northeast1" }, guardianAbsences.setChildren);
+exports.submitClubEventAbsence = onCall({ region: "asia-northeast1" }, guardianAbsences.submit);
+exports.cancelClubEventAbsence = onCall({ region: "asia-northeast1" }, guardianAbsences.cancel);
+exports.cleanupGuardianChildren = onDocumentWritten({
+  document: "teams/{teamId}/members/{uid}", region: "asia-northeast1", retry: true,
+}, guardianAbsences.membershipChanged);
 const { createWorkspaceReactionBackend } = require("./workspaceReactionBackend");
 const workspaceReactions = createWorkspaceReactionBackend({ firestore, FieldValue, HttpsError });
 exports.sendWorkspaceReaction = onCall({ region: "asia-northeast1" }, workspaceReactions.submit);
@@ -510,6 +518,10 @@ const anonymizeAccountValue = (
   value,
   { uid, uniqueDisplayNames, fieldName = "" },
 ) => {
+  // These IDs and names identify team-owned manual children, not user accounts.
+  if (fieldName === "manualChildren" && Array.isArray(value) && value.every((child) =>
+    isPlainObject(child) && typeof child.id === "string" && typeof child.name === "string" &&
+    Object.keys(child).every((key) => ["id", "name"].includes(key)))) return { value, changed: false };
   if (Array.isArray(value)) {
     const nextValue = [];
     let changed = false;
@@ -559,6 +571,18 @@ const anonymizeAccountValue = (
       return { value: null, changed: true };
     }
     return { value, changed: false };
+  }
+
+  if (value.uid === "" && typeof value.childId === "string") {
+    const nextValue = { ...value };
+    let changed = false;
+    for (const [key, nestedValue] of Object.entries(value)) {
+      if (["id", "childId", "user"].includes(key)) continue;
+      const sanitized = anonymizeAccountValue(nestedValue, { uid, uniqueDisplayNames, fieldName: key });
+      nextValue[key] = sanitized.value;
+      changed = changed || sanitized.changed;
+    }
+    return { value: nextValue, changed };
   }
 
   const matchingUidIdentityFields = [...UID_IDENTITY_FIELDS].filter(
@@ -644,12 +668,13 @@ const getAccountDocumentUpdates = (data, context) => {
 
 const getAccountDeletionContext = async (uid) => {
   const userRef = firestore.collection("users").doc(uid);
-  const [userSnap, ownedTeamsSnapshot, tacticalTeamIds, loadingReadTeamIds, reactionTeamIds] = await Promise.all([
+  const [userSnap, ownedTeamsSnapshot, tacticalTeamIds, loadingReadTeamIds, reactionTeamIds, guardianTeamIds] = await Promise.all([
     userRef.get(),
     firestore.collection("teams").where("createdBy", "==", uid).get(),
     tacticalNotes.relatedTeamIds(uid),
     loadingOptimization.relatedTeamIds(uid),
     workspaceReactions.relatedTeamIds(uid),
+    guardianAbsences.relatedTeamIds(uid),
   ]);
   const userData = userSnap.exists ? userSnap.data() || {} : {};
   const teamIds = [
@@ -659,6 +684,7 @@ const getAccountDeletionContext = async (uid) => {
       ...tacticalTeamIds,
       ...loadingReadTeamIds,
       ...reactionTeamIds,
+      ...guardianTeamIds,
     ]),
   ];
   const teamEntries = await Promise.all(
@@ -1791,6 +1817,7 @@ exports.deleteUserAccount = onCall(
         await deleteNonSafetySupportCasesForAccount(uid);
       removedBlockReferenceCount = await removeAccountFromBlockLists(uid);
       for (const teamEntry of context.teamEntries) {
+        await guardianAbsences.removeLinks(teamEntry.teamId, uid);
         anonymizedDocumentCount += await anonymizeAccountDataInTeam({
           uid,
           teamEntry,
@@ -1813,6 +1840,7 @@ exports.deleteUserAccount = onCall(
       // against the removed membership before its identity cleanup can finish.
       for (const teamEntry of context.teamEntries) {
         anonymizedDocumentCount += await workspaceReactions.anonymizeTeam(teamEntry.teamRef, uid);
+        anonymizedDocumentCount += await guardianAbsences.anonymizeTeam(teamEntry.teamRef, uid);
       }
 
       await removeNotificationPushTokenRegistrations(uid);
