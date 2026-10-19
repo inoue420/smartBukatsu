@@ -193,6 +193,29 @@ test("grade post includes public captain/guardian, filters stale UID lists and r
   assert.equal(h.pushes.length, 4);
 });
 
+test("a secondary group match sends one notification even when several memberships match", async () => {
+  const h = gradeHarness([]);
+  h.documents.get("teams/team").channels[0].allowedGrades = ["1年生", "Aチーム"];
+  h.documents.get("teams/team/members/target").grades = ["2年生", "Aチーム", "Aチーム"];
+  h.documents.get("teams/team/members/writer").grades = ["1年生", "Aチーム"];
+  h.documents.get("teams/team/members/captain").grades = [];
+  await h.run(null, { ...post, shareScope: "grades", visibleToUids: ["author", "writer", "target", "captain"] });
+  assert.deepEqual(h.notifications().map((item) => item.uid).sort(), ["target", "writer"]);
+  assert.equal(h.pushes.length, 2);
+  await h.run(null, { ...post, shareScope: "grades", visibleToUids: ["author", "writer", "target", "captain"] });
+  assert.equal(h.notifications().length, 2); assert.equal(h.pushes.length, 2);
+});
+
+test("removing a secondary group suppresses stale new-post and mention recipients", async () => {
+  for (const isNew of [true, false]) {
+    const h = gradeHarness([]);
+    h.documents.get("teams/team").channels[0].allowedGrades = ["Aチーム"];
+    h.documents.get("teams/team/members/target").grades = ["2年生"];
+    await h.run(isNew ? null : post, { ...post, shareScope: "grades", visibleToUids: ["target"], mentionedUids: ["target"] });
+    assert.equal(h.notifications().length, 0); assert.equal(h.pushes.length, 0);
+  }
+});
+
 test("selected staff outside the public scope do not receive post contents", async () => {
   const h = gradeHarness([]);
   await h.run(null, { ...post, shareScope: "grades" });

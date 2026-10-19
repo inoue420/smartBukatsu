@@ -28,6 +28,7 @@ import { Calendar, LocaleConfig } from "react-native-calendars";
 import { httpsCallable } from "firebase/functions";
 
 import { useAuth } from "../AuthContext";
+import { memberGrades } from "../../functions/workspaceAudience";
 import ZoomableImage from "../components/ZoomableImage";
 import { cloudFunctions } from "../firebase";
 import {
@@ -2759,7 +2760,7 @@ const CalendarScreen = ({
                               accessibilityRole="radio" accessibilityState={{ checked: absenceTargetKey === child.selectionKey }}
                               accessibilityLabel={`${child.name}${child.childId ? "（未登録）" : ""}の不参加連絡`}
                               onPress={() => setAbsenceTargetKey(child.selectionKey)} disabled={isLoading}>
-                              <Text>{absenceTargetKey === child.selectionKey ? "●" : "○"} {child.name}{child.grade ? `・${child.grade}` : ""}（{{ member: "一般部員", captain: "キャプテン", staff: "スタッフ", manual: "未登録" }[child.role]}）</Text>
+                              <Text>{absenceTargetKey === child.selectionKey ? "●" : "○"} {child.name}{memberGrades(child).length ? `・${memberGrades(child).join(" / ")}` : ""}（{{ member: "一般部員", captain: "キャプテン", staff: "スタッフ", manual: "未登録" }[child.role]}）</Text>
                             </TouchableOpacity>
                           ))}
                         </>

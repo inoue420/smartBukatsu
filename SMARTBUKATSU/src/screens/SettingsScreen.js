@@ -28,6 +28,7 @@ import {
 import { useAuth } from "../AuthContext";
 import MedicalSafetyNotice from "../components/MedicalSafetyNotice";
 import { auth, db } from "../firebase";
+import { memberGrades } from "../../functions/workspaceAudience";
 import { doc, getDoc, updateDoc } from "firebase/firestore";
 
 import {
@@ -532,7 +533,7 @@ const SettingsScreen = ({
   const [selectedMemberForRole, setSelectedMemberForRole] = useState(null);
   const [isChangingMemberRole, setIsChangingMemberRole] = useState(false);
   const [selectedGradeMemberUid, setSelectedGradeMemberUid] = useState(null);
-  const [editingMemberGrade, setEditingMemberGrade] = useState("");
+  const [editingMemberGrades, setEditingMemberGrades] = useState([]);
   const [isSavingMemberGrade, setIsSavingMemberGrade] = useState(false);
 
   const [isAssignStaffModalVisible, setIsAssignStaffModalVisible] =
@@ -1172,20 +1173,22 @@ const SettingsScreen = ({
   const handleOpenMemberGrade = (profile) => {
     if (!isStaffOrAbove || !profile.uid) return;
     setSelectedGradeMemberUid(profile.uid);
-    setEditingMemberGrade(profile.grade || "");
+    setEditingMemberGrades(memberGrades(profile));
   };
 
   const handleSaveMemberGrade = async () => {
     if (!isStaffOrAbove || !activeTeamId || !selectedGradeMemberUid || isSavingMemberGrade) return;
-    if (editingMemberGrade && !grades.includes(editingMemberGrade)) {
-      Alert.alert("学年を選択してください", "学年リストに登録されている学年を選択するか、未設定にしてください。");
+    if (editingMemberGrades.some((grade) => !grades.includes(grade))) {
+      Alert.alert("学年・グループを確認してください", "削除済みの学年・グループの選択を解除してください。すべて解除すると未設定になります。");
       return;
     }
     setIsSavingMemberGrade(true);
     try {
-      await updateMemberRoleConfig(activeTeamId, selectedGradeMemberUid, { grade: editingMemberGrade });
+      await updateMemberRoleConfig(activeTeamId, selectedGradeMemberUid, {
+        grades: editingMemberGrades, grade: editingMemberGrades[0] || "",
+      });
       setSelectedGradeMemberUid(null);
-      Alert.alert("保存完了", "学年を更新しました。");
+      Alert.alert("保存完了", "学年・グループを更新しました。");
     } catch (error) {
       Alert.alert("保存できませんでした", "権限と通信状態を確認してください。");
     } finally {
@@ -1514,7 +1517,7 @@ const SettingsScreen = ({
                 </Text>
 
                 <Text style={styles.hintText}>
-                  学年：{currentUserProfile.grade || "未設定"}（変更は管理者へ依頼してください）
+                  学年・グループ：{memberGrades(currentUserProfile).join(" / ") || "未設定"}（変更は管理者へ依頼してください）
                 </Text>
 
                 <Text style={styles.label}>ポジション・役割</Text>
@@ -2213,9 +2216,9 @@ const SettingsScreen = ({
                             <TouchableOpacity
                               style={styles.subSettingBadge}
                               onPress={() => handleOpenMemberGrade(profile)}
-                              accessibilityLabel={`${displayName}の学年を設定`}
+                              accessibilityLabel={`${displayName}の学年・グループを設定`}
                             >
-                              <Text style={styles.subSettingText}>学年: {profile.grade || "未設定"} ▾</Text>
+                              <Text style={styles.subSettingText}>学年・グループ: {memberGrades(profile).join(" / ") || "未設定"} ▾</Text>
                             </TouchableOpacity>
                           )}
 
@@ -2359,12 +2362,12 @@ const SettingsScreen = ({
               <SectionCard
                 isExp={expanded.grade}
                 onToggle={() => toggleSection("grade")}
-                title="🎓 学年リスト管理"
+                title="🎓 学年・グループ管理"
               >
                 <View style={styles.addMemberRow}>
                   <TextInput
                     style={styles.inputFlex}
-                    placeholder="例: 1年生"
+                    placeholder="例: 1年生、Aチーム"
                     value={newGradeName}
                     onChangeText={setNewGradeName}
                   />
@@ -2390,7 +2393,7 @@ const SettingsScreen = ({
                       <Text style={styles.memberName}>{g}</Text>
                       <TouchableOpacity
                         onPress={() =>
-                          handleDeleteTeamArrayItem("grades", g, "学年")
+                          handleDeleteTeamArrayItem("grades", g, "学年・グループ")
                         }
                       >
                         <Text style={styles.deleteText}>削除</Text>
@@ -2655,17 +2658,33 @@ const SettingsScreen = ({
         <View style={styles.modalOverlay}>
           <View style={[styles.modalContent, { maxHeight: "85%" }]}>
             <Text style={styles.modalTitle}>
-              {getMemberProfileByUid(selectedGradeMemberUid).name || "部員"} の学年を設定
+              {getMemberProfileByUid(selectedGradeMemberUid).name || "部員"} の学年・グループを設定（複数選択可）
             </Text>
             <ScrollView>
-              <OptionSelector options={grades} selected={editingMemberGrade} onSelect={setEditingMemberGrade} />
-              {grades.length === 0 && <Text style={styles.emptyText}>学年リスト管理で学年を登録してください。</Text>}
-              <TouchableOpacity style={styles.cancelBtn} onPress={() => setEditingMemberGrade("")} disabled={isSavingMemberGrade}>
-                <Text style={styles.cancelBtnText}>学年を未設定にする</Text>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", marginBottom: 15 }}>
+                {[...new Set([...grades, ...editingMemberGrades])].map((grade) => {
+                  const selected = editingMemberGrades.includes(grade);
+                  return (
+                    <TouchableOpacity key={grade}
+                      style={[styles.optionBtn, selected && styles.optionBtnActive]}
+                      accessibilityRole="checkbox" accessibilityState={{ checked: selected }}
+                      disabled={isSavingMemberGrade}
+                      onPress={() => setEditingMemberGrades((previous) => previous.includes(grade)
+                        ? previous.filter((value) => value !== grade) : [...previous, grade])}>
+                      <Text style={[styles.optionText, selected && styles.optionTextActive]}>
+                        {grade}{grades.includes(grade) ? "" : "（削除済み）"}{selected ? " ✓" : ""}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+              {grades.length === 0 && <Text style={styles.emptyText}>学年・グループ管理で学年・グループを登録してください。</Text>}
+              <TouchableOpacity style={styles.cancelBtn} onPress={() => setEditingMemberGrades([])} disabled={isSavingMemberGrade}>
+                <Text style={styles.cancelBtnText}>学年・グループを未設定にする</Text>
               </TouchableOpacity>
             </ScrollView>
             <TouchableOpacity style={styles.saveBtn} onPress={handleSaveMemberGrade} disabled={isSavingMemberGrade}>
-              <Text style={styles.saveBtnText}>{isSavingMemberGrade ? "保存中..." : "学年を保存"}</Text>
+              <Text style={styles.saveBtnText}>{isSavingMemberGrade ? "保存中..." : "学年・グループを保存"}</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.cancelBtn} onPress={() => setSelectedGradeMemberUid(null)} disabled={isSavingMemberGrade}>
               <Text style={styles.cancelBtnText}>キャンセル</Text>

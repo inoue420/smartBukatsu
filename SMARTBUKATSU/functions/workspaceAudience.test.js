@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { canViewChannel, audienceForChannel, channelRoleGroups, channelMemberAudience, needsGeneralAudienceUpgrade } = require("./workspaceAudience");
+const { memberGrades, canViewChannel, audienceForChannel, channelRoleGroups, channelMemberAudience, needsGeneralAudienceUpgrade } = require("./workspaceAudience");
 const { audienceFor } = require("./loadingOptimizationCore");
 
 const members = [
@@ -12,6 +12,28 @@ const members = [
   { uid: "guardian", role: "guardian", grade: "1年生" },
 ];
 const channel = { id: "grade", shareScope: "grades", allowedRoleGroups: [], allowedGrades: ["1年生"] };
+
+test("multiple memberships are authoritative, deduplicated and compatible with legacy grades", () => {
+  assert.deepEqual(memberGrades({ grade: "1年生" }), ["1年生"]);
+  assert.deepEqual(memberGrades({ grade: "1年生", grades: ["2年生", "Aチーム", "Aチーム", "", null, 3] }), ["2年生", "Aチーム"]);
+  assert.deepEqual(memberGrades({ grade: "1年生", grades: [] }), []);
+  assert.deepEqual(memberGrades({}), []);
+});
+
+test("any matching membership includes members and captains only once", () => {
+  const roster = [
+    { uid: "a", role: "member", grade: "2年生", grades: ["2年生", "Aチーム"] },
+    { uid: "b", role: "captain", grades: ["1年生", "Aチーム", "1年生"] },
+    { uid: "c", role: "member", grade: "1年生", grades: [] },
+    { uid: "d", role: "member", grades: ["Bチーム"] },
+    { uid: "e", role: "guardian", grades: ["Aチーム"] },
+    { uid: "f", role: "staff", grades: ["Aチーム"] },
+  ];
+  const result = audienceForChannel({ ...channel, allowedGrades: ["1年生", "Aチーム"] }, roster);
+  assert.deepEqual(result.visibleToUids, ["a", "b"]);
+  assert.deepEqual(result.readTargetUids, ["a", "b"]);
+  assert.deepEqual(audienceForChannel({ ...channel, allowedGrades: [] }, roster).visibleToUids, []);
+});
 
 test("grade audiences include captains and exclude unset/other grades and unselected roles", () => {
   assert.deepEqual(audienceForChannel(channel, members).visibleToUids, ["captain", "first"]);

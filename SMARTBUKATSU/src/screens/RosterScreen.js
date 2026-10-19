@@ -12,6 +12,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../AuthContext";
+import { memberGrades } from "../../functions/workspaceAudience";
 import {
   setUserBlocked,
   updateMemberRoleConfig,
@@ -76,7 +77,7 @@ const RosterScreen = ({
 
   // 選択されたユーザーの詳細モーダル用
   const [selectedUser, setSelectedUser] = useState(null);
-  const [editingGrade, setEditingGrade] = useState("");
+  const [editingGrades, setEditingGrades] = useState([]);
   const [editingPosition, setEditingPosition] = useState("");
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [isUpdatingBlock, setIsUpdatingBlock] = useState(false);
@@ -138,7 +139,7 @@ const RosterScreen = ({
       list = list.filter((m) => m.name.toLowerCase().includes(q));
     }
     if (filterGrade !== "all") {
-      list = list.filter((m) => m.profile.grade === filterGrade);
+      list = list.filter((m) => memberGrades(m.profile).includes(filterGrade));
     }
     if (filterPosition !== "all") {
       list = list.filter((m) => m.profile.position === filterPosition);
@@ -188,20 +189,26 @@ const RosterScreen = ({
 
   const handleOpenMemberDetail = (member) => {
     setSelectedUser(member);
-    setEditingGrade(member.profile.grade || "");
+    setEditingGrades(memberGrades(member.profile));
     setEditingPosition(member.profile.position || "");
   };
 
   const handleSaveSelectedProfile = async () => {
+    if (!isStaffOrAbove || isSavingProfile) return;
     if (!selectedUser?.profile?.uid || !activeTeamId) {
       Alert.alert("エラー", "選手情報を保存できませんでした。");
+      return;
+    }
+    if (editingGrades.some((grade) => !grades.includes(grade))) {
+      Alert.alert("学年・グループを確認してください", "削除済みの学年・グループの選択を解除してください。すべて解除すると未設定になります。");
       return;
     }
 
     try {
       setIsSavingProfile(true);
       await updateMemberRoleConfig(activeTeamId, selectedUser.profile.uid, {
-        grade: editingGrade,
+        grades: editingGrades,
+        grade: editingGrades[0] || "",
         position: editingPosition,
       });
       setSelectedUser((prev) =>
@@ -210,16 +217,17 @@ const RosterScreen = ({
               ...prev,
               profile: {
                 ...prev.profile,
-                grade: editingGrade,
+                grades: editingGrades,
+                grade: editingGrades[0] || "",
                 position: editingPosition,
               },
             }
           : prev,
       );
-      Alert.alert("保存完了", "学年・ポジションを更新しました。");
+      Alert.alert("保存完了", "学年・グループとポジションを更新しました。");
     } catch (error) {
       console.log("選手プロフィール更新エラー:", error);
-      Alert.alert("エラー", "学年・ポジションの更新に失敗しました。");
+      Alert.alert("エラー", "学年・グループとポジションの更新に失敗しました。");
     } finally {
       setIsSavingProfile(false);
     }
@@ -301,19 +309,20 @@ const RosterScreen = ({
     </ScrollView>
   );
 
-  const renderProfileOptionSelector = (options, selected, onSelect) => (
+  const renderProfileOptionSelector = (options, selected, onSelect, multiple = false) => (
     <View style={styles.profileOptionWrap}>
       <TouchableOpacity
         style={[
           styles.profileOptionChip,
-          selected === "" && styles.profileOptionChipActive,
+          (multiple ? selected.length === 0 : selected === "") && styles.profileOptionChipActive,
         ]}
-        onPress={() => onSelect("")}
+        disabled={isSavingProfile}
+        onPress={() => onSelect(multiple ? [] : "")}
       >
         <Text
           style={[
             styles.profileOptionText,
-            selected === "" && styles.profileOptionTextActive,
+            (multiple ? selected.length === 0 : selected === "") && styles.profileOptionTextActive,
           ]}
         >
           未設定
@@ -324,17 +333,22 @@ const RosterScreen = ({
           key={opt}
           style={[
             styles.profileOptionChip,
-            selected === opt && styles.profileOptionChipActive,
+            (multiple ? selected.includes(opt) : selected === opt) && styles.profileOptionChipActive,
           ]}
-          onPress={() => onSelect(opt)}
+          accessibilityRole={multiple ? "checkbox" : "radio"}
+          accessibilityState={{ checked: multiple ? selected.includes(opt) : selected === opt }}
+          disabled={isSavingProfile}
+          onPress={() => multiple
+            ? onSelect((previous) => previous.includes(opt) ? previous.filter((value) => value !== opt) : [...previous, opt])
+            : onSelect(opt)}
         >
           <Text
             style={[
               styles.profileOptionText,
-              selected === opt && styles.profileOptionTextActive,
+              (multiple ? selected.includes(opt) : selected === opt) && styles.profileOptionTextActive,
             ]}
           >
-            {opt}
+            {opt}{multiple && !grades.includes(opt) ? "（削除済み）" : ""}{multiple && selected.includes(opt) ? " ✓" : ""}
           </Text>
         </TouchableOpacity>
       ))}
@@ -369,7 +383,7 @@ const RosterScreen = ({
         </View>
 
         <View style={styles.filterRowWrapper}>
-          <Text style={styles.filterLabel}>学年</Text>
+          <Text style={[styles.filterLabel, { width: 100 }]}>学年・グループ</Text>
           {renderFilterScroll(grades, filterGrade, setFilterGrade)}
         </View>
 
@@ -596,9 +610,9 @@ const RosterScreen = ({
                   <View style={styles.detailSection}>
                     <Text style={styles.detailSectionTitle}>基本情報</Text>
                     <View style={styles.detailRow}>
-                      <Text style={styles.detailLabel}>🎓 学年</Text>
-                      <Text style={styles.detailValue}>
-                        {selectedUser.profile.grade || "未設定"}
+                      <Text style={[styles.detailLabel, { marginRight: 8 }]}>🎓 学年・グループ</Text>
+                      <Text style={[styles.detailValue, { flex: 1, textAlign: "right" }]}>
+                        {memberGrades(selectedUser.profile).join(" / ") || "未設定"}
                       </Text>
                     </View>
                     <View style={styles.detailRow}>
@@ -609,16 +623,17 @@ const RosterScreen = ({
                     </View>
                     {isStaffOrAbove && (
                       <View style={styles.profileEditBox}>
-                        <Text style={styles.profileEditLabel}>学年を設定</Text>
-                        {grades.length > 0 ? (
+                        <Text style={styles.profileEditLabel}>学年・グループを設定（複数選択可）</Text>
+                        {grades.length > 0 || editingGrades.length > 0 ? (
                           renderProfileOptionSelector(
-                            grades,
-                            editingGrade,
-                            setEditingGrade,
+                            [...new Set([...grades, ...editingGrades])],
+                            editingGrades,
+                            setEditingGrades,
+                            true,
                           )
                         ) : (
                           <Text style={styles.profileEmptyText}>
-                            学年リストが登録されていません
+                            学年・グループが登録されていません
                           </Text>
                         )}
 

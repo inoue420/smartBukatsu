@@ -7,7 +7,7 @@ const audience = require("../../functions/workspaceAudience");
 // Render the actual screens and invoke their handlers. Firebase/native modules
 // are replaced; this suite never starts an app or connects to a service.
 function screenHarness(screen, options = {}) {
-  const slots = [], writes = [], alerts = [], migrations = [];
+  const slots = [], writes = [], alerts = [], migrations = [], audienceSyncs = [];
   let cursor = 0, effects = [], dirty = true, tree, Component;
   const same = (a, b) => a && b && a.length === b.length && a.every((value, i) => Object.is(value, b[i]));
   const react = {
@@ -25,18 +25,19 @@ function screenHarness(screen, options = {}) {
     Coach: { uid: "coach", name: "Coach", role: "staff" },
     Member: { uid: "member", name: "Member", role: "member", grade: "1年生", position: "GK" },
     Captain: { uid: "captain", name: "Captain", role: "captain", grade: "2年生" },
+    ...options.profiles,
   };
   const uid = options.uid || "coach";
   const props = { currentUser: Object.values(profiles).find((p) => p.uid === uid).name, currentUserUid: uid,
-    isAdmin: false, grades: options.grades || ["1年生", "2年生"], positions: ["GK", "CB"], userProfiles: profiles,
+    isAdmin: false, activeTeamId: "team", grades: options.grades || ["1年生", "2年生"], positions: ["GK", "CB"], userProfiles: profiles,
     clubMembers: Object.keys(profiles), posts: [], notices: [], setPosts: idle, setNotices: idle,
-    setUserProfiles: idle, alertThresholds: {}, setAlertThresholds: idle, navigation: { navigate: idle, goBack: idle }, optimize: true };
+    setUserProfiles: idle, alertThresholds: {}, setAlertThresholds: idle, navigation: { navigate: idle, goBack: idle }, optimize: options.optimize ?? true };
   const file = path.join(root, "src/screens", screen + ".js"), source = fs.readFileSync(file, "utf8"), modules = {};
   for (const declaration of parse(source, { sourceType: "module", plugins: ["jsx"] }).program.body.filter((node) => node.type === "ImportDeclaration")) {
     modules[declaration.source.value] = { __esModule: true, default: declaration.source.value };
     for (const specifier of declaration.specifiers) if (specifier.imported) modules[declaration.source.value][specifier.imported.name] = idle;
   }
-  const native = new Proxy({ StyleSheet: { create: (value) => value }, Platform: { OS: "android" },
+  const native = new Proxy({ StyleSheet: { create: (value) => value }, Platform: { OS: options.os || "android" },
     Alert: { alert: (...args) => alerts.push(args) }, Keyboard: { dismiss: idle } }, { get: (target, key) => target[key] || key });
   Object.assign(modules, {
     react: { __esModule: true, default: react, ...react }, "react-native": native,
@@ -56,6 +57,8 @@ function screenHarness(screen, options = {}) {
       measuredOnSnapshot: (_name, _ref, next) => { next({ exists: () => true, data: () => ({ channels: options.channels || [] }) }); return idle; } },
   });
   Object.assign(modules["../services/firestoreService"], {
+    getWorkspacePostsForAudienceSync: async () => options.syncPosts || [],
+    updateWorkspacePostAudiences: async (team, updates) => { audienceSyncs.push({ team, updates }); },
     ensureGeneralChannelMemberAudience: async (team) => { migrations.push(team); return false; },
     updateMemberRoleConfig: async (team, memberUid, data) => {
       if (options.failSave) throw new Error("Synthetic save failure"); writes.push({ team, uid: memberUid, data });
@@ -85,7 +88,7 @@ function screenHarness(screen, options = {}) {
   const text = (node = tree) => textOf(node);
   const button = (label) => { const result = all((node) => node.type === "TouchableOpacity" && text(node).startsWith(label))[0]; assert.ok(result, `Missing button: ${label}`); return result; };
   render();
-  return { writes, alerts, migrations, props, render, all, text, button,
+  return { writes, alerts, migrations, audienceSyncs, props, render, all, text, button,
     async press(label) { const result = button(label); assert.ok(!result.props.disabled, `Disabled: ${label}`); await result.props.onPress(); render(); },
     change(placeholder, value) { const input = all((node) => node.type === "TextInput" && node.props.placeholder === placeholder)[0]; assert.ok(input); input.props.onChangeText(value); render(); } };
 }
@@ -93,7 +96,7 @@ function screenHarness(screen, options = {}) {
 test("member profile shows assigned grade without a grade selector and preserves the position argument", async () => {
   const h = screenHarness("SettingsScreen", { uid: "member" });
   await h.press("👤 プロフィール設定");
-  assert.match(h.text(), /学年：1年生（変更は管理者へ依頼してください）/);
+  assert.match(h.text(), /学年・グループ：1年生（変更は管理者へ依頼してください）/);
   assert.equal(h.all((node) => node.type === "TouchableOpacity" && ["1年生", "2年生"].includes(h.text(node))).length, 0);
   await h.press("プロフィールを保存");
   assert.deepEqual(JSON.parse(JSON.stringify(h.writes)), [{ profile: ["team", "member", "Member", "GK"] }]);
@@ -102,29 +105,122 @@ test("member profile shows assigned grade without a grade selector and preserves
 test("staff assign and clear grades from member management for members and captains", async () => {
   const h = screenHarness("SettingsScreen");
   await h.press("👥 部員リスト・権限・担当管理");
-  const gradeButton = h.all((node) => node.props?.accessibilityLabel === "Memberの学年を設定")[0];
+  const gradeButton = h.all((node) => node.props?.accessibilityLabel === "Memberの学年・グループを設定")[0];
   gradeButton.props.onPress(); h.render();
-  await h.press("2年生"); await h.press("学年を保存");
-  assert.deepEqual(JSON.parse(JSON.stringify(h.writes[0])), { team: "team", uid: "member", data: { grade: "2年生" } });
-  h.all((node) => node.props?.accessibilityLabel === "Captainの学年を設定")[0].props.onPress(); h.render();
-  await h.press("学年を未設定にする"); await h.press("学年を保存");
-  assert.deepEqual(JSON.parse(JSON.stringify(h.writes[1])), { team: "team", uid: "captain", data: { grade: "" } });
+  await h.press("2年生"); await h.press("学年・グループを保存");
+  assert.deepEqual(JSON.parse(JSON.stringify(h.writes[0])), { team: "team", uid: "member", data: { grade: "1年生", grades: ["1年生", "2年生"] } });
+  h.all((node) => node.props?.accessibilityLabel === "Captainの学年・グループを設定")[0].props.onPress(); h.render();
+  await h.press("学年・グループを未設定にする"); await h.press("学年・グループを保存");
+  assert.deepEqual(JSON.parse(JSON.stringify(h.writes[1])), { team: "team", uid: "captain", data: { grade: "", grades: [] } });
 });
 
 test("failed grade saves keep the modal open for retry", async () => {
   const h = screenHarness("SettingsScreen", { failSave: true });
   await h.press("👥 部員リスト・権限・担当管理");
-  h.all((node) => node.props?.accessibilityLabel === "Memberの学年を設定")[0].props.onPress(); h.render();
-  await h.press("2年生"); await h.press("学年を保存");
-  assert.equal(h.writes.length, 0); assert.ok(h.button("学年を保存"));
+  h.all((node) => node.props?.accessibilityLabel === "Memberの学年・グループを設定")[0].props.onPress(); h.render();
+  await h.press("2年生"); await h.press("学年・グループを保存");
+  assert.equal(h.writes.length, 0); assert.ok(h.button("学年・グループを保存"));
+  assert.equal(h.button("1年生").props.accessibilityState.checked, true);
+  assert.equal(h.button("2年生").props.accessibilityState.checked, true);
   assert.equal(h.alerts.at(-1)[0], "保存できませんでした");
+});
+
+for (const os of ["android", "ios"]) test(`${os}: staff retain, toggle and reopen multiple memberships`, async () => {
+  const h = screenHarness("SettingsScreen", { os, grades: ["1年生", "2年生", "Aチーム"] });
+  await h.press("👥 部員リスト・権限・担当管理");
+  const open = () => { h.all((node) => node.props?.accessibilityLabel === "Memberの学年・グループを設定")[0].props.onPress(); h.render(); };
+  open(); assert.equal(h.button("1年生").props.accessibilityState.checked, true);
+  await h.press("Aチーム"); await h.press("2年生"); await h.press("2年生");
+  await h.press("学年・グループを保存");
+  assert.deepEqual(JSON.parse(JSON.stringify(h.writes[0].data)), { grade: "1年生", grades: ["1年生", "Aチーム"] });
+  h.props.userProfiles = { ...h.props.userProfiles, Member: { ...h.props.userProfiles.Member, ...h.writes[0].data } }; h.render();
+  open(); assert.equal(h.button("Aチーム").props.accessibilityState.checked, true);
+  await h.press("1年生"); await h.press("キャンセル");
+  assert.equal(h.writes.length, 1); open();
+  assert.equal(h.button("1年生").props.accessibilityState.checked, true);
+  assert.equal(h.button("Aチーム").props.accessibilityState.checked, true);
+});
+
+test("member profile displays every assigned group and saving a position does not write memberships", async () => {
+  const h = screenHarness("SettingsScreen", { uid: "member", profiles: {
+    Member: { uid: "member", name: "Member", role: "member", grade: "1年生", grades: ["1年生", "Aチーム"], position: "GK" },
+  } });
+  await h.press("👤 プロフィール設定");
+  assert.match(h.text(), /学年・グループ：1年生 \/ Aチーム（変更は管理者へ依頼してください）/);
+  await h.press("プロフィールを保存");
+  assert.deepEqual(JSON.parse(JSON.stringify(h.writes)), [{ profile: ["team", "member", "Member", "GK"] }]);
+});
+
+test("deleted memberships are visible and removable without silently dropping them on save", async () => {
+  const h = screenHarness("SettingsScreen", { grades: [], profiles: {
+    Member: { uid: "member", name: "Member", role: "member", grades: ["旧グループ"] },
+  } });
+  await h.press("👥 部員リスト・権限・担当管理");
+  h.all((node) => node.props?.accessibilityLabel === "Memberの学年・グループを設定")[0].props.onPress(); h.render();
+  assert.match(h.text(), /旧グループ（削除済み）/);
+  await h.press("学年・グループを保存"); assert.equal(h.writes.length, 0);
+  await h.press("旧グループ（削除済み）"); await h.press("学年・グループを保存");
+  assert.deepEqual(JSON.parse(JSON.stringify(h.writes[0].data)), { grade: "", grades: [] });
+});
+
+test("roster filters by a secondary membership and its editor preserves position selection", async () => {
+  const h = screenHarness("RosterScreen", { grades: ["1年生", "2年生", "Aチーム"], profiles: {
+    Member: { uid: "member", name: "Member", role: "member", grade: "1年生", grades: ["1年生", "Aチーム"], position: "GK" },
+  } });
+  await h.press("Aチーム");
+  assert.match(h.text(), /選手名簿 \(1名\)/);
+  assert.match(h.text(), /👤 Member/); assert.doesNotMatch(h.text(), /👤 Captain/);
+  await h.press("👤 Member"); assert.match(h.text(), /1年生 \/ Aチーム/);
+  const gradeOption = (label) => h.all((node) => node.props?.accessibilityRole === "checkbox" && h.text(node).startsWith(label))[0];
+  gradeOption("2年生").props.onPress(); h.render();
+  gradeOption("Aチーム").props.onPress(); h.render();
+  h.all((node) => node.props?.accessibilityRole === "radio" && h.text(node) === "CB")[0].props.onPress(); h.render();
+  await h.press("基本情報を保存");
+  assert.deepEqual(JSON.parse(JSON.stringify(h.writes[0].data)), { grade: "1年生", grades: ["1年生", "2年生"], position: "CB" });
+  await h.press("未設定"); await h.press("基本情報を保存");
+  assert.deepEqual(JSON.parse(JSON.stringify(h.writes[1].data)), { grade: "", grades: [], position: "CB" });
+});
+
+test("roster members can view multiple memberships but cannot edit them", async () => {
+  const h = screenHarness("RosterScreen", { uid: "member" });
+  await h.press("👤 Member");
+  assert.equal(h.all((node) => node.props?.accessibilityRole === "checkbox").length, 0);
+  assert.equal(h.all((node) => node.type === "TouchableOpacity" && h.text(node).startsWith("基本情報を保存")).length, 0);
+});
+
+test("secondary groups control the rendered channel tabs and explicit clearing hides them", () => {
+  const h = screenHarness("WorkspaceHomeScreen", { uid: "member", channels: [
+    { id: "group", name: "Aチーム専用", memberAudience: "grades", allowedRoleGroups: [], allowedGrades: ["Aチーム"] },
+  ], profiles: { Member: { uid: "member", name: "Member", role: "member", grade: "1年生", grades: ["1年生", "Aチーム"] } } });
+  assert.match(h.text(), /Aチーム専用/);
+  h.props.userProfiles = { ...h.props.userProfiles, Member: { ...h.props.userProfiles.Member, grades: ["1年生"] } }; h.render();
+  assert.doesNotMatch(h.text(), /Aチーム専用/);
+  h.props.userProfiles = { ...h.props.userProfiles, Member: { ...h.props.userProfiles.Member, grade: "Aチーム", grades: [] } }; h.render();
+  assert.doesNotMatch(h.text(), /Aチーム専用/);
+});
+
+test("optimization-off synchronization follows secondary memberships and ignores reordered selections", async () => {
+  const h = screenHarness("WorkspaceHomeScreen", { optimize: false,
+    channels: [{ id: "group", name: "Group", memberAudience: "grades", allowedGrades: ["Aチーム"], allowedRoleGroups: ["staff"] }],
+    syncPosts: [{ id: "post", channelId: "group", authorUid: "coach" }],
+  });
+  await new Promise(setImmediate);
+  assert.equal(h.audienceSyncs.at(-1).updates[0].audience.visibleToUids.includes("member"), false);
+  const change = (grades) => { h.props.userProfiles = { ...h.props.userProfiles, Member: { ...h.props.userProfiles.Member, grades } }; h.render(); };
+  change(["1年生", "Aチーム"]); await new Promise(setImmediate);
+  assert.ok(h.audienceSyncs.at(-1).updates[0].audience.visibleToUids.includes("member"));
+  const count = h.audienceSyncs.length;
+  change(["Aチーム", "1年生"]); await new Promise(setImmediate);
+  assert.equal(h.audienceSyncs.length, count);
+  change(["1年生"]); await new Promise(setImmediate);
+  assert.equal(h.audienceSyncs.at(-1).updates[0].audience.visibleToUids.includes("member"), false);
 });
 
 test("new channel saves selected grades and staff notification choices without legacy member roles", async () => {
   const h = screenHarness("WorkspaceHomeScreen");
   await h.press("＋ 追加"); h.change("例: 1年生専用", "First grade");
   assert.equal(h.all((node) => node.type === "TouchableOpacity" && h.text(node).startsWith("一般部員")).length, 0);
-  await h.press("学年ごと");
+  await h.press("学年・グループごと");
   await h.press("2年生"); await h.press("Coach"); await h.press("作成する");
   const channel = h.writes[0].data.channels.at(-1);
   assert.equal(channel.shareScope, "grades");

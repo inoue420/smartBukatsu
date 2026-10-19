@@ -134,9 +134,10 @@ function harness(options = {}) {
   const seed = (path, data) => { documents.set(path, copy(data)); };
   const members = options.members || [{ uid: "a", name: "A", profileKey: "A", role: "member", blockedUserUids: [] }];
   seed(base, { name: "Synthetic team", channels: [] });
-  seed(statePath, { ready: true, enabled: true, separateReads: false, schemaVersion: 1, medicalSummaryVersion: 2, status: "ready", preparationId: "revision-1", contextVersion: 2, contextRevision: "revision-1", contextShardCount: 1 });
+  seed(statePath, { ready: true, enabled: true, separateReads: false, schemaVersion: 1, medicalSummaryVersion: 2, status: "ready", preparationId: "revision-1", contextVersion: 3, contextRevision: "revision-1", contextShardCount: 1 });
   seed(`${base}/system/loadingContext_0`, { revision: "revision-1", payload: JSON.stringify({ members, channels: [] }) });
   for (const member of members) { seed(`${base}/members/${member.uid}`, { name: member.name, role: member.role, grade: member.grade || "",
+    ...(Array.isArray(member.grades) ? { grades: member.grades } : {}),
     ...(member.staffScope ? { staffScope: member.staffScope } : {}), ...(member.assignedStaff ? { assignedStaff: member.assignedStaff } : {}) }); seed(`users/${member.uid}`, { name: member.name }); }
   const eventSnapshot = (data) => ({ exists: data !== null, data: () => copy(data) });
   const event = (id, before, after) => ({ params: { teamId: TEAM, documentId: id }, data: { before: eventSnapshot(before), after: eventSnapshot(after) } });
@@ -299,7 +300,7 @@ test("reader-only late events cannot recreate an anchor for a deleted user", asy
 
 function nearLimitMembers(overLimit = false) {
   const members = Array.from({ length: 16 }, (_, index) => ({ uid: `large${index}`, name: "あ".repeat(43600) + index, role: index ? "member" : "owner" }));
-  const projection = () => ({ members: members.map((member) => ({ ...member, grade: "", profileKey: member.name, staffScope: null, assignedStaff: null, blockedUserUids: [] })), channels: [] });
+  const projection = () => ({ members: members.map((member) => ({ ...member, grade: "", grades: [], profileKey: member.name, staffScope: null, assignedStaff: null, blockedUserUids: [] })), channels: [] });
   const max = 4 * 1024 * 1024, initial = Buffer.byteLength(stableStringify(projection()), "utf8");
   const target = max - ((max - initial) % 2), difference = target - initial;
   members.at(-1).name += "あ".repeat(Math.floor(difference / 6)) + "x".repeat((difference % 6) / 2);
@@ -414,10 +415,53 @@ test("old contexts missing grade data are rebuilt before grade audience preparat
   const result = await h.backend.context(TEAM);
   assert.equal(result.members[0].grade, "1年生");
   assert.equal(result.channels[0].memberAudience, "grades");
-  assert.equal(h.documents.get(statePath).contextVersion, 2);
+  assert.equal(h.documents.get(statePath).contextVersion, 3);
   assert.equal(h.documents.get(statePath).enabled, false);
   await finish(h);
   assert.equal(h.documents.get(statePath).enabled, true);
+});
+
+test("adding and removing a secondary group repairs audiences and counts without changing the legacy grade", async () => {
+  const h = harness({ members: [
+    { uid: "a", name: "A", profileKey: "A", role: "captain", grade: "1年生", grades: ["1年生"] },
+    { uid: "coach", name: "Coach", profileKey: "Coach", role: "staff" },
+  ] });
+  const before = h.documents.get(base), after = { ...before, channels: [{ id: "group", name: "Group", shareScope: "grades", allowedGrades: ["Aチーム"], allowedRoleGroups: ["staff"] }] };
+  h.seed(base, after);
+  h.seed(`${base}/workspacePosts/group`, { channelId: "group", channel: "Group", authorUid: "coach", content: "@A", replies: [] });
+  await h.backend.handleTeam({ params: { teamId: TEAM }, data: { before: { data: () => before }, after: { exists: true, data: () => after } } });
+  await finish(h);
+  assert.deepEqual(h.documents.get(`${base}/workspacePosts/group`).visibleToUids, ["coach"]);
+  const change = async (grades) => {
+    const previous = h.documents.get(`${base}/members/a`), next = { ...previous, grades };
+    h.seed(`${base}/members/a`, next);
+    await h.backend.handleMembership({ params: { teamId: TEAM, uid: "a" }, data: { before: { data: () => previous }, after: { data: () => next } } });
+    await finish(h);
+  };
+  h.reset(); await change(["1年生", "Aチーム"]);
+  assert.deepEqual(h.documents.get(`${base}/workspacePosts/group`).visibleToUids, ["a", "coach"]);
+  assert.equal(h.documents.get(summaryPath("a")).workspaceNotificationUnreadCount, 1);
+  assert.equal(h.trace.some((item) => item.type === "query" && /\/(dailyReports|notices|clubEvents|personalEvents)$/.test(item.path)), false);
+  h.reset(); await change(["Aチーム", "1年生"]);
+  assert.deepEqual(h.counts(), { reads: 0, writes: 0, queries: 0, getAll: 0 });
+  await change(["1年生"]);
+  assert.deepEqual(h.documents.get(`${base}/workspacePosts/group`).visibleToUids, ["coach"]);
+  assert.equal(h.documents.get(summaryPath("a")).workspaceNotificationUnreadCount, 0);
+});
+
+test("version-two single-grade caches rebuild the full group list before becoming ready", async () => {
+  const h = harness({ members: [{ uid: "a", name: "A", profileKey: "A", role: "member", grade: "1年生", grades: ["1年生", "Aチーム"] }] });
+  h.seed(statePath, { ...h.documents.get(statePath), contextVersion: 2 });
+  h.seed(`${base}/system/loadingContext_0`, { revision: "revision-1", payload: JSON.stringify({ members: [{ uid: "a", role: "member", grade: "1年生" }], channels: [] }) });
+  h.seed(base, { ...h.documents.get(base), channels: [{ id: "group", memberAudience: "grades", allowedGrades: ["Aチーム"] }] });
+  h.seed(`${base}/workspacePosts/group`, { channelId: "group", authorUid: "coach", content: "Synthetic" });
+  const context = await h.backend.context(TEAM);
+  assert.deepEqual(context.members[0].grades, ["1年生", "Aチーム"]);
+  assert.equal(h.documents.get(statePath).contextVersion, 3);
+  assert.equal(h.documents.get(statePath).enabled, false);
+  await finish(h);
+  assert.equal(h.documents.get(statePath).enabled, true);
+  assert.ok(h.documents.get(`${base}/workspacePosts/group`).visibleToUids.includes("a"));
 });
 
 test("General all-member migration and later explicit grade choices survive cached channel updates", async () => {

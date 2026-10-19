@@ -1,6 +1,7 @@
 const { SCHEMA_VERSION, lastEventDate, contributions, adjustSummary, audienceFor,
   contentChanges, latestReportData, validLatest, compareReports, stableStringify, postActorUids } = require("./loadingOptimizationCore");
-const CONTEXT_VERSION = 2, SHARD_BYTES = 256 * 1024, MAX_CONTEXT_BYTES = 4 * 1024 * 1024;
+const { memberGrades } = require("./workspaceAudience");
+const CONTEXT_VERSION = 3, SHARD_BYTES = 256 * 1024, MAX_CONTEXT_BYTES = 4 * 1024 * 1024;
 const SOURCE_KINDS = ["notices", "dailyReports", "workspacePosts"];
 const MEDICAL_SUMMARY_VERSION = 2;
 const POST_ACTOR_INDEX_VERSION = 1;
@@ -80,6 +81,7 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
       const profileKey = usedNames.has(name) ? name + "_" + d.id.substring(0, 4) : name;
       usedNames.add(profileKey);
       members.push({ uid: d.id, name, profileKey, role: data.role || "member", grade: data.grade || "",
+        grades: memberGrades(data),
         staffScope: data.staffScope || null, assignedStaff: data.assignedStaff || null,
         blockedUserUids: (user.blockedUserUids || []).filter((uid) => !excludedUids[uid]).sort() });
     });
@@ -467,7 +469,7 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
         SOURCE_KINDS.forEach((kind) => kinds.add(kind)); latestUids.push(uid);
       } else {
         if (a.role !== b.role) { stages.add("audiences"); kinds.add("workspacePosts"); kinds.add("dailyReports"); }
-        if ((a.grade || "") !== (b.grade || "")) { stages.add("audiences"); kinds.add("workspacePosts"); }
+        if (stableStringify(memberGrades(a).sort()) !== stableStringify(memberGrades(b).sort())) { stages.add("audiences"); kinds.add("workspacePosts"); }
         if ((a.assignedStaff || null) !== (b.assignedStaff || null)) reportAuthors.add(uid);
         if ((a.staffScope || null) !== (b.staffScope || null)) {
           for (const author of after.members) {
@@ -517,6 +519,7 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
     const name = member.data()?.name || user.data()?.name || "名称未設定";
     if (!previous || !member.exists || !user.exists || previous.name !== name) return sourceContext(teamId, m, tx);
     const updated = { ...previous, role: member.data().role || "member", grade: member.data().grade || "", staffScope: member.data().staffScope || null,
+      grades: memberGrades(member.data()),
       assignedStaff: member.data().assignedStaff || null, blockedUserUids: [...(user.data().blockedUserUids || [])].sort() };
     const excluded = (await read(exclusionsRef(teamId), m, tx)).data()?.uids || {};
     if (excluded[uid]) return sourceContext(teamId, m, tx);
@@ -562,7 +565,7 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
     });
   }
   async function handleMembership(event) {
-    const relevant = (d) => d && [d.name, d.role, d.grade, d.staffScope, d.assignedStaff];
+    const relevant = (d) => d && [d.name, d.role, memberGrades(d).sort(), d.staffScope, d.assignedStaff];
     if (stableStringify(relevant(event.data?.before.data() || null)) === stableStringify(relevant(event.data?.after.data() || null))) return;
     await restartForReferenceChange(event.params.teamId, { kind: "member", uid: event.params.uid });
   }
