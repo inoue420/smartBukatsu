@@ -472,6 +472,7 @@ function AppContent() {
                   alertThresholds={alertThresholds}
                   userProfiles={userProfiles}
                   dailyReports={alertReports}
+                  grades={grades}
                 />
               )}
             </Stack.Screen>

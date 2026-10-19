@@ -513,17 +513,13 @@ const SettingsScreen = ({
     }
   }, [activeTeamId]);
 
-  const [myGrade, setMyGrade] = useState(
-    currentUserProfile.grade || "",
-  );
   const [myPosition, setMyPosition] = useState(
     currentUserProfile.position || "",
   );
 
   useEffect(() => {
-    setMyGrade(currentUserProfile.grade || "");
     setMyPosition(currentUserProfile.position || "");
-  }, [currentUserProfile.grade, currentUserProfile.position]);
+  }, [currentUserProfile.position]);
 
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -535,6 +531,9 @@ const SettingsScreen = ({
   const [isRoleModalVisible, setIsRoleModalVisible] = useState(false);
   const [selectedMemberForRole, setSelectedMemberForRole] = useState(null);
   const [isChangingMemberRole, setIsChangingMemberRole] = useState(false);
+  const [selectedGradeMemberUid, setSelectedGradeMemberUid] = useState(null);
+  const [editingMemberGrade, setEditingMemberGrade] = useState("");
+  const [isSavingMemberGrade, setIsSavingMemberGrade] = useState(false);
 
   const [isAssignStaffModalVisible, setIsAssignStaffModalVisible] =
     useState(false);
@@ -937,7 +936,6 @@ const SettingsScreen = ({
           activeTeamId,
           uid,
           trimmedName,
-          myGrade,
           myPosition,
         );
       }
@@ -1168,6 +1166,30 @@ const SettingsScreen = ({
       );
     } catch (error) {
       Alert.alert("エラー", "保護者権限の更新に失敗しました。");
+    }
+  };
+
+  const handleOpenMemberGrade = (profile) => {
+    if (!isStaffOrAbove || !profile.uid) return;
+    setSelectedGradeMemberUid(profile.uid);
+    setEditingMemberGrade(profile.grade || "");
+  };
+
+  const handleSaveMemberGrade = async () => {
+    if (!isStaffOrAbove || !activeTeamId || !selectedGradeMemberUid || isSavingMemberGrade) return;
+    if (editingMemberGrade && !grades.includes(editingMemberGrade)) {
+      Alert.alert("学年を選択してください", "学年リストに登録されている学年を選択するか、未設定にしてください。");
+      return;
+    }
+    setIsSavingMemberGrade(true);
+    try {
+      await updateMemberRoleConfig(activeTeamId, selectedGradeMemberUid, { grade: editingMemberGrade });
+      setSelectedGradeMemberUid(null);
+      Alert.alert("保存完了", "学年を更新しました。");
+    } catch (error) {
+      Alert.alert("保存できませんでした", "権限と通信状態を確認してください。");
+    } finally {
+      setIsSavingMemberGrade(false);
     }
   };
 
@@ -1491,18 +1513,9 @@ const SettingsScreen = ({
                   ※変更するとアプリ全体の表示名が切り替わります。
                 </Text>
 
-                <Text style={[styles.label, { marginTop: 15 }]}>学年</Text>
-                {grades.length > 0 ? (
-                  <OptionSelector
-                    options={grades}
-                    selected={myGrade}
-                    onSelect={setMyGrade}
-                  />
-                ) : (
-                  <Text style={styles.emptyText}>
-                    管理者が学年を登録していません
-                  </Text>
-                )}
+                <Text style={styles.hintText}>
+                  学年：{currentUserProfile.grade || "未設定"}（変更は管理者へ依頼してください）
+                </Text>
 
                 <Text style={styles.label}>ポジション・役割</Text>
                 {positions.length > 0 ? (
@@ -2199,6 +2212,17 @@ const SettingsScreen = ({
                             memberRole === "captain") && (
                             <TouchableOpacity
                               style={styles.subSettingBadge}
+                              onPress={() => handleOpenMemberGrade(profile)}
+                              accessibilityLabel={`${displayName}の学年を設定`}
+                            >
+                              <Text style={styles.subSettingText}>学年: {profile.grade || "未設定"} ▾</Text>
+                            </TouchableOpacity>
+                          )}
+
+                          {(memberRole === "member" ||
+                            memberRole === "captain") && (
+                            <TouchableOpacity
+                              style={styles.subSettingBadge}
                               onPress={() => handleOpenAssignStaffModal(profile.uid)}
                             >
                               <Text style={styles.subSettingText}>
@@ -2622,6 +2646,33 @@ const SettingsScreen = ({
       {/* ========================================== */}
       {/* ▼ モーダル群 */}
       {/* ========================================== */}
+      <Modal
+        visible={Boolean(selectedGradeMemberUid)}
+        transparent
+        animationType="fade"
+        onRequestClose={() => { if (!isSavingMemberGrade) setSelectedGradeMemberUid(null); }}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { maxHeight: "85%" }]}>
+            <Text style={styles.modalTitle}>
+              {getMemberProfileByUid(selectedGradeMemberUid).name || "部員"} の学年を設定
+            </Text>
+            <ScrollView>
+              <OptionSelector options={grades} selected={editingMemberGrade} onSelect={setEditingMemberGrade} />
+              {grades.length === 0 && <Text style={styles.emptyText}>学年リスト管理で学年を登録してください。</Text>}
+              <TouchableOpacity style={styles.cancelBtn} onPress={() => setEditingMemberGrade("")} disabled={isSavingMemberGrade}>
+                <Text style={styles.cancelBtnText}>学年を未設定にする</Text>
+              </TouchableOpacity>
+            </ScrollView>
+            <TouchableOpacity style={styles.saveBtn} onPress={handleSaveMemberGrade} disabled={isSavingMemberGrade}>
+              <Text style={styles.saveBtnText}>{isSavingMemberGrade ? "保存中..." : "学年を保存"}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.cancelBtn} onPress={() => setSelectedGradeMemberUid(null)} disabled={isSavingMemberGrade}>
+              <Text style={styles.cancelBtnText}>キャンセル</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
       <Modal
         visible={isOwnershipTransferModalVisible}
         transparent

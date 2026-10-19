@@ -251,9 +251,9 @@ test("real emulator: preparation, idempotent summaries, old latest condition, ov
       assert.equal((await summary()).unreadNoticeCount, previous.unreadNoticeCount);
     });
     await t.test("member references ignore unrelated fields and rebuild relevant membership, channel and block changes", async () => {
-      const ownerRef = ref.collection("members").doc("owner"), previousState = (await stateRef.get()).data(), beforeGrade = await ownerRef.get();
-      await ownerRef.update({ grade: "synthetic grade" });
-      await backend.handleMembership({ params: { teamId: team, uid: "owner" }, data: { before: beforeGrade, after: await ownerRef.get() } });
+      const ownerRef = ref.collection("members").doc("owner"), previousState = (await stateRef.get()).data(), beforePosition = await ownerRef.get();
+      await ownerRef.update({ position: "synthetic position" });
+      await backend.handleMembership({ params: { teamId: team, uid: "owner" }, data: { before: beforePosition, after: await ownerRef.get() } });
       assert.equal((await stateRef.get()).data().preparationId, previousState.preparationId, "unrelated profile fields must not restart preparation");
       const userRef = db.collection("users").doc("a"), beforeBlock = await userRef.get(), unreadBeforeBlock = (await summary()).workspaceNotificationUnreadCount;
       await userRef.update({ blockedUserUids: ["b"], teamIds: [team], activeTeamId: team });
