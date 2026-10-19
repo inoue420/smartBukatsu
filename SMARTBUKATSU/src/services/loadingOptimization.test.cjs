@@ -313,12 +313,14 @@ test("notification provider keeps summaries at startup and subscribes to the lis
   const service = {
     Notifications: { setNotificationHandler: idle, addNotificationResponseReceivedListener: () => ({ remove: idle }), getLastNotificationResponseAsync: async () => null },
     getNotificationPermissionStatus: async () => "undetermined", setApplicationBadge: idle,
-    registerPushToken: async () => ({}),
+    registerPushToken: async () => ({}), ensureNotificationSummary: async () => {},
   };
   for (const name of ["Summary", "Preferences", "s"]) service["subscribeNotification" + name] = (...args) => { const item = { name, args, stops: 0 }; calls.push(item); return () => item.stops++; };
-  const { NotificationProvider } = load(path.join(__dirname, "../NotificationContext.js"), { react: { __esModule: true, default: h.react, ...h.react }, "./AuthContext": { useAuth: () => auth }, "./services/notificationService": service, "./notifications/notificationConfig": { DEFAULT_NOTIFICATION_PREFERENCES: {}, normalizeNotificationPreferences: (value) => value } });
+  const config = load(path.join(__dirname, "../notifications/notificationConfig.js"), {});
+  const { NotificationProvider } = load(path.join(__dirname, "../NotificationContext.js"), { react: { __esModule: true, default: h.react, ...h.react }, "./AuthContext": { useAuth: () => auth }, "./services/notificationService": service, "./notifications/notificationConfig": config });
   h.mount(NotificationProvider); assert.equal(calls.length, 2);
-  const oldSummary = calls[0]; oldSummary.args[1]({ unreadTotal: 7, unreadByTeam: {} }); assert.equal(h.render().props.value.unreadTotal, 7);
+  calls[1].args[1](config.normalizeNotificationPreferences({ masterEnabled: true }));
+  const oldSummary = calls[0]; oldSummary.args[1]({ unreadTotal: 7, unreadByTeam: {}, unreadBucketsVersion: 1, unreadBuckets: { '["notice","a"]': 7 } }); assert.equal(h.render().props.value.unreadTotal, 7);
   const stop = h.render().props.value.startNotificationList(100);
   const list = calls.at(-1); assert.equal(list.name, "s"); assert.equal(list.args[3], 100);
   list.args[1]([{ id: "n" }], true); assert.equal(h.render().props.value.notifications.length, 1);
@@ -334,4 +336,93 @@ test("notification center stops its list on blur and renews it on focus", () => 
   h.mount(Screen); assert.equal(calls[0].count, 100);
   focused = false; h.update(); assert.equal(calls[0].stops, 1); assert.equal(calls.length, 1);
   focused = true; h.update(); assert.equal(calls.length, 2); h.unmount(); assert.equal(calls[1].stops, 1);
+});
+
+function notificationProviderHarness(overrides = {}) {
+  const h = componentHarness(), calls = [], badges = [];
+  let uid = "a", handler;
+  const config = load(path.join(__dirname, "../notifications/notificationConfig.js"), {});
+  const service = {
+    Notifications: {
+      setNotificationHandler: value => { handler = value.handleNotification; },
+      addNotificationResponseReceivedListener: () => ({ remove() {} }), getLastNotificationResponseAsync: async () => null,
+    },
+    getNotificationPermissionStatus: async () => "granted", setApplicationBadge: count => badges.push(count),
+    registerPushToken: async () => ({ granted: true, status: "granted" }), ensureNotificationSummary: async () => {},
+    saveNotificationPreferences: async value => value,
+    ...overrides,
+  };
+  for (const name of ["Summary", "Preferences", "s"]) service["subscribeNotification" + name] = (...args) => {
+    const call = { name, args, stops: 0 }; calls.push(call); return () => call.stops++;
+  };
+  const { NotificationProvider } = load(path.join(__dirname, "../NotificationContext.js"), {
+    react: { __esModule: true, default: h.react, ...h.react }, "./AuthContext": { useAuth: () => ({ user: uid ? { uid } : null }) },
+    "./services/notificationService": service, "./notifications/notificationConfig": config,
+  });
+  h.mount(NotificationProvider);
+  const api = () => h.render().props.value;
+  const preferences = value => { calls.findLast(call => call.name === "Preferences").args[1](config.normalizeNotificationPreferences(value)); h.render(); };
+  return { ...h, api, calls, badges, preferences,
+    foreground: category => handler({ request: { content: { data: { category, teamId: "a" } } } }),
+    account(value) { uid = value; h.update(); } };
+}
+
+test("provider filters list and badge together, restores history and suppresses foreground delivery", async () => {
+  const h = notificationProviderHarness();
+  h.preferences({ masterEnabled: true });
+  const stop = h.api().startNotificationList();
+  const list = h.calls.at(-1);
+  list.args[1]([{ id: "notice", category: "notice", teamId: "a" },
+    { id: "reply", category: "workspaceReply", teamId: "b" },
+    { id: "reminder", category: "scheduleReminder", teamId: "a" }], true);
+  h.calls[0].args[1]({ unreadBucketsVersion: 1, unreadBuckets: {
+    '["notice","a"]': 4, '["workspaceReply","b"]': 6, '["scheduleReminder","a"]': 9,
+  } });
+  assert.equal(h.api().notifications.length, 2); assert.equal(h.api().unreadTotal, 10);
+  assert.equal(h.badges.at(-1), 10);
+  h.preferences({ masterEnabled: true, categories: { notice: false } });
+  assert.equal(h.api().notifications[0].id, "reply"); assert.equal(h.api().unreadTotal, 6);
+  assert.equal((await h.foreground("notice")).shouldShowBanner, false);
+  assert.equal((await h.foreground("scheduleReminder")).shouldSetBadge, false);
+  h.preferences({ masterEnabled: true, teamEnabled: { b: false } });
+  assert.equal(h.api().notifications[0].id, "notice"); assert.equal(h.api().unreadTotal, 4);
+  h.preferences({ masterEnabled: false });
+  assert.equal(h.api().notifications.length, 0); assert.equal(h.api().unreadTotal, 0);
+  assert.equal(h.api().notificationListHasMore, false); assert.equal(h.badges.at(-1), 0);
+  const count = h.calls.length; h.api().startNotificationList()(); assert.equal(h.calls.length, count);
+  h.preferences({ masterEnabled: true });
+  assert.equal(h.api().notifications.length, 2); assert.equal(h.api().unreadTotal, 10);
+  assert.equal((await h.foreground("notice")).shouldShowBanner, true);
+  stop(); h.unmount();
+});
+
+test("failed preference saves restore the previous visible list and badge", async () => {
+  const h = notificationProviderHarness({ saveNotificationPreferences: async () => { throw new Error("Synthetic save failure"); } });
+  h.preferences({ masterEnabled: true });
+  h.calls[0].args[1]({ unreadBucketsVersion: 1, unreadBuckets: { '["notice","a"]': 3 } });
+  const pending = h.api().updatePreferences({ masterEnabled: false });
+  assert.equal(h.api().unreadTotal, 0);
+  await assert.rejects(pending, /Synthetic save failure/);
+  assert.equal(h.api().preferences.masterEnabled, true); assert.equal(h.api().unreadTotal, 3);
+  h.unmount();
+});
+
+test("failed repair can be retried and late failures cannot affect a new account", async () => {
+  let fail = true, calls = 0, rejectLate;
+  const h = notificationProviderHarness({ ensureNotificationSummary: async () => {
+    calls++; if (fail) throw new Error("Synthetic offline");
+  } });
+  await new Promise(setImmediate);
+  assert.ok(h.api().notificationSummaryError);
+  const oldSummary = h.calls[0];
+  fail = false; await h.api().refreshNotificationSummary();
+  assert.equal(h.api().notificationSummaryError, ""); assert.equal(calls, 2);
+  assert.equal(oldSummary.stops, 1);
+  oldSummary.args[1]({ unreadBucketsVersion: 1, unreadBuckets: { '["notice","a"]': 99 } });
+  assert.equal(h.api().unreadTotal, 0);
+  h.unmount();
+  const late = notificationProviderHarness({ ensureNotificationSummary: () => new Promise((_resolve, reject) => { rejectLate = reject; }) });
+  const oldReject = rejectLate; late.account("b"); oldReject(new Error("Late old-account failure"));
+  await new Promise(setImmediate);
+  assert.equal(late.api().notificationSummaryError, ""); late.unmount();
 });

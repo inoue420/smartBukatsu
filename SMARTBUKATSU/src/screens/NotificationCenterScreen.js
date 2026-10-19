@@ -33,6 +33,9 @@ export default function NotificationCenterScreen({ navigation }) {
     notificationListLoading,
     notificationListError,
     notificationListHasMore,
+    preferences,
+    notificationSummaryError,
+    refreshNotificationSummary,
   } = useNotifications();
   const [count, setCount] = useState(100);
   useFocusEffect(useCallback(() => startNotificationList(count), [startNotificationList, count]));
@@ -73,6 +76,11 @@ export default function NotificationCenterScreen({ navigation }) {
       </View>
 
       <ScrollView contentContainerStyle={styles.content}>
+        {!!notificationSummaryError && (
+          <TouchableOpacity onPress={refreshNotificationSummary}>
+            <Text style={{ color: "#b42318", padding: 12 }}>{notificationSummaryError}</Text>
+          </TouchableOpacity>
+        )}
         {notificationListLoading && <ActivityIndicator color="#0077cc" />}
         {!!notificationListError && <TouchableOpacity onPress={() => setCount((value) => value + 1)}><Text style={{ color: "#b42318", padding: 12 }}>{notificationListError} タップして再試行</Text></TouchableOpacity>}
         {!notificationListLoading && !notificationListError && notifications.length === 0 ? (
@@ -80,7 +88,9 @@ export default function NotificationCenterScreen({ navigation }) {
             <Text style={styles.emptyIcon}>🔔</Text>
             <Text style={styles.emptyTitle}>通知はありません</Text>
             <Text style={styles.emptyText}>
-              お知らせ、予定、返信などがここに表示されます。
+              {preferences?.masterEnabled === false
+                ? "通知設定がOFFのため、通知は表示されません。設定をONにすると履歴を再表示できます。"
+                : "通知設定がONのお知らせ、予定、返信などがここに表示されます。"}
             </Text>
           </View>
         ) : (

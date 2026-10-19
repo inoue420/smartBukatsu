@@ -10,6 +10,9 @@ const {
   DEFAULT_CATEGORY_PREFERENCES,
   normalizePreferences,
   shouldSendPush,
+  adjustUnreadSummary,
+  summarizeUnreadNotifications,
+  getVisibleUnreadSummary,
   getAddedItems,
   getScheduleFingerprint,
   getScheduleNotificationWindowDays,
@@ -296,7 +299,36 @@ function dailyReportCommentEventAllowed(teamData, eventTime) {
   return seconds > changedAt.seconds || (seconds === changedAt.seconds && nanos >= changedAt.nanoseconds);
 }
 
+async function readNotificationSummary(transaction, userRef, summarySnapshot) {
+  const summary = summarySnapshot.data() || {};
+  if (summary.unreadBucketsVersion === 1) return summary;
+  // Every notification mutation also writes the summary, so a concurrent change
+  // makes this transaction retry rather than publishing a stale repair.
+  const unread = await transaction.get(
+    userRef.collection("notifications").where("readAt", "==", null),
+  );
+  return summarizeUnreadNotifications(unread.docs.map((document) => document.data()));
+}
+
+const ensureNotificationSummary = onCall(
+  { region: REGION, timeoutSeconds: 60, memory: "256MiB" },
+  async (request) => {
+    const uid = requireAuthenticatedUid(request);
+    const userRef = firestore.collection("users").doc(uid);
+    const summaryRef = userRef.collection("notificationState").doc("summary");
+    await firestore.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(summaryRef);
+      if (snapshot.data()?.unreadBucketsVersion === 1) return;
+      const summary = await readNotificationSummary(transaction, userRef, snapshot);
+      // Replace aggregate maps so obsolete legacy team counters cannot survive.
+      transaction.set(summaryRef, { ...summary, updatedAt: Timestamp.now() });
+    });
+    return { ready: true };
+  },
+);
+
 async function createNotificationForUser(uid, payload) {
+  if (payload.category === "scheduleReminder") return [];
   const notificationId = safeDocumentId(payload.id);
   const userRef = firestore.collection("users").doc(uid);
   const notificationRef = userRef.collection("notifications").doc(notificationId);
@@ -352,30 +384,29 @@ async function createNotificationForUser(uid, payload) {
     if (existingSnapshot.exists) return { created: false, unreadTotal: 0 };
 
     const summarySnapshot = await transaction.get(summaryRef);
-    const summaryData = summarySnapshot.data() || {};
-    const unreadByTeam = { ...(summaryData.unreadByTeam || {}) };
-    if (notification.teamId) {
-      unreadByTeam[notification.teamId] =
-        Math.max(0, Number(unreadByTeam[notification.teamId]) || 0) + 1;
-    }
-    const unreadTotal = Math.max(0, Number(summaryData.unreadTotal) || 0) + 1;
+    const summaryData = await readNotificationSummary(transaction, userRef, summarySnapshot);
+    const preferencesSnapshot = await transaction.get(preferencesRef);
+    const preferences = preferencesSnapshot.data() || {};
+    const nextSummary = adjustUnreadSummary(summaryData, notification, 1);
 
     transaction.create(notificationRef, notification);
     transaction.set(
       summaryRef,
-      { unreadTotal, unreadByTeam, updatedAt: now },
-      { merge: true },
+      { ...nextSummary, updatedAt: now },
     );
-    return { created: true, unreadTotal };
+    return {
+      created: true,
+      unreadTotal: getVisibleUnreadSummary(nextSummary, preferences).unreadTotal,
+      preferences,
+    };
   });
 
   if (!transactionResult.created) return [];
-  const preferencesSnapshot = await preferencesRef.get();
   return collectExpoPushForUser({
     uid,
     notification,
     unreadTotal: transactionResult.unreadTotal,
-    preferences: preferencesSnapshot.data() || {},
+    preferences: transactionResult.preferences,
   });
 }
 
@@ -755,41 +786,9 @@ const sendScheduledEventReminders = onSchedule(
     timeoutSeconds: 540,
     memory: "512MiB",
   },
-  async () => {
-    const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000);
-    const targetDate = getJstDateString(tomorrow);
-    const teamsSnapshot = await firestore.collection("teams").get();
-    for (const teamDocument of teamsSnapshot.docs) {
-      const eventsRef = teamDocument.ref.collection("clubEvents");
-      const [startingEventsSnapshot, multiDayEventsSnapshot] = await Promise.all([
-        eventsRef.where("date", "==", targetDate).get(),
-        eventsRef.where("selectedDates", "array-contains", targetDate).get(),
-      ]);
-      const eventDocuments = new Map();
-      [...startingEventsSnapshot.docs, ...multiDayEventsSnapshot.docs].forEach(
-        (document) => eventDocuments.set(document.id, document),
-      );
-
-      for (const eventDocument of eventDocuments.values()) {
-        const eventData = eventDocument.data() || {};
-        if (eventData.status === "deleted") continue;
-        await fanOutToTeam({
-          teamId: teamDocument.id,
-          payload: {
-            id: `schedule_reminder_${teamDocument.id}_${eventDocument.id}_${targetDate}`,
-            category: NOTIFICATION_CATEGORIES.SCHEDULE_REMINDER,
-            title: "明日のチーム予定",
-            body: eventData.title || "明日の予定を確認してください。",
-            target: notificationTarget("Calendar", {
-              eventId: eventDocument.id,
-              date: targetDate,
-            }),
-            source: { collection: "clubEvents", documentId: eventDocument.id },
-          },
-        });
-      }
-    }
-  },
+  // Keep the deployed endpoint compatible; it no longer reads data or sends.
+  // Removing the scheduler itself is a separate production operation.
+  async () => {},
 );
 
 async function updateNotificationState(uid, notificationId, action) {
@@ -806,7 +805,7 @@ async function updateNotificationState(uid, notificationId, action) {
       throw new HttpsError("not-found", "通知が見つかりません。");
     }
     const notificationData = notificationSnapshot.data() || {};
-    const wasUnread = !notificationData.readAt;
+    const wasUnread = !notificationData.readAt && !notificationData.dismissedAt;
     const updateData = { updatedAt: now };
     if (action === "read") updateData.readAt = notificationData.readAt || now;
     if (action === "dismiss") {
@@ -816,25 +815,13 @@ async function updateNotificationState(uid, notificationId, action) {
 
     if (wasUnread) {
       const summarySnapshot = await transaction.get(summaryRef);
-      const summaryData = summarySnapshot.data() || {};
-      const unreadByTeam = { ...(summaryData.unreadByTeam || {}) };
-      if (notificationData.teamId) {
-        unreadByTeam[notificationData.teamId] = Math.max(
-          0,
-          (Number(unreadByTeam[notificationData.teamId]) || 0) - 1,
-        );
-      }
+      const summaryData = await readNotificationSummary(transaction, userRef, summarySnapshot);
       transaction.set(
         summaryRef,
         {
-          unreadTotal: Math.max(
-            0,
-            (Number(summaryData.unreadTotal) || 0) - 1,
-          ),
-          unreadByTeam,
+          ...adjustUnreadSummary(summaryData, notificationData, -1),
           updatedAt: now,
         },
-        { merge: true },
       );
     }
     transaction.update(notificationRef, updateData);
@@ -993,27 +980,15 @@ async function deleteExpiredNotification(documentReference) {
     const notificationSnapshot = await transaction.get(documentReference);
     if (!notificationSnapshot.exists) return;
     const notificationData = notificationSnapshot.data() || {};
-    if (!notificationData.readAt) {
+    if (!notificationData.readAt && !notificationData.dismissedAt) {
       const summarySnapshot = await transaction.get(summaryRef);
-      const summaryData = summarySnapshot.data() || {};
-      const unreadByTeam = { ...(summaryData.unreadByTeam || {}) };
-      if (notificationData.teamId) {
-        unreadByTeam[notificationData.teamId] = Math.max(
-          0,
-          (Number(unreadByTeam[notificationData.teamId]) || 0) - 1,
-        );
-      }
+      const summaryData = await readNotificationSummary(transaction, userRef, summarySnapshot);
       transaction.set(
         summaryRef,
         {
-          unreadTotal: Math.max(
-            0,
-            (Number(summaryData.unreadTotal) || 0) - 1,
-          ),
-          unreadByTeam,
+          ...adjustUnreadSummary(summaryData, notificationData, -1),
           updatedAt: Timestamp.now(),
         },
-        { merge: true },
       );
     }
     transaction.delete(documentReference);
@@ -1047,6 +1022,7 @@ const deleteExpiredNotifications = onSchedule(
 );
 
 module.exports = {
+  ensureNotificationSummary,
   notifyTeamMemberCreated,
   notifyNoticeWritten,
   notifyClubEventWritten,

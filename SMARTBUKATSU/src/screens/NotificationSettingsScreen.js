@@ -67,7 +67,7 @@ export default function NotificationSettingsScreen({ navigation }) {
         if (!result?.granted) {
           Alert.alert(
             "通知が許可されていません",
-            "端末設定でSMARTBUKATSUの通知を許可してください。アプリ内通知は引き続き利用できます。",
+            "端末設定でSMARTBUKATSUの通知を許可してから、プッシュ通知をONにしてください。",
             [
               { text: "閉じる", style: "cancel" },
               { text: "端末設定を開く", onPress: Linking.openSettings },
@@ -109,9 +109,9 @@ export default function NotificationSettingsScreen({ navigation }) {
       </View>
       <ScrollView contentContainerStyle={styles.content}>
         <View style={styles.infoCard}>
-          <Text style={styles.infoTitle}>アプリ内通知は常に保存されます</Text>
+          <Text style={styles.infoTitle}>通知センターもこの設定に連動します</Text>
           <Text style={styles.infoText}>
-            ここでOFFにした項目も通知センターには残り、プッシュ表示だけが停止します。
+            全体・項目別・チーム別の設定をOFFにすると、対象の通知と未読件数を表示しません。履歴は保存され、ONに戻すと再表示されます。
           </Text>
         </View>
 
@@ -172,7 +172,7 @@ export default function NotificationSettingsScreen({ navigation }) {
                 <View style={styles.settingTextBox}>
                   <Text style={styles.settingTitle}>{team.name}</Text>
                   <Text style={styles.settingDescription}>
-                    このチームからのプッシュ通知
+                    このチームのプッシュ通知と通知センター表示
                   </Text>
                 </View>
                 <Switch

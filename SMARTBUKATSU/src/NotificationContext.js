@@ -11,6 +11,7 @@ import { useAuth } from "./AuthContext";
 import {
   Notifications,
   dismissNotification as dismissNotificationRemote,
+  ensureNotificationSummary,
   getNotificationPermissionStatus,
   markNotificationRead,
   registerPushToken,
@@ -23,6 +24,8 @@ import {
 import {
   DEFAULT_NOTIFICATION_PREFERENCES,
   normalizeNotificationPreferences,
+  isNotificationVisible,
+  getVisibleUnreadSummary,
 } from "./notifications/notificationConfig";
 
 const NotificationContext = createContext(null);
@@ -53,6 +56,7 @@ export function NotificationProvider({ children }) {
   const [notificationListLoading, setNotificationListLoading] = useState(false);
   const [notificationListError, setNotificationListError] = useState("");
   const [notificationListHasMore, setNotificationListHasMore] = useState(false);
+  const [notificationSummaryError, setNotificationSummaryError] = useState("");
   const [summary, setSummary] = useState({
     unreadTotal: 0,
     unreadByTeam: {},
@@ -64,15 +68,47 @@ export function NotificationProvider({ children }) {
   const [isSavingPreferences, setIsSavingPreferences] = useState(false);
   const navigationHandlerRef = useRef(null);
   const pendingNotificationRef = useRef(null);
+  const summaryRetryRef = useRef(null);
+  const preferencesRef = useRef(preferences);
+  preferencesRef.current = preferences;
+  const sessionUidRef = useRef(user?.uid);
+  sessionUidRef.current = user?.uid;
+  const visibleNotifications = useMemo(
+    () => notifications.filter((notification) => isNotificationVisible(preferences, notification)),
+    [notifications, preferences],
+  );
+  const visibleSummary = useMemo(
+    () => getVisibleUnreadSummary(summary, preferences),
+    [summary, preferences],
+  );
+  const refreshNotificationSummary = useCallback(async (resubscribe = true) => {
+    const uid = user?.uid;
+    if (!uid) return;
+    if (resubscribe) summaryRetryRef.current?.();
+    try {
+      await ensureNotificationSummary();
+      if (sessionUidRef.current === uid) setNotificationSummaryError("");
+    } catch {
+      if (sessionUidRef.current === uid) {
+        setNotificationSummaryError("通知の未読件数を更新できませんでした。タップして再試行");
+      }
+    }
+  }, [user?.uid]);
 
   useEffect(() => {
     Notifications.setNotificationHandler({
-      handleNotification: async () => ({
-        shouldPlaySound: true,
-        shouldSetBadge: true,
-        shouldShowBanner: true,
-        shouldShowList: true,
-      }),
+      handleNotification: async (notification) => {
+        const visible = isNotificationVisible(
+          preferencesRef.current,
+          notification.request.content.data,
+        );
+        return {
+          shouldPlaySound: visible,
+          shouldSetBadge: visible,
+          shouldShowBanner: visible,
+          shouldShowList: visible,
+        };
+      },
     });
   }, []);
 
@@ -87,6 +123,7 @@ export function NotificationProvider({ children }) {
       setNotifications([]);
       setSummary({ unreadTotal: 0, unreadByTeam: {} });
       setPreferences(DEFAULT_NOTIFICATION_PREFERENCES);
+      setNotificationSummaryError("");
       return undefined;
     }
 
@@ -99,24 +136,43 @@ export function NotificationProvider({ children }) {
     setNotifications([]); setNotificationListHasMore(false);
     setSummary({ unreadTotal: 0, unreadByTeam: {} });
     setPreferences(DEFAULT_NOTIFICATION_PREFERENCES);
-    const unsubscribeSummary = subscribeNotificationSummary(
-      user.uid,
-      (value) => { if (active) setSummary(value); },
-      handleSubscriptionError("通知集計"),
-    );
+    setNotificationSummaryError("");
+    let unsubscribeSummary = () => {};
+    let summaryGeneration = 0;
+    const restartSummary = () => {
+      const generation = ++summaryGeneration;
+      unsubscribeSummary();
+      unsubscribeSummary = subscribeNotificationSummary(
+        user.uid,
+        (value) => {
+          if (!active || generation !== summaryGeneration) return;
+          setSummary(value);
+          if (value.unreadBucketsVersion === 1) setNotificationSummaryError("");
+        },
+        (error) => {
+          if (!active || generation !== summaryGeneration) return;
+          handleSubscriptionError("通知集計")(error);
+          setNotificationSummaryError("通知の未読件数を更新できませんでした。タップして再試行");
+        },
+      );
+    };
+    restartSummary();
+    summaryRetryRef.current = restartSummary;
     const unsubscribePreferences = subscribeNotificationPreferences(
       user.uid,
       (value) => { if (active) setPreferences(value); },
       handleSubscriptionError("通知設定"),
     );
+    refreshNotificationSummary(false);
     return () => {
       active = false;
+      if (summaryRetryRef.current === restartSummary) summaryRetryRef.current = null;
       unsubscribeSummary();
       unsubscribePreferences();
     };
-  }, [user?.uid]);
+  }, [user?.uid, refreshNotificationSummary]);
   const startNotificationList = useCallback((count = 100) => {
-    if (!user?.uid) return () => {};
+    if (!user?.uid || !preferences.masterEnabled) return () => {};
     let active = true;
     setNotificationListLoading(true); setNotificationListError("");
     const stop = subscribeNotifications(user.uid, (items, hasMore) => {
@@ -126,11 +182,11 @@ export function NotificationProvider({ children }) {
       if (active) { setNotificationListError("通知を読み込めませんでした。通信状態とログイン状態を確認してください。"); setNotificationListLoading(false); }
     }, count);
     return () => { active = false; stop(); setNotifications([]); setNotificationListLoading(false); };
-  }, [user?.uid]);
+  }, [user?.uid, preferences.masterEnabled]);
 
   useEffect(() => {
-    setApplicationBadge(summary.unreadTotal);
-  }, [summary.unreadTotal]);
+    setApplicationBadge(visibleSummary.unreadTotal);
+  }, [visibleSummary.unreadTotal]);
 
   useEffect(() => {
     if (!user?.uid || !preferences.masterEnabled) return;
@@ -201,33 +257,40 @@ export function NotificationProvider({ children }) {
 
   const updatePreferences = useCallback(async (nextPreferences) => {
     setIsSavingPreferences(true);
+    const previous = preferencesRef.current;
+    const uid = sessionUidRef.current;
     try {
       const normalized = normalizeNotificationPreferences(nextPreferences);
       setPreferences(normalized);
       const saved = await saveNotificationPreferences(normalized);
-      setPreferences(saved);
+      if (sessionUidRef.current === uid) setPreferences(saved);
       return saved;
+    } catch (error) {
+      if (sessionUidRef.current === uid) setPreferences(previous);
+      throw error;
     } finally {
       setIsSavingPreferences(false);
     }
   }, []);
 
   const enablePushNotifications = useCallback(async () => {
+    const uid = user?.uid;
     setIsSavingPreferences(true);
     try {
       const result = await registerPushToken({ requestPermission: true });
+      if (sessionUidRef.current !== uid) return result;
       setPermissionStatus(result?.status || result?.reason || "undetermined");
       if (!result?.granted) return result;
       const saved = await saveNotificationPreferences({
         ...preferences,
         masterEnabled: true,
       });
-      setPreferences(saved);
+      if (sessionUidRef.current === user?.uid) setPreferences(saved);
       return result;
     } finally {
       setIsSavingPreferences(false);
     }
-  }, [preferences]);
+  }, [preferences, user?.uid]);
 
   const dismissNotification = useCallback(async (notificationId) => {
     await dismissNotificationRemote(notificationId);
@@ -235,13 +298,15 @@ export function NotificationProvider({ children }) {
 
   const value = useMemo(
     () => ({
-      notifications,
+      notifications: visibleNotifications,
       startNotificationList,
       notificationListLoading,
       notificationListError,
-      notificationListHasMore,
-      unreadTotal: summary.unreadTotal,
-      unreadByTeam: summary.unreadByTeam,
+      notificationListHasMore: preferences.masterEnabled && notificationListHasMore,
+      notificationSummaryError,
+      refreshNotificationSummary,
+      unreadTotal: visibleSummary.unreadTotal,
+      unreadByTeam: visibleSummary.unreadByTeam,
       preferences,
       permissionStatus,
       isSavingPreferences,
@@ -252,12 +317,14 @@ export function NotificationProvider({ children }) {
       setNavigationHandler,
     }),
     [
-      notifications,
+      visibleNotifications,
       startNotificationList,
       notificationListLoading,
       notificationListError,
       notificationListHasMore,
-      summary,
+      visibleSummary,
+      notificationSummaryError,
+      refreshNotificationSummary,
       preferences,
       permissionStatus,
       isSavingPreferences,

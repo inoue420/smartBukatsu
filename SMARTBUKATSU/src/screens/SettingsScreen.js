@@ -2462,7 +2462,7 @@ const SettingsScreen = ({
             title="🔔 プッシュ通知"
           >
             <Text style={styles.subText}>
-              通知する項目とチームを選択できます。プッシュ通知をOFFにしても、アプリ内の通知センターには通知が残ります。
+              通知する項目とチームを選択できます。OFFにした通知は、通知センターと未読件数にも表示されません。ONに戻すと履歴を再表示できます。
             </Text>
             <TouchableOpacity
               style={styles.saveBtn}

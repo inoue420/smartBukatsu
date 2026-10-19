@@ -19,7 +19,7 @@ test("push is disabled until the user opts in", () => {
   );
 });
 
-test("category and team overrides only affect push delivery", () => {
+test("category and team overrides filter push delivery", () => {
   const preferences = normalizePreferences({
     masterEnabled: true,
     categories: { notice: false },
