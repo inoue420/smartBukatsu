@@ -31,23 +31,25 @@ function harness(source = currentSource, options = {}) {
   function snapshot(ref) {
     return { id: ref.id, ref, exists: documents.has(ref.path), data: () => documents.get(ref.path) };
   }
-  function reference(location) {
+  function reference(location, filters = []) {
     return {
       path: location,
       id: location.split("/").at(-1),
       doc: (id) => reference(`${location}/${id}`),
       collection: (name) => reference(`${location}/${name}`),
+      where: (field, _operator, value) => reference(location, [...filters, [field, value]]),
       async get() {
         if (location === "teams/team") {
           teamReads += 1;
           if (options.failTeamRead) throw new Error("simulated team read failure");
         }
-        if (location === "teams/team/members" || location.endsWith("/pushTokens")) {
+        if (location === "teams/team/members" || location.endsWith("/pushTokens") || filters.length) {
           if (location === "teams/team/members" && options.failTeamRead) {
             await new Promise((resolve) => setImmediate(resolve));
           }
           const docs = [...documents.keys()]
             .filter((key) => key.startsWith(`${location}/`) && key.split("/").length === location.split("/").length + 1)
+            .filter((key) => filters.every(([field, value]) => documents.get(key)[field] === value))
             .map((key) => snapshot(reference(key)));
           if (location === "teams/team/members") {
             memberQueries += 1;
@@ -63,7 +65,7 @@ function harness(source = currentSource, options = {}) {
     collection: reference,
     async runTransaction(callback) {
       return callback({
-        get: async (ref) => snapshot(ref),
+        get: async (ref) => ref.get(),
         create(ref, data) {
           assert.equal(documents.has(ref.path), false);
           documents.set(ref.path, data);
@@ -306,7 +308,8 @@ test("same event replay does not duplicate notification documents or pushes", as
 
 test("mentions for the same event share one HTTP request with per-user badges", async () => {
   const h = harness();
-  h.documents.set("users/target/notificationState/summary", { unreadTotal: 7, unreadByTeam: { team: 7 } });
+  h.documents.set("users/target/notificationState/summary", { unreadTotal: 7, unreadByTeam: { team: 7 },
+    unreadBucketsVersion: 1, unreadBuckets: { '["mention","team"]': 7 } });
   await h.run(post, { ...post, mentionedUids: ["target", "manager"] });
   assert.equal(h.pushRequestCount(), 1);
   assert.equal(h.pushes.length, 2);

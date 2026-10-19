@@ -9,11 +9,6 @@ export const NOTIFICATION_CATEGORIES = {
     description: "予定の追加、変更、中止",
     icon: "📅",
   },
-  scheduleReminder: {
-    label: "予定リマインド",
-    description: "予定開始前日の18:00",
-    icon: "⏰",
-  },
   diaryReply: {
     label: "日誌への返信",
     description: "日誌のコメントとやり取り",
@@ -81,4 +76,35 @@ export function getNotificationCategory(category) {
   return (
     NOTIFICATION_CATEGORIES[category] || NOTIFICATION_CATEGORIES.system
   );
+}
+
+export function isNotificationVisible(preferences, notification = {}) {
+  notification = notification || {};
+  if (preferences?.masterEnabled !== true || notification.category === "scheduleReminder") {
+    return false;
+  }
+  const category = Object.prototype.hasOwnProperty.call(NOTIFICATION_CATEGORIES, notification.category)
+    ? notification.category
+    : "system";
+  return preferences.categories?.[category] !== false &&
+    (!notification.teamId || preferences.teamEnabled?.[notification.teamId] !== false);
+}
+
+export function getVisibleUnreadSummary(summary = {}, preferences) {
+  const result = { unreadTotal: 0, unreadByTeam: {} };
+  // Legacy totals include hidden categories. Wait for the server's one-time repair.
+  if (summary.unreadBucketsVersion !== 1) return result;
+  Object.entries(summary.unreadBuckets || {}).forEach(([key, value]) => {
+    let category, teamId;
+    try {
+      [category, teamId] = JSON.parse(key);
+    } catch {
+      return;
+    }
+    if (!isNotificationVisible(preferences, { category, teamId })) return;
+    const count = Math.max(0, Number(value) || 0);
+    result.unreadTotal += count;
+    if (teamId) result.unreadByTeam[teamId] = (result.unreadByTeam[teamId] || 0) + count;
+  });
+  return result;
 }

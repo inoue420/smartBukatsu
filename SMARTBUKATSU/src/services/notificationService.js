@@ -75,10 +75,17 @@ export function subscribeNotificationSummary(uid, onValue, onError) {
       onValue({
         unreadTotal: Math.max(0, Number(data.unreadTotal) || 0),
         unreadByTeam: data.unreadByTeam || {},
+        unreadBucketsVersion: data.unreadBucketsVersion,
+        unreadBuckets: data.unreadBuckets || {},
       });
     },
     onError,
   );
+}
+
+export async function ensureNotificationSummary() {
+  const ensure = httpsCallable(cloudFunctions, "ensureNotificationSummary");
+  await ensure({});
 }
 
 export function subscribeNotificationPreferences(uid, onValue, onError) {

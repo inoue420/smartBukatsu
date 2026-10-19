@@ -56,7 +56,7 @@ function harness(options = {}) {
         const result = await callback({
           get: async (ref) => {
             assert.equal(operations.length, 0, "Firestore reads must precede writes");
-            return snapshot(ref);
+            return ref.get();
           },
           create: (ref, data) => operations.push({ action: "create", ref, data }),
           set: (ref, data, config) => operations.push({ action: "set", ref, data, config }),
@@ -142,7 +142,8 @@ test("30 recipients use one HTTP request and identical notifications/unread writ
   const original = execFileSync("git", ["show", "da53f362:./notifications.js"], { cwd: __dirname, encoding: "utf8" });
   const before = harness({ source: original }), after = harness();
   for (const h of [before, after]) {
-    h.documents.set("users/member0/notificationState/summary", { unreadTotal: 9, unreadByTeam: { other: 5, team: 4 } });
+    h.documents.set("users/member0/notificationState/summary", { unreadTotal: 9, unreadByTeam: { other: 5, team: 4 }, unreadBucketsVersion: 1,
+      unreadBuckets: { '["notice","other"]': 5, '["notice","team"]': 4 } });
     await h.run();
   }
   assert.equal(before.requests.length, 30);
@@ -276,7 +277,7 @@ test("a provider outage cannot consume an unbounded send budget", async () => {
   assert.equal(h.notifications().length, 205);
 });
 
-test("master/category/team OFF affect only pushes; no tokens and malformed tokens do not make HTTP requests", async () => {
+test("master/category/team OFF preserve stored history; no tokens and malformed tokens do not make HTTP requests", async () => {
   const h = harness({ count: 5 });
   h.documents.set("users/member0/notificationPreferences/default", { masterEnabled: false });
   h.documents.set("users/member1/notificationPreferences/default", { masterEnabled: true, categories: { notice: false } });
@@ -366,15 +367,12 @@ test("simultaneous delivery of the same event creates and sends each notificatio
   assert.equal(h.writes.length, 60);
 });
 
-for (const kind of ["notice", "schedule", "post", "diary", "join", "reminder"]) {
+for (const kind of ["notice", "schedule", "post", "diary", "join"]) {
   test(`${kind} retains navigation, per-user badge, channel and notification ID`, async () => {
     const h = harness({ count: 2 });
     h.documents.set("teams/team/members/member0", { role: "admin" });
     h.documents.set("teams/team/members/member1", { role: "staff" });
-    if (kind === "reminder") {
-      h.documents.set("teams/team/clubEvents/schedule", { date: "2026-10-07", title: "Synthetic reminder" });
-      await h.reminders();
-    } else await h.run(kind);
+    await h.run(kind);
     assert.equal(h.requests.length, 1);
     const expectedScreen = ["schedule", "reminder"].includes(kind) ? "Calendar" : kind === "notice" ? "NoticeBoard" : kind === "diary" ? "Diary" : kind === "join" ? "Roster" : "WorkspaceHome";
     for (const message of h.requests.flat()) {
@@ -390,3 +388,26 @@ for (const kind of ["notice", "schedule", "post", "diary", "join", "reminder"]) 
     }
   });
 }
+
+test("retired schedule reminder sends nothing and leaves notifications/counters unchanged", async () => {
+  const h = harness({ count: 2 });
+  h.documents.set("teams/team/clubEvents/schedule", { date: "2026-10-07", title: "Synthetic reminder" });
+  await h.reminders();
+  assert.equal(h.requests.length, 0);
+  assert.equal(h.writes.length, 0);
+  assert.equal(h.notifications().length, 0);
+});
+
+test("push badge excludes disabled categories, disabled teams and retired reminders", async () => {
+  const h = harness({ count: 1 });
+  h.documents.set("users/member0/notificationPreferences/default", {
+    masterEnabled: true, categories: { workspacePost: false }, teamEnabled: { other: false },
+  });
+  for (const [id, category, teamId] of [["hiddenCategory", "workspacePost", "team"], ["hiddenTeam", "notice", "other"], ["reminder", "scheduleReminder", "team"], ["visible", "notice", "team"]]) {
+    h.documents.set(`users/member0/notifications/${id}`, { category, teamId, readAt: null, dismissedAt: null });
+  }
+  await h.run();
+  assert.equal(h.requests[0][0].badge, 2);
+  assert.equal(h.notifications().length, 5);
+  assert.equal(h.documents.get("users/member0/notificationState/summary").unreadTotal, 5);
+});

@@ -1,7 +1,6 @@
 const NOTIFICATION_CATEGORIES = Object.freeze({
   NOTICE: "notice",
   SCHEDULE: "schedule",
-  SCHEDULE_REMINDER: "scheduleReminder",
   DIARY_REPLY: "diaryReply",
   WORKSPACE_REPLY: "workspaceReply",
   WORKSPACE_POST: "workspacePost",
@@ -54,10 +53,54 @@ function normalizePreferences(value = {}) {
 
 function shouldSendPush(preferences, category, teamId) {
   const normalized = normalizePreferences(preferences);
+  if (category === "scheduleReminder") return false;
+  if (!Object.values(NOTIFICATION_CATEGORIES).includes(category)) category = "system";
   if (!normalized.masterEnabled) return false;
   if (normalized.categories[category] === false) return false;
   if (teamId && normalized.teamEnabled[teamId] === false) return false;
   return true;
+}
+
+function adjustUnreadSummary(summary, notification, delta) {
+  const teamId = notification.teamId || "";
+  const key = JSON.stringify([notification.category || "system", teamId]);
+  const unreadByTeam = { ...(summary.unreadByTeam || {}) };
+  if (teamId) unreadByTeam[teamId] = Math.max(0, (Number(unreadByTeam[teamId]) || 0) + delta);
+  return {
+    unreadTotal: Math.max(0, (Number(summary.unreadTotal) || 0) + delta),
+    unreadByTeam,
+    unreadBucketsVersion: 1,
+    unreadBuckets: {
+      ...(summary.unreadBuckets || {}),
+      [key]: Math.max(0, (Number(summary.unreadBuckets?.[key]) || 0) + delta),
+    },
+  };
+}
+
+function summarizeUnreadNotifications(notifications) {
+  return notifications.reduce((summary, notification) =>
+    notification.readAt || notification.dismissedAt
+      ? summary
+      : adjustUnreadSummary(summary, notification, 1),
+  { unreadTotal: 0, unreadByTeam: {}, unreadBucketsVersion: 1, unreadBuckets: {} });
+}
+
+function getVisibleUnreadSummary(summary = {}, preferences) {
+  const result = { unreadTotal: 0, unreadByTeam: {} };
+  if (summary.unreadBucketsVersion !== 1) return result;
+  Object.entries(summary.unreadBuckets || {}).forEach(([key, value]) => {
+    let category, teamId;
+    try {
+      [category, teamId] = JSON.parse(key);
+    } catch {
+      return;
+    }
+    if (!shouldSendPush(preferences, category, teamId)) return;
+    const count = Math.max(0, Number(value) || 0);
+    result.unreadTotal += count;
+    if (teamId) result.unreadByTeam[teamId] = (result.unreadByTeam[teamId] || 0) + count;
+  });
+  return result;
 }
 
 function getAddedItems(beforeItems, afterItems) {
@@ -175,6 +218,9 @@ module.exports = {
   DEFAULT_CATEGORY_PREFERENCES,
   normalizePreferences,
   shouldSendPush,
+  adjustUnreadSummary,
+  summarizeUnreadNotifications,
+  getVisibleUnreadSummary,
   getAddedItems,
   getScheduleFingerprint,
   normalizeAbsenceDeadlineDaysBefore,
