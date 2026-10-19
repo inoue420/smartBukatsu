@@ -26,6 +26,7 @@ const REGION = "asia-northeast1";
 const NOTIFICATION_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 const EXPO_PUSH_ENDPOINT = "https://exp.host/--/api/v2/push/send";
 const EXPO_PUSH_TOKEN_PATTERN = /^(ExponentPushToken|ExpoPushToken)\[[^\]]+\]$/;
+const PUSH_REGISTRATION_REFRESH_MS = 24 * 60 * 60 * 1000;
 const EXPO_PUSH_BATCH_SIZE = 100;
 const EXPO_PUSH_MAX_ATTEMPTS = 3;
 const EXPO_PUSH_TIMEOUT_MS = 10000;
@@ -833,6 +834,9 @@ const registerPushToken = onCall(
   { region: REGION, timeoutSeconds: 30, memory: "256MiB" },
   async (request) => {
     const uid = requireAuthenticatedUid(request);
+    if (request.data?.expectedUid && request.data.expectedUid !== uid) {
+      throw new HttpsError("failed-precondition", "ログイン状態が変わりました。");
+    }
     const token = String(request.data?.token || "").trim();
     const deviceId = String(request.data?.deviceId || "").trim();
     const platform = String(request.data?.platform || "").trim();
@@ -879,6 +883,7 @@ const registerPushToken = onCall(
       const previousTokenSnapshot = previousTokenRef
         ? await transaction.get(previousTokenRef)
         : null;
+      const preferencesSnapshot = await transaction.get(preferencesRef);
       const previousRegistryData = previousRegistrySnapshot?.data() || {};
       if (
         previousRegistryRef &&
@@ -894,18 +899,29 @@ const registerPushToken = onCall(
       ) {
         transaction.delete(previousTokenRef);
       }
-      transaction.set(tokenRef, { token, platform, updatedAt: now });
-      transaction.set(registryRef, { uid, deviceId, updatedAt: now });
+      const currentData = currentTokenSnapshot.data() || {};
+      const needsRefresh = (value) => {
+        const updatedAt = value?.updatedAt?.toMillis?.();
+        const age = now.toMillis() - updatedAt;
+        return !Number.isFinite(updatedAt) || age < 0 || age >= PUSH_REGISTRATION_REFRESH_MS;
+      };
+      if (currentData.token !== token || currentData.platform !== platform ||
+          needsRefresh(currentData)) {
+        transaction.set(tokenRef, { token, platform, updatedAt: now });
+      }
+      if (registryData.uid !== uid || registryData.deviceId !== deviceId ||
+          needsRefresh(registryData)) {
+        transaction.set(registryRef, { uid, deviceId, updatedAt: now });
+      }
+      if (!preferencesSnapshot.exists) {
+        transaction.create(preferencesRef, {
+          masterEnabled: request.data?.initializePreferencesEnabled !== false,
+          categories: DEFAULT_CATEGORY_PREFERENCES,
+          teamEnabled: {},
+          updatedAt: now,
+        });
+      }
     });
-    const preferencesSnapshot = await preferencesRef.get();
-    if (!preferencesSnapshot.exists) {
-      await preferencesRef.set({
-        masterEnabled: true,
-        categories: DEFAULT_CATEGORY_PREFERENCES,
-        teamEnabled: {},
-        updatedAt: now,
-      });
-    }
     return { registered: true };
   },
 );
@@ -914,6 +930,9 @@ const unregisterPushToken = onCall(
   { region: REGION, timeoutSeconds: 15, memory: "256MiB" },
   async (request) => {
     const uid = requireAuthenticatedUid(request);
+    if (request.data?.expectedUid && request.data.expectedUid !== uid) {
+      throw new HttpsError("failed-precondition", "ログイン状態が変わりました。");
+    }
     const deviceId = String(request.data?.deviceId || "").trim();
     if (!/^[A-Za-z0-9_-]{8,128}$/.test(deviceId)) {
       throw new HttpsError("invalid-argument", "無効な端末IDです。");

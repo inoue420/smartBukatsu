@@ -292,6 +292,11 @@ async function rememberTeamMembership(uid, teamId) {
     ? normalizeTeamIds(userSnap.data())
     : [];
   const nextTeamIds = [...new Set([...currentTeamIds, teamId])];
+  const saved = userSnap.data() || {};
+  if (userSnap.metadata?.fromCache === false && !userSnap.metadata.hasPendingWrites &&
+      saved.activeTeamId === teamId && Array.isArray(saved.teamIds) &&
+      saved.teamIds.length === nextTeamIds.length &&
+      saved.teamIds.every((id, index) => id === nextTeamIds[index])) return;
 
   await setDoc(
     userRef,
