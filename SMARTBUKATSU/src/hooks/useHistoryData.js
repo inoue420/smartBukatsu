@@ -7,7 +7,6 @@ import { HISTORY_PAGE_SIZE } from "../utils/historyLoading";
 export function useHistoryData(teamId, name, active, options, receive) {
   const [count, setCount] = useState(HISTORY_PAGE_SIZE);
   const [all, setAll] = useState(false);
-  const [past, setPast] = useState(false);
   const [included, setIncluded] = useState([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -15,11 +14,11 @@ export function useHistoryData(teamId, name, active, options, receive) {
   const [scanned, setScanned] = useState(0);
   const generation = useRef(0), scanning = useRef(false), searchRun = useRef(0);
   const wasActive = useRef(false);
-  const base = useRef([]), extras = useRef({}), size = useRef(0);
+  const base = useRef([]), extras = useRef({});
   const optionKey = JSON.stringify(options);
   useEffect(() => {
     generation.current += 1; searchRun.current += 1; scanning.current = false;
-    setCount(HISTORY_PAGE_SIZE); setAll(false); setPast(false); base.current = []; size.current = 0;
+    setCount(HISTORY_PAGE_SIZE); setAll(false); base.current = [];
     setBusy(false); setError(""); setScanned(0);
   }, [teamId, optionKey, active]);
   useEffect(() => { setIncluded([]); extras.current = {}; }, [teamId, active]);
@@ -31,20 +30,19 @@ export function useHistoryData(teamId, name, active, options, receive) {
     }
     wasActive.current = true;
     setBusy(true); setError("");
-    const range = { ...options, count: name === "tagGroups" || ((name === "dailyReports" || name === "clubEvents" || name === "personalEvents") && !past) ? null : count };
-    if (past) delete range.since;
+    const range = { ...options, count: ["tagGroups", "dailyReports", "clubEvents", "personalEvents"].includes(name) ? null : count };
     const stop = subscribeHistory(teamId, name, range, (page) => {
       if (generation.current !== epoch) return;
-      base.current = page.items; size.current = page.items.length;
+      base.current = page.items;
       receive([...new Map([...page.items, ...Object.values(extras.current).filter(Boolean)].map((item) => [item.id, item])).values()]);
-      setHasMore(page.hasMore || (name === "dailyReports" && !past)); setBusy(scanning.current);
+      setHasMore(page.hasMore); setBusy(scanning.current);
     }, (failure) => {
       if (generation.current !== epoch) return;
       setError(failure?.code === "permission-denied" ? "閲覧権限を確認してください。" : "読み込みに失敗しました。通信状態を確認して再試行してください。");
       setBusy(false);
     });
     return () => { generation.current += 1; stop(); };
-  }, [teamId, name, active, optionKey, count, past, receive]);
+  }, [teamId, name, active, optionKey, count, receive]);
   useEffect(() => {
     if (!active || !teamId) return undefined;
     let live = true;
@@ -58,10 +56,7 @@ export function useHistoryData(teamId, name, active, options, receive) {
     return () => { live = false; stops.forEach((stop) => stop()); };
   }, [teamId, name, active, included, receive]);
   const include = useCallback((id) => { if (id) setIncluded((current) => current.includes(id) ? current : [...current, id]); }, []);
-  const loadMore = useCallback(() => {
-    if (name === "dailyReports" && !past) { setPast(true); setCount(size.current + HISTORY_PAGE_SIZE); }
-    else setCount((current) => current + HISTORY_PAGE_SIZE);
-  }, [name, past]);
+  const loadMore = useCallback(() => setCount((current) => current + HISTORY_PAGE_SIZE), []);
   const searchAll = useCallback(async () => {
     if (scanning.current || !active || !teamId) return;
     const epoch = generation.current, run = ++searchRun.current;
@@ -69,13 +64,13 @@ export function useHistoryData(teamId, name, active, options, receive) {
     let cursor = null, total = 0;
     try {
       do {
-        const page = await readHistoryPage(teamId, name, { ...options, since: null }, cursor);
+        const page = await readHistoryPage(teamId, name, options, cursor);
         if (generation.current !== epoch || searchRun.current !== run || !scanning.current) return;
         total += page.items.length; setScanned(total); cursor = page.cursor;
         if (!page.hasMore) break;
       } while (cursor);
       // The final live window supersedes scan results, so stale/deleted rows cannot survive.
-      scanning.current = false; setAll(true); setPast(true); setCount(Math.max(HISTORY_PAGE_SIZE, total + HISTORY_PAGE_SIZE));
+      scanning.current = false; setAll(true); setCount(Math.max(HISTORY_PAGE_SIZE, total + HISTORY_PAGE_SIZE));
     } catch {
       if (generation.current !== epoch || searchRun.current !== run || !scanning.current) return;
       setError("過去履歴の検索に失敗しました。再試行してください。"); setBusy(false);
@@ -83,7 +78,7 @@ export function useHistoryData(teamId, name, active, options, receive) {
     }
   }, [active, teamId, name, optionKey]);
   const cancel = useCallback(() => { searchRun.current += 1; scanning.current = false; setBusy(false); }, []);
-  const reset = useCallback(() => { searchRun.current += 1; scanning.current = false; setAll(false); setPast(false); setCount(HISTORY_PAGE_SIZE); setScanned(0); }, []);
+  const reset = useCallback(() => { searchRun.current += 1; scanning.current = false; setAll(false); setCount(HISTORY_PAGE_SIZE); setScanned(0); }, []);
   return { busy, searching: scanning.current, error, hasMore, scanned, all, loadMore, searchAll, cancel, reset,
     include, retry: () => setCount((current) => current + 1) };
 }

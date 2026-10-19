@@ -7,7 +7,7 @@ function loadSafetyBackend(firestore, Timestamp) {
   const names = new Set(["SUPPORT_CASE_COLLECTION", "ACTIVE_SUPPORT_CASE_STATUSES", "SAFETY_REPORT_REASONS",
     "SAFETY_REPORT_SUBJECTS", "SAFETY_REPORT_TARGET_TYPES", "normalizeCaseText", "getEvidenceValue",
     "getReplyEvidence", "getWorkspacePostEvidence", "getDailyReportCommentEvidence",
-    "getDailyReportEvidence", "getDailyReportDocumentFingerprint", "getAuthenticatedTeamMember", "dailyReportCommentEventAllowed", "createSupportCaseWithEvidence"]);
+    "getDailyReportEvidence", "getDailyReportDocumentFingerprint", "getAuthenticatedTeamMember", "dailyReportCommentEventAllowed", "createSupportCaseWithEvidence", "trackReportedDailyReportChanges"]);
   const exports = {};
   const parts = parse(source).program.body.filter(node =>
     (node.type === "VariableDeclaration" && node.declarations.some(d => names.has(d.id.name))) ||
@@ -15,11 +15,11 @@ function loadSafetyBackend(firestore, Timestamp) {
       node.expression.left.type === "MemberExpression" &&
       ["submitSafetyReport", "trackReportedDailyReportChanges"].includes(node.expression.left.property.name)));
   class HttpsError extends Error { constructor(code, message) { super(message); this.code = code; } }
-  vm.runInNewContext(parts.map(node => source.slice(node.start, node.end)).join("\n"), {
+  vm.runInNewContext(parts.map(node => source.slice(node.start, node.end)).join("\n") + "\nexports.trackReportedDailyReportChanges = trackReportedDailyReportChanges;", {
     // Admin SDK checks Promise identity; adapt callbacks across the VM boundary.
     firestore: { collection: name => firestore.collection(name), batch: () => firestore.batch(),
       runTransaction: callback => firestore.runTransaction(async transaction => callback(transaction)) },
-    Timestamp, exports, HttpsError, logger: { info() {} },
+    Timestamp, exports, HttpsError, logger: { info() {} }, require: (name) => { if (name === "node:crypto") return require(name); throw new Error(name); },
     onCall: (_options, fn) => fn, onDocumentWritten: (_options, fn) => fn,
   });
   return exports;
@@ -87,7 +87,7 @@ function loadNotificationBackend(firestore, Timestamp) {
       throw new Error(`Unexpected notification dependency: ${name}`);
     },
   });
-  return module.exports;
+  return { ...module.exports, notifyDailyReportWritten: module.exports.handleDailyReportWritten };
 }
 function loadCommentSettingsService(db, sdk) {
   const source = fs.readFileSync(path.join(__dirname, "../src/services/firestoreService.js"), "utf8");
@@ -97,4 +97,13 @@ function loadCommentSettingsService(db, sdk) {
     source.slice(node.start, node.end) + "\nreturn updateDailyReportCommentSettings;")(
       db, sdk.doc, sdk.runTransaction, sdk.serverTimestamp);
 }
-module.exports = { loadSafetyBackend, loadNotificationBackend, loadCommentSettingsService, memoryFirestore };
+function loadDailyReportService(db, sdk, uid) {
+  const source = fs.readFileSync(path.join(__dirname, "../src/services/firestoreService.js"), "utf8");
+  const names = ["createDailyReport", "editOwnDailyReport", "appendDailyReportComment"];
+  const parts = parse(source, { sourceType: "module" }).program.body.filter(item =>
+    item.type === "ExportNamedDeclaration" && names.includes(item.declaration?.id?.name));
+  return new Function("db", "auth", "doc", "runTransaction", "serverTimestamp",
+    parts.map(item => source.slice(item.declaration.start, item.declaration.end)).join("\n") + `\nreturn { ${names.join(",")} };`)(
+      db, { currentUser: { uid } }, sdk.doc, sdk.runTransaction, sdk.serverTimestamp);
+}
+module.exports = { loadSafetyBackend, loadNotificationBackend, loadCommentSettingsService, loadDailyReportService, memoryFirestore };

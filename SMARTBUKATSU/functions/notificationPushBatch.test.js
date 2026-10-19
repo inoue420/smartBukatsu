@@ -124,7 +124,7 @@ function harness(options = {}) {
         diary: { authorUid: "member0", comments: [{ id: "comment", authorUid: "actor", text: "Synthetic comment" }] },
         join: { name: "Synthetic new member", role: "member" },
       };
-      return module.exports[handlers[kind]]({ id, time: "2026-10-06T03:00:00Z",
+      return (kind === "diary" ? module.exports.handleDailyReportWritten || module.exports.notifyDailyReportWritten : module.exports[handlers[kind]])({ id, time: "2026-10-06T03:00:00Z",
         params: { teamId: "team", noticeId: "notice", eventId: "schedule", postId: "post", reportId: "report", memberUid: "newmember" },
         data: { before: { exists: before != null, data: () => before }, after: { exists: true, data: () => after || defaults[kind] } },
       });

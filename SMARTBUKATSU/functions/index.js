@@ -42,7 +42,7 @@ exports.trackCalendarAttachmentReferences = onDocumentWritten({
 
 const { createLoadingOptimizationBackend } = require("./loadingOptimizationBackend");
 const loadingOptimization = createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, HttpsError, logger });
-for (const name of ["notices", "dailyReports", "workspacePosts"]) {
+for (const name of ["notices", "workspacePosts"]) {
   exports[`updateLoading${name[0].toUpperCase()}${name.slice(1)}`] = onDocumentWritten({
     document: `teams/{teamId}/${name}/{documentId}`, region: "asia-northeast1", retry: true,
   }, (event) => loadingOptimization.handleContent(name, event));
@@ -1424,14 +1424,7 @@ exports.trackReportedWorkspacePostChanges = onDocumentWritten(
   },
 );
 
-exports.trackReportedDailyReportChanges = onDocumentWritten(
-  {
-    document: "teams/{teamId}/dailyReports/{reportId}",
-    region: "asia-northeast1",
-    timeoutSeconds: 60,
-    memory: "256MiB",
-  },
-  async (event) => {
+const trackReportedDailyReportChanges = async (event) => {
     const beforeData = event.data?.before.exists
       ? event.data.before.data() || {}
       : null;
@@ -1458,15 +1451,18 @@ exports.trackReportedDailyReportChanges = onDocumentWritten(
       .where("targetDocumentPath", "==", targetDocumentPath).get();
     const activeCases = casesSnapshot.docs.filter((caseSnapshot) =>
       ACTIVE_SUPPORT_CASE_STATUSES.has(caseSnapshot.data()?.status));
-    const capturedAt = Timestamp.now();
+    const capturedAt = event.time ? Timestamp.fromMillis(Date.parse(event.time)) : Timestamp.now();
     for (const caseSnapshot of activeCases) {
-      const evidenceRef = caseSnapshot.ref.collection("evidence").doc();
+      const evidenceId = require("node:crypto").createHash("sha256")
+        .update(`${teamId}:${reportId}:${event.time || event.id || ""}:${getDailyReportDocumentFingerprint(beforeData, reportId)}:${getDailyReportDocumentFingerprint(afterData, reportId)}`).digest("hex");
+      const evidenceRef = caseSnapshot.ref.collection("evidence").doc(`daily_${evidenceId}`);
       await firestore.runTransaction(async (transaction) => {
         const currentTeam = await transaction.get(teamRef);
         if (!dailyReportCommentEventAllowed(currentTeam.data(), event.time)) return;
         const currentCase = await transaction.get(caseSnapshot.ref);
         const caseData = currentCase.data();
         if (!currentCase.exists || !ACTIVE_SUPPORT_CASE_STATUSES.has(caseData?.status)) return;
+        if ((await transaction.get(evidenceRef)).exists) return;
         const evidenceOptions = { reportId, commentId: caseData.targetCommentId || "" };
         const beforeSnapshot = getDailyReportEvidence(beforeData, evidenceOptions);
         const afterSnapshot = getDailyReportEvidence(afterData, evidenceOptions);
@@ -1477,8 +1473,17 @@ exports.trackReportedDailyReportChanges = onDocumentWritten(
         });
       });
     }
-  },
-);
+};
+
+const { createDailyReportProcessor } = require("./dailyReportProcessor");
+exports.processDailyReportWritten = onDocumentWritten({
+  document: "teams/{teamId}/dailyReports/{reportId}", region: "asia-northeast1",
+  retry: true, timeoutSeconds: 120, memory: "256MiB",
+}, createDailyReportProcessor({
+  notify: (event) => require("./notifications").handleDailyReportWritten(event),
+  evidence: trackReportedDailyReportChanges,
+  loading: (event) => loadingOptimization.handleContent("dailyReports", event), logger,
+}));
 
 exports.applySupportCaseRetention = onDocumentUpdated(
   {
@@ -2240,4 +2245,5 @@ exports.deleteExpiredCalendarAttachments = onSchedule(
   () => attachmentExpiry.cleanupExpired(),
 );
 
-Object.assign(exports, require("./notifications"));
+const { handleDailyReportWritten: _dailyReportHandler, ...notificationFunctions } = require("./notifications");
+Object.assign(exports, notificationFunctions);

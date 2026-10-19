@@ -7,6 +7,9 @@
     { "collectionGroup": "dailyReports", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "author", "order": "ASCENDING" }, { "fieldPath": "createdAt", "order": "DESCENDING" }] },
     { "collectionGroup": "dailyReports", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "authorUid", "order": "ASCENDING" }, { "fieldPath": "date", "order": "DESCENDING" }, { "fieldPath": "createdAt", "order": "DESCENDING" }] },
     { "collectionGroup": "dailyReports", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "author", "order": "ASCENDING" }, { "fieldPath": "date", "order": "DESCENDING" }, { "fieldPath": "createdAt", "order": "DESCENDING" }] },
+    { "collectionGroup": "dailyReports", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "sharedWith", "order": "ASCENDING" }, { "fieldPath": "date", "order": "DESCENDING" }, { "fieldPath": "createdAt", "order": "DESCENDING" }] },
+    { "collectionGroup": "dailyReports", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "authorUid", "order": "ASCENDING" }, { "fieldPath": "isReviewed", "order": "ASCENDING" }] },
+    { "collectionGroup": "dailyReports", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "author", "order": "ASCENDING" }, { "fieldPath": "isReviewed", "order": "ASCENDING" }] },
     { "collectionGroup": "clubEvents", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "date", "order": "DESCENDING" }, { "fieldPath": "lastEventDate", "order": "DESCENDING" }] },
     { "collectionGroup": "personalEvents", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "date", "order": "DESCENDING" }, { "fieldPath": "lastEventDate", "order": "DESCENDING" }] },
     {

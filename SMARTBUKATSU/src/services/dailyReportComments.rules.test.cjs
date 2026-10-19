@@ -2,7 +2,7 @@ const test = require("node:test"), assert = require("node:assert/strict"), fs = 
 const sdk = require("firebase/firestore"), { initializeApp, deleteApp } = require("firebase/app");
 const functionRequire = require("node:module").createRequire(path.join(__dirname, "../../functions/package.json"));
 const adminApp = functionRequire("firebase-admin/app"), admin = functionRequire("firebase-admin/firestore");
-const { loadSafetyBackend, loadCommentSettingsService } = require("../../scripts/dailyReportCommentsTestHarness.cjs");
+const { loadSafetyBackend, loadCommentSettingsService, loadDailyReportService } = require("../../scripts/dailyReportCommentsTestHarness.cjs");
 const projectId = "demo-daily-report-comments", host = "127.0.0.1:8187";
 if (process.env.FIRESTORE_EMULATOR_HOST !== host || process.env.GCLOUD_PROJECT !== projectId) {
   throw new Error("These tests require the dedicated local demo emulator.");
@@ -50,6 +50,29 @@ test("real Firestore rules and backend: default OFF, owner/admin gate, comments,
     assert.equal((await teamRef.get()).data().dailyReportCommentsEnabled, true);
     await saveSettings(manager)(team, false);
     await denied(sdk.updateDoc(reportDoc(member), { comments: [] }));
+    // Exercise the actual client transactions with real SDK conflict retries.
+    await saveSettings(owner)(team, true);
+    const studentReports = loadDailyReportService(member, sdk, "member"), coachReports = loadDailyReportService(staff, sdk, "staff");
+    const retryRef = teamRef.collection("dailyReports").doc("stable-retry");
+    await assert.rejects(studentReports.createDailyReport(team, { authorUid: "member" }), /提出ID/);
+    await assert.rejects(studentReports.createDailyReport(team, { id: "wrong-author", authorUid: "staff" }), /提出者/);
+    const original = { id: "stable-retry", authorUid: "member", author: "member", date: "2026-10-17", reflection: "Original submitted report", comments: [], isReviewed: false };
+    await Promise.all([studentReports.createDailyReport(team, original), studentReports.createDailyReport(team, original)]);
+    const firstWrite = await retryRef.get();
+    await studentReports.createDailyReport(team, { ...original, reflection: "Must not overwrite a submitted report" });
+    assert.equal((await retryRef.get()).data().reflection, original.reflection);
+    assert.equal((await retryRef.get()).data().createdAt.isEqual(firstWrite.data().createdAt), true);
+    await Promise.all([
+      coachReports.appendDailyReportComment(team, "stable-retry", { id: "coach-reply", uid: "staff", text: "Coach concurrent reply" }),
+      studentReports.appendDailyReportComment(team, "stable-retry", { id: "student-reply", uid: "member", text: "Student concurrent reply" }),
+    ]);
+    let current = (await retryRef.get()).data();
+    assert.equal(current.comments.length, 2); assert.equal(current.isReviewed, true);
+    await studentReports.appendDailyReportComment(team, "stable-retry", { id: "student-reply", uid: "member", text: "Duplicate" });
+    current = (await retryRef.get()).data(); assert.equal(current.comments.length, 2); assert.equal(current.isReviewed, true);
+    await assert.rejects(studentReports.editOwnDailyReport(team, "stable-retry", { reflection: "Review conflict" }), /修正可能/);
+    await saveSettings(owner)(team, false);
+    await assert.rejects(studentReports.appendDailyReportComment(team, "stable-retry", { id: "off-reply", uid: "member", text: "OFF" }), /コメント設定/);
     await denied(sdk.updateDoc(teamDoc(staff), { dailyReportCommentsEnabled: sdk.deleteField() }));
 
     const backend = loadSafetyBackend(db, admin.Timestamp);

@@ -1,11 +1,19 @@
 const HISTORY_PAGE_SIZE = 50;
 const pad = (value) => String(value).padStart(2, "0");
 const isoDate = (date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-function monthAgo(today = new Date()) {
-  const day = today.getDate();
-  const result = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-  result.setDate(Math.min(day, new Date(result.getFullYear(), result.getMonth() + 1, 0).getDate()));
-  return isoDate(result);
+const reportDay = (value) => String(value || "").replaceAll("/", "-").slice(0, 10);
+const jstDay = (now = new Date()) => new Date(now.getTime() + 9 * 3600000).toISOString().slice(0, 10);
+function reportWeek(day = jstDay(), offset = 0) {
+  const end = new Date(`${reportDay(day)}T00:00:00Z`);
+  end.setUTCDate(end.getUTCDate() - offset * 7);
+  const start = new Date(end); start.setUTCDate(start.getUTCDate() - 6);
+  return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
+}
+function reportSubmissionKey(report) {
+  const canonical = (value) => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object"
+    ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value ?? null;
+  const fields = ["date", "condition", "fatigue", "medicalScaleVersion", "isParticipating", "hasPain", "painDetails", "reflection", "achievement", "attachments", "memo", "highlightLink"];
+  return JSON.stringify(fields.map((field) => canonical(report[field])));
 }
 function monthWindow(date = isoDate(new Date())) {
   const [year, month] = date.split("-").map(Number);
@@ -35,4 +43,4 @@ function medicalDangerCount(histogram = {}, thresholds) {
     return total + ((bad || unavailable || fatigue >= thresholds.fatigueDanger || pain >= thresholds.painDanger) ? count : 0);
   }, 0);
 }
-module.exports = { HISTORY_PAGE_SIZE, isoDate, monthAgo, monthWindow, mergeReadState, medicalDangerCount };
+module.exports = { HISTORY_PAGE_SIZE, isoDate, monthWindow, mergeReadState, medicalDangerCount, reportDay, jstDay, reportWeek, reportSubmissionKey };

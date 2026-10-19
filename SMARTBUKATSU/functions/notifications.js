@@ -378,13 +378,14 @@ async function createNotificationForUser(uid, payload) {
   });
 }
 
-async function fanOutToUids(uids, payload) {
+async function fanOutToUids(uids, payload, retryFailures = false) {
   const results = await Promise.allSettled(
     uniqueUids(uids).map((uid) => createNotificationForUser(uid, payload)),
   );
   const failures = results.filter((result) => result.status === "rejected").length;
   if (failures) logger.error("Notification fan-out failed.", { count: failures });
   await sendExpoPushBatches(results.flatMap((result) => result.status === "fulfilled" ? result.value : []));
+  if (failures && retryFailures) throw new Error("Daily report notification recipients failed");
 }
 
 async function fanOutToTeam({
@@ -694,14 +695,7 @@ const notifyWorkspacePostWritten = onDocumentWritten(
   },
 );
 
-const notifyDailyReportWritten = onDocumentWritten(
-  {
-    document: "teams/{teamId}/dailyReports/{reportId}",
-    region: REGION,
-    timeoutSeconds: 60,
-    memory: "256MiB",
-  },
-  async (event) => {
+const handleDailyReportWritten = async (event) => {
     const beforeData = event.data?.before.exists ? event.data.before.data() : {};
     const afterData = event.data?.after.exists ? event.data.after.data() : null;
     if (!afterData || afterData.status === "deleted") return;
@@ -732,10 +726,9 @@ const notifyDailyReportWritten = onDocumentWritten(
         body: comment.text || "日誌の返信を確認してください。",
         target: notificationTarget("Diary", { reportId }),
         source: { collection: "dailyReports", documentId: reportId },
-      });
+      }, true);
     }
-  },
-);
+};
 
 function getJstDateString(date) {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -1052,7 +1045,7 @@ module.exports = {
   notifyNoticeWritten,
   notifyClubEventWritten,
   notifyWorkspacePostWritten,
-  notifyDailyReportWritten,
+  handleDailyReportWritten,
   sendScheduledEventReminders,
   registerPushToken,
   unregisterPushToken,

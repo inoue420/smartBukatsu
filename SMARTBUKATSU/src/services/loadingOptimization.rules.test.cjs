@@ -21,7 +21,7 @@ test("real emulator: preparation, idempotent summaries, old latest condition, ov
     assert.ok(metrics.length, "the backend must publish anonymous operation metrics");
     const [label, value] = metrics.at(-1);
     assert.equal(label, "loading_optimization_metrics");
-    assert.deepEqual(Object.keys(value).sort(), ["operation", "reads", "writes", "queries", "retries", "skipped", "contextRebuilds", "latestSearches", "durationMs"].sort(), "metrics must contain only operation labels and anonymous counts");
+    assert.ok(Object.keys(value).every((key) => ["operation", "reads", "writes", "queries", "retries", "skipped", "contextRebuilds", "latestSearches", "durationMs", "skipReason", "partialPreparation"].includes(key)), "metrics must contain only operation labels and anonymous counts");
     for (const field of ["reads", "writes", "queries", "retries", "skipped", "contextRebuilds", "latestSearches", "durationMs"]) assert.ok(Number.isFinite(value[field]) && value[field] >= 0, `${field} must be a nonnegative count or duration`);
     return value;
   };
@@ -69,7 +69,8 @@ test("real emulator: preparation, idempotent summaries, old latest condition, ov
     const state = (await stateRef.get()).data(); assert.equal(state.ready, true); assert.equal(state.enabled, false); assert.equal(state.separateReads, false); assert.ok(steps >= 10);
     const summary = () => ref.collection("loadingSummaries").doc("a").get().then((item) => item.data());
     assert.equal((await summary()).workspaceNotificationUnreadCount, 110); assert.equal((await summary()).unreadNoticeCount, 1);
-    assert.deepEqual((await summary()).medicalHistogram, { "0:0:5:0": 1 });
+    assert.deepEqual((await summary()).medicalHistogram, {});
+    assert.deepEqual((await ref.collection("loadingSummaries").doc("owner").get()).data().medicalHistogram, { "0:0:5:0": 1 });
     assert.equal((await ref.collection("latestDailyReports").doc("a").get()).data().id, "old-report");
     assert.equal(await backend.context(team), null, "disabled teams must not load a member reference context");
     const disabledSummary = await summary();
@@ -107,14 +108,24 @@ test("real emulator: preparation, idempotent summaries, old latest condition, ov
     await writes.markWorkspacePostRead(team, "p001", "a", "A", false);
     assert.ok((await ref.collection("workspacePosts").doc("p001").get()).data().readByUids.includes("a"));
     const code = transformSync(fs.readFileSync(path.join(__dirname, "historyDataService.js"), "utf8"), { configFile: false, babelrc: false, plugins: ["@babel/plugin-transform-modules-commonjs"] }).code;
-    const module = { exports: {} }, modules = { "firebase/firestore": sdk, "../firebase": { db: a }, "./firestoreSubscription": { measuredOnSnapshot: (_name, target, next, error) => sdk.onSnapshot(target, next, error) }, "../utils/historyLoading": require("../utils/historyLoading") };
+    const module = { exports: {} }, modules = { "firebase/firestore": sdk, "../firebase": { db: a }, "./firestoreSubscription": { measuredOnSnapshot: (_name, target, next, error, options) => options ? sdk.onSnapshot(target, options, next, error) : sdk.onSnapshot(target, next, error) }, "../utils/historyLoading": require("../utils/historyLoading") };
     vm.runInThisContext(`(function(require, module, exports) {${code}\n})`)((name) => modules[name], module, module.exports);
     const service = module.exports;
-    const firstSnapshot = (subscribe) => new Promise((resolve, reject) => { let stop; stop = subscribe((value) => { stop?.(); resolve(value); }, reject); });
+    const firstSnapshot = (subscribe, label = "history") => new Promise((resolve, reject) => {
+      const timeout = new Error("Server snapshot timed out: " + label);
+      let stop; const timer = setTimeout(() => { stop?.(); reject(timeout); }, 30000);
+      const fail = (error) => { clearTimeout(timer); stop?.(); reject(error); };
+      stop = subscribe((value) => { if (value.fromCache) return; clearTimeout(timer); stop?.(); resolve(value); }, fail);
+    });
     const page = await firstSnapshot((next, error) => service.subscribeHistory(team, "workspacePosts", { uid: "a", channel: "General", count: 50 }, next, error)); assert.equal(page.items.length, 50); assert.equal(page.hasMore, true);
     const events = await firstSnapshot((next, error) => service.subscribeHistory(team, "clubEvents", { start: "2026-10-01", end: "2026-10-31" }, next, error)); assert.equal(events.items[0].id, "overlap");
     const personal = await firstSnapshot((next, error) => service.subscribeHistory(team, "personalEvents", { uid: "a", start: "2026-10-01", end: "2026-10-31" }, next, error)); assert.equal(personal.items[0].id, "personal");
     const reports = await firstSnapshot((next, error) => service.subscribeHistory(team, "dailyReports", { start: "2025-01-01", end: "2025-01-31", authorUid: "a", author: "A" }, next, error)); assert.equal(reports.items[0].id, "old-report");
+    const dateFixtures = [["week-iso", "2026-10-17"], ["week-slash", "2026/10/11"], ["outside-iso", "2026-10-10"], ["outside-slash", "2026/01/01"]];
+    for (const [id, date] of dateFixtures) await ref.collection("dailyReports").doc(id).set({ authorUid: "a", author: "A", date, createdAt: admin.Timestamp.fromMillis(100) });
+    const sevenDays = await firstSnapshot((next, error) => service.subscribeHistory(team, "dailyReports", { start: "2026-10-11", end: "2026-10-17", authorUid: "a", author: "A" }, next, error));
+    assert.deepEqual(sevenDays.items.map(item => item.id).sort(), ["week-iso", "week-slash"]);
+    for (const [id] of dateFixtures) await ref.collection("dailyReports").doc(id).delete();
     await ref.collection("dailyReports").doc("new-report").set({ author: "A", authorUid: "a", date: "2026-10-05", createdAt: admin.Timestamp.fromMillis(5000), fatigue: 3, medicalScaleVersion: 2 });
     await backend.process(team, "dailyReports", "new-report"); assert.equal((await ref.collection("latestDailyReports").doc("a").get()).data().id, "new-report");
     await ref.collection("dailyReports").doc("new-report").update({ status: "deleted" }); await backend.process(team, "dailyReports", "new-report"); assert.equal((await ref.collection("latestDailyReports").doc("a").get()).data().id, "old-report");
@@ -309,7 +320,7 @@ test("real emulator: preparation, idempotent summaries, old latest condition, ov
     assert.equal((await ref.collection("loadingSummaries").doc("a").get()).exists, false);
     for (const [label, value] of metrics) {
       assert.equal(label, "loading_optimization_metrics");
-      assert.deepEqual(Object.keys(value).sort(), ["operation", "reads", "writes", "queries", "retries", "skipped", "contextRebuilds", "latestSearches", "durationMs"].sort());
+      assert.ok(Object.keys(value).every((key) => ["operation", "reads", "writes", "queries", "retries", "skipped", "contextRebuilds", "latestSearches", "durationMs", "skipReason", "partialPreparation"].includes(key)));
     }
   } finally {
     await Promise.all(clients.map(async ({ app, db }) => { await sdk.terminate(db); await deleteApp(app); })); await db.terminate(); await adminApp.deleteApp(serverApp);
