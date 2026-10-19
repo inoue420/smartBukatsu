@@ -56,6 +56,7 @@ function screenHarness(screen = "CalendarScreen", changes = {}, overrides = {}, 
     "react-native-calendars": { Calendar: "Calendar", LocaleConfig: { locales: {} } }, "react-native-maps": { default: null },
     "../hooks/useHistoryData": { useHistoryData: () => ({ items: [], busy: false }) },
     "../utils/historyLoading": require("../utils/historyLoading"), "../utils/medicalScale": require("../utils/medicalScale"),
+    "../../functions/workspaceAudience": require("../../functions/workspaceAudience"),
     "../services/firestoreService": services,
     "../services/calendarAttachmentService": { getActiveCalendarAttachments: () => [] },
     "../services/dailyReportAttachmentService": { getActiveDailyReportAttachments: () => [] },
@@ -101,6 +102,17 @@ for (const os of ["android", "ios"]) test(`${os}: parent chooses a child by UID,
   s.change({ clubEvents: [{ id: "event", date: "2099-01-10", status: "active", absenceComments: comments }] });
   assert.ok(s.h.text(s.h.render()).includes("保護者 Parent2 が代理登録")); s.h.unmount();
 });
+test("child choices display every assigned group while retaining legacy grade compatibility", () => {
+  const s = screenHarness();
+  s.change({ userProfiles: { ...s.profiles,
+    Child: { ...s.profiles.Child, grade: "1年生", grades: ["1年生", "Aチーム"] },
+    Sibling: { ...s.profiles.Sibling, grade: "2年生" },
+  } }); s.open();
+  assert.match(s.h.text(s.byLabel("Same nameの不参加連絡")), /1年生 \/ Aチーム/);
+  assert.match(s.h.text(s.h.render()), /2年生/);
+  s.h.unmount();
+});
+
 test("one linked child is automatically selected; no valid child hides the report entry point", () => {
   const s = screenHarness();
   s.change({ userProfiles: { ...s.profiles, Parent: { ...s.profiles.Parent, childUids: ["child"] } } }); s.open();

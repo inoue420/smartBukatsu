@@ -4,6 +4,12 @@ const DEFAULT_ROLE_GROUPS = ["staff", "captain", "member"];
 const STAFF_ROLES = ["owner", "admin", "staff"];
 const MEMBER_AUDIENCES = ["all", "grades", "none"];
 
+function memberGrades(member) {
+  // An explicit empty list clears membership; only legacy records use grade.
+  const values = Array.isArray(member?.grades) ? member.grades : [member?.grade];
+  return [...new Set(values.filter((value) => typeof value === "string" && value.trim()))];
+}
+
 function needsGeneralAudienceUpgrade(channel) {
   return (channel?.id === "ch_1" || (!channel?.id && channel?.name === "全体連絡")) &&
     !MEMBER_AUDIENCES.includes(channel.memberAudience);
@@ -48,8 +54,7 @@ function canViewChannel(channel, member, members = []) {
   if (!["member", "captain"].includes(member.role || "member")) return false;
   if (mode === "all") return true;
   if (mode === "none") return false;
-  return ["member", "captain"].includes(member.role || "member") && Boolean(member.grade) &&
-    (channel.allowedGrades || []).includes(member.grade);
+  return memberGrades(member).some((grade) => (channel.allowedGrades || []).includes(grade));
 }
 
 function audienceForChannel(channel, members, authorUid = "") {
@@ -60,4 +65,4 @@ function audienceForChannel(channel, members, authorUid = "") {
   return { shareScope: channelMemberAudience(channel, members) === "grades" ? "grades" : "roles", visibleToUids, readTargetUids };
 }
 
-module.exports = { DEFAULT_ROLE_GROUPS, channelRoleGroups, channelMemberAudience, needsGeneralAudienceUpgrade, canViewChannel, audienceForChannel };
+module.exports = { DEFAULT_ROLE_GROUPS, memberGrades, channelRoleGroups, channelMemberAudience, needsGeneralAudienceUpgrade, canViewChannel, audienceForChannel };

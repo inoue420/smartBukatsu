@@ -328,6 +328,7 @@ function AppContent() {
             canEditTags: Boolean(m.canEditTags),
             canEditCalendar: Boolean(m.canEditCalendar),
             grade: m.grade || "",
+            grades: m.grades,
             position: m.position || "",
           };
         });

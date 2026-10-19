@@ -40,7 +40,7 @@ import { medicalDangerCount } from "../utils/historyLoading";
 import HistoryLoadingControls from "../components/HistoryLoadingControls";
 import { useWorkspaceReactions } from "../hooks/useWorkspaceReactions";
 import { WORKSPACE_REACTION_EMOJIS, canViewWorkspaceReactionSenders, workspaceReactionSenders } from "../utils/workspaceReactions";
-import { channelRoleGroups, channelMemberAudience, needsGeneralAudienceUpgrade, canViewChannel, audienceForChannel } from "../../functions/workspaceAudience";
+import { memberGrades, channelRoleGroups, channelMemberAudience, needsGeneralAudienceUpgrade, canViewChannel, audienceForChannel } from "../../functions/workspaceAudience";
 import {
   getBlockedContentMessage,
   getContentWarningMessage,
@@ -401,7 +401,7 @@ const WorkspaceHomeScreen = ({
           uid: profile.uid,
           name: profile.name,
           role: profile.role,
-          grade: profile.grade,
+          grades: memberGrades(profile).sort(),
         })),
       }),
     [activeTeamId, channels, memberEntries],
@@ -2818,8 +2818,8 @@ const WorkspaceHomeScreen = ({
                     <Text style={styles.inputLabel}>部員の公開範囲</Text>
                     <View style={styles.memberSelectorWrapper}>
                       {[
-                        { id: "all", label: "部員全体", description: "学年未設定の部員も含む全員" },
-                        { id: "grades", label: "学年ごと", description: "選択した学年の部員・キャプテン" },
+                        { id: "all", label: "部員全体", description: "学年・グループ未設定の部員も含む全員" },
+                        { id: "grades", label: "学年・グループごと", description: "選択した学年・グループの部員・キャプテン" },
                       ].map((option) => {
                         const isSelected = selectedMemberAudience === option.id;
                         return (
@@ -2848,7 +2848,7 @@ const WorkspaceHomeScreen = ({
                           onPress={() => toggleGradeSelection(grade)}>
                           <View style={styles.roleOptionTextContainer}>
                             <Text style={[styles.memberOptionText, isSelected && styles.memberOptionTextSelected]}>{grade}</Text>
-                            <Text style={styles.roleOptionDescription}>{grades.includes(grade) ? "この学年の部員・キャプテン" : "学年リストから削除済み"}</Text>
+                            <Text style={styles.roleOptionDescription}>{grades.includes(grade) ? "この学年・グループの部員・キャプテン" : "学年・グループ管理から削除済み"}</Text>
                           </View>
                           <Text style={[styles.roleOptionStatus, isSelected && styles.roleOptionStatusSelected]}>{isSelected ? "ON ✓" : "OFF"}</Text>
                         </TouchableOpacity>
@@ -2857,10 +2857,10 @@ const WorkspaceHomeScreen = ({
                   </View>
                 )}
                 <Text style={styles.guardianDefaultNote}>
-                  ※保護者は新規作成時、デフォルトでOFFです。「部員全体」は学年未設定者も対象です。「学年ごと」は選択した学年だけが対象です。
+                  ※保護者は新規作成時、デフォルトでOFFです。「部員全体」は学年・グループ未設定者も対象です。「学年・グループごと」は選択した学年・グループのいずれかに所属する部員が対象です。
                 </Text>
                 {grades.length === 0 && selectedMemberAudience === "grades" && (
-                  <Text style={styles.guardianDefaultNote}>学年リスト管理でグループを登録してください。学年を使わない場合は「部員全体」を選択できます。</Text>
+                  <Text style={styles.guardianDefaultNote}>学年・グループ管理で学年・グループを登録してください。学年・グループを使わない場合は「部員全体」を選択できます。</Text>
                 )}
                 {editingChannel && editingChannel.shareScope !== "grades" && (
                   <Text style={styles.guardianDefaultNote}>

@@ -140,6 +140,7 @@ service cloud.firestore {
           (inviteOk(request.resource.data.inviteCode, teamId)
             && request.resource.data.role == 'member'
             && request.resource.data.get('grade', '') == ''
+            && request.resource.data.get('grades', []) == []
             && request.resource.data.get('canEditCalendar', false) == false
             && request.resource.data.get('canPostTacticalNotes', false) == false)
         );
@@ -147,7 +148,7 @@ service cloud.firestore {
         allow update: if isMember(teamId)
           && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['childUids', 'childMemberships', 'manualChildren'])
           && (isManager(teamId) || (memberId == uid()
-          && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['grade'])
+          && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['grade', 'grades'])
           && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'canPostTacticalNotes', 'canEditCalendar'])
             || (get(/databases/$(database)/documents/teams/$(teamId)).data.createdBy == uid()
               && request.resource.data.role == 'admin'

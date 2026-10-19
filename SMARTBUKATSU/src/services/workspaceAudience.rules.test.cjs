@@ -25,7 +25,7 @@ test("real rules: only staff can change grades, and profile saves preserve a con
     await db.collection("invites").doc("synthetic-grade").set({ teamId: team, active: true });
     const sessions = {};
     for (const role of ["owner", "admin", "staff", "captain", "member", "guardian"]) {
-      await members.doc(role).set({ name: "Synthetic", role, grade: "1年生", position: "GK" });
+      await members.doc(role).set({ name: "Synthetic", role, grade: "1年生", grades: ["1年生", "Aチーム"], position: "GK" });
       await db.collection("users").doc(role).set({ name: "Synthetic", activeTeamId: team });
       sessions[role] = client(role);
     }
@@ -34,14 +34,19 @@ test("real rules: only staff can change grades, and profile saves preserve a con
         await denied(sdk.updateDoc(ref(sessions[role], role), { grade: "2年生" }));
         await denied(sdk.updateDoc(ref(sessions[role], role), { grade: sdk.deleteField() }));
         await denied(sdk.updateDoc(ref(sessions[role], "owner"), { grade: "2年生" }));
+        await denied(sdk.updateDoc(ref(sessions[role], role), { grades: ["2年生", "Aチーム"] }));
+        await denied(sdk.updateDoc(ref(sessions[role], role), { grades: [] }));
+        await denied(sdk.updateDoc(ref(sessions[role], role), { grades: sdk.deleteField() }));
+        await denied(sdk.updateDoc(ref(sessions[role], "owner"), { grades: ["Aチーム"] }));
         await sdk.updateDoc(ref(sessions[role], role), { name: "Updated synthetic", position: "CB" });
       }
     });
     await t.test("owner/admin/staff can assign and clear member and captain grades", async () => {
       for (const role of ["owner", "admin", "staff"]) {
-        await sdk.updateDoc(ref(sessions[role], "member"), { grade: "2年生" });
-        await sdk.updateDoc(ref(sessions[role], "captain"), { grade: "2年生" });
-        await sdk.updateDoc(ref(sessions[role], "member"), { grade: "" });
+        await sdk.updateDoc(ref(sessions[role], "member"), { grade: "2年生", grades: ["2年生", "Aチーム"] });
+        await sdk.updateDoc(ref(sessions[role], "captain"), { grade: "2年生", grades: ["2年生", "Aチーム"] });
+        assert.deepEqual((await members.doc("captain").get()).data().grades, ["2年生", "Aチーム"]);
+        await sdk.updateDoc(ref(sessions[role], "member"), { grade: "", grades: [] });
       }
     });
     await t.test("a profile save never overwrites the manager's grade, including a missing-grade legacy profile", async () => {
@@ -49,20 +54,25 @@ test("real rules: only staff can change grades, and profile saves preserve a con
       const declaration = require("@babel/parser").parse(source, { sourceType: "module" }).program.body
         .find((item) => item.type === "ExportNamedDeclaration" && item.declaration?.id?.name === "updateMemberProfile").declaration;
       const save = vm.runInThisContext("(function({ doc, setDoc, db }) {" + source.slice(declaration.start, declaration.end) + "\nreturn updateMemberProfile; })")({ ...sdk, db: sessions.member });
-      await sdk.updateDoc(ref(sessions.staff, "member"), { grade: "2年生" });
+      await sdk.updateDoc(ref(sessions.staff, "member"), { grade: "2年生", grades: ["2年生", "Aチーム"] });
       await save(team, "member", "New synthetic name", "RW");
       let data = (await members.doc("member").get()).data();
       assert.equal(data.grade, "2年生"); assert.equal(data.position, "RW");
-      await members.doc("member").update({ grade: admin.FieldValue.delete() });
+      assert.deepEqual(data.grades, ["2年生", "Aチーム"]);
+      await members.doc("member").update({ grade: admin.FieldValue.delete(), grades: admin.FieldValue.delete() });
       await save(team, "member", "Legacy synthetic name", "LW");
       data = (await members.doc("member").get()).data();
       assert.equal(Object.hasOwn(data, "grade"), false); assert.equal(data.position, "LW");
+      assert.equal(Object.hasOwn(data, "grades"), false);
     });
     await t.test("an invitation cannot be used to self-assign a grade during membership creation", async () => {
       const newcomer = client("newcomer"), data = { name: "Synthetic newcomer", inviteCode: "synthetic-grade", role: "member" };
       await denied(sdk.setDoc(ref(newcomer, "newcomer"), { ...data, grade: "2年生" }));
+      await denied(sdk.setDoc(ref(newcomer, "newcomer"), { ...data, grades: ["Aチーム"] }));
+      await denied(sdk.setDoc(ref(newcomer, "newcomer"), { ...data, grades: "Aチーム" }));
       await sdk.setDoc(ref(newcomer, "newcomer"), data);
       await denied(sdk.updateDoc(ref(newcomer, "newcomer"), { grade: "1年生" }));
+      await denied(sdk.updateDoc(ref(newcomer, "newcomer"), { grades: ["Aチーム"] }));
       await sdk.updateDoc(ref(sessions.staff, "newcomer"), { grade: "1年生" });
       assert.equal((await members.doc("newcomer").get()).data().grade, "1年生");
     });
@@ -70,8 +80,8 @@ test("real rules: only staff can change grades, and profile saves preserve a con
       class HttpsError extends Error { constructor(code, message) { super(message); this.code = code; } }
       const backend = createLoadingOptimizationBackend({ firestore: db, FieldValue: admin.FieldValue, FieldPath: admin.FieldPath, HttpsError });
       const stateRef = root.collection("loadingOptimization").doc("state"), postRef = root.collection("workspacePosts").doc("audience");
-      await root.update({ channels: [{ id: "first", name: "First", shareScope: "grades", allowedRoleGroups: ["staff"], allowedGrades: ["1年生"] }] });
-      await members.doc("member").update({ grade: "1年生" });
+      await root.update({ channels: [{ id: "first", name: "First", shareScope: "grades", allowedRoleGroups: ["staff"], allowedGrades: ["Aチーム"] }] });
+      await members.doc("member").update({ grade: "1年生", grades: ["1年生", "Aチーム"] });
       await postRef.set({ authorUid: "staff", channelId: "first", channel: "First", content: "Synthetic grade post", createdAt: admin.Timestamp.now() });
       const finish = async () => {
         for (let step = 0; step < 40; step++) {
@@ -85,7 +95,7 @@ test("real rules: only staff can change grades, and profile saves preserve a con
       await backend.configureCallable({ auth: { uid: "owner" }, data: { teamId: team, enabled: true } }); await finish();
       assert.ok((await postRef.get()).data().visibleToUids.includes("member"));
       const before = await members.doc("member").get();
-      await sdk.updateDoc(ref(sessions.staff, "member"), { grade: "2年生" });
+      await sdk.updateDoc(ref(sessions.staff, "member"), { grades: ["1年生"] });
       await backend.handleMembership({ params: { teamId: team, uid: "member" }, data: { before, after: await members.doc("member").get() } });
       await finish();
       const data = (await postRef.get()).data();
@@ -93,6 +103,7 @@ test("real rules: only staff can change grades, and profile saves preserve a con
       assert.equal(data.visibleToUids.includes("member"), false);
       assert.equal(data.readTargetUids.includes("member"), false);
       assert.equal((await stateRef.get()).data().enabled, true);
+      assert.equal((await members.doc("member").get()).data().grade, "1年生");
     });
     await t.test("General migration is staff-only, idempotent, and preserves unrelated channel settings", async () => {
       const source = fs.readFileSync(path.join(__dirname, "firestoreService.js"), "utf8");

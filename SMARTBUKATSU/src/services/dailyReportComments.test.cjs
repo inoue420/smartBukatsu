@@ -69,6 +69,7 @@ function screenHarness(screen, overrides = {}, os = "android") {
     "../services/firestoreService": services,
     "../services/dailyReportAttachmentService": { getActiveDailyReportAttachments: () => [], MAX_DAILY_REPORT_ATTACHMENTS: 2 },
     "../utils/medicalScale": require("../utils/medicalScale"),
+    "../../functions/workspaceAudience": require("../../functions/workspaceAudience"),
     "../utils/historyLoading": require("../utils/historyLoading"),
     "../utils/contentModeration": require("../utils/contentModeration"),
     "../ads/adSettings": require("../ads/adSettings"),
