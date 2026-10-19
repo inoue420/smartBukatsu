@@ -83,6 +83,7 @@ function loadNotificationBackend(firestore, Timestamp) {
       if (name === "firebase-functions/v2/scheduler") return { onSchedule: (_options, fn) => fn };
       if (name === "firebase-functions/logger") return { info() {}, warn() {}, error() {} };
       if (name === "./notificationCore") return require("../functions/notificationCore");
+      if (name === "./workspaceAudience") return require("../functions/workspaceAudience");
       if (name === "node:crypto") return require(name);
       throw new Error(`Unexpected notification dependency: ${name}`);
     },

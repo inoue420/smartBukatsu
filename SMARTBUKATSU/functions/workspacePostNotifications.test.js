@@ -86,6 +86,7 @@ function harness(source = currentSource, options = {}) {
     "firebase-admin/firestore": { getFirestore: () => firestore, Timestamp: { now: () => timestamp(1000), fromMillis: timestamp } },
     "node:crypto": require("node:crypto"),
     "./notificationCore": require("./notificationCore"),
+    "./workspaceAudience": require("./workspaceAudience"),
   };
   vm.runInNewContext(source, {
     module,
@@ -156,10 +157,105 @@ for (const [name, change] of Object.entries(passiveChanges)) {
   }
 }
 
-test("new post retains manager role and sender exclusion", async () => {
+test("new post reaches public members and selected public managers, excluding the sender", async () => {
   const h = harness();
   await h.run(null, post);
-  assert.deepEqual(h.notifications().map((item) => item.uid), ["manager"]);
+  assert.deepEqual(h.notifications().map((item) => item.uid).sort(), ["manager", "target", "writer"]);
+});
+
+function gradeHarness(allowedRoleGroups = ["staff", "guardian"]) {
+  const h = harness();
+  h.documents.set("teams/team", { name: "Test team", channels: [{
+    id: "channel", name: "First grade", shareScope: "grades", allowedGrades: ["1年生"],
+    allowedRoleGroups, notificationRecipientUids: ["manager", "unselected", "target", "outsider"],
+  }] });
+  for (const [uid, role, grade] of [
+    ["author", "staff", ""], ["writer", "member", "1年生"], ["target", "member", "2年生"],
+    ["manager", "admin", ""], ["unselected", "staff", ""], ["captain", "captain", "1年生"],
+    ["unset", "member", ""], ["guardian", "guardian", "1年生"],
+  ]) {
+    h.documents.set(`teams/team/members/${uid}`, { role, grade });
+    h.documents.set(`users/${uid}`, {});
+    h.documents.set(`users/${uid}/notificationPreferences/default`, { masterEnabled: true });
+    h.documents.set(`users/${uid}/pushTokens/device`, { token: `ExpoPushToken[${uid}]` });
+  }
+  // A staff member outside the explicit selection must not receive a new-post notification.
+  h.documents.get("teams/team").channels[0].notificationRecipientUids = ["manager", "target", "outsider"];
+  return h;
+}
+
+test("grade post includes public captain/guardian, filters stale UID lists and retains staff selection", async () => {
+  const h = gradeHarness();
+  await h.run(null, { ...post, shareScope: "grades", visibleToUids: ["author", "writer", "target", "manager", "unselected", "captain", "unset", "guardian", "outsider"] });
+  assert.deepEqual(h.notifications().map((item) => item.uid).sort(), ["captain", "guardian", "manager", "writer"]);
+  assert.equal(h.pushes.length, 4);
+});
+
+test("selected staff outside the public scope do not receive post contents", async () => {
+  const h = gradeHarness([]);
+  await h.run(null, { ...post, shareScope: "grades" });
+  assert.deepEqual(h.notifications().map((item) => item.uid).sort(), ["captain", "writer"]);
+});
+
+test("grade channel with no selected grades does not default to all members", async () => {
+  const h = gradeHarness([]);
+  h.documents.get("teams/team").channels[0].allowedGrades = [];
+  await h.run(null, { ...post, shareScope: "grades" });
+  assert.equal(h.notifications().length, 0);
+});
+
+test("new-post category, team and master switches suppress pushes while retaining in-app notifications", async () => {
+  const h = gradeHarness();
+  h.documents.set("users/writer/notificationPreferences/default", { masterEnabled: true, categories: { workspacePost: false } });
+  h.documents.set("users/manager/notificationPreferences/default", { masterEnabled: true, teamEnabled: { team: false } });
+  h.documents.set("users/guardian/notificationPreferences/default", { masterEnabled: false });
+  await h.run(null, post);
+  assert.equal(h.notifications().length, 4);
+  assert.deepEqual(h.pushes.map((message) => message.to), ["ExpoPushToken[captain]"]);
+});
+
+test("new post replay is idempotent and an explicit mention takes precedence over the new-post notification", async () => {
+  const h = gradeHarness();
+  const mentioned = { ...post, mentionedUids: ["writer"] };
+  await h.run(null, mentioned);
+  await h.run(null, mentioned);
+  assert.equal(h.notifications().length, 4);
+  assert.equal(h.pushes.length, 4);
+  assert.deepEqual(h.notifications().filter((item) => item.uid === "writer").map((item) => item.category), ["mention"]);
+});
+
+test("hidden, unknown grade channels and empty saved audiences never produce new-post notifications", async () => {
+  for (const change of [{ moderationStatus: "hidden" }, { channelId: "missing", shareScope: "grades" }, { visibleToUids: [] }]) {
+    const h = gradeHarness();
+    await h.run(null, { ...post, ...change });
+    assert.equal(h.notifications().length, 0);
+  }
+});
+
+test("grade changes also prevent stale mentions from notifying a former audience member", async () => {
+  const h = gradeHarness([]);
+  await h.run(post, { ...post, shareScope: "grades", visibleToUids: ["target"], mentionedUids: ["target"] });
+  assert.equal(h.notifications().length, 0);
+});
+
+test("all-member mode notifies unset and other grades while retaining the selected staff rule", async () => {
+  const h = gradeHarness();
+  h.documents.get("teams/team").channels[0].memberAudience = "all";
+  await h.run(null, post);
+  assert.deepEqual(h.notifications().map((item) => item.uid).sort(), ["captain", "guardian", "manager", "target", "unset", "writer"]);
+});
+
+test("the existing system General defaults to all and still honors subsequent explicit grade choices", async () => {
+  for (const memberAudience of [undefined, "grades"]) {
+    const h = gradeHarness();
+    const channel = h.documents.get("teams/team").channels[0];
+    channel.id = "ch_1"; channel.name = "全体連絡";
+    if (memberAudience) channel.memberAudience = memberAudience;
+    await h.run(null, { ...post, channelId: "ch_1" });
+    assert.equal(h.notifications().some((item) => item.uid === "unset"), memberAudience === undefined);
+    assert.equal(h.notifications().some((item) => item.uid === "target"), memberAudience === undefined);
+    assert.equal(h.notifications().some((item) => item.uid === "manager"), true);
+  }
 });
 
 test("mentions retain visibility, sender exclusion and membership checks", async () => {
@@ -195,7 +291,7 @@ test("legacy author fields and channel names keep working", async () => {
   const h = harness();
   await h.run({ createdBy: "author" }, { createdBy: "author", replies: [{ id: "legacy", uid: "writer" }] });
   await h.run(null, { createdBy: "author", channel: "General" }, "new");
-  assert.deepEqual(h.notifications().map((item) => item.uid).sort(), ["author", "manager"]);
+  assert.deepEqual(h.notifications().map((item) => item.uid).sort(), ["author", "manager", "target", "writer"]);
 });
 
 test("same event replay does not duplicate notification documents or pushes", async () => {
@@ -250,13 +346,12 @@ test("metrics are emitted even when context retrieval fails", async () => {
   assert.equal(h.logs[0].memberDocumentsFetched, 4);
 });
 
-test("before/after comparison: fewer reads with identical notifications", async () => {
+test("before/after comparison: passive/mention/reply events retain fewer reads and identical notifications", async () => {
   // Pin the approved starting revision, so this regression remains useful after commit.
   const originalSource = execFileSync("git", ["show", "1c127f44c760a9b417574661ccffaa0b6aeb3c97:./notifications.js"], { cwd: __dirname, encoding: "utf8" });
   const old = harness(originalSource);
   const updated = harness();
   const scenarios = [
-    [null, post],
     ...Object.values(passiveChanges).map((change) => [post, { ...post, ...change }]),
     [post, { ...post, ...passiveChanges.both, replies: [reply], mentionedUids: ["target"] }],
     [post, { ...post, replies: [{ ...reply, mentionedUids: ["author", "target"] }] }],
@@ -268,6 +363,6 @@ test("before/after comparison: fewer reads with identical notifications", async 
   }
   assert.deepEqual(updated.notifications(), old.notifications());
   assert.deepEqual(updated.pushes, old.pushes);
-  assert.equal(old.counts().memberDocuments, 24);
-  assert.equal(updated.counts().memberDocuments, 12);
+  assert.equal(old.counts().memberDocuments, 20);
+  assert.equal(updated.counts().memberDocuments, 8);
 });

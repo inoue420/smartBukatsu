@@ -88,6 +88,7 @@ function harness(options = {}) {
       if (name === "firebase-functions/v2/https") return { onCall: (_config, handler) => handler, HttpsError: Error };
       if (name === "firebase-functions/logger") return Object.fromEntries(["info", "warn", "error"].map((level) => [level, (message, fields) => logs.push({ level, message, ...fields })]));
       if (name === "./notificationCore") return require("./notificationCore");
+      if (name === "./workspaceAudience") return require("./workspaceAudience");
       if (name === "node:crypto") return require(name);
       throw new Error(`Unexpected dependency: ${name}`);
     },

@@ -60,17 +60,7 @@ function adjustSummary(summary = {}, before = {}, after = {}) {
 function audienceFor(post, channels, members) {
   const channel = channels.find((item) => item.id === post.channelId || item.name === post.channel) || channels[0] || { allowedRoleGroups: ["staff", "captain", "member"] };
   if (!channel) return null;
-  const group = (role) => ["owner", "admin", "staff"].includes(role) ? "staff" : role === "captain" ? "captain" : role === "guardian" ? "guardian" : "member";
-  let groups = channel.allowedRoleGroups?.length ? channel.allowedRoleGroups : null;
-  if (!groups && channel.shareScope === "coach") groups = ["staff"];
-  if (!groups && channel.shareScope === "group" && !(channel.allowedMembers || []).includes("all")) {
-    groups = ["staff", ...members.filter((member) => (channel.allowedMemberUids || []).includes(member.uid) || (channel.allowedMembers || []).some((name) => [member.name, member.profileKey].includes(name))).map((member) => group(member.role))];
-  }
-  groups ||= ["staff", "captain", "member"];
-  const audience = members.filter((member) => groups.includes(group(member.role)));
-  const visibleToUids = [...new Set([...audience.map((member) => member.uid), ...(post.authorUid ? [post.authorUid] : [])])].sort();
-  const readTargetUids = members.filter((member) => member.role !== "guardian" && visibleToUids.includes(member.uid)).map((member) => member.uid).sort();
-  return { shareScope: "roles", visibleToUids, readTargetUids };
+  return require("./workspaceAudience").audienceForChannel(channel, members, post.authorUid);
 }
 
 function timestampParts(value) {

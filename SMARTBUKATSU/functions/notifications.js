@@ -4,6 +4,7 @@ const { onSchedule } = require("firebase-functions/v2/scheduler");
 const logger = require("firebase-functions/logger");
 const { getFirestore, Timestamp } = require("firebase-admin/firestore");
 const { createHash } = require("node:crypto");
+const { audienceForChannel } = require("./workspaceAudience");
 const {
   NOTIFICATION_CATEGORIES,
   DEFAULT_CATEGORY_PREFERENCES,
@@ -566,7 +567,7 @@ const notifyWorkspacePostWritten = onDocumentWritten(
     try {
       const beforeData = event.data?.before.exists ? event.data.before.data() : {};
       const afterData = event.data?.after.exists ? event.data.after.data() : null;
-      if (!afterData || afterData.status === "deleted") return;
+      if (!afterData || afterData.status === "deleted" || afterData.moderationStatus === "hidden") return;
 
       const isNewPost = !event.data?.before.exists;
       const visibleUidSet = new Set(uniqueUids(afterData.visibleToUids));
@@ -603,18 +604,22 @@ const notifyWorkspacePostWritten = onDocumentWritten(
         (item) =>
           item?.id === afterData.channelId ||
           (item?.name && item.name === afterData.channel),
-      );
+      ) || (channels.length === 0 && (afterData.channelId === "ch_1" || afterData.channel === "全体連絡")
+        ? { id: "ch_1", name: "全体連絡" } : null);
+      const channelUidSet = new Set(channel
+        ? audienceForChannel(channel, members, actorUid(afterData)).visibleToUids
+        : afterData.shareScope === "grades" ? [] : members.map((member) => member.uid));
+      // Intersect the saved audience with current membership/grade settings.
+      // A missing legacy array falls back to the channel; an explicit empty one does not.
+      const isVisibleRecipient = (uid) => channelUidSet.has(uid) &&
+        (!Array.isArray(afterData.visibleToUids) || visibleUidSet.has(uid));
+      const postMentionUids = addedPostMentions.filter(isVisibleRecipient);
       if (isNewPost && channel) {
-        const managerUidSet = new Set(
-          members
-            .filter((member) => STAFF_NOTIFICATION_ROLES.has(member.role))
-            .map((member) => member.uid),
-        );
-        const recipientUids = uniqueUids(
-          channel.notificationRecipientUids,
-        ).filter(
-          (uid) => uid !== actorUid(afterData) && managerUidSet.has(uid),
-        );
+        const selectedStaffUids = new Set(uniqueUids(channel.notificationRecipientUids));
+        const recipientUids = members.filter((member) =>
+          !STAFF_NOTIFICATION_ROLES.has(member.role) || selectedStaffUids.has(member.uid))
+          .map((member) => member.uid).filter((uid) =>
+            uid !== actorUid(afterData) && isVisibleRecipient(uid) && !postMentionUids.includes(uid));
         if (recipientUids.length > 0) {
           await fanOutToUids(recipientUids, {
             id: `workspace_post_${teamId}_${postId}`,
@@ -629,8 +634,8 @@ const notifyWorkspacePostWritten = onDocumentWritten(
           });
         }
       }
-      if (addedPostMentions.length > 0) {
-        await fanOutToUids(addedPostMentions, {
+      if (postMentionUids.length > 0) {
+        await fanOutToUids(postMentionUids, {
           id: `mention_${event.id}`,
           category: NOTIFICATION_CATEGORIES.MENTION,
           teamId,
@@ -648,7 +653,7 @@ const notifyWorkspacePostWritten = onDocumentWritten(
         const mentionedUids = uniqueUids(reply.mentionedUids).filter(
           (uid) =>
             uid !== senderUid &&
-            (visibleUidSet.size === 0 || visibleUidSet.has(uid)),
+            isVisibleRecipient(uid),
         );
         if (mentionedUids.length > 0) {
           await fanOutToUids(mentionedUids, {
@@ -671,6 +676,7 @@ const notifyWorkspacePostWritten = onDocumentWritten(
         if (
           postAuthorUid &&
           postAuthorUid !== senderUid &&
+          isVisibleRecipient(postAuthorUid) &&
           !mentionedUids.includes(postAuthorUid)
         ) {
           await fanOutToUids([postAuthorUid], {

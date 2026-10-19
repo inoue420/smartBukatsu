@@ -25,6 +25,7 @@ import { LEGAL_POLICY_VERSION, MINIMUM_USER_AGE } from "../legal";
 import { validateNote, contentFingerprint, validateTasks, noteAcknowledgementId, isNoteSummaryCurrent, timestampsEqual } from "../utils/tacticalNotes";
 import { uploadTacticalNoteImage } from "./tacticalNoteAttachmentService";
 import { sendWorkspaceReaction } from "./workspaceReactionService";
+import { needsGeneralAudienceUpgrade } from "../../functions/workspaceAudience";
 const eventLastDate = (data) => [...(data.selectedDates || [])].sort().at(-1) || data.endDate || data.date;
 const clubAbsenceDate = (value) => {
   const match = /^(\d{4})[/-](\d{1,2})[/-](\d{1,2})(?:$|T| )/.exec(String(value || "").trim());
@@ -742,7 +743,6 @@ export async function updateMemberProfile(
   teamId,
   uid,
   newName,
-  grade,
   position,
 ) {
   if (!uid) return;
@@ -751,7 +751,7 @@ export async function updateMemberProfile(
   if (teamId) {
     await setDoc(
       doc(db, "teams", teamId, "members", uid),
-      { name: newName, grade: grade || "", position: position || "" },
+      { name: newName, position: position || "" },
       { merge: true },
     );
   }
@@ -1149,6 +1149,19 @@ export async function markWorkspaceNotificationState(teamId, postId, uid, key, a
   await setDoc(doc(db, "teams", teamId, "workspacePostReadStates", postId), {
     [field]: { [uid]: arrayUnion(key) }, updatedAt: serverTimestamp(),
   }, { merge: true });
+}
+
+export async function ensureGeneralChannelMemberAudience(teamId) {
+  if (!teamId) return false;
+  const teamRef = doc(db, "teams", teamId);
+  return runTransaction(db, async (transaction) => {
+    const snapshot = await transaction.get(teamRef);
+    const channels = snapshot.exists() && snapshot.data().channels;
+    if (!Array.isArray(channels) || !channels.some(needsGeneralAudienceUpgrade)) return false;
+    transaction.update(teamRef, { channels: channels.map((channel) => needsGeneralAudienceUpgrade(channel)
+      ? { ...channel, memberAudience: "all" } : channel) });
+    return true;
+  });
 }
 
 export async function getWorkspacePostsForAudienceSync(teamId) {

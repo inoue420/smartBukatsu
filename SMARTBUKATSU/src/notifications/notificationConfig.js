@@ -26,7 +26,7 @@ export const NOTIFICATION_CATEGORIES = {
   },
   workspacePost: {
     label: "チャンネルの新規投稿",
-    description: "通知先に指定されたチャンネルへの新しい投稿",
+    description: "公開範囲とスタッフの通知先設定に応じた新しい投稿",
     icon: "📣",
   },
   mention: {

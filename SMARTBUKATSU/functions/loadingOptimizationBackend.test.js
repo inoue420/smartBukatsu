@@ -134,9 +134,9 @@ function harness(options = {}) {
   const seed = (path, data) => { documents.set(path, copy(data)); };
   const members = options.members || [{ uid: "a", name: "A", profileKey: "A", role: "member", blockedUserUids: [] }];
   seed(base, { name: "Synthetic team", channels: [] });
-  seed(statePath, { ready: true, enabled: true, separateReads: false, schemaVersion: 1, medicalSummaryVersion: 2, status: "ready", preparationId: "revision-1", contextVersion: 1, contextRevision: "revision-1", contextShardCount: 1 });
+  seed(statePath, { ready: true, enabled: true, separateReads: false, schemaVersion: 1, medicalSummaryVersion: 2, status: "ready", preparationId: "revision-1", contextVersion: 2, contextRevision: "revision-1", contextShardCount: 1 });
   seed(`${base}/system/loadingContext_0`, { revision: "revision-1", payload: JSON.stringify({ members, channels: [] }) });
-  for (const member of members) { seed(`${base}/members/${member.uid}`, { name: member.name, role: member.role,
+  for (const member of members) { seed(`${base}/members/${member.uid}`, { name: member.name, role: member.role, grade: member.grade || "",
     ...(member.staffScope ? { staffScope: member.staffScope } : {}), ...(member.assignedStaff ? { assignedStaff: member.assignedStaff } : {}) }); seed(`users/${member.uid}`, { name: member.name }); }
   const eventSnapshot = (data) => ({ exists: data !== null, data: () => copy(data) });
   const event = (id, before, after) => ({ params: { teamId: TEAM, documentId: id }, data: { before: eventSnapshot(before), after: eventSnapshot(after) } });
@@ -299,7 +299,7 @@ test("reader-only late events cannot recreate an anchor for a deleted user", asy
 
 function nearLimitMembers(overLimit = false) {
   const members = Array.from({ length: 16 }, (_, index) => ({ uid: `large${index}`, name: "あ".repeat(43600) + index, role: index ? "member" : "owner" }));
-  const projection = () => ({ members: members.map((member) => ({ ...member, profileKey: member.name, staffScope: null, assignedStaff: null, blockedUserUids: [] })), channels: [] });
+  const projection = () => ({ members: members.map((member) => ({ ...member, grade: "", profileKey: member.name, staffScope: null, assignedStaff: null, blockedUserUids: [] })), channels: [] });
   const max = 4 * 1024 * 1024, initial = Buffer.byteLength(stableStringify(projection()), "utf8");
   const target = max - ((max - initial) % 2), difference = target - initial;
   members.at(-1).name += "あ".repeat(Math.floor(difference / 6)) + "x".repeat((difference % 6) / 2);
@@ -382,6 +382,63 @@ async function finish(h) {
     await h.backend.handlePreparation({ params: { teamId: TEAM }, data: { after: { exists: true, data: () => value } } });
   }
 }
+
+test("grade changes repair existing post audiences and unread counts without scanning unrelated histories", async () => {
+  const h = harness({ members: [
+    { uid: "a", name: "A", profileKey: "A", role: "member", grade: "1年生" },
+    { uid: "coach", name: "Coach", profileKey: "Coach", role: "staff" },
+  ] });
+  const beforeTeam = h.documents.get(base), channel = { id: "grade", name: "Grade", shareScope: "grades", allowedGrades: ["1年生"], allowedRoleGroups: ["staff"] };
+  const afterTeam = { ...beforeTeam, channels: [channel] };
+  h.seed(base, afterTeam);
+  h.seed(`${base}/workspacePosts/grade`, { channelId: "grade", channel: "Grade", authorUid: "coach", user: "Coach", content: "@A", replies: [] });
+  await h.backend.handleTeam({ params: { teamId: TEAM }, data: { before: { data: () => beforeTeam }, after: { exists: true, data: () => afterTeam } } });
+  await finish(h);
+  assert.deepEqual(h.documents.get(`${base}/workspacePosts/grade`).visibleToUids, ["a", "coach"]);
+  assert.equal(h.documents.get(summaryPath("a")).workspaceNotificationUnreadCount, 1);
+  h.reset();
+  const before = h.documents.get(`${base}/members/a`), after = { ...before, grade: "2年生" };
+  h.seed(`${base}/members/a`, after);
+  await h.backend.handleMembership({ params: { teamId: TEAM, uid: "a" }, data: { before: { data: () => before }, after: { data: () => after } } });
+  assert.deepEqual(h.documents.get(statePath).preparationStages, ["audiences", "workspacePosts", "entries:workspacePosts", "complete"]);
+  await finish(h);
+  assert.deepEqual(h.documents.get(`${base}/workspacePosts/grade`).visibleToUids, ["coach"]);
+  assert.equal(h.documents.get(summaryPath("a")).workspaceNotificationUnreadCount, 0);
+  assert.equal(h.trace.some((item) => item.type === "query" && /\/(dailyReports|notices|clubEvents|personalEvents)$/.test(item.path)), false);
+});
+
+test("old contexts missing grade data are rebuilt before grade audience preparation", async () => {
+  const h = harness({ members: [{ uid: "a", name: "A", profileKey: "A", role: "member", grade: "1年生" }] });
+  h.seed(base, { ...h.documents.get(base), channels: [{ id: "ch_1", shareScope: "grades", memberAudience: "grades", allowedGrades: ["1年生"] }] });
+  h.seed(statePath, { ...h.documents.get(statePath), contextVersion: 1 });
+  const result = await h.backend.context(TEAM);
+  assert.equal(result.members[0].grade, "1年生");
+  assert.equal(result.channels[0].memberAudience, "grades");
+  assert.equal(h.documents.get(statePath).contextVersion, 2);
+  assert.equal(h.documents.get(statePath).enabled, false);
+  await finish(h);
+  assert.equal(h.documents.get(statePath).enabled, true);
+});
+
+test("General all-member migration and later explicit grade choices survive cached channel updates", async () => {
+  const h = harness({ members: [
+    { uid: "a", name: "A", profileKey: "A", role: "member", grade: "" },
+    { uid: "coach", name: "Coach", profileKey: "Coach", role: "staff" },
+  ] });
+  h.seed(`${base}/workspacePosts/general`, { channelId: "ch_1", channel: "全体連絡", authorUid: "coach", content: "Synthetic", replies: [] });
+  const setMode = async (memberAudience) => {
+    const before = h.documents.get(base), after = { ...before, channels: [{ id: "ch_1", name: "全体連絡",
+      shareScope: "grades", memberAudience, allowedGrades: ["1年生"], allowedRoleGroups: ["staff"] }] };
+    h.seed(base, after);
+    await h.backend.handleTeam({ params: { teamId: TEAM }, data: { before: { data: () => before }, after: { exists: true, data: () => after } } });
+    await finish(h);
+    assert.equal((await h.backend.context(TEAM)).channels[0].memberAudience, memberAudience);
+  };
+  await setMode("all");
+  assert.ok(h.documents.get(`${base}/workspacePosts/general`).visibleToUids.includes("a"));
+  await setMode("grades");
+  assert.equal(h.documents.get(`${base}/workspacePosts/general`).visibleToUids.includes("a"), false);
+});
 test("medical recipients exclude students/guardians while latest and other counters remain intact", async () => {
   const h = harness({ members: [
     { uid: "student", name: "Student", profileKey: "Student", role: "member" },

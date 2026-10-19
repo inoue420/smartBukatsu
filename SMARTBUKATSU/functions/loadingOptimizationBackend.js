@@ -1,6 +1,6 @@
 const { SCHEMA_VERSION, lastEventDate, contributions, adjustSummary, audienceFor,
   contentChanges, latestReportData, validLatest, compareReports, stableStringify, postActorUids } = require("./loadingOptimizationCore");
-const CONTEXT_VERSION = 1, SHARD_BYTES = 256 * 1024, MAX_CONTEXT_BYTES = 4 * 1024 * 1024;
+const CONTEXT_VERSION = 2, SHARD_BYTES = 256 * 1024, MAX_CONTEXT_BYTES = 4 * 1024 * 1024;
 const SOURCE_KINDS = ["notices", "dailyReports", "workspacePosts"];
 const MEDICAL_SUMMARY_VERSION = 2;
 const POST_ACTOR_INDEX_VERSION = 1;
@@ -79,12 +79,12 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
       const data = d.data(), user = users[i].data(), name = data.name || user.name || "名称未設定";
       const profileKey = usedNames.has(name) ? name + "_" + d.id.substring(0, 4) : name;
       usedNames.add(profileKey);
-      members.push({ uid: d.id, name, profileKey, role: data.role || "member",
+      members.push({ uid: d.id, name, profileKey, role: data.role || "member", grade: data.grade || "",
         staffScope: data.staffScope || null, assignedStaff: data.assignedStaff || null,
         blockedUserUids: (user.blockedUserUids || []).filter((uid) => !excludedUids[uid]).sort() });
     });
     const channels = (team.data().channels || []).map((c) => Object.fromEntries(
-      ["id", "name", "allowedRoleGroups", "shareScope", "allowedMemberUids", "allowedMembers"]
+      ["id", "name", "memberAudience", "allowedRoleGroups", "allowedGrades", "shareScope", "allowedMemberUids", "allowedMembers"]
         .filter((key) => c[key] !== undefined).map((key) => [key, c[key]])));
     return { members, channels, ...(Object.keys(excludedUids).length ? { excludedUids: Object.keys(excludedUids).sort() } : {}) };
   }
@@ -467,6 +467,7 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
         SOURCE_KINDS.forEach((kind) => kinds.add(kind)); latestUids.push(uid);
       } else {
         if (a.role !== b.role) { stages.add("audiences"); kinds.add("workspacePosts"); kinds.add("dailyReports"); }
+        if ((a.grade || "") !== (b.grade || "")) { stages.add("audiences"); kinds.add("workspacePosts"); }
         if ((a.assignedStaff || null) !== (b.assignedStaff || null)) reportAuthors.add(uid);
         if ((a.staffScope || null) !== (b.staffScope || null)) {
           for (const author of after.members) {
@@ -507,7 +508,7 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
       const team = await read(teamRef(teamId), m, tx);
       if (!team.exists) return null;
       const channels = (team.data().channels || []).map((channel) => Object.fromEntries(
-        ["id", "name", "allowedRoleGroups", "shareScope", "allowedMemberUids", "allowedMembers"]
+        ["id", "name", "memberAudience", "allowedRoleGroups", "allowedGrades", "shareScope", "allowedMemberUids", "allowedMembers"]
           .filter((key) => channel[key] !== undefined).map((key) => [key, channel[key]])));
       return { members: old.members, channels, ...(old.excludedUids?.length ? { excludedUids: old.excludedUids } : {}) };
     }
@@ -515,7 +516,7 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
     const [member, user] = await Promise.all([read(teamRef(teamId).collection("members").doc(uid), m, tx), read(firestore.collection("users").doc(uid), m, tx)]);
     const name = member.data()?.name || user.data()?.name || "名称未設定";
     if (!previous || !member.exists || !user.exists || previous.name !== name) return sourceContext(teamId, m, tx);
-    const updated = { ...previous, role: member.data().role || "member", staffScope: member.data().staffScope || null,
+    const updated = { ...previous, role: member.data().role || "member", grade: member.data().grade || "", staffScope: member.data().staffScope || null,
       assignedStaff: member.data().assignedStaff || null, blockedUserUids: [...(user.data().blockedUserUids || [])].sort() };
     const excluded = (await read(exclusionsRef(teamId), m, tx)).data()?.uids || {};
     if (excluded[uid]) return sourceContext(teamId, m, tx);
@@ -561,7 +562,7 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
     });
   }
   async function handleMembership(event) {
-    const relevant = (d) => d && [d.name, d.role, d.staffScope, d.assignedStaff];
+    const relevant = (d) => d && [d.name, d.role, d.grade, d.staffScope, d.assignedStaff];
     if (stableStringify(relevant(event.data?.before.data() || null)) === stableStringify(relevant(event.data?.after.data() || null))) return;
     await restartForReferenceChange(event.params.teamId, { kind: "member", uid: event.params.uid });
   }

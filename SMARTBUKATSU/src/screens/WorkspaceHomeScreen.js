@@ -22,6 +22,7 @@ import {
   appendWorkspacePostReply,
   createNotice,
   createWorkspacePost,
+  ensureGeneralChannelMemberAudience,
   getWorkspacePostsForAudienceSync,
   manageOwnWorkspaceContent,
   markWorkspacePostRead,
@@ -39,6 +40,7 @@ import { medicalDangerCount } from "../utils/historyLoading";
 import HistoryLoadingControls from "../components/HistoryLoadingControls";
 import { useWorkspaceReactions } from "../hooks/useWorkspaceReactions";
 import { WORKSPACE_REACTION_EMOJIS, canViewWorkspaceReactionSenders, workspaceReactionSenders } from "../utils/workspaceReactions";
+import { channelRoleGroups, channelMemberAudience, needsGeneralAudienceUpgrade, canViewChannel, audienceForChannel } from "../../functions/workspaceAudience";
 import {
   getBlockedContentMessage,
   getContentWarningMessage,
@@ -73,7 +75,6 @@ const REPORT_REASONS = [
   { value: "spam_fraud", label: "スパム・詐欺" },
   { value: "other", label: "その他" },
 ];
-const MANAGER_ROLES = ["owner", "admin", "staff"];
 const DEFAULT_ALLOWED_ROLE_GROUPS = ["staff", "captain", "member"];
 const ROLE_GROUP_OPTIONS = [
   {
@@ -81,8 +82,11 @@ const ROLE_GROUP_OPTIONS = [
     label: "スタッフ",
     description: "監督・管理者・コーチ",
   },
-  { id: "captain", label: "キャプテン", description: "キャプテン権限" },
-  { id: "member", label: "一般部員", description: "一般部員権限" },
+  {
+    id: "students",
+    label: "部員",
+    description: "一般部員・キャプテン",
+  },
   {
     id: "guardian",
     label: "保護者",
@@ -105,13 +109,6 @@ const formatRelativeTime = (createdAt, fallbackTime, now) => {
   return `${Math.floor(elapsedHours / 24)}日前`;
 };
 
-const getRoleGroup = (role) => {
-  if (MANAGER_ROLES.includes(role)) return "staff";
-  if (role === "captain") return "captain";
-  if (role === "guardian") return "guardian";
-  return "member";
-};
-
 const hasSameUids = (first, second) => {
   if (!Array.isArray(first) || !Array.isArray(second)) return false;
   if (first.length !== second.length) return false;
@@ -126,6 +123,7 @@ const defaultChannels = [
     name: "全体連絡",
     isReadOnly: true,
     shareScope: "roles",
+    memberAudience: "all",
     allowedRoleGroups: DEFAULT_ALLOWED_ROLE_GROUPS,
   },
 ];
@@ -150,6 +148,7 @@ const WorkspaceHomeScreen = ({
   dailyReports = [],
   alertThresholds,
   userProfiles = {},
+  grades = [],
 }) => {
   const { activeTeamId, blockedUserUids = [] } = useAuth();
   const { unreadTotal } = useNotifications();
@@ -211,13 +210,9 @@ const WorkspaceHomeScreen = ({
       Object.entries(userProfiles).filter(([, profile]) => profile?.uid),
     [userProfiles],
   );
-  const notificationRecipientProfiles = useMemo(
-    () =>
-      memberEntries
-        .map(([, profile]) => profile)
-        .filter((profile) => MANAGER_ROLES.includes(profile.role)),
-    [memberEntries],
-  );
+  const audienceMembers = memberEntries.map(([profileKey, profile]) => ({ ...profile, profileKey }));
+  const notificationRecipientProfiles = memberEntries.map(([, profile]) => profile)
+    .filter((profile) => ["owner", "admin", "staff"].includes(profile.role));
   const getMentionedUids = (text) => {
     const content = String(text || "");
     return [
@@ -250,75 +245,11 @@ const WorkspaceHomeScreen = ({
     [memberEntries],
   );
   const getChannelAllowedRoleGroups = (channel) => {
-    if (
-      Array.isArray(channel?.allowedRoleGroups) &&
-      channel.allowedRoleGroups.length > 0
-    ) {
-      return channel.allowedRoleGroups;
-    }
-
-    if (channel?.shareScope === "coach") return ["staff"];
-    if (channel?.shareScope === "group") {
-      if ((channel.allowedMembers || []).includes("all")) {
-        return DEFAULT_ALLOWED_ROLE_GROUPS;
-      }
-
-      const legacyAllowedUids = new Set(channel.allowedMemberUids || []);
-      const legacyAllowedMembers = new Set(channel.allowedMembers || []);
-      const roleGroups = new Set(["staff"]);
-      memberEntries.forEach(([profileKey, profile]) => {
-        if (
-          legacyAllowedUids.has(profile.uid) ||
-          legacyAllowedMembers.has(profileKey) ||
-          legacyAllowedMembers.has(profile.name)
-        ) {
-          roleGroups.add(getRoleGroup(profile.role));
-        }
-      });
-      return [...roleGroups];
-    }
-
-    return DEFAULT_ALLOWED_ROLE_GROUPS;
-  };
-
-  const getChannelAudience = (channel) => {
-    const allowedRoleGroups = new Set(getChannelAllowedRoleGroups(channel));
-    const visibleProfiles = memberEntries.filter(([, profile]) =>
-      allowedRoleGroups.has(getRoleGroup(profile.role)),
-    );
-
-    return {
-      visibleToUids: [...new Set(visibleProfiles.map(([, profile]) => profile.uid))],
-      readTargetUids: [
-        ...new Set(
-          visibleProfiles
-            .map(([, profile]) => profile)
-            .filter((profile) => profile.role !== "guardian")
-            .map((profile) => profile.uid),
-        ),
-      ],
-    };
+    return channelRoleGroups(channel, audienceMembers);
   };
 
   const getPostAudience = (channel, authorUid = "") => {
-    const channelAudience = getChannelAudience(channel);
-    const authorProfile = memberEntries.find(
-      ([, profile]) => profile.uid === authorUid,
-    )?.[1];
-    return {
-      visibleToUids: [
-        ...new Set([
-          ...channelAudience.visibleToUids,
-          ...(authorUid ? [authorUid] : []),
-        ]),
-      ],
-      readTargetUids: [
-        ...new Set([
-          ...channelAudience.readTargetUids,
-          ...(authorUid && authorProfile?.role !== "guardian" ? [authorUid] : []),
-        ]),
-      ],
-    };
+    return audienceForChannel(channel, audienceMembers, authorUid);
   };
 
   const isPostReadByProfile = (post, profile) =>
@@ -441,9 +372,19 @@ const WorkspaceHomeScreen = ({
     return () => unsubscribe();
   }, [activeTeamId, isOffline]);
 
+  const needsGeneralUpgrade = channels.some(needsGeneralAudienceUpgrade);
+  useEffect(() => {
+    if (!activeTeamId || isOffline || !isStaffOrAbove || !channelsLoaded || !needsGeneralUpgrade) return;
+    // The transaction rechecks the current document, so an explicit manager
+    // choice made meanwhile is never replaced by the one-time default.
+    ensureGeneralChannelMemberAudience(activeTeamId).catch((error) => {
+      console.log("全体連絡の部員公開設定更新エラー:", error?.code || "unknown");
+    });
+  }, [activeTeamId, isOffline, isStaffOrAbove, channelsLoaded, needsGeneralUpgrade]);
+
   const visibleChannels = channels.filter((ch) => {
     if (isStaffOrAbove) return true;
-    return getChannelAllowedRoleGroups(ch).includes(getRoleGroup(userRole));
+    return canViewChannel(ch, { ...currentUserProfile, role: userRole }, audienceMembers);
   });
 
   const activeChannelObj =
@@ -460,6 +401,7 @@ const WorkspaceHomeScreen = ({
           uid: profile.uid,
           name: profile.name,
           role: profile.role,
+          grade: profile.grade,
         })),
       }),
     [activeTeamId, channels, memberEntries],
@@ -488,7 +430,7 @@ const WorkspaceHomeScreen = ({
             ) || defaultChannels[0];
           const audience = getPostAudience(channel, post.authorUid);
           if (
-            post.shareScope === "roles" &&
+            post.shareScope === audience.shareScope &&
             hasSameUids(post.visibleToUids, audience.visibleToUids) &&
             hasSameUids(post.readTargetUids, audience.readTargetUids)
           ) {
@@ -498,7 +440,7 @@ const WorkspaceHomeScreen = ({
             {
               postId: post.id,
               audience: {
-                shareScope: "roles",
+                shareScope: audience.shareScope,
                 visibleToUids: audience.visibleToUids,
                 readTargetUids: audience.readTargetUids,
               },
@@ -527,10 +469,11 @@ const WorkspaceHomeScreen = ({
   const [newChannelName, setNewChannelName] = useState("");
   const [newChannelIsReadOnly, setNewChannelIsReadOnly] = useState(false);
   const [selectedRoleGroups, setSelectedRoleGroups] = useState(
-    DEFAULT_ALLOWED_ROLE_GROUPS,
+    ["staff"],
   );
-  const [selectedNotificationRecipientUids, setSelectedNotificationRecipientUids] =
-    useState([]);
+  const [selectedGrades, setSelectedGrades] = useState([]);
+  const [selectedMemberAudience, setSelectedMemberAudience] = useState("all");
+  const [selectedNotificationRecipientUids, setSelectedNotificationRecipientUids] = useState([]);
 
   const [newPostText, setNewPostText] = useState("");
   const [expandedPostId, setExpandedPostId] = useState(null);
@@ -1001,7 +944,9 @@ const WorkspaceHomeScreen = ({
     setEditingChannel(null);
     setNewChannelName("");
     setNewChannelIsReadOnly(false);
-    setSelectedRoleGroups(DEFAULT_ALLOWED_ROLE_GROUPS);
+    setSelectedRoleGroups(["staff"]);
+    setSelectedGrades([]);
+    setSelectedMemberAudience("all");
     setSelectedNotificationRecipientUids([]);
   };
 
@@ -1009,7 +954,9 @@ const WorkspaceHomeScreen = ({
     setEditingChannel(null);
     setNewChannelName("");
     setNewChannelIsReadOnly(false);
-    setSelectedRoleGroups(DEFAULT_ALLOWED_ROLE_GROUPS);
+    setSelectedRoleGroups(["staff"]);
+    setSelectedGrades([...grades]);
+    setSelectedMemberAudience("all");
     setSelectedNotificationRecipientUids([]);
     setIsAddChannelModalVisible(true);
   };
@@ -1019,20 +966,23 @@ const WorkspaceHomeScreen = ({
     setEditingChannel(channel);
     setNewChannelName(channel.name);
     setNewChannelIsReadOnly(Boolean(channel.isReadOnly));
-    setSelectedRoleGroups(getChannelAllowedRoleGroups(channel));
-    setSelectedNotificationRecipientUids(
-      Array.isArray(channel.notificationRecipientUids)
-        ? channel.notificationRecipientUids
-        : [],
-    );
+    const groups = getChannelAllowedRoleGroups(channel);
+    setSelectedMemberAudience(channelMemberAudience(channel, audienceMembers));
+    setSelectedRoleGroups(groups.filter((group) => ["staff", "guardian"].includes(group)));
+    setSelectedGrades(channel.shareScope === "grades"
+      ? [...(channel.allowedGrades || [])]
+      : groups.some((group) => ["captain", "member"].includes(group)) ? [...grades] : []);
+    setSelectedNotificationRecipientUids(channel.notificationRecipientUids || []);
     setIsAddChannelModalVisible(true);
   };
 
   const handleSaveChannel = async () => {
     const trimmedName = newChannelName.trim();
     if (trimmedName === "") return;
-    if (selectedRoleGroups.length === 0) {
-      Alert.alert("共有範囲", "公開する役割を1つ以上選択してください。");
+    const includesMembers = selectedMemberAudience === "all" ||
+      (selectedMemberAudience === "grades" && selectedGrades.length > 0);
+    if (selectedRoleGroups.length === 0 && !includesMembers) {
+      Alert.alert("共有範囲", "公開するスタッフ・部員・保護者を1つ以上選択してください。");
       return;
     }
 
@@ -1043,8 +993,10 @@ const WorkspaceHomeScreen = ({
       id: editingChannel?.id || "ch_" + Date.now().toString(),
       name: editingChannel?.name || trimmedName,
       isReadOnly: newChannelIsReadOnly,
-      shareScope: "roles",
-      allowedRoleGroups: selectedRoleGroups,
+      shareScope: selectedMemberAudience === "grades" ? "grades" : "roles",
+      memberAudience: selectedMemberAudience,
+      allowedRoleGroups: [...selectedRoleGroups, ...(selectedMemberAudience === "all" ? ["captain", "member"] : [])],
+      allowedGrades: selectedMemberAudience === "grades" ? selectedGrades : [],
       allowedMembers: [],
       allowedMemberUids: [],
       notificationRecipientUids: selectedNotificationRecipientUids,
@@ -1115,12 +1067,17 @@ const WorkspaceHomeScreen = ({
     );
   };
 
-  const toggleNotificationRecipient = (uid) => {
-    setSelectedNotificationRecipientUids((current) =>
-      current.includes(uid)
-        ? current.filter((item) => item !== uid)
-        : [...current, uid],
+  const toggleGradeSelection = (grade) => {
+    setSelectedGrades((current) =>
+      current.includes(grade)
+        ? current.filter((item) => item !== grade)
+        : [...current, grade],
     );
+  };
+
+  const toggleNotificationRecipient = (uid) => {
+    setSelectedNotificationRecipientUids((current) => current.includes(uid)
+      ? current.filter((item) => item !== uid) : [...current, uid]);
   };
 
   const handleCreatePost = async () => {
@@ -1140,7 +1097,7 @@ const WorkspaceHomeScreen = ({
     );
     if (!canSubmit) return;
     const currentReplyTo = replyingTo;
-    const { visibleToUids, readTargetUids } = getPostAudience(
+    const { shareScope, visibleToUids, readTargetUids } = getPostAudience(
       activeChannelObj,
       currentUserUid,
     );
@@ -1157,7 +1114,7 @@ const WorkspaceHomeScreen = ({
       id: Date.now().toString(),
       channelId: activeChannelObj.id,
       channel: activeChannelObj.name,
-      shareScope: "roles",
+      shareScope,
       visibleToUids,
       readTargetUids,
       user: displayUserName,
@@ -2818,7 +2775,8 @@ const WorkspaceHomeScreen = ({
                 <Text style={styles.inputLabel}>共有範囲（複数選択可）</Text>
                 <View style={styles.memberSelectorWrapper}>
                   {ROLE_GROUP_OPTIONS.map((option) => {
-                    const isSelected = selectedRoleGroups.includes(option.id);
+                    const isSelected = option.id === "students"
+                      ? selectedMemberAudience !== "none" : selectedRoleGroups.includes(option.id);
                     return (
                       <TouchableOpacity
                         key={option.id}
@@ -2826,7 +2784,9 @@ const WorkspaceHomeScreen = ({
                           styles.memberOption,
                           isSelected && styles.memberOptionSelected,
                         ]}
-                        onPress={() => toggleRoleGroupSelection(option.id)}
+                        onPress={() => option.id === "students"
+                          ? setSelectedMemberAudience(selectedMemberAudience === "none" ? "all" : "none")
+                          : toggleRoleGroupSelection(option.id)}
                       >
                         <View style={styles.roleOptionTextContainer}>
                           <Text
@@ -2853,62 +2813,85 @@ const WorkspaceHomeScreen = ({
                     );
                   })}
                 </View>
-                <Text style={styles.guardianDefaultNote}>
-                  ※保護者は新規作成時、デフォルトでOFFです。
-                </Text>
-
-                <Text style={styles.inputLabel}>新規投稿の通知先（複数選択可）</Text>
-                <Text style={styles.switchSubLabel}>
-                  選択した管理者・スタッフへ、このチャンネルの新規投稿を通知します。
-                </Text>
-                <View style={styles.memberSelectorWrapper}>
-                  {notificationRecipientProfiles.length === 0 ? (
-                    <Text style={styles.guardianDefaultNote}>
-                      通知先に指定できる管理者・スタッフがいません。
-                    </Text>
-                  ) : (
-                    notificationRecipientProfiles.map((profile) => {
-                      const isSelected = selectedNotificationRecipientUids.includes(
-                        profile.uid,
-                      );
+                {selectedMemberAudience !== "none" && (
+                  <>
+                    <Text style={styles.inputLabel}>部員の公開範囲</Text>
+                    <View style={styles.memberSelectorWrapper}>
+                      {[
+                        { id: "all", label: "部員全体", description: "学年未設定の部員も含む全員" },
+                        { id: "grades", label: "学年ごと", description: "選択した学年の部員・キャプテン" },
+                      ].map((option) => {
+                        const isSelected = selectedMemberAudience === option.id;
+                        return (
+                          <TouchableOpacity key={option.id}
+                            accessibilityRole="radio" accessibilityState={{ checked: isSelected }}
+                            style={[styles.memberOption, isSelected && styles.memberOptionSelected]}
+                            onPress={() => setSelectedMemberAudience(option.id)}>
+                            <View style={styles.roleOptionTextContainer}>
+                              <Text style={[styles.memberOptionText, isSelected && styles.memberOptionTextSelected]}>{option.label}</Text>
+                              <Text style={styles.roleOptionDescription}>{option.description}</Text>
+                            </View>
+                            <Text style={[styles.roleOptionStatus, isSelected && styles.roleOptionStatusSelected]}>{isSelected ? "選択中 ✓" : "選択"}</Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  </>
+                )}
+                {selectedMemberAudience === "grades" && (
+                  <View style={styles.memberSelectorWrapper}>
+                    {[...new Set([...grades, ...selectedGrades])].map((grade) => {
+                      const isSelected = selectedGrades.includes(grade);
                       return (
-                        <TouchableOpacity
-                          key={profile.uid}
-                          style={[
-                            styles.memberOption,
-                            isSelected && styles.memberOptionSelected,
-                          ]}
-                          onPress={() => toggleNotificationRecipient(profile.uid)}
-                        >
+                        <TouchableOpacity key={`grade:${grade}`}
+                          style={[styles.memberOption, isSelected && styles.memberOptionSelected]}
+                          onPress={() => toggleGradeSelection(grade)}>
                           <View style={styles.roleOptionTextContainer}>
-                            <Text
-                              style={[
-                                styles.memberOptionText,
-                                isSelected && styles.memberOptionTextSelected,
-                              ]}
-                            >
-                              {profile.name || "名称未設定"}
-                            </Text>
-                            <Text style={styles.roleOptionDescription}>
-                              {profile.role === "owner"
-                                ? "監督"
-                                : profile.role === "admin"
-                                  ? "管理者"
-                                  : "スタッフ"}
-                            </Text>
+                            <Text style={[styles.memberOptionText, isSelected && styles.memberOptionTextSelected]}>{grade}</Text>
+                            <Text style={styles.roleOptionDescription}>{grades.includes(grade) ? "この学年の部員・キャプテン" : "学年リストから削除済み"}</Text>
                           </View>
-                          <Text
-                            style={[
-                              styles.roleOptionStatus,
-                              isSelected && styles.roleOptionStatusSelected,
-                            ]}
-                          >
-                            {isSelected ? "ON ✓" : "OFF"}
-                          </Text>
+                          <Text style={[styles.roleOptionStatus, isSelected && styles.roleOptionStatusSelected]}>{isSelected ? "ON ✓" : "OFF"}</Text>
                         </TouchableOpacity>
                       );
-                    })
-                  )}
+                    })}
+                  </View>
+                )}
+                <Text style={styles.guardianDefaultNote}>
+                  ※保護者は新規作成時、デフォルトでOFFです。「部員全体」は学年未設定者も対象です。「学年ごと」は選択した学年だけが対象です。
+                </Text>
+                {grades.length === 0 && selectedMemberAudience === "grades" && (
+                  <Text style={styles.guardianDefaultNote}>学年リスト管理でグループを登録してください。学年を使わない場合は「部員全体」を選択できます。</Text>
+                )}
+                {editingChannel && editingChannel.shareScope !== "grades" && (
+                  <Text style={styles.guardianDefaultNote}>
+                    保存すると、従来のキャプテン・一般部員の指定を選択した部員の公開範囲へ切り替えます。保存するまでは現在の公開範囲を維持します。
+                  </Text>
+                )}
+                <Text style={styles.inputLabel}>新規投稿の通知</Text>
+                <Text style={styles.switchSubLabel}>
+                  投稿者本人を除く公開対象の部員・キャプテン・保護者へ通知します。管理者・スタッフには、下で選択した公開対象者だけへ通知します。プッシュ通知のON/OFFは各自の通知設定で変更できます。
+                </Text>
+                <Text style={styles.inputLabel}>管理者・スタッフの通知先（複数選択可）</Text>
+                {!selectedRoleGroups.includes("staff") && (
+                  <Text style={styles.guardianDefaultNote}>共有範囲でスタッフをONにすると、選択したスタッフへ通知します。</Text>
+                )}
+                <View style={styles.memberSelectorWrapper}>
+                  {notificationRecipientProfiles.map((profile) => {
+                    const isSelected = selectedNotificationRecipientUids.includes(profile.uid);
+                    return (
+                      <TouchableOpacity key={profile.uid}
+                        style={[styles.memberOption, isSelected && styles.memberOptionSelected]}
+                        disabled={!selectedRoleGroups.includes("staff")}
+                        onPress={() => toggleNotificationRecipient(profile.uid)}>
+                        <View style={styles.roleOptionTextContainer}>
+                          <Text style={[styles.memberOptionText, isSelected && styles.memberOptionTextSelected]}>{profile.name || "名称未設定"}</Text>
+                          <Text style={styles.roleOptionDescription}>{profile.role === "owner" ? "監督" : profile.role === "admin" ? "管理者" : "スタッフ"}</Text>
+                        </View>
+                        <Text style={[styles.roleOptionStatus, isSelected && styles.roleOptionStatusSelected]}>{isSelected ? "ON ✓" : "OFF"}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                  {notificationRecipientProfiles.length === 0 && <Text style={styles.guardianDefaultNote}>通知先に指定できる管理者・スタッフがいません。</Text>}
                 </View>
                 {editingChannel &&
                   editingChannel.id !== "ch_1" &&
