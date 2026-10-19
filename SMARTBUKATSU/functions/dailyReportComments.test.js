@@ -38,6 +38,13 @@ test("ON copies only existing conversation evidence; health/reflection fields ar
   for (const text of ["private condition", "private reflection", "private treatment"]) assert.equal(JSON.stringify(evidence).includes(text), false);
 });
 
+test("a duplicate Firestore event creates one evidence revision", async () => {
+  const h = setup(true); await h.backend.submitSafetyReport(h.request);
+  const event = { ...h.event(h.changed), id: "synthetic-same-event" };
+  await h.backend.trackReportedDailyReportChanges(event); await h.backend.trackReportedDailyReportChanges(event);
+  assert.equal(h.evidence().length, 2);
+});
+
 test("OFF stops tracking before case queries; unchanged report updates do not read the gate", async () => {
   const h = setup(false); await h.backend.submitSafetyReport(h.request);
   const queryCount = h.stats.queries;

@@ -1199,39 +1199,50 @@ export function subscribeWorkspacePosts(teamId, userUid, callback) {
 // ==========================================
 // 📝 振り返り（Daily Reports）関連
 // ==========================================
-export function subscribeDailyReports(teamId, callback) {
-  if (!teamId) return () => {};
-  const q = query(
-    collection(db, "teams", teamId, "dailyReports"),
-    orderBy("createdAt", "desc"),
-  );
-  return subscribeToTeamData("dailyReports", q, (snapshot) => {
-    callback(
-      snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-        createdAt: doc.data().createdAt?.toMillis() || Date.now(),
-      })),
-    );
+export async function createDailyReport(teamId, reportData) {
+  if (!teamId || !reportData?.id) throw new Error("チームIDまたは提出IDがありません。");
+  const docRef = doc(db, "teams", teamId, "dailyReports", reportData.id);
+  return runTransaction(db, async (transaction) => {
+    const existing = await transaction.get(docRef);
+    if (!reportData.authorUid || reportData.authorUid !== auth.currentUser?.uid) throw new Error("提出者を確認できません。");
+    if (existing.exists()) {
+      if (existing.data().authorUid !== auth.currentUser.uid) throw new Error("提出者を確認できません。");
+      if (existing.data().status === "deleted") throw new Error("この日報は削除済みです。日報一覧を確認してください。");
+      return { ...existing.data(), id: existing.id, createdAt: existing.data().createdAt?.toMillis?.() ?? existing.data().createdAt, existingSubmission: true };
+    }
+    transaction.set(docRef, { ...reportData, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+    return reportData;
   });
 }
 
-export async function createDailyReport(teamId, reportData) {
-  if (!teamId) throw new Error("チームIDがありません");
-  if (reportData.id) {
-    const docRef = doc(db, "teams", teamId, "dailyReports", reportData.id);
-    await setDoc(docRef, {
-      ...reportData,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
-  } else {
-    await addDoc(collection(db, "teams", teamId, "dailyReports"), {
-      ...reportData,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
-  }
+export async function editOwnDailyReport(teamId, reportId, updates) {
+  const ref = doc(db, "teams", teamId, "dailyReports", reportId);
+  return runTransaction(db, async (transaction) => {
+    const snapshot = await transaction.get(ref), data = snapshot.data();
+    const created = data?.createdAt?.toMillis?.() ?? data?.createdAt;
+    if (!snapshot.exists() || data.status === "deleted" || data.authorUid !== auth.currentUser?.uid ||
+        data.isReviewed || !Number.isFinite(created) || Date.now() - created >= 30 * 60000) {
+      throw new Error("確認済み、または修正可能な時間を過ぎています。最新の日報を確認してください。");
+    }
+    transaction.update(ref, { ...updates, updatedAt: serverTimestamp() });
+  });
+}
+
+export async function appendDailyReportComment(teamId, reportId, comment) {
+  if (!teamId || !reportId || !comment?.id || comment.uid !== auth.currentUser?.uid) throw new Error("送信者を確認できません。");
+  const ref = doc(db, "teams", teamId, "dailyReports", reportId);
+  return runTransaction(db, async (transaction) => {
+    const [team, report, member] = await Promise.all([
+      transaction.get(doc(db, "teams", teamId)), transaction.get(ref),
+      transaction.get(doc(db, "teams", teamId, "members", comment.uid)),
+    ]);
+    if (!member.exists() || team.data()?.dailyReportCommentsEnabled !== true) throw new Error("コメント設定または所属を確認してください。");
+    if (!report.exists() || report.data().status === "deleted") throw new Error("日報が見つかりません。");
+    const comments = report.data().comments || [];
+    if (comments.some((item) => item.id === comment.id)) return;
+    const isStaff = ["owner", "admin", "staff"].includes(member.data().role);
+    transaction.update(ref, { comments: [...comments, comment], ...(isStaff ? { isReviewed: true } : {}), updatedAt: serverTimestamp() });
+  });
 }
 
 export async function updateDailyReport(teamId, reportId, updateData) {

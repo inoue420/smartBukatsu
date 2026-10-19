@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createLoadingOptimizationBackend } = require("./loadingOptimizationBackend");
-const { stableStringify } = require("./loadingOptimizationCore");
+const { stableStringify, contributions, adjustSummary } = require("./loadingOptimizationCore");
 
 const TEAM = "synthetic-team";
 const base = `teams/${TEAM}`;
@@ -64,7 +64,7 @@ function harness(options = {}) {
     where(field, operation, value) { return new Query(this.path, [...this.filters, [field, operation, value]], this.orders, this.pageLimit, this.cursor); }
     orderBy(field, direction = "asc") { return new Query(this.path, this.filters, [...this.orders, [field, direction]], this.pageLimit, this.cursor); }
     limit(count) { return new Query(this.path, this.filters, this.orders, count, this.cursor); }
-    startAfter(cursor) { return new Query(this.path, this.filters, this.orders, this.pageLimit, cursor); }
+    startAfter(...cursor) { return new Query(this.path, this.filters, this.orders, this.pageLimit, cursor); }
     async get() {
       let items = [...documents.keys()].filter((path) => path.startsWith(`${this.path}/`) && !path.slice(this.path.length + 1).includes("/")).map((path) => snapshot(new DocumentReference(path)));
       items = items.filter((item) => this.filters.every(([field, operation, value]) => {
@@ -72,6 +72,10 @@ function harness(options = {}) {
         if (operation === "==") return actual === value;
         if (operation === "!=") return actual !== undefined && actual !== value;
         if (operation === "array-contains") return (actual || []).includes(value);
+        if (operation === "array-contains-any") return (actual || []).some((item) => value.includes(item));
+        if (operation === ">") return actual > value;
+        if (operation === ">=") return actual >= value;
+        if (operation === "<=") return actual <= value;
         throw new Error(`Unsupported synthetic query operator: ${operation}`);
       }));
       const comparable = (value) => value?.toMillis?.() ?? value;
@@ -83,9 +87,16 @@ function harness(options = {}) {
         return left.id.localeCompare(right.id);
       });
       if (this.cursor) {
-        const cursorId = typeof this.cursor === "string" ? this.cursor : this.cursor.id;
-        const position = items.findIndex((item) => item.id === cursorId);
-        items = items.slice(position + 1);
+        const orders = this.orders.length ? this.orders : [[SyntheticFieldPath.documentId(), "asc"]];
+        const [first] = this.cursor;
+        const values = typeof first?.get === "function" ? orders.map(([field]) => first.get(field)) : this.cursor;
+        items = items.filter((item) => {
+          for (let i = 0; i < orders.length; i++) {
+            const [field, direction] = orders[i], a = comparable(item.get(field)), b = comparable(values[i]);
+            if (a !== b) return (a < b ? -1 : 1) * (direction === "desc" ? -1 : 1) > 0;
+          }
+          return false;
+        });
       }
       items = items.slice(0, this.pageLimit);
       trace.push({ type: "query", path: this.path, count: Math.max(1, items.length), filters: this.filters });
@@ -123,9 +134,10 @@ function harness(options = {}) {
   const seed = (path, data) => { documents.set(path, copy(data)); };
   const members = options.members || [{ uid: "a", name: "A", profileKey: "A", role: "member", blockedUserUids: [] }];
   seed(base, { name: "Synthetic team", channels: [] });
-  seed(statePath, { ready: true, enabled: true, separateReads: false, schemaVersion: 1, status: "ready", preparationId: "revision-1", contextVersion: 1, contextRevision: "revision-1", contextShardCount: 1 });
+  seed(statePath, { ready: true, enabled: true, separateReads: false, schemaVersion: 1, medicalSummaryVersion: 2, status: "ready", preparationId: "revision-1", contextVersion: 1, contextRevision: "revision-1", contextShardCount: 1 });
   seed(`${base}/system/loadingContext_0`, { revision: "revision-1", payload: JSON.stringify({ members, channels: [] }) });
-  for (const member of members) { seed(`${base}/members/${member.uid}`, { name: member.name, role: member.role }); seed(`users/${member.uid}`, { name: member.name }); }
+  for (const member of members) { seed(`${base}/members/${member.uid}`, { name: member.name, role: member.role,
+    ...(member.staffScope ? { staffScope: member.staffScope } : {}), ...(member.assignedStaff ? { assignedStaff: member.assignedStaff } : {}) }); seed(`users/${member.uid}`, { name: member.name }); }
   const eventSnapshot = (data) => ({ exists: data !== null, data: () => copy(data) });
   const event = (id, before, after) => ({ params: { teamId: TEAM, documentId: id }, data: { before: eventSnapshot(before), after: eventSnapshot(after) } });
   const counts = () => ({ reads: trace.filter((item) => item.type === "read").length,
@@ -144,8 +156,9 @@ test("disabled summaries read only their state and never load a roster or users"
     const metric = h.logs.find(([message]) => message === "loading_optimization_metrics")?.[1];
     assert.ok(metric);
     assert.equal(metric.reads, 1); assert.equal(metric.writes, 0); assert.equal(metric.queries, 0);
-    assert.deepEqual(Object.keys(metric).sort(), ["operation", "reads", "writes", "queries", "retries", "skipped", "contextRebuilds", "latestSearches", "durationMs"].sort());
-    for (const [name, value] of Object.entries(metric)) if (name !== "operation") assert.equal(typeof value, "number", name);
+    assert.deepEqual(Object.keys(metric).sort(), ["operation", "reads", "writes", "queries", "retries", "skipped", "contextRebuilds", "latestSearches", "durationMs", "skipReason"].sort());
+    assert.equal(metric.skipReason, "optimization_disabled");
+    for (const [name, value] of Object.entries(metric)) if (!["operation", "skipReason"].includes(name)) assert.equal(typeof value, "number", name);
   }
 });
 
@@ -359,4 +372,242 @@ test("reports with missing creation dates are not promoted to latest", async () 
   await h.backend.handleContent("dailyReports", h.event("undated", null, undated));
   assert.equal(h.documents.get(`${base}/latestDailyReports/a`).id, "typed");
   assert.equal(h.counts().queries, 0);
+});
+
+async function finish(h) {
+  let steps = 0;
+  while (h.documents.get(statePath)?.status === "preparing") {
+    assert.ok(++steps < 80);
+    const value = h.documents.get(statePath);
+    await h.backend.handlePreparation({ params: { teamId: TEAM }, data: { after: { exists: true, data: () => value } } });
+  }
+}
+test("medical recipients exclude students/guardians while latest and other counters remain intact", async () => {
+  const h = harness({ members: [
+    { uid: "student", name: "Student", profileKey: "Student", role: "member" },
+    { uid: "coach", name: "Coach", profileKey: "Coach", role: "owner" },
+    { uid: "guardian", name: "Guardian", profileKey: "Guardian", role: "guardian" },
+  ] });
+  const data = { authorUid: "student", author: "Student", date: "2020/01/01", fatigue: 5, medicalScaleVersion: 2, createdAt: new SyntheticTimestamp(100) };
+  h.seed(summaryPath("student"), { unreadNoticeCount: 8, workspaceNotificationUnreadCount: 3, medicalHistogram: {} });
+  h.seed(`${base}/dailyReports/report`, data);
+  await h.backend.handleContent("dailyReports", h.event("report", null, data));
+  assert.deepEqual(h.documents.get(summaryPath("coach")).medicalHistogram, { "0:0:5:0": 1 });
+  assert.deepEqual(h.documents.get(summaryPath("student")), { unreadNoticeCount: 8, workspaceNotificationUnreadCount: 3, medicalHistogram: {} });
+  assert.equal(h.documents.has(summaryPath("guardian")), false);
+  assert.equal(h.documents.get(`${base}/latestDailyReports/student`).id, "report");
+});
+test("block and channel changes prepare only posts and do not scan events, notices or reports", async () => {
+  const h = harness();
+  const before = { name: "A", teamIds: [TEAM] }, after = { ...before, blockedUserUids: ["b"] };
+  h.seed("users/a", after); await h.backend.handleUser({ params: { uid: "a" }, data: { before: { data: () => before }, after: { data: () => after } } });
+  assert.deepEqual(h.documents.get(statePath).preparationStages, ["targetPosts", "complete"]);
+  assert.equal(h.trace.some((item) => item.type === "query" && item.path.endsWith("/members")), false);
+  h.reset(); await finish(h);
+  assert.equal(h.trace.some((item) => item.type === "query" && /\/(dailyReports|notices|clubEvents|personalEvents)$/.test(item.path)), false);
+  const teamBefore = h.documents.get(base), teamAfter = { ...teamBefore, channels: [{ id: "staff", allowedRoleGroups: ["staff"] }] };
+  h.seed(base, teamAfter); await h.backend.handleTeam({ params: { teamId: TEAM }, data: { before: { data: () => teamBefore }, after: { exists: true, data: () => teamAfter } } });
+  assert.deepEqual(h.documents.get(statePath).preparationStages, ["audiences", "workspacePosts", "entries:workspacePosts", "complete"]);
+});
+test("promotion and demotion rebuild all-time medical counts without changing unrelated summary fields", async () => {
+  const h = harness(), report = { authorUid: "a", author: "A", date: "2020/01/01", fatigue: 5, medicalScaleVersion: 2 };
+  h.seed(`${base}/dailyReports/old`, report); h.seed(summaryPath("a"), { unreadNoticeCount: 7, workspaceNotificationUnreadCount: 4, medicalHistogram: {} });
+  const changeRole = async (role) => {
+    const before = h.documents.get(`${base}/members/a`), after = { ...before, role }; h.seed(`${base}/members/a`, after);
+    await h.backend.handleMembership({ params: { teamId: TEAM, uid: "a" }, data: { before: { data: () => before }, after: { data: () => after } } }); await finish(h);
+  };
+  await changeRole("admin"); assert.equal(h.documents.get(summaryPath("a")).medicalHistogram["0:0:5:0"], 1);
+  await changeRole("member"); const summary = h.documents.get(summaryPath("a"));
+  assert.deepEqual(summary.medicalHistogram, {}); assert.equal(summary.unreadNoticeCount, 7); assert.equal(summary.workspaceNotificationUnreadCount, 4);
+});
+
+test("old recipient aggregates trigger one compatible full preparation and remove only obsolete medical counts", async () => {
+  const h = harness(), state = h.documents.get(statePath); delete state.medicalSummaryVersion; h.seed(statePath, state);
+  const medical = { medicalHistogram: { "0:0:5:0": 1 } };
+  h.seed(`${base}/dailyReports/old`, { authorUid: "a", fatigue: 5, medicalScaleVersion: 2, date: "2020/01/01" });
+  h.seed(entryPath("dailyReports", "old"), { contributions: { a: medical }, authorUids: ["a"] });
+  h.seed(summaryPath("a"), { ...medical, unreadNoticeCount: 3, workspaceNotificationUnreadCount: 4 });
+  await h.backend.context(TEAM); assert.equal(h.documents.get(statePath).preparationStages, null);
+  await finish(h);
+  const summary = h.documents.get(summaryPath("a"));
+  assert.deepEqual(summary.medicalHistogram, {}); assert.equal(summary.unreadNoticeCount, 3); assert.equal(summary.workspaceNotificationUnreadCount, 4);
+  assert.equal(h.documents.get(statePath).schemaVersion, 1); assert.equal(h.documents.get(statePath).medicalSummaryVersion, 2);
+});
+
+const logicalReads = (h) => h.trace.reduce((total, item) => total + (item.type === "read" ? 1 : item.type === "query" ? item.count : 0), 0);
+async function blockUsers(h, uid, blockedUserUids) {
+  const before = { ...h.documents.get(`users/${uid}`), teamIds: [TEAM] }, after = { ...before, blockedUserUids };
+  h.seed(`users/${uid}`, after);
+  await h.backend.handleUser({ params: { uid }, data: { before: { data: () => before }, after: { data: () => after } } });
+}
+async function changeMember(h, uid, changes) {
+  const before = h.documents.get(`${base}/members/${uid}`), after = { ...before, ...changes }; h.seed(`${base}/members/${uid}`, after);
+  await h.backend.handleMembership({ params: { teamId: TEAM, uid }, data: { before: { data: () => before }, after: { data: () => after } } });
+}
+async function seedContent(h, kind, id, data) {
+  h.seed(`${base}/${kind}/${id}`, data); await h.backend.process(TEAM, kind, id);
+}
+async function assertFreshAggregates(h) {
+  const ctx = await h.backend.context(TEAM), expected = new Map();
+  for (const [path, data] of h.documents) {
+    const kind = ["notices", "dailyReports", "workspacePosts"].find((name) => path.startsWith(`${base}/${name}/`) && path.split("/").length === 4);
+    if (!kind) continue;
+    const state = h.documents.get(`${base}/workspacePostReadStates/${path.split("/").at(-1)}`) || {};
+    for (const [uid, value] of Object.entries(contributions(kind, data, ctx.members, state))) expected.set(uid, adjustSummary(expected.get(uid), {}, value));
+  }
+  for (const member of ctx.members) {
+    const actual = h.documents.get(summaryPath(member.uid)) || {}, value = expected.get(member.uid) || {};
+    for (const field of ["unreadNoticeCount", "workspaceNotificationUnreadCount"]) assert.equal(actual[field] || 0, value[field] || 0, `${member.uid}:${field}`);
+    assert.deepEqual(actual.medicalHistogram || {}, value.medicalHistogram || {}, member.uid);
+  }
+}
+
+test("unrelated block has a constant 14-read cost with 100 or 500 posts, including old ready teams", async (t) => {
+  for (const size of [100, 500]) {
+    const h = harness();
+    for (let i = 0; i < size; i++) await seedContent(h, "workspacePosts", `p${String(i).padStart(4, "0")}`, { authorUid: "a", user: "A", content: "Unrelated", visibleToUids: ["a"], replies: [] });
+    h.reset(); await blockUsers(h, "a", ["unrelated"]); await finish(h);
+    assert.equal(logicalReads(h), 14);
+    assert.equal(h.trace.some((item) => item.type === "query" && item.path.endsWith("/workspacePosts")), false);
+    assert.equal(JSON.stringify(h.documents.get(statePath)).includes("unrelated"), false, "block targets must stay in private shards");
+    t.diagnostic(`${size} posts: ${logicalReads(h)} logical reads, ${h.counts().writes} writes`);
+  }
+});
+
+test("indexed block/unblock includes reply-only and UID-less actors and skips unrelated posts", async () => {
+  const members = ["a", "b", "c"].map((uid) => ({ uid, name: uid.toUpperCase(), profileKey: uid.toUpperCase(), role: "member" }));
+  const h = harness({ members });
+  for (let i = 0; i < 100; i++) await seedContent(h, "workspacePosts", `unrelated${i}`, { authorUid: "c", user: "C", content: "No mention", visibleToUids: ["a", "b", "c"] });
+  await seedContent(h, "workspacePosts", "reply", { authorUid: "a", user: "A", visibleToUids: ["a", "b", "c"], replies: [{ id: "r", user: "B", content: "Legacy reply" }] });
+  h.seed(statePath, { ...h.documents.get(statePath), postActorIndexVersion: 1 });
+  for (const blocked of [["b"], []]) {
+    h.reset(); await blockUsers(h, "a", blocked); await finish(h);
+    assert.equal(h.trace.filter((item) => item.type === "read" && item.path.startsWith(`${base}/workspacePosts/`)).length, 1);
+    assert.equal(h.documents.get(summaryPath("a")).workspaceNotificationUnreadCount, blocked.length ? 0 : 1);
+    await assertFreshAggregates(h);
+  }
+});
+
+test("old recipient queries paginate after matching entries disappear, then unblocking backfills actors once", async () => {
+  const h = harness({ members: ["a", "b"].map((uid) => ({ uid, name: uid.toUpperCase(), profileKey: uid.toUpperCase(), role: "member" })) });
+  for (let i = 0; i < 75; i++) {
+    const id = `p${String(i).padStart(3, "0")}`;
+    await seedContent(h, "workspacePosts", id, { authorUid: "b", user: "B", content: "@A", visibleToUids: ["a", "b"] });
+    const entry = h.documents.get(entryPath("workspacePosts", id)); delete entry.postActorUids; delete entry.referencePreparationId; h.seed(entryPath("workspacePosts", id), entry);
+  }
+  h.reset(); await blockUsers(h, "a", ["b"]); await finish(h);
+  assert.equal(h.documents.get(summaryPath("a")).workspaceNotificationUnreadCount, 0);
+  assert.equal(h.trace.some((item) => item.type === "query" && item.path.endsWith("/workspacePosts")), false);
+  assert.equal(h.documents.get(statePath).postActorIndexVersion, 0);
+  h.reset(); await blockUsers(h, "a", []); await finish(h);
+  assert.equal(h.documents.get(summaryPath("a")).workspaceNotificationUnreadCount, 75);
+  assert.equal(h.documents.get(statePath).postActorIndexVersion, 1);
+  assert.equal(h.trace.filter((item) => item.type === "read" && item.path.startsWith(`${base}/workspacePosts/`)).length, 75, "source and entry stages must apply each post once");
+  await assertFreshAggregates(h);
+  h.reset(); await blockUsers(h, "a", ["b"]); await finish(h);
+  assert.equal(h.trace.some((item) => item.type === "query" && item.path.endsWith("/workspacePosts")), false);
+  await assertFreshAggregates(h);
+});
+
+test("actor batches over 30 deduplicate a post mentioned by multiple changed actors", async () => {
+  const actors = Array.from({ length: 35 }, (_, i) => `b${i}`), members = ["a", ...actors].map((uid) => ({ uid, name: uid, profileKey: uid, role: "member" }));
+  const h = harness({ members });
+  await seedContent(h, "workspacePosts", "many", { authorUid: "a", user: "a", visibleToUids: members.map((m) => m.uid), replies: actors.map((uid) => ({ id: uid, user: uid, authorUid: uid, content: "Reply" })) });
+  h.seed(statePath, { ...h.documents.get(statePath), postActorIndexVersion: 1 });
+  h.reset(); await blockUsers(h, "a", actors); await finish(h);
+  assert.equal(h.documents.get(summaryPath("a")).workspaceNotificationUnreadCount, 0);
+  assert.equal(h.trace.filter((item) => item.type === "read" && item.path === `${base}/workspacePosts/many`).length, 1);
+  const queries = h.trace.filter((item) => item.type === "query" && item.filters.some(([, op]) => op === "array-contains-any"));
+  assert.equal(queries.length, 2); assert.ok(queries.every((item) => item.filters[0][2].length <= 30));
+  await assertFreshAggregates(h);
+});
+
+test("assignment changes query only the student's old and live report entries, preserving roster latest", async () => {
+  const h = harness({ members: [
+    { uid: "s1", name: "S1", profileKey: "S1", role: "member", assignedStaff: "C1" },
+    { uid: "s2", name: "S2", profileKey: "S2", role: "member", assignedStaff: "C1" },
+    { uid: "c1", name: "C1", profileKey: "C1", role: "staff", staffScope: "assigned" },
+    { uid: "c2", name: "C2", profileKey: "C2", role: "staff", staffScope: "assigned" },
+  ] });
+  for (let i = 0; i < 100; i++) await seedContent(h, "dailyReports", `other${i}`, { authorUid: "s2", fatigue: 5, medicalScaleVersion: 2, createdAt: new SyntheticTimestamp(i + 1) });
+  await seedContent(h, "dailyReports", "legacy", { author: "S1", fatigue: 5, medicalScaleVersion: 2, createdAt: new SyntheticTimestamp(200) });
+  await seedContent(h, "dailyReports", "orphan", { authorUid: "s1", fatigue: 5, medicalScaleVersion: 2, createdAt: new SyntheticTimestamp(100) });
+  h.documents.delete(`${base}/dailyReports/orphan`);
+  const latest = copy(h.documents.get(`${base}/latestDailyReports/s1`));
+  h.reset(); await changeMember(h, "s1", { assignedStaff: "C2" }); await finish(h);
+  assert.equal(h.documents.get(summaryPath("c1")).medicalHistogram["0:0:5:0"], 100);
+  assert.equal(h.documents.get(summaryPath("c2")).medicalHistogram["0:0:5:0"], 1);
+  assert.equal(h.documents.has(entryPath("dailyReports", "orphan")), false);
+  assert.deepEqual(h.documents.get(`${base}/latestDailyReports/s1`), latest);
+  assert.equal(h.trace.some((item) => item.type === "query" && /\/(dailyReports|workspacePosts|notices|latestDailyReports)$/.test(item.path)), false);
+  assert.equal(h.trace.filter((item) => item.type === "read" && item.path.startsWith(`${base}/dailyReports/other`)).length, 0);
+  await assertFreshAggregates(h);
+});
+
+test("staff scope changes process only authors whose medical recipients change", async () => {
+  const h = harness({ members: [
+    { uid: "s1", name: "S1", profileKey: "S1", role: "member", assignedStaff: "Coach" },
+    { uid: "s2", name: "S2", profileKey: "S2", role: "member" },
+    { uid: "coach", name: "Coach", profileKey: "Coach", role: "staff", staffScope: "all" },
+  ] });
+  for (const uid of ["s1", "s2"]) await seedContent(h, "dailyReports", uid, { authorUid: uid, fatigue: 5, medicalScaleVersion: 2 });
+  h.reset(); await changeMember(h, "coach", { staffScope: "assigned" }); await finish(h);
+  assert.equal(h.documents.get(summaryPath("coach")).medicalHistogram["0:0:5:0"], 1);
+  assert.equal(h.trace.some((item) => item.type === "read" && item.path === `${base}/dailyReports/s1`), false);
+  await assertFreshAggregates(h);
+});
+
+test("full preparation skips already-applied entries but still subtracts physically deleted sources", async () => {
+  const h = harness();
+  for (let i = 0; i < 60; i++) await seedContent(h, "notices", `n${i}`, { readBy: [] });
+  h.documents.delete(`${base}/notices/n0`);
+  await h.backend.prepare(TEAM, { enabled: true }); h.reset(); await finish(h);
+  assert.equal(h.documents.get(summaryPath("a")).unreadNoticeCount, 59);
+  assert.equal(h.trace.filter((item) => item.type === "read" && item.path.startsWith(`${base}/notices/`)).length, 60);
+  await assertFreshAggregates(h);
+});
+
+test("a missing private target plan falls back to complete preparation instead of publishing stale counts", async () => {
+  const h = harness(); await blockUsers(h, "a", ["b"]);
+  const stored = h.documents.get(`${base}/system/loadingContext_0`), payload = JSON.parse(stored.payload); delete payload.referenceTargets;
+  h.seed(`${base}/system/loadingContext_0`, { ...stored, payload: JSON.stringify(payload) });
+  const prior = h.documents.get(statePath).preparationId; await finish(h);
+  assert.notEqual(h.documents.get(statePath).preparationId, prior);
+  assert.equal(h.documents.get(statePath).ready, true);
+  await assertFreshAggregates(h);
+});
+
+test("a second reference change during preparation safely restarts with a full current-generation context", async () => {
+  const h = harness({ members: ["a", "b"].map((uid) => ({ uid, name: uid.toUpperCase(), profileKey: uid.toUpperCase(), role: "member" })) });
+  await seedContent(h, "workspacePosts", "post", { authorUid: "b", user: "B", content: "@A", visibleToUids: ["a", "b"] });
+  await blockUsers(h, "a", ["b"]); const first = h.documents.get(statePath).preparationId;
+  await blockUsers(h, "a", []);
+  assert.notEqual(h.documents.get(statePath).preparationId, first);
+  assert.equal(h.documents.get(statePath).preparationStages, null);
+  await finish(h); assert.equal(h.documents.get(summaryPath("a")).workspaceNotificationUnreadCount, 1);
+  await assertFreshAggregates(h);
+});
+
+test("late target work cannot update summaries or finish a replacement generation", async () => {
+  let enabled = false, stateReads = 0;
+  const h = harness({ members: ["a", "b"].map((uid) => ({ uid, name: uid.toUpperCase(), profileKey: uid.toUpperCase(), role: "member" })),
+    onRead(path, documents) {
+      if (enabled && path === statePath && ++stateReads === 3) documents.set(statePath, { ...documents.get(statePath), preparationId: "replacement", contextRevision: "replacement", lease: null });
+    } });
+  await seedContent(h, "workspacePosts", "post", { authorUid: "b", user: "B", content: "@A", visibleToUids: ["a", "b"] });
+  await blockUsers(h, "a", ["b"]); h.reset(); enabled = true;
+  const before = h.documents.get(statePath);
+  await h.backend.handlePreparation({ params: { teamId: TEAM }, data: { after: { exists: true, data: () => before } } });
+  assert.equal(h.documents.get(statePath).preparationId, "replacement");
+  assert.equal(h.documents.get(statePath).status, "preparing");
+  assert.equal(h.trace.some((item) => item.type === "write" && item.path.includes("/loadingSummaries/")), false);
+});
+
+test("a saved private plan does not turn a reordered block list into another preparation", async () => {
+  const h = harness(); await blockUsers(h, "a", ["b", "c"]); await finish(h);
+  const id = h.documents.get(statePath).preparationId;
+  h.reset(); await blockUsers(h, "a", ["c", "b"]);
+  assert.equal(h.documents.get(statePath).preparationId, id);
+  assert.equal(h.counts().writes, 0);
+  assert.equal(h.documents.get(statePath).ready, true);
 });

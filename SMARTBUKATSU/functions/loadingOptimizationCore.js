@@ -15,6 +15,12 @@ function displayName(member) {
 function contentUid(data, members) {
   return data.authorUid || members.find((member) => [member.name, member.profileKey, displayName(member)].includes(data.user || data.author))?.uid || "";
 }
+function postActorUids(post, members, excludedUids = []) {
+  if (!post || post.status === "deleted" || post.moderationStatus === "hidden") return [];
+  const excluded = new Set(excludedUids);
+  return [...new Set([post, ...(post.replies || [])].filter((item) => item.status !== "deleted" && item.moderationStatus !== "hidden")
+    .map((item) => contentUid(item, members)).filter((uid) => uid && !excluded.has(uid)))].sort();
+}
 function workspaceNotifications(post, member, members, state = {}) {
   if (!post || post.status === "deleted" || post.moderationStatus === "hidden" || !(post.visibleToUids || []).includes(member.uid)) return 0;
   const blocked = new Set(member.blockedUserUids || []);
@@ -30,10 +36,10 @@ function workspaceNotifications(post, member, members, state = {}) {
 function contributions(kind, data, members, state) {
   if (!data || data.status === "deleted") return {};
   const result = {};
-  const author = members.find((member) => member.uid === data.authorUid || member.profileKey === data.author);
+  const author = members.find((member) => data.authorUid ? member.uid === data.authorUid : member.profileKey === data.author);
   for (const member of members) {
     if (kind === "notices" && !(data.readBy || []).includes(member.profileKey)) result[member.uid] = { unreadNoticeCount: 1 };
-    if (kind === "dailyReports" && !data.isReviewed && (member.role !== "staff" || member.staffScope !== "assigned" || author?.assignedStaff === member.profileKey)) result[member.uid] = { medicalHistogram: { [medicalKey(data)]: 1 } };
+    if (kind === "dailyReports" && ["owner", "admin", "staff"].includes(member.role) && !data.isReviewed && (member.role !== "staff" || member.staffScope !== "assigned" || author?.assignedStaff === member.profileKey)) result[member.uid] = { medicalHistogram: { [medicalKey(data)]: 1 } };
     if (kind === "workspacePosts") {
       const count = workspaceNotifications(data, member, members, state);
       if (count) result[member.uid] = { workspaceNotificationUnreadCount: count };
@@ -137,4 +143,4 @@ function compareReports(first, second) {
   return Buffer.compare(Buffer.from(String(b.id || "")), Buffer.from(String(a.id || "")));
 }
 module.exports = { SCHEMA_VERSION, lastEventDate, medicalKey, displayName, contributions, adjustSummary, audienceFor,
-  contentChanges, latestReportData, validLatest, compareReports, canonicalValue, stableStringify };
+  contentChanges, latestReportData, validLatest, compareReports, canonicalValue, stableStringify, postActorUids };

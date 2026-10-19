@@ -383,8 +383,9 @@ const WorkspaceHomeScreen = ({
 
         // コーチ権限で「担当のみ」になっている場合は、他の生徒の通知を除外する
         if (userRole === "staff" && staffScope === "assigned") {
-          const authorProfile = userProfiles[r.author] || {};
-          if (authorProfile.assignedStaff !== currentUser) return false;
+          const authorProfile = r.authorUid ? Object.values(userProfiles).find((profile) => profile.uid === r.authorUid) : userProfiles[r.author];
+          const myKey = Object.keys(userProfiles).find((key) => userProfiles[key].uid === currentUserUid) || currentUser;
+          if (authorProfile?.assignedStaff !== myKey) return false;
         }
 
         return getAlertLevel(r, dailyReports) === "danger";
@@ -2260,11 +2261,7 @@ const WorkspaceHomeScreen = ({
                 <Text style={styles.menuIconText}>📝</Text>
                 {/* ★ 修正：カレンダーにあったメディカルの通知バッジを振り返りに移動！ */}
                 {isStaffOrAbove && unreadMedicalDangerCount > 0 && (
-                  <View style={styles.menuBadge}>
-                    <Text style={styles.menuBadgeText}>
-                      {unreadMedicalDangerCount}
-                    </Text>
-                  </View>
+                  <View accessibilityLabel="未確認の体調アラートがあります" style={[styles.menuBadge, { minWidth: 10, width: 10, height: 10, borderRadius: 5 }]} />
                 )}
               </View>
               <Text style={styles.menuLabel}>振り返り</Text>

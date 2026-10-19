@@ -1,11 +1,11 @@
 const test = require("node:test"), assert = require("node:assert/strict");
 const fs = require("node:fs"), path = require("node:path"), vm = require("node:vm");
 const { transformSync } = require("@babel/core");
-const { monthAgo, monthWindow, mergeReadState, medicalDangerCount } = require("../utils/historyLoading");
+const { monthWindow, mergeReadState, medicalDangerCount } = require("../utils/historyLoading");
 function load(file, modules, extra = "") {
   const code = transformSync(fs.readFileSync(file, "utf8") + extra, { configFile: false, babelrc: false, plugins: ["@babel/plugin-transform-react-jsx", "@babel/plugin-transform-modules-commonjs"] }).code;
   const module = { exports: {} };
-  vm.runInNewContext(code, { module, exports: module.exports, require: (name) => { assert.ok(name in modules, name); return modules[name]; }, console, Map, Set, setTimeout: () => 1, clearTimeout() {} });
+  vm.runInNewContext(code, { module, exports: module.exports, require: (name) => { assert.ok(name in modules, name); return modules[name]; }, console, Map, Set, setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {} });
   return module.exports;
 }
 function hookHarness(pageReader = async () => ({ items: [], hasMore: false })) {
@@ -30,9 +30,7 @@ function hookHarness(pageReader = async () => ({ items: [], hasMore: false })) {
   render();
   return { render, subscriptions, results, get api() { return api; }, change(value) { props = { ...props, ...value }; dirty = true; render(); }, unmount() { slots.forEach((slot) => slot.cleanup?.()); } };
 }
-test("rolling month clamps month ends and calendar grid includes adjacent dates", () => {
-  assert.equal(monthAgo(new Date(2026, 2, 31)), "2026-02-28");
-  assert.equal(monthAgo(new Date(2024, 2, 31)), "2024-02-29");
+test("calendar grid includes adjacent dates", () => {
   assert.deepEqual(monthWindow("2026-10-05"), { start: "2026-09-27", end: "2026-10-31" });
 });
 test("separated read state merges legacy readers and reply notifications without changing source", () => {
@@ -52,11 +50,12 @@ test("latest 50 is the initial window; explicit expansion stays live and replace
   h.subscriptions.at(-1).next({ items: [{ id: "new" }], hasMore: false }); h.render();
   assert.deepEqual(h.results.at(-1), [{ id: "new" }]);
 });
-test("report expansion adds history without dropping the already visible month", () => {
-  const h = hookHarness(); h.change({ name: "dailyReports", options: { since: "2026-09-05" } });
+test("calendar reports retain their complete month range without a 50-report cap", () => {
+  const h = hookHarness(); h.change({ name: "dailyReports", options: { start: "2026-09-01", end: "2026-09-30" } });
   const first = h.subscriptions.at(-1); assert.equal(first.options.count, null);
-  first.next({ items: Array.from({ length: 900 }, (_, id) => ({ id: String(id) })), hasMore: false }); h.render(); h.api.loadMore(); h.render();
-  assert.equal(h.subscriptions.at(-1).options.count, 950); assert.equal(h.subscriptions.at(-1).options.since, undefined); assert.equal(h.api.all, false);
+  first.next({ items: Array.from({ length: 900 }, (_, id) => ({ id: String(id) })), hasMore: false }); h.render();
+  assert.equal(h.results.at(-1).length, 900); assert.equal(h.api.hasMore, false);
+  assert.equal(first.options.start, "2026-09-01"); assert.equal(first.options.end, "2026-09-30");
 });
 test("full history search is explicit and paged, then attaches a live complete window", async () => {
   let reads = 0;
@@ -137,6 +136,8 @@ test("real queries keep post audience/channel constraints and calendar overlap",
   assert.ok(constraints.some((item) => item.join() === "visibleToUids,array-contains,member")); assert.ok(constraints.some((item) => item.join() === "channel,==,General"));
   service.subscribeHistory("team", "clubEvents", { start: "2026-09-27", end: "2026-10-31" }, () => {});
   assert.ok(recorded.at(-1).ref.args.some((item) => item.args?.join() === "lastEventDate,>=,2026-09-27"));
+  assert.throws(() => service.subscribeHistory("team", "dailyReports", { start: "2026-10-12", end: "2026-10-18" }, () => {}), /本人と期間/);
+  assert.throws(() => service.subscribeHistory("team", "dailyReports", { authorUid: "member", author: "M" }, () => {}), /本人と期間/);
 });
 
 function componentHarness() {
@@ -171,15 +172,21 @@ test("startup waits for the gate; navigation owns bounded listeners; rollback re
   const legacy = Object.fromEntries([...legacyNames, "TeamData", "TeamMembers"].map((name) => ["subscribe" + name, watch("legacy" + name)]));
   const historyModules = { subscribeHistory: watch("history"), readHistoryPage: async () => ({ items: [], hasMore: false }), subscribeHistoryDocument: watch("document") };
   const hook = load(path.join(__dirname, "../hooks/useHistoryData.js"), { react, "../services/historyDataService": historyModules, "../utils/historyLoading": require("../utils/historyLoading") });
+  const reportModules = { subscribeDailyReportHistory: (team, options, next, error) => watch("history")(team, "dailyReports", options, next, error), subscribeDailyReportDocument: watch("document") };
+  const dailyHook = load(path.join(__dirname, "../hooks/useDailyReportHistory.js"), { react, "../services/dailyReportReadService": reportModules, "../utils/historyLoading": require("../utils/historyLoading"),
+    "react-native": { AppState: { addEventListener: () => ({ remove() {} }) } } });
   const modules = {
     react, "@react-navigation/native": { NavigationContainer: "NavigationContainer", useNavigationContainerRef: () => navigation },
     "@react-navigation/native-stack": { createNativeStackNavigator: () => ({ Screen: "Screen", Navigator: "Navigator" }) },
-    "react-native": { LogBox: { ignoreLogs() {} }, Platform: { OS: "android" }, View: "View", Text: "Text", ActivityIndicator: "ActivityIndicator" },
+    "react-native": { AppState: { addEventListener: () => ({ remove() {} }) }, LogBox: { ignoreLogs() {} }, Platform: { OS: "android" }, View: "View", Text: "Text", ActivityIndicator: "ActivityIndicator" },
     "@react-native-community/netinfo": { __esModule: true, default: { addEventListener: () => () => {} } },
     "./src/ads/AdManager": { useAds: () => ({ configureInterstitial: idle, recordScreenTransition: idle }) },
     "./src/ads/adSettings": { DEFAULT_INTERSTITIAL_SETTINGS: {}, getInterstitialSettingsFromTeamData: () => ({}) },
     "./src/utils/medicalScale": { DEFAULT_ALERT_THRESHOLDS: {} }, "./src/utils/historyLoading": require("../utils/historyLoading"),
     "./src/hooks/useHistoryData": hook, "./src/services/firestoreService": legacy,
+    "./src/hooks/useDailyReportHistory": dailyHook,
+    "./src/utils/dailyReportScope": require("../utils/dailyReportScope"),
+    "./src/services/dailyReportReadService": { subscribeUnreviewedReports: watch("unreviewed"), subscribeRosterLatestReports: watch("rosterFallback") },
     "./src/services/historyDataService": Object.fromEntries(["LoadingState", "LoadingSummary", "LatestReports", "PostReadStates", "PinnedPosts"].map((name) => ["subscribe" + name, watch(name)])),
     "./src/AuthContext": { useAuth: () => auth }, "./src/NotificationContext": { useNotifications: () => ({ setNavigationHandler: idle }) },
   };
@@ -190,19 +197,29 @@ test("startup waits for the gate; navigation owns bounded listeners; rollback re
   h.mount(AppContent);
   assert.equal(calls.filter((item) => legacyNames.some((name) => item.name === "legacy" + name) || item.name === "history").length, 0);
   assert.equal(calls.filter((item) => ["legacyTeamData", "legacyTeamMembers"].includes(item.name)).length, 2);
+  calls.find((item) => item.name === "legacyTeamMembers").args[1]([{ uid: "member", name: "M", role: "member" }]); h.render();
   const gate = calls.find((item) => item.name === "LoadingState");
+  gate.args[1]({ ready: false, enabled: false, status: "preparing", schemaVersion: 1 }); h.render();
+  route = { name: "Diary" }; h.find((node) => node.type === "NavigationContainer").props.onStateChange(); h.render();
+  const beforePreparation = calls.findLast((item) => item.name === "history" && item.args[1] === "dailyReports");
+  assert.ok(beforePreparation.args[2].start); assert.equal(beforePreparation.args[2].scope.canSearchAll, false);
+  const calendar = h.find((node) => node.type === "Screen" && node.props.name === "Calendar").children[0]({}).props;
+  assert.equal(calendar.reportReadsReady, true); assert.equal(calendar.optimize, false);
+  assert.equal(calls.filter((item) => item.name === "legacyDailyReports").length, 0);
+  route = { name: "WorkspaceHome" }; h.find((node) => node.type === "NavigationContainer").props.onStateChange(); h.render();
   gate.args[1]({ ready: true, enabled: true, separateReads: true, schemaVersion: 1 }); h.render();
-  assert.equal(calls.filter((item) => legacyNames.some((name) => item.name === "legacy" + name)).length, 0);
+  assert.equal(calls.filter((item) => !item.stops && legacyNames.some((name) => item.name === "legacy" + name)).length, 0);
   const home = () => h.find((node) => node.type === "Screen" && node.props.name === "WorkspaceHome").children[0]({}).props;
   home().onChannelChange("General"); h.render();
   const post = calls.find((item) => item.name === "history" && item.args[1] === "workspacePosts");
   assert.equal(post.args[2].count, 50); assert.equal(post.args[2].channel, "General");
   route = { name: "Diary" }; h.find((node) => node.type === "NavigationContainer").props.onStateChange(); h.render();
   assert.equal(post.stops, 1);
-  const report = calls.find((item) => item.name === "history" && item.args[1] === "dailyReports");
-  assert.ok(report.args[2].since); assert.equal(report.args[2].count, null);
+  const report = calls.findLast((item) => item.name === "history" && item.args[1] === "dailyReports");
+  assert.ok(report.args[2].start); assert.ok(report.args[2].end); assert.equal(report.args[2].count, null);
   gate.args[1]({ ready: true, enabled: false, separateReads: false, schemaVersion: 1 }); h.render();
-  assert.equal(report.stops, 1);
+  assert.equal(report.stops, 0, "the seven-day report subscription must survive optimization being disabled");
+  assert.equal(calls.filter((item) => item.name === "legacyDailyReports").length, 0);
   const legacyPosts = calls.findLast((item) => item.name === "legacyWorkspacePosts");
   legacyPosts.args[2]([{ id: "old", readBy: [] }]); h.render();
   route = { name: "WorkspaceHome" }; h.find((node) => node.type === "NavigationContainer").props.onStateChange(); h.render();
@@ -214,6 +231,64 @@ test("startup waits for the gate; navigation owns bounded listeners; rollback re
   gate.args[1]({ ready: true, enabled: true, schemaVersion: 1 }); h.render();
   assert.equal(home().posts.length, 0); assert.equal(gate.stops, 1);
   h.unmount(); assert.ok(calls.every((item) => item.stops === 1));
+});
+
+test("daily seven-day windows load old weeks only when opened, reuse listeners, and ignore late scope callbacks", () => {
+  const h = componentHarness(), calls = [], results = []; let active = false, team = "a", day = "2026-10-17", foreground;
+  const receive = (items) => results.push(items);
+  const watch = (teamId, _name, options, next, error) => { const sub = { teamId, options, next, error, stops: 0 }; calls.push(sub); return () => sub.stops++; };
+  const { useDailyReportHistory } = load(path.join(__dirname, "../hooks/useDailyReportHistory.js"), { react: h.react,
+    "../utils/historyLoading": { ...require("../utils/historyLoading"), jstDay: () => day },
+    "../services/dailyReportReadService": { subscribeDailyReportHistory: (teamId, options, next, error) => watch(teamId, "dailyReports", options, next, error), subscribeDailyReportDocument: (teamId, name, id, next, error) => watch(teamId, name, { id }, next, error) },
+    "react-native": { AppState: { addEventListener: (_event, callback) => { foreground = callback; return { remove() {} }; } } } });
+  let api; h.mount(() => { api = useDailyReportHistory(team, active, receive, { ready: true, canSearchAll: true }); return null; });
+  assert.equal(calls.length, 0); assert.equal(results.length, 0, "inactive hook must preserve fallback data");
+  active = true; h.update(); assert.equal(calls.length, 1);
+  assert.equal(calls[0].options.start, "2026-10-11"); assert.equal(calls[0].options.end, "2026-10-17"); assert.equal(calls[0].options.count, null);
+  calls[0].next({ items: [], fromCache: true }); h.render(); assert.equal(api.isDateLoaded(day), false); assert.equal(api.busy, true);
+  const recent = Array.from({ length: 80 }, (_, id) => ({ id: String(id), date: day })); calls[0].next({ items: recent }); h.render(); assert.equal(results.at(-1).length, 80);
+  api.loadMore(); h.render(); assert.equal(calls.length, 1, "collapsed week must not fetch");
+  api.toggleWeek(1); h.render(); assert.equal(calls.length, 2); assert.equal(calls[1].options.end, "2026-10-10");
+  calls[1].next({ items: [{ id: "old", date: "2026-10-09" }] }); h.render(); assert.equal(results.at(-1).length, 81);
+  api.toggleWeek(1); h.render(); assert.equal(results.at(-1).length, 80); api.toggleWeek(1); h.render(); assert.equal(calls.length, 2);
+  api.include("outside"); h.render(); calls.at(-1).next({ id: "outside", date: "2020-01-01" }); h.render(); assert.ok(results.at(-1).some(item => item.id === "outside"));
+  calls.at(-1).next(null); h.render(); assert.equal(results.at(-1).find(item => item.id === "outside").status, "deleted");
+  team = "b"; h.update(); assert.equal(calls.filter(call => call.teamId === "b").length, 1);
+  calls[0].next({ items: [{ id: "late-old-team" }] }); h.render(); assert.equal(results.at(-1).length, 0);
+  day = "2026-10-18"; foreground("active"); h.render(); assert.equal(calls.at(-1).options.start, "2026-10-12");
+  foreground("background"); h.render(); assert.ok(calls.every(call => call.stops === 1));
+  active = false; h.update(); assert.ok(calls.every(call => call.stops === 1)); h.unmount();
+});
+
+test("only owners may search all history, full search releases week listeners and demotion clears old data", () => {
+  const h = componentHarness(), calls = [], results = [];
+  let scope = { ready: true, role: "owner", canSearchAll: true };
+  const watch = (teamId, options, next) => { const call = { options, next, stops: 0 }; calls.push(call); return () => call.stops++; };
+  const { useDailyReportHistory } = load(path.join(__dirname, "../hooks/useDailyReportHistory.js"), { react: h.react,
+    "../utils/historyLoading": require("../utils/historyLoading"), "../services/dailyReportReadService": { subscribeDailyReportHistory: watch },
+    "react-native": { AppState: { addEventListener: () => ({ remove() {} }) } } });
+  let api; const receive = (items) => results.push(items);
+  h.mount(() => { api = useDailyReportHistory("team", true, receive, scope); return null; });
+  assert.ok(calls[0].options.start);
+  calls[0].next({ items: [{ id: "recent" }] }); h.render();
+  api.searchAll(); h.render(); assert.equal(calls[0].stops, 1);
+  assert.equal(calls.at(-1).options.start, undefined); const all = calls.at(-1);
+  all.next({ items: [{ id: "old-private" }] }); h.render(); assert.equal(results.at(-1)[0].id, "old-private");
+  for (const role of ["admin", "staff", "member", "guardian"]) {
+    scope = { ready: true, role, canSearchAll: false }; h.update();
+    assert.equal(api.all, false); assert.equal(api.canSearchAll, false); assert.ok(calls.at(-1).options.start);
+    const count = calls.length; api.searchAll(); h.render(); assert.equal(calls.length, count);
+    all.next({ items: [{ id: "late-private" }] }); h.render(); assert.equal(results.at(-1).length, 0);
+  }
+  h.unmount(); assert.ok(calls.every((call) => call.stops === 1));
+});
+
+test("report dates normalize slash legacy format and seven days follow JST at UTC boundaries", () => {
+  const { jstDay, reportDay, reportWeek } = require("../utils/historyLoading");
+  assert.equal(jstDay(new Date("2026-10-16T14:59:59Z")), "2026-10-16");
+  assert.equal(jstDay(new Date("2026-10-16T15:00:00Z")), "2026-10-17");
+  assert.equal(reportDay("2026/10/17"), "2026-10-17");
+  assert.deepEqual(reportWeek("2026-01-02"), { start: "2025-12-27", end: "2026-01-02" });
 });
 test("an empty cached gate cannot start a legacy whole-history fetch", () => {
   let receive; const values = [];

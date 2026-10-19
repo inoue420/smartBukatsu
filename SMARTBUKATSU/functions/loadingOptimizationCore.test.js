@@ -1,6 +1,13 @@
 const test = require("node:test"), assert = require("node:assert/strict");
-const { lastEventDate, contributions, adjustSummary, audienceFor, contentChanges, latestReportData, validLatest, compareReports, stableStringify } = require("./loadingOptimizationCore");
+const { lastEventDate, contributions, adjustSummary, audienceFor, contentChanges, latestReportData, validLatest, compareReports, stableStringify, postActorUids } = require("./loadingOptimizationCore");
 const members = [{ uid: "owner", name: "Coach", profileKey: "Coach", role: "owner" }, { uid: "staff", name: "Staff", profileKey: "Staff", role: "staff", staffScope: "assigned" }, { uid: "a", name: "A", profileKey: "A", role: "member", assignedStaff: "Staff" }, { uid: "b", name: "B", profileKey: "B", role: "member" }, { uid: "g", name: "G", profileKey: "G", role: "guardian" }];
+test("block targets cover active legacy replies while deleted and hidden history needs no actor index", () => {
+  const post = { authorUid: "a", user: "A", replies: [{ user: "B" }, { authorUid: "staff", status: "deleted" }, { authorUid: "owner", moderationStatus: "hidden" }] };
+  assert.deepEqual(postActorUids(post, members), ["a", "b"]);
+  assert.deepEqual(postActorUids(post, members, ["b"]), ["a"], "late source events must not restore a deleted account in the actor index");
+  assert.deepEqual(postActorUids({ ...post, status: "deleted" }, members), []);
+  assert.deepEqual(postActorUids({ ...post, moderationStatus: "hidden" }, members), []);
+});
 test("legacy and selected multi-day schedules preserve overlapping dates", () => {
   assert.equal(lastEventDate({ date: "2026-09-30", endDate: "2026-10-02" }), "2026-10-02");
   assert.equal(lastEventDate({ date: "2026-09-30", selectedDates: ["2026-10-03", "2026-09-30"] }), "2026-10-03");
@@ -12,6 +19,17 @@ test("old medical reports remain counted with staff assigned-scope and all scale
   assert.deepEqual(result.staff.medicalHistogram, { "0:0:4:0": 1 });
   assert.equal(contributions("dailyReports", { ...data, authorUid: "b", author: "B" }, members).staff, undefined);
   assert.deepEqual(contributions("dailyReports", { ...data, isReviewed: true }, members), {});
+});
+
+test("an explicit author UID wins over an earlier member with the same legacy name", () => {
+  const roster = [
+    { uid: "wrong", profileKey: "Same", role: "member", assignedStaff: "Wrong coach" },
+    { uid: "correct", profileKey: "Same_1234", role: "member", assignedStaff: "Correct coach" },
+    { uid: "coach1", profileKey: "Wrong coach", role: "staff", staffScope: "assigned" },
+    { uid: "coach2", profileKey: "Correct coach", role: "staff", staffScope: "assigned" },
+  ];
+  const result = contributions("dailyReports", { authorUid: "correct", author: "Same", fatigue: 5 }, roster);
+  assert.equal(result.coach1, undefined); assert.ok(result.coach2); assert.equal(result.correct, undefined);
 });
 test("notice read counts are independent of the limited list and deletion subtracts contributions", () => {
   const result = contributions("notices", { readBy: ["A"] }, members); assert.equal(result.a, undefined); assert.equal(result.b.unreadNoticeCount, 1);

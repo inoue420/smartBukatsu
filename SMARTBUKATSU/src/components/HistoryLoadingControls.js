@@ -7,7 +7,8 @@ export default function HistoryLoadingControls({ history, search = false, label 
     {!!history.error && <Text accessibilityRole="alert" style={{ color: "#b42318" }}>{history.error}</Text>}
     {history.busy && <ActivityIndicator color="#0077cc" />}
     {history.scanned > 0 && history.busy && <Text>過去履歴を確認中：{history.scanned}件</Text>}
-    {!history.all && search && <TouchableOpacity disabled={history.busy} onPress={history.searchAll}><Text style={{ color: "#0077cc", padding: 8 }}>過去の履歴も検索する</Text></TouchableOpacity>}
+    {!history.all && search && history.canSearchAll !== false && <TouchableOpacity disabled={history.busy} onPress={history.searchAll}><Text style={{ color: "#0077cc", padding: 8 }}>過去の履歴も検索する</Text></TouchableOpacity>}
+    {!history.all && search && history.canSearchAll === false && <Text>過去の週を開くと、その期間も検索できます。</Text>}
     {!history.busy && history.hasMore && <TouchableOpacity onPress={history.loadMore}><Text style={{ color: "#0077cc", padding: 8 }}>{label}</Text></TouchableOpacity>}
     {history.searching && <TouchableOpacity onPress={history.cancel}><Text style={{ color: "#666", padding: 8 }}>検索を中止</Text></TouchableOpacity>}
     {!!history.error && <TouchableOpacity onPress={history.retry}><Text style={{ color: "#0077cc", padding: 8 }}>再試行</Text></TouchableOpacity>}

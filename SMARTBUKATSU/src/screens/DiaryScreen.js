@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import HistoryLoadingControls from "../components/HistoryLoadingControls";
+import { jstDay, reportDay, reportSubmissionKey } from "../utils/historyLoading";
 import {
   View,
   Text,
@@ -30,6 +31,8 @@ import {
   createDailyReport,
   createWorkspacePost,
   updateDailyReport,
+  appendDailyReportComment,
+  editOwnDailyReport,
   deleteDailyReport,
   setUserBlocked,
   submitSafetyReport,
@@ -148,10 +151,7 @@ const AttachmentViewerOverlay = ({ attachment, onClose }) => {
   );
 };
 
-const getTodayString = () => {
-  const today = new Date();
-  return `${today.getFullYear()}/${String(today.getMonth() + 1).padStart(2, "0")}/${String(today.getDate()).padStart(2, "0")}`;
-};
+const getTodayString = () => jstDay();
 
 const REPORT_REASONS = [
   { value: "harassment_bullying", label: "いじめ・嫌がらせ・誹謗中傷" },
@@ -194,11 +194,24 @@ const DiaryScreen = ({
     ) || {};
   const userRole =
     global.TEST_ROLE ||
-    (isAdmin ? "owner" : currentUserProfile.role || "member");
-  const isStaffOrAbove = ["owner", "staff"].includes(userRole);
+    (currentUserProfile.role || (isAdmin ? "owner" : "member"));
+  const isStaffOrAbove = ["owner", "admin", "staff"].includes(userRole);
+  const canReadReport = (report) => {
+    if (report.status === "deleted") return false;
+    if (report.sharedWith === "all" || ["owner", "admin"].includes(userRole)) return true;
+    if (userRole === "staff") {
+      if ((currentUserProfile.staffScope || "all") === "all") return true;
+      if (currentUserProfile.staffScope !== "assigned") return false;
+      const authorProfile = report.authorUid ? Object.values(userProfiles).find((profile) => profile.uid === report.authorUid) : userProfiles[report.author];
+      const myKey = Object.keys(userProfiles).find((key) => userProfiles[key].uid === currentUserUid) || currentUser;
+      return authorProfile?.assignedStaff === myKey;
+    }
+    return ["member", "captain"].includes(userRole) && (report.authorUid ? report.authorUid === currentUserUid : report.author === currentUser);
+  };
 
   const roleNameMap = {
     owner: "管理者(監督)",
+    admin: "管理者",
     staff: "コーチ(スタッフ)",
     captain: `${currentUser}(キャプテン)`,
     member: `${currentUser}(あなた)`,
@@ -207,17 +220,25 @@ const DiaryScreen = ({
 
   const [isCreateModalVisible, setIsCreateModalVisible] = useState(false);
   const [selectedReport, setSelectedReport] = useState(null);
+  useEffect(() => {
+    if (!selectedReport) return;
+    const latest = dailyReports.find((report) => report.id === selectedReport.id);
+    if (!canReadReport(latest || selectedReport)) setSelectedReport(null);
+    else if (latest && latest !== selectedReport) setSelectedReport(latest);
+  }, [dailyReports, selectedReport?.id, userProfiles, userRole, currentUserUid, currentUser]);
+  useEffect(() => { if (selectedReport?.id) history?.include(selectedReport.id); }, [selectedReport?.id, history?.include]);
 
   useEffect(() => {
     const reportId = route?.params?.reportId;
     if (!reportId) return;
     const targetReport = dailyReports.find((report) => report.id === reportId);
-    if (!targetReport) return;
+    if (!targetReport || !canReadReport(targetReport)) return;
     setSelectedReport(targetReport);
     navigation.setParams({ reportId: undefined });
-  }, [dailyReports, navigation, route?.params?.reportId]);
+  }, [dailyReports, navigation, route?.params?.reportId, userProfiles, userRole, currentUserUid, currentUser]);
   const [commentDraftsByReportId, setCommentDraftsByReportId] = useState({});
   const isSendingCommentRef = useRef(false);
+  const commentAttempts = useRef(new Map());
   const commentContextRef = useRef(null);
   commentContextRef.current = { teamId: activeTeamId, enabled: dailyReportCommentsEnabled === true };
   useEffect(() => () => { commentContextRef.current = null; }, []);
@@ -230,6 +251,14 @@ const DiaryScreen = ({
   const [isSubmittingReport, setIsSubmittingReport] = useState(false);
 
   const [isLoading, setIsLoading] = useState(false);
+  const submittingRef = useRef(false), submissionIdRef = useRef(null), scopeRef = useRef(null);
+  const previousScope = useRef(`${activeTeamId}:${currentUserUid}`);
+  scopeRef.current = `${activeTeamId}:${currentUserUid}`;
+  useEffect(() => {
+    if (previousScope.current !== scopeRef.current) { setSelectedReport(null); setIsLoading(false); setCommentDraftsByReportId({}); }
+    previousScope.current = scopeRef.current;
+  }, [activeTeamId, currentUserUid]);
+  useEffect(() => () => { scopeRef.current = null; }, []);
 
   const confirmContentForSubmission = async (content, contentType) => {
     const localInspection = inspectUserContent(content);
@@ -325,15 +354,22 @@ const DiaryScreen = ({
   const [expandedDates, setExpandedDates] = useState({});
 
   // ★ 追加：下書き保存用のキー（ユーザーごとに分ける）
-  const DRAFT_KEY = `diary_draft_${currentUser}`;
+  const DRAFT_KEY = `diary_draft_v2_${activeTeamId}_${currentUserUid}`;
+  const [draftReady, setDraftReady] = useState("");
+  const draftWrites = useRef(Promise.resolve());
 
   // ★ 追加：初回起動時に下書きデータを読み込む
   useEffect(() => {
+    let live = true;
+    setDraftReady(""); resetForm(); setIsCreateModalVisible(false);
     const loadDraft = async () => {
       try {
         const draftStr = await AsyncStorage.getItem(DRAFT_KEY);
+        if (!live) return;
         if (draftStr) {
           const draft = JSON.parse(draftStr);
+          submissionIdRef.current = draft.submissionId || null;
+          setEditingReportId(draft.editingReportId || null);
           setReportDate(draft.reportDate || getTodayString());
           setCondition(draft.condition || "良い");
           setFatigue(
@@ -358,17 +394,45 @@ const DiaryScreen = ({
             draft.achievement !== undefined ? draft.achievement : 3,
           );
           setMemo(draft.memo || "");
+          setAttachments(draft.attachments || []);
+          setRemovedAttachments(draft.removedAttachments || []);
+          setHighlightLink(draft.highlightLink || "");
+        } else {
+          // The old key has no team/UID. Import only after an explicit choice;
+          // retain it when declined, rather than assigning it to another team.
+          const legacy = await AsyncStorage.getItem(`diary_draft_${currentUser}`);
+          if (legacy && live && JSON.parse(legacy).reflection) {
+            await new Promise((resolve) => Alert.alert("以前の下書きがあります",
+              "旧形式の下書きには所属チームの情報がありません。現在のチームの下書きとして復元しますか？", [
+                { text: "復元しない", style: "cancel", onPress: resolve },
+                { text: "復元する", onPress: () => {
+                  if (live) {
+                    const draft = JSON.parse(legacy);
+                    setReflection(draft.reflection || ""); setMemo(draft.memo || "");
+                    setReportDate(draft.reportDate || getTodayString()); setCondition(draft.condition || "良い");
+                    setFatigue(normalizeMedicalScaleValue(draft.fatigue, draft.medicalScaleVersion));
+                    setIsParticipating(draft.isParticipating || "通常"); setHasPain(draft.hasPain || false);
+                    setPainPart(draft.painPart || ""); setPainLevel(normalizeMedicalScaleValue(draft.painLevel, draft.medicalScaleVersion));
+                    setSinceWhen(draft.sinceWhen || ""); setTreatment(draft.treatment || ""); setAchievement(draft.achievement ?? 3);
+                  }
+                  resolve();
+                } },
+              ], { cancelable: false }));
+          }
         }
       } catch (error) {
         console.log("下書き読み込みエラー:", error);
+      } finally {
+        if (live) setDraftReady(DRAFT_KEY);
       }
     };
     loadDraft();
+    return () => { live = false; };
   }, [DRAFT_KEY]);
 
   // ★ 追加：入力が変わるたびに自動で下書きを保存する
   useEffect(() => {
-    if (editingReportId) return; // 過去の記録を修正中の場合は下書き上書きしない
+    if (draftReady !== DRAFT_KEY || !activeTeamId || !currentUserUid) return;
 
     const saveDraft = async () => {
       const draft = {
@@ -385,9 +449,12 @@ const DiaryScreen = ({
         reflection,
         achievement,
         memo,
+        teamId: activeTeamId, uid: currentUserUid, editingReportId,
+        submissionId: submissionIdRef.current, attachments, removedAttachments, highlightLink,
       };
       try {
-        await AsyncStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
+        draftWrites.current = draftWrites.current.catch(() => {}).then(() => AsyncStorage.setItem(DRAFT_KEY, JSON.stringify(draft)));
+        await draftWrites.current;
       } catch (error) {
         console.log("下書き保存エラー:", error);
       }
@@ -408,6 +475,7 @@ const DiaryScreen = ({
     memo,
     editingReportId,
     DRAFT_KEY,
+    draftReady, attachments, removedAttachments, highlightLink,
   ]);
 
   const targetPlayers = useMemo(() => {
@@ -418,11 +486,13 @@ const DiaryScreen = ({
     baseList.forEach((name) => {
       const role = userProfiles[name]?.role || "member";
       if (role === "member" || role === "captain") {
+        const myKey = Object.keys(userProfiles).find((key) => userProfiles[key].uid === currentUserUid) || currentUser;
+        if (userRole === "staff" && currentUserProfile.staffScope === "assigned" && userProfiles[name]?.assignedStaff !== myKey) return;
         players.push(name);
       }
     });
     return Array.from(new Set(players)).sort();
-  }, [clubMembers, userProfiles]);
+  }, [clubMembers, userProfiles, currentUserUid, currentUser, userRole, currentUserProfile.staffScope]);
 
   const REPLY_TEMPLATES = [
     { label: "👍 励ます", text: "お疲れ様！その調子で引き続き頑張ろう。" },
@@ -460,24 +530,7 @@ const DiaryScreen = ({
     return level;
   };
 
-  const staffScope = currentUserProfile.staffScope || "all";
-
-  let processedReports = dailyReports.filter((d) => {
-    if (d.status === "deleted") return false;
-    if (d.sharedWith === "all") return true;
-    if (userRole === "owner") return true;
-    if (userRole === "staff") {
-      if (staffScope === "all") return true;
-      if (staffScope === "assigned") {
-        const authorProfile = userProfiles[d.author] || {};
-        return authorProfile.assignedStaff === currentUser;
-      }
-    }
-    if (userRole === "member" || userRole === "captain") {
-      return d.author === currentUser;
-    }
-    return false;
-  });
+  let processedReports = dailyReports.filter(canReadReport);
 
   if (isStaffOrAbove) {
     if (activeTab === "unread") {
@@ -519,8 +572,10 @@ const DiaryScreen = ({
   }
 
   const groupedReports = processedReports.reduce((acc, report) => {
-    if (!acc[report.date]) acc[report.date] = [];
-    acc[report.date].push(report);
+    const author = report.authorUid ? Object.keys(userProfiles).find((key) => userProfiles[key].uid === report.authorUid) || report.author : report.author;
+    const day = reportDay(report.date);
+    if (!acc[day]) acc[day] = [];
+    acc[day].push({ ...report, author });
     return acc;
   }, {});
 
@@ -531,7 +586,7 @@ const DiaryScreen = ({
   let displayDates = [...sortedDates];
   if (isStaffOrAbove && activeTab === "all" && searchQuery === "") {
     const todayStr = getTodayString();
-    if (!displayDates.includes(todayStr)) {
+    if (!displayDates.includes(todayStr) && (!history || history.isDateLoaded?.(todayStr))) {
       displayDates = [todayStr, ...displayDates];
     }
   }
@@ -684,6 +739,7 @@ const DiaryScreen = ({
   };
 
   const resetForm = () => {
+    submissionIdRef.current = null;
     setEditingReportId(null);
     setReportDate(getTodayString());
     setCondition("良い");
@@ -802,6 +858,14 @@ const DiaryScreen = ({
   };
 
   const handleCreateOrEditReport = async () => {
+    if (submittingRef.current) return;
+    if (isOffline || !activeTeamId || !currentUserUid) {
+      try {
+        await draftWrites.current;
+        Alert.alert("まだ提出されていません", "入力は下書きとして保存します。オンラインに戻ったら、この画面で提出してください。");
+      } catch { Alert.alert("端末に保存できませんでした", "入力は画面に残っています。端末の空き容量を確認し、画面を閉じずにもう一度お試しください。"); }
+      return;
+    }
     if (!reportDate.trim()) {
       Alert.alert("入力エラー", "対象日を選択してください。");
       return;
@@ -818,9 +882,11 @@ const DiaryScreen = ({
       return;
     }
 
-    setIsLoading(true);
-    const safeTeamId = activeTeamId || "test_team";
-    const reportId = editingReportId || `rep_${Date.now().toString()}`;
+    submittingRef.current = true; setIsLoading(true);
+    const scope = scopeRef.current;
+    const safeTeamId = activeTeamId;
+    const reportId = editingReportId || submissionIdRef.current || `rep_${currentUserUid}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    submissionIdRef.current = reportId;
     let uploadedAttachments = [];
     let attachmentCleanupFailed = false;
 
@@ -832,24 +898,22 @@ const DiaryScreen = ({
       const persistedAttachments = attachments.filter(
         (attachment) => !attachment.pending && attachment.downloadUrl,
       );
-      if (!isOffline) {
-        for (const attachment of attachments.filter(
-          (item) => item.pending,
-        )) {
-          const uploadedAttachment = await uploadDailyReportAttachment({
-            teamId: safeTeamId,
-            authorUid: currentUserUid,
-            reportId,
-            attachment,
-          });
-          uploadedAttachments.push(uploadedAttachment);
-        }
+      for (const attachment of attachments.filter((item) => item.pending)) {
+        const uploadedAttachment = await uploadDailyReportAttachment({
+          teamId: safeTeamId,
+          authorUid: currentUserUid,
+          reportId,
+          attachment,
+        });
+        uploadedAttachments.push(uploadedAttachment);
+        if (scopeRef.current !== scope) return;
       }
       const nextAttachments = [...persistedAttachments, ...uploadedAttachments];
+      if (scopeRef.current !== scope) return;
 
       if (editingReportId) {
         const updateData = {
-          date: reportDate,
+          date: reportDay(reportDate),
           condition,
           fatigue,
           medicalScaleVersion: MEDICAL_SCALE_VERSION,
@@ -861,24 +925,18 @@ const DiaryScreen = ({
           attachments: nextAttachments,
           memo,
           highlightLink,
-          status: isOffline ? "pending" : "sent",
+          status: "sent",
         };
 
-        const updated = dailyReports.map((r) => {
-          if (r.id === editingReportId) return { ...r, ...updateData };
-          return r;
-        });
-
-        if (!isOffline) {
-          await updateDailyReport(safeTeamId, editingReportId, updateData);
-          try {
-            await deleteDailyReportAttachments(removedAttachments);
-          } catch (error) {
-            console.warn("削除済み添付のStorage削除エラー:", error);
-            attachmentCleanupFailed = true;
-          }
+        await editOwnDailyReport(safeTeamId, editingReportId, updateData);
+        try {
+          await deleteDailyReportAttachments(removedAttachments);
+        } catch (error) {
+          console.warn("削除済み添付のStorage削除エラー:", error);
+          attachmentCleanupFailed = true;
         }
-        setDailyReports(updated);
+        if (scopeRef.current !== scope) return;
+        setDailyReports((reports) => reports.map((r) => r.id === reportId ? { ...r, ...updateData } : r));
         Alert.alert(
           attachmentCleanupFailed ? "修正完了（一部削除待ち）" : "修正完了",
           attachmentCleanupFailed
@@ -888,7 +946,7 @@ const DiaryScreen = ({
       } else {
         const newReport = {
           id: reportId,
-          date: reportDate,
+          date: reportDay(reportDate),
           author: currentUser,
           authorUid: currentUserUid,
           condition,
@@ -902,7 +960,7 @@ const DiaryScreen = ({
           attachments: nextAttachments,
           memo,
           highlightLink,
-          status: isOffline ? "pending" : "sent",
+          status: "sent",
           isReviewed: false,
           isStarred: false,
           isFollowUp: false,
@@ -911,37 +969,49 @@ const DiaryScreen = ({
           comments: [],
         };
 
-        if (!isOffline) {
-          await createDailyReport(safeTeamId, newReport);
+        // Persist the retry ID and uploaded references before submitting. An
+        // uncertain acknowledgement must not create a second document.
+        await draftWrites.current.catch(() => {});
+        await AsyncStorage.setItem(DRAFT_KEY, JSON.stringify({ reportDate, condition, fatigue,
+          medicalScaleVersion: MEDICAL_SCALE_VERSION, isParticipating, hasPain, painPart, painLevel,
+          sinceWhen, treatment, reflection, achievement, memo, highlightLink, attachments: nextAttachments,
+          submissionId: reportId, teamId: safeTeamId, uid: currentUserUid }));
+        if (scopeRef.current !== scope) return;
+        const saved = await createDailyReport(safeTeamId, newReport);
+        if (scopeRef.current !== scope) return;
+        setDailyReports((reports) => [saved || newReport, ...reports.filter((report) => report.id !== reportId)]);
+        history?.include(reportId);
+        if (saved?.existingSubmission && reportSubmissionKey(saved) !== reportSubmissionKey(newReport)) {
+          Alert.alert("前回の提出を確認しました", "前回の内容は保存済みです。今回変更した入力は下書きに残しています。一覧の日報を確認し、修正可能な場合は日報の修正から変更してください。");
+          return;
         }
-        setDailyReports([newReport, ...dailyReports]);
         Alert.alert("提出完了", "振り返りを提出しました。", [
           {
             text: "OK",
             onPress: () => {
-              if (!isOffline) onDiarySubmitted?.();
+              onDiarySubmitted?.();
             },
           },
         ]);
 
         // ★ 追加：提出完了したら下書きを消去
-        await AsyncStorage.removeItem(DRAFT_KEY);
+        try { await AsyncStorage.removeItem(DRAFT_KEY); } catch { console.warn("提出済み下書きの削除を再試行してください。"); }
+      }
+      if (scopeRef.current === scope) {
+        submissionIdRef.current = null; setIsCreateModalVisible(false); resetForm(); Keyboard.dismiss();
       }
     } catch (error) {
+      if (scopeRef.current !== scope) return;
       console.log("Firestore保存エラー:", error);
       if (uploadedAttachments.length > 0) {
-        try {
-          await deleteDailyReportAttachments(uploadedAttachments);
-        } catch (cleanupError) {
-          console.warn("保存失敗後の添付削除エラー:", cleanupError);
-        }
+        // The server may have committed before the connection failed. Retain
+        // uploaded files for the same-ID retry; expiry handles abandoned ones.
+        setAttachments((current) => current.map((attachment) => uploadedAttachments.find((uploaded) => uploaded.id === attachment.id) || attachment));
       }
-      Alert.alert("エラー", "データの保存に失敗しました。");
+      Alert.alert("提出を確認できませんでした", "入力内容は保持しています。通信状態を確認して、もう一度提出してください。");
     } finally {
-      setIsLoading(false);
-      setIsCreateModalVisible(false);
-      resetForm();
-      Keyboard.dismiss();
+      submittingRef.current = false;
+      if (scopeRef.current === scope) setIsLoading(false);
     }
   };
 
@@ -1033,6 +1103,7 @@ const DiaryScreen = ({
     }
 
     isSendingCommentRef.current = true;
+    const commentScope = scopeRef.current, attemptKey = `${commentScope}:${reportId}`;
     try {
       const contentToSend = commentText.trim();
       const canSubmit = await confirmContentForSubmission(
@@ -1040,15 +1111,18 @@ const DiaryScreen = ({
         "daily_report_comment",
       );
       if (!canSubmit) return;
-      if (commentContextRef.current?.teamId !== activeTeamId) return;
+      if (scopeRef.current !== commentScope) return;
       if (!commentContextRef.current.enabled) {
         Alert.alert("送信を中止しました", "コメント設定がOFFに変更されました。入力内容は保持しています。");
         return;
       }
       setIsLoading(true);
 
+      const previousAttempt = commentAttempts.current.get(attemptKey);
+      const commentId = previousAttempt?.text === contentToSend ? previousAttempt.id : `c_${currentUserUid}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      commentAttempts.current.set(attemptKey, { id: commentId, text: contentToSend });
       const newComment = {
-        id: "c_" + Date.now().toString(),
+        id: commentId,
         user: displayUserName,
         uid: currentUserUid,
         text: contentToSend,
@@ -1056,12 +1130,9 @@ const DiaryScreen = ({
         status: "sent",
       };
       const isStaffComment = isStaffOrAbove;
-      const newComments = [...(selectedReport.comments || []), newComment];
-      await updateDailyReport(activeTeamId, reportId, {
-        comments: newComments,
-        isReviewed: isStaffComment ? true : selectedReport.isReviewed,
-      });
-      if (commentContextRef.current?.teamId !== activeTeamId) return;
+      await appendDailyReportComment(activeTeamId, reportId, newComment);
+      if (scopeRef.current !== commentScope) return;
+      commentAttempts.current.delete(attemptKey);
 
       const applyComment = (report) => ({
         ...report,
@@ -1083,7 +1154,7 @@ const DiaryScreen = ({
         return remainingDrafts;
       });
     } catch (error) {
-      if (commentContextRef.current?.teamId !== activeTeamId) return;
+      if (scopeRef.current !== commentScope) return;
       console.log("コメント送信エラー:", error);
       Alert.alert(
         "送信エラー",
@@ -1091,7 +1162,7 @@ const DiaryScreen = ({
       );
     } finally {
       isSendingCommentRef.current = false;
-      if (commentContextRef.current?.teamId === activeTeamId) setIsLoading(false);
+      if (scopeRef.current === commentScope) setIsLoading(false);
     }
   };
 
@@ -1201,14 +1272,17 @@ const DiaryScreen = ({
     }
   };
 
-  const handleMarkAsReviewed = () => {
-    const updated = dailyReports.map((r) => {
-      if (r.id === selectedReport.id) return { ...r, isReviewed: true };
-      return r;
-    });
-    setDailyReports(updated);
-    setSelectedReport((prev) => ({ ...prev, isReviewed: true }));
-    updateReportStatusAsync(selectedReport.id, { isReviewed: true });
+  const handleMarkAsReviewed = async () => {
+    if (!selectedReport || !isStaffOrAbove || isOffline || !activeTeamId) {
+      Alert.alert("確認済みにできません", "オンラインに戻ってから確認済みにしてください。"); return;
+    }
+    const reportId = selectedReport.id, scope = scopeRef.current;
+    try {
+      await updateDailyReport(activeTeamId, reportId, { isReviewed: true });
+      if (scopeRef.current !== scope) return;
+      setDailyReports((reports) => reports.map((report) => report.id === reportId ? { ...report, isReviewed: true } : report));
+      setSelectedReport((report) => report?.id === reportId ? { ...report, isReviewed: true } : report);
+    } catch { if (scopeRef.current === scope) Alert.alert("確認を保存できませんでした", "通信状態を確認して再試行してください。"); }
   };
 
   const renderStars = (rating, onSelect = null) => {
@@ -1236,11 +1310,11 @@ const DiaryScreen = ({
 
   const recentDates = useMemo(() => {
     const dates = [];
-    const today = new Date();
+    const today = new Date(`${getTodayString()}T00:00:00Z`);
     for (let i = 0; i < 30; i++) {
       const d = new Date(today);
-      d.setDate(today.getDate() - i);
-      const dateStr = `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
+      d.setUTCDate(today.getUTCDate() - i);
+      const dateStr = d.toISOString().slice(0, 10);
       let label = dateStr;
       if (i === 0) label += " (今日)";
       else if (i === 1) label += " (昨日)";
@@ -1291,7 +1365,7 @@ const DiaryScreen = ({
             <TextInput
               style={styles.searchInputFlex}
               placeholder="部員名やキーワードで検索..."
-              onSubmitEditing={() => history?.searchAll()}
+              onSubmitEditing={() => { if (searchQuery.trim() && history?.canSearchAll) history.searchAll(); }}
               value={searchQuery}
               onChangeText={setSearchQuery}
             />
@@ -1388,12 +1462,20 @@ const DiaryScreen = ({
         style={styles.content}
         contentContainerStyle={{ paddingBottom: 100 }}
       >
-        <HistoryLoadingControls history={history} search={Boolean(searchQuery.trim())} />
+        {history?.weeks && !history.all && <View style={{ padding: 12, gap: 8 }}>
+          <Text>直近7日を表示しています。過去の週は開くと読み込みます。</Text>
+          {history.weeks.map((week) => <View key={week.offset}>
+            <TouchableOpacity onPress={() => history.toggleWeek(week.offset)}>
+              <Text style={{ color: "#0077cc", padding: 8 }}>{week.open ? "▼" : "▶"} {week.start} ～ {week.end} {!week.state ? "（未取得）" : week.state.error ? "（取得失敗）" : week.state.cached ? "（端末の保存分・未同期）" : week.state.empty ? "（日報なし）" : ""}</Text>
+            </TouchableOpacity>
+          </View>)}
+        </View>}
+        <HistoryLoadingControls history={history} search={Boolean(searchQuery.trim()) || activeTab !== "all"} label="前の週を表示（開くまで取得しません）" />
         {isStaffOrAbove && activeTab === "danger" && (
           <MedicalSafetyNotice variant="alert" />
         )}
         {displayDates.length === 0 ? (
-          <Text style={styles.emptyText}>データがありません。</Text>
+          <Text style={styles.emptyText}>{history?.busy ? "日報を読み込み中です。" : history?.error ? "日報を取得できていません。再試行してください。" : "表示中の期間に日報はありません。"}</Text>
         ) : (
           displayDates.map((date, index) => {
             const reportsInDate = groupedReports[date] || [];
@@ -1638,8 +1720,8 @@ const DiaryScreen = ({
       {["member", "captain"].includes(userRole) && (
         <TouchableOpacity
           style={[styles.fab, isOffline && { backgroundColor: "#f39c12" }]}
+          disabled={draftReady !== DRAFT_KEY || isLoading}
           onPress={() => {
-            setEditingReportId(null);
             setIsCreateModalVisible(true);
           }}
         >
@@ -1711,7 +1793,7 @@ const DiaryScreen = ({
               {selectedReport &&
                 (() => {
                   const isMyReport =
-                    currentUser === selectedReport.author &&
+                    (selectedReport.authorUid ? currentUserUid === selectedReport.authorUid : currentUser === selectedReport.author) &&
                     ["member", "captain"].includes(userRole);
                   const timeElapsed =
                     Date.now() - (selectedReport.createdAt || Date.now());
@@ -2355,12 +2437,13 @@ const DiaryScreen = ({
                     isOffline && { backgroundColor: "#f39c12" },
                   ]}
                   onPress={handleCreateOrEditReport}
+                  disabled={isLoading || draftReady !== DRAFT_KEY}
                 >
                   <Text style={styles.submitButtonText}>
                     {editingReportId
                       ? "修正内容を保存"
                       : isOffline
-                        ? "待機リストに保存"
+                        ? "下書きを保持（未提出）"
                         : "この内容で1日の日報を提出する"}
                   </Text>
                 </TouchableOpacity>

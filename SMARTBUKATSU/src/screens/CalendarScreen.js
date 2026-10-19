@@ -502,7 +502,7 @@ const CalendarScreen = ({
   currentUser,
   currentUserUid = "",
   clubEvents = [],
-  dailyReports: suppliedReports = [],
+  reportReadsReady = false,
   optimize = false,
   eventHistory = null,
   onVisibleMonthChange,
@@ -558,9 +558,9 @@ const CalendarScreen = ({
   const focused = useIsFocused();
   const [visibleMonth, setVisibleMonth] = useState(selectedDate.substring(0, 7) + "-01");
   const [calendarReports, setCalendarReports] = useState([]);
-  const reportHistory = useHistoryData(activeTeamId, "dailyReports", optimize && focused,
+  const reportHistory = useHistoryData(activeTeamId, "dailyReports", reportReadsReady && focused,
     { ...monthWindow(visibleMonth), authorUid: currentUserUid, author: currentUser }, setCalendarReports);
-  const dailyReports = optimize ? calendarReports : suppliedReports;
+  const dailyReports = calendarReports;
 
   const [isClubModalVisible, setIsClubModalVisible] = useState(false);
   const [isPersonalModalVisible, setIsPersonalModalVisible] = useState(false);
@@ -688,13 +688,13 @@ const CalendarScreen = ({
     });
 
     dailyReports.forEach((report) => {
-      if (report.author === currentUser && report.status !== "deleted") {
+      if ((report.authorUid ? report.authorUid === currentUserUid : report.author === currentUser) && report.status !== "deleted") {
         addIndicator(report.date, `report-${report.id}`, COLORS.secondary);
       }
     });
 
     return indicators;
-  }, [clubEvents, personalEvents, dailyReports, currentUser]);
+  }, [clubEvents, personalEvents, dailyReports, currentUser, currentUserUid]);
 
   const dailyClubEvents = clubEvents.filter((p) => {
     if (p.status === "deleted") return false;
@@ -711,7 +711,7 @@ const CalendarScreen = ({
   const dailyMyReports = dailyReports.filter(
     (r) =>
       normalizeDate(r.date) === selectedDate &&
-      r.author === currentUser &&
+      (r.authorUid ? r.authorUid === currentUserUid : r.author === currentUser) &&
       r.status !== "deleted",
   );
 
@@ -2184,8 +2184,8 @@ const CalendarScreen = ({
         style={styles.scrollContent}
         contentContainerStyle={{ paddingBottom: 100 }}
       >
-        <HistoryLoadingControls history={optimize ? { ...reportHistory, hasMore: false, busy: reportHistory.busy || eventHistory?.busy, error: reportHistory.error || eventHistory?.error,
-          retry: () => { reportHistory.retry(); eventHistory?.retry(); } } : null} />
+        <HistoryLoadingControls history={{ ...reportHistory, hasMore: false, busy: reportHistory.busy || eventHistory?.busy, error: reportHistory.error || eventHistory?.error,
+          retry: () => { reportHistory.retry(); eventHistory?.retry(); } }} />
         <View style={styles.dateHeaderRow}>
           <Text style={styles.selectedDateText}>
             {selectedDate.replace(/-/g, "/")} の予定

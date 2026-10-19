@@ -1,7 +1,10 @@
 const { SCHEMA_VERSION, lastEventDate, contributions, adjustSummary, audienceFor,
-  contentChanges, latestReportData, validLatest, compareReports, stableStringify } = require("./loadingOptimizationCore");
+  contentChanges, latestReportData, validLatest, compareReports, stableStringify, postActorUids } = require("./loadingOptimizationCore");
 const CONTEXT_VERSION = 1, SHARD_BYTES = 256 * 1024, MAX_CONTEXT_BYTES = 4 * 1024 * 1024;
 const SOURCE_KINDS = ["notices", "dailyReports", "workspacePosts"];
+const MEDICAL_SUMMARY_VERSION = 2;
+const POST_ACTOR_INDEX_VERSION = 1;
+const chunksOf = (values) => Array.from({ length: Math.ceil(values.length / 30) }, (_, i) => values.slice(i * 30, i * 30 + 30));
 const maintained = (s) => s?.status === "preparing" || Boolean(s?.ready && s.enabled);
 const revision = () => Date.now() + "_" + require("node:crypto").randomUUID();
 // Existing author queries order Timestamp values ahead of numeric legacy values.
@@ -46,6 +49,9 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
       status: "preparing", stage: 0, cursor: null, personalIndex: 0, processed: 0, lease: null,
       desiredEnabled: options.enabled === true, desiredSeparateReads: options.separateReads === true,
       preparationId: revision(), contextVersion: CONTEXT_VERSION, contextRevision: null,
+      preparationStages: null, latestUids: null, targetedPreparation: false, queryIndex: 0,
+      postActorIndexVersion: 0,
+      medicalSummaryVersion: MEDICAL_SUMMARY_VERSION,
       contextShardCount: current?.contextShardCount || 0 };
   }
   const desired = (s) => ({ enabled: s?.status === "preparing" ? s.desiredEnabled : s?.enabled,
@@ -80,7 +86,7 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
     const channels = (team.data().channels || []).map((c) => Object.fromEntries(
       ["id", "name", "allowedRoleGroups", "shareScope", "allowedMemberUids", "allowedMembers"]
         .filter((key) => c[key] !== undefined).map((key) => [key, c[key]])));
-    return { members, channels };
+    return { members, channels, ...(Object.keys(excludedUids).length ? { excludedUids: Object.keys(excludedUids).sort() } : {}) };
   }
   async function cachedPayload(teamId, s, m, tx) {
     if (s?.contextVersion !== CONTEXT_VERSION || s.contextRevision !== s.preparationId ||
@@ -105,7 +111,15 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
   async function context(teamId, existing, attempt = 0) {
     return measured("context", async (m) => {
       const s = (await read(stateRef(teamId), m)).data();
-      if (!maintained(s)) { m.skipped++; return null; }
+      if (!maintained(s)) { m.skipped++; m.skipReason = "optimization_disabled"; return null; }
+      if (s.medicalSummaryVersion !== MEDICAL_SUMMARY_VERSION) {
+        await transact(m, async (tx) => {
+          const current = (await read(stateRef(teamId), m, tx)).data();
+          if (!maintained(current) || current.medicalSummaryVersion === MEDICAL_SUMMARY_VERSION) return;
+          write(tx, "update", stateRef(teamId), preparationFields(current, desired(current)), m);
+        });
+        return context(teamId, m, attempt + 1);
+      }
       const cached = parseContext(await cachedPayload(teamId, s, m), s.preparationId);
       if (cached) return cached;
       if (attempt >= 2) throw new HttpsError("aborted", "チーム設定の更新後に再試行します。");
@@ -199,7 +213,13 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
           else write(tx, "set", summaries[i].ref, { ...adjustSummary(summaries[i].data(), previous[uid], next[uid]), updatedAt: FieldValue.serverTimestamp() }, m);
         });
         if (!sourceSnap.exists) { if (oldSnap.exists) write(tx, "delete", entry, null, m); }
-        else if (stableStringify(previous) !== stableStringify(next) || stableStringify(old.authorUids || []) !== stableStringify(authorUids)) write(tx, "set", entry, { contributions: next, authorUids }, m);
+        else {
+          const actorUids = kind === "workspacePosts" ? postActorUids(data, ctx.members, ctx.excludedUids) : null;
+          const changedEntry = stableStringify(previous) !== stableStringify(next) || stableStringify(old.authorUids || []) !== stableStringify(authorUids)
+            || (actorUids && stableStringify(old.postActorUids) !== stableStringify(actorUids));
+          if (changedEntry || (options.preparing && old.referencePreparationId !== ctx.preparationId)) write(tx, "set", entry,
+            { contributions: next, authorUids, ...(actorUids ? { postActorUids: actorUids } : {}), referencePreparationId: ctx.preparationId }, m);
+        }
       });
       if (changedContext) {
         if (suppliedContext) return;
@@ -207,6 +227,7 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
         return process(teamId, kind, id, null, skipLatest, attempt + 1, options, m);
       }
       if (kind === "dailyReports" && !skipLatest) await Promise.all(authors.map((member) => refreshLatest(teamId, member, ctx.preparationId, id, m)));
+      if (!m.writes && !m.skipReason) m.skipReason = "already_applied_or_no_recipient_change";
     }, existing);
   }
   async function prepare(teamId, options = {}, existing) {
@@ -230,14 +251,40 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
       try {
         const ctx = await context(teamId, m);
         if (!ctx || ctx.preparationId !== s.preparationId) return;
-        const stages = ["audiences", "clubEvents", "personalEvents", "notices", "dailyReports", "workspacePosts", "entries", "latest", "cleanup"];
+        const stages = s.preparationStages || ["audiences", "clubEvents", "personalEvents", "notices", "dailyReports", "workspacePosts", "entries", "latest", "cleanup"];
         const stage = stages[s.stage || 0];
-        const next = { stage: s.stage || 0, cursor: null, personalIndex: s.personalIndex || 0, processed: s.processed || 0, lease: null };
+        const next = { stage: s.stage || 0, cursor: null, queryIndex: 0, personalIndex: s.personalIndex || 0, processed: s.processed || 0, lease: null };
         if (stage === "latest") {
-          await Promise.all(ctx.members.map((member) => refreshLatest(teamId, member, ctx.preparationId, null, m))); next.stage++;
-        } else if (stage === "cleanup") {
+          await Promise.all(ctx.members.filter((member) => !s.latestUids || s.latestUids.includes(member.uid)).map((member) => refreshLatest(teamId, member, ctx.preparationId, null, m))); next.stage++;
+        } else if (stage === "targetPosts" || stage === "targetReports") {
+          // The plan lives in the private context shards, never in the state
+          // document that team members can read (block lists are private).
+          const targets = ctx.referenceTargets?.[stage === "targetPosts" ? "posts" : "reports"];
+          if (!targets) { await prepare(teamId, null, m); return; }
+          const queryIndex = s.queryIndex || 0, target = targets[queryIndex];
+          if (!target) next.stage++;
+          else {
+            const field = target.recipientUid ? new FieldPath("contributions", target.recipientUid, "workspaceNotificationUnreadCount") : target.field;
+            let q = teamRef(teamId).collection("loadingEntries");
+            if (target.recipientUid) q = q.where(field, ">", 0).orderBy(field).orderBy(FieldPath.documentId());
+            else q = q.where(field, "array-contains-any", target.uids).orderBy(FieldPath.documentId());
+            if (s.cursor) q = target.recipientUid ? q.startAfter(s.cursor.value, s.cursor.id) : q.startAfter(s.cursor);
+            const page = await read(q.limit(50), m), kind = stage === "targetPosts" ? "workspacePosts" : "dailyReports";
+            for (const item of page.docs) {
+              if (!item.id.startsWith(kind + "_") || item.data().referencePreparationId === ctx.preparationId) continue;
+              await process(teamId, kind, item.id.slice(kind.length + 1), ctx, true, 0, { preparing: true }, m);
+            }
+            next.processed += page.size;
+            next.queryIndex = queryIndex;
+            if (page.size === 50) {
+              const last = page.docs.at(-1);
+              next.cursor = target.recipientUid ? { id: last.id, value: last.get(field) } : last.id;
+            } else if (queryIndex + 1 < targets.length) next.queryIndex++;
+            else { next.stage++; next.queryIndex = 0; }
+          }
+        } else if (stage === "cleanup" || stage === "complete") {
           const valid = new Set(ctx.members.map((member) => member.uid));
-          for (const name of ["loadingSummaries", "latestDailyReports"]) {
+          for (const name of stage === "cleanup" ? ["loadingSummaries", "latestDailyReports"] : []) {
             const snap = await read(teamRef(teamId).collection(name), m);
             for (const item of snap.docs.filter((d) => !valid.has(d.id))) {
               await transact(m, async (tx) => {
@@ -248,11 +295,13 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
           }
           Object.assign(next, { ready: true, status: "ready", preparedAt: FieldValue.serverTimestamp() });
         } else {
+          const entryKind = stage?.startsWith("entries:") ? stage.slice(8) : null;
           const personal = stage === "personalEvents", member = ctx.members[next.personalIndex];
           if (personal && !member) next.stage++;
           else {
-            const source = personal ? firestore.collection("users").doc(member.uid).collection(stage) : teamRef(teamId).collection(stage === "audiences" ? "workspacePosts" : stage === "entries" ? "loadingEntries" : stage);
+            const source = personal ? firestore.collection("users").doc(member.uid).collection(stage) : teamRef(teamId).collection(stage === "audiences" ? "workspacePosts" : stage === "entries" || entryKind ? "loadingEntries" : stage);
             let q = source.orderBy(FieldPath.documentId()).limit(50);
+            if (entryKind) q = q.where(FieldPath.documentId(), ">=", entryKind + "_").where(FieldPath.documentId(), "<=", entryKind + "_\uf8ff");
             if (s.cursor) q = q.startAfter(s.cursor);
             const page = await read(q, m);
             for (const item of page.docs) {
@@ -266,10 +315,12 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
                   if (audience && stableStringify([data.shareScope, [...(data.visibleToUids || [])].sort(), [...(data.readTargetUids || [])].sort()]) !== stableStringify([audience.shareScope, audience.visibleToUids, audience.readTargetUids])) write(tx, "update", item.ref, { ...audience, updatedAt: FieldValue.serverTimestamp() }, m);
                 });
               } else if (stage === "clubEvents" || personal) await handleEventDate({ data: { after: { exists: true, ref: item.ref } } }, m);
-              else if (stage === "entries") {
+              else if (stage === "entries" || entryKind) {
                 const kind = SOURCE_KINDS.find((name) => item.id.startsWith(name + "_"));
-                if (kind) await process(teamId, kind, item.id.slice(kind.length + 1), ctx, true, 0, {}, m);
-              } else await process(teamId, stage, item.id, ctx, true, 0, {}, m);
+                // Source stages already applied these entries in this
+                // generation. Only drain old entries, including orphans.
+                if (kind && item.data().referencePreparationId !== ctx.preparationId) await process(teamId, kind, item.id.slice(kind.length + 1), ctx, true, 0, { preparing: true }, m);
+              } else await process(teamId, stage, item.id, ctx, true, 0, { preparing: true }, m);
             }
             next.processed += page.size;
             if (page.size === 50) next.cursor = page.docs.at(-1).id;
@@ -280,7 +331,8 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
         await transact(m, async (tx) => {
           const current = (await read(ref, m, tx)).data();
           if (current?.preparationId !== s.preparationId || current.lease?.token !== token) return;
-          if (next.ready) Object.assign(next, { enabled: current.desiredEnabled === true, separateReads: current.desiredEnabled === true && current.desiredSeparateReads === true });
+          if (next.ready) Object.assign(next, { enabled: current.desiredEnabled === true, separateReads: current.desiredEnabled === true && current.desiredSeparateReads === true,
+            ...(!s.preparationStages || stages.includes("workspacePosts") ? { postActorIndexVersion: POST_ACTOR_INDEX_VERSION } : {}) });
           write(tx, "update", ref, next, m);
         });
       } catch (error) {
@@ -304,7 +356,7 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
       const teamId = await authorize(request, m);
       const result = await transact(m, async (tx) => {
         const s = (await read(stateRef(teamId), m, tx)).data();
-        if (s?.ready && s.enabled && s.schemaVersion === SCHEMA_VERSION &&
+        if (s?.ready && s.enabled && s.schemaVersion === SCHEMA_VERSION && s.medicalSummaryVersion === MEDICAL_SUMMARY_VERSION &&
             parseContext(await cachedPayload(teamId, s, m, tx), s.preparationId)) return { ready: true };
         if (s?.status !== "preparing") return null;
         if ((s.lease?.expiresAt || 0) < Date.now()) write(tx, "update", stateRef(teamId), { lease: null, resumeAt: FieldValue.serverTimestamp() }, m);
@@ -326,7 +378,7 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
         write(tx, "update", stateRef(teamId), { desiredEnabled: true, desiredSeparateReads: separateReads, updatedAt: FieldValue.serverTimestamp() }, m);
         return { enabled: false, separateReads: false, ready: false, status: "preparing" };
       }
-      if (enabled && (!s.enabled || !s.ready || !parseContext(await cachedPayload(teamId, s, m, tx), s.preparationId))) {
+      if (enabled && (!s.enabled || !s.ready || s.medicalSummaryVersion !== MEDICAL_SUMMARY_VERSION || !parseContext(await cachedPayload(teamId, s, m, tx), s.preparationId))) {
         write(tx, "set", stateRef(teamId), preparationFields(s, { enabled, separateReads }), m, { merge: true });
         return { enabled: false, separateReads: false, ready: false, status: "preparing" };
       }
@@ -342,7 +394,7 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
     const before = event.data?.before.exists ? event.data.before.data() : null, after = event.data?.after.exists ? event.data.after.data() : null;
     const changes = event.data ? contentChanges(kind, before, after) : { aggregate: true, latest: kind === "dailyReports" };
     return measured("content", async (m) => {
-      if (!changes.aggregate && !changes.latest) { m.skipped++; return; }
+      if (!changes.aggregate && !changes.latest) { m.skipped++; m.skipReason = "irrelevant_fields"; return; }
       await process(event.params.teamId, kind, event.params.documentId, null, !changes.latest, 0, { aggregate: changes.aggregate, before }, m);
     });
   }
@@ -386,8 +438,10 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
       records.forEach((d) => { m.writes++; writer.update(d.ref,
         new FieldPath("readers", uid), FieldValue.delete(), new FieldPath("notificationReads", uid), FieldValue.delete(), new FieldPath("notificationDismissals", uid), FieldValue.delete()); });
       const entries = new Map(), entryCollection = team.collection("loadingEntries");
-      for (const q of [entryCollection.where(new FieldPath("contributions", uid), "!=", null), entryCollection.where("authorUids", "array-contains", uid)]) (await read(q, m)).docs.forEach((d) => entries.set(d.id, d));
-      entries.forEach((d) => { m.writes++; writer.update(d.ref, new FieldPath("contributions", uid), FieldValue.delete(), "authorUids", FieldValue.arrayRemove(uid)); });
+      for (const q of [entryCollection.where(new FieldPath("contributions", uid), "!=", null), entryCollection.where("authorUids", "array-contains", uid),
+        entryCollection.where("postActorUids", "array-contains", uid)]) (await read(q, m)).docs.forEach((d) => entries.set(d.id, d));
+      entries.forEach((d) => { m.writes++; writer.update(d.ref, new FieldPath("contributions", uid), FieldValue.delete(), "authorUids", FieldValue.arrayRemove(uid),
+        ...(Array.isArray(d.data().postActorUids) ? ["postActorUids", FieldValue.arrayRemove(uid)] : [])); });
       writer.delete(team.collection("loadingSummaries").doc(uid)); writer.delete(team.collection("latestDailyReports").doc(uid)); m.writes += 2;
       await writer.close(); return records.size;
     });
@@ -399,7 +453,77 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
       if (data && lastEventDate(data) && data.lastEventDate !== lastEventDate(data)) write(tx, "update", ref, { lastEventDate: lastEventDate(data) }, m);
     }), existing);
   }
-  async function restartForReferenceChange(teamId) {
+  function referenceStages(before, after, state) {
+    const kinds = new Set(), stages = new Set();
+    if (stableStringify(before.channels) !== stableStringify(after.channels)) { stages.add("audiences"); kinds.add("workspacePosts"); }
+    const oldMembers = new Map(before.members.map((member) => [member.uid, member]));
+    const newMembers = new Map(after.members.map((member) => [member.uid, member]));
+    const latestUids = [], reportAuthors = new Set(), postQueries = [];
+    for (const uid of new Set([...oldMembers.keys(), ...newMembers.keys()])) {
+      const a = oldMembers.get(uid), b = newMembers.get(uid);
+      if (stableStringify(a) === stableStringify(b)) continue;
+      if (!a || !b || a.name !== b.name || a.profileKey !== b.profileKey) {
+        stages.add("audiences"); stages.add("cleanup");
+        SOURCE_KINDS.forEach((kind) => kinds.add(kind)); latestUids.push(uid);
+      } else {
+        if (a.role !== b.role) { stages.add("audiences"); kinds.add("workspacePosts"); kinds.add("dailyReports"); }
+        if ((a.assignedStaff || null) !== (b.assignedStaff || null)) reportAuthors.add(uid);
+        if ((a.staffScope || null) !== (b.staffScope || null)) {
+          for (const author of after.members) {
+            const report = { authorUid: author.uid, author: author.profileKey, isReviewed: false };
+            if (stableStringify(contributions("dailyReports", report, before.members)) !== stableStringify(contributions("dailyReports", report, after.members))) reportAuthors.add(author.uid);
+          }
+        }
+        const oldBlocked = new Set(a.blockedUserUids || []), newBlocked = new Set(b.blockedUserUids || []);
+        const changed = [...new Set([...oldBlocked, ...newBlocked])].filter((blocked) => oldBlocked.has(blocked) !== newBlocked.has(blocked));
+        if (changed.length) {
+          if (state.postActorIndexVersion === POST_ACTOR_INDEX_VERSION) {
+            postQueries.push(...chunksOf(changed).map((uids) => ({ field: "postActorUids", uids })));
+          } else if (changed.some((blocked) => oldBlocked.has(blocked))) {
+            // Old ready teams have no actor index for previously suppressed
+            // notifications. Backfill posts once when unblocking needs it.
+            kinds.add("workspacePosts");
+          } else {
+            // Adding a block can only remove existing notifications. This
+            // query works with old entries too and avoids a migration scan.
+            postQueries.push({ recipientUid: uid });
+          }
+        }
+      }
+    }
+    const targets = { posts: kinds.has("workspacePosts") ? [] : postQueries,
+      reports: kinds.has("dailyReports") ? [] : chunksOf([...reportAuthors]).map((uids) => ({ field: "authorUids", uids })) };
+    // Author UIDs were already maintained for every known daily-report
+    // author, including reviewed reports. Reading these entries also drains
+    // orphan contributions without walking the entire source collection.
+    return { stages: [...(stages.has("audiences") ? ["audiences"] : []), ...kinds,
+      ...[...kinds].map((kind) => "entries:" + kind), ...(targets.posts.length ? ["targetPosts"] : []),
+      ...(targets.reports.length ? ["targetReports"] : []), ...(latestUids.length ? ["latest"] : []),
+      stages.has("cleanup") ? "cleanup" : "complete"], latestUids, targets };
+  }
+  async function referenceContext(teamId, old, change, m, tx) {
+    if (!old || !change) return sourceContext(teamId, m, tx);
+    if (change.kind === "channels") {
+      const team = await read(teamRef(teamId), m, tx);
+      if (!team.exists) return null;
+      const channels = (team.data().channels || []).map((channel) => Object.fromEntries(
+        ["id", "name", "allowedRoleGroups", "shareScope", "allowedMemberUids", "allowedMembers"]
+          .filter((key) => channel[key] !== undefined).map((key) => [key, channel[key]])));
+      return { members: old.members, channels, ...(old.excludedUids?.length ? { excludedUids: old.excludedUids } : {}) };
+    }
+    const uid = change.uid, previous = old.members.find((member) => member.uid === uid);
+    const [member, user] = await Promise.all([read(teamRef(teamId).collection("members").doc(uid), m, tx), read(firestore.collection("users").doc(uid), m, tx)]);
+    const name = member.data()?.name || user.data()?.name || "名称未設定";
+    if (!previous || !member.exists || !user.exists || previous.name !== name) return sourceContext(teamId, m, tx);
+    const updated = { ...previous, role: member.data().role || "member", staffScope: member.data().staffScope || null,
+      assignedStaff: member.data().assignedStaff || null, blockedUserUids: [...(user.data().blockedUserUids || [])].sort() };
+    const excluded = (await read(exclusionsRef(teamId), m, tx)).data()?.uids || {};
+    if (excluded[uid]) return sourceContext(teamId, m, tx);
+    updated.blockedUserUids = updated.blockedUserUids.filter((blocked) => !excluded[blocked]);
+    return { channels: old.channels, members: old.members.map((item) => item.uid === uid ? updated : item),
+      ...(Object.keys(excluded).length ? { excludedUids: Object.keys(excluded).sort() } : {}) };
+  }
+  async function restartForReferenceChange(teamId, change) {
     return measured("reference_change", async (m) => {
       try { return await transact(m, async (tx) => {
       const s = (await read(stateRef(teamId), m, tx)).data();
@@ -408,12 +532,23 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
         for (let i = 0; i < (s.contextShardCount || 0); i++) write(tx, "delete", contextRef(teamId, i), null, m);
         write(tx, "update", stateRef(teamId), { ready: false, contextRevision: null, contextShardCount: 0 }, m); return;
       }
-      const [ctx, payload] = await Promise.all([sourceContext(teamId, m, tx), cachedPayload(teamId, s, m, tx)]);
-      if (!ctx || payload === stableStringify(ctx)) return;
+      const payload = await cachedPayload(teamId, s, m, tx), old = parseContext(payload, s.preparationId);
+      const ctx = await referenceContext(teamId, old, change, m, tx);
+      const previous = old && { members: old.members, channels: old.channels, ...(old.excludedUids?.length ? { excludedUids: old.excludedUids } : {}) };
+      if (!ctx || stableStringify(previous) === stableStringify(ctx)) return;
       const next = preparationFields(s, desired(s));
-      shardsFor(stableStringify(ctx));
+      let published = ctx;
+      if (old && s.status === "ready" && s.medicalSummaryVersion === MEDICAL_SUMMARY_VERSION) {
+        const scope = referenceStages(old, ctx, s);
+        next.preparationStages = scope.stages; next.latestUids = scope.latestUids;
+        next.postActorIndexVersion = s.postActorIndexVersion || 0;
+        next.targetedPreparation = scope.targets.posts.length > 0 || scope.targets.reports.length > 0;
+        if (next.targetedPreparation) published = { ...ctx, referenceTargets: scope.targets };
+        m.partialPreparation = scope.stages;
+      }
+      shardsFor(stableStringify(published));
       write(tx, "update", stateRef(teamId), next, m);
-      publishContext(teamId, next, ctx, m, tx);
+      publishContext(teamId, next, published, m, tx);
       }); } catch (error) {
         if (error.code === "resource-exhausted") {
           await transact(m, async (tx) => {
@@ -428,18 +563,18 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
   async function handleMembership(event) {
     const relevant = (d) => d && [d.name, d.role, d.staffScope, d.assignedStaff];
     if (stableStringify(relevant(event.data?.before.data() || null)) === stableStringify(relevant(event.data?.after.data() || null))) return;
-    await restartForReferenceChange(event.params.teamId);
+    await restartForReferenceChange(event.params.teamId, { kind: "member", uid: event.params.uid });
   }
   async function handleTeam(event) {
     if (!event.data?.after.exists) return;
     if (stableStringify(event.data.before.data()?.channels) === stableStringify(event.data.after.data()?.channels)) return;
-    await restartForReferenceChange(event.params.teamId);
+    await restartForReferenceChange(event.params.teamId, { kind: "channels" });
   }
   async function handleUser(event) {
     const before = event.data?.before.data() || null, after = event.data?.after.data() || null;
     if (stableStringify(before && [before.name, before.blockedUserUids]) === stableStringify(after && [after.name, after.blockedUserUids])) return;
     const teamIds = new Set([...(before?.teamIds || []), ...(after?.teamIds || []), before?.activeTeamId, after?.activeTeamId].filter(Boolean));
-    for (const teamId of teamIds) await restartForReferenceChange(teamId);
+    for (const teamId of teamIds) await restartForReferenceChange(teamId, { kind: "user", uid: event.params.uid });
   }
   return { process, context, refreshLatest, prepare, prepareCallable, configureCallable, handleContent, handleReadState,
     handleEventDate, handleMembership, handleTeam, handlePreparation, handleUser, relatedTeamIds, anonymizeTeam };

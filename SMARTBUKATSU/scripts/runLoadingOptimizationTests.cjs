@@ -17,7 +17,7 @@ server.on("error", (error) => { logs += error.message; });
       if (Date.now() > deadline) throw new Error("Local emulator did not start. " + logs);
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
-    const tests = spawn(process.execPath, ["--test", "src/services/loadingOptimization.rules.test.cjs"], { windowsHide: true, stdio: "inherit", env: { ...process.env, FIRESTORE_EMULATOR_HOST: `127.0.0.1:${port}`, GCLOUD_PROJECT: project, METADATA_SERVER_DETECTION: "none" } });
+    const tests = spawn(process.execPath, ["--test", process.argv[3] || "src/services/loadingOptimization.rules.test.cjs"], { windowsHide: true, stdio: "inherit", env: { ...process.env, FIRESTORE_EMULATOR_HOST: `127.0.0.1:${port}`, GCLOUD_PROJECT: project, METADATA_SERVER_DETECTION: "none" } });
     const code = await new Promise((resolve, reject) => { tests.on("exit", resolve); tests.on("error", reject); });
     process.exitCode = code;
   } catch (error) { process.stderr.write(error.message + "\n"); process.exitCode = 1; }

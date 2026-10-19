@@ -4,7 +4,7 @@ import {
   useNavigationContainerRef,
 } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
-import { Alert, LogBox, ActivityIndicator, View, Text, Platform } from "react-native";
+import { Alert, AppState, LogBox, ActivityIndicator, View, Text, Platform } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import NetInfo from "@react-native-community/netinfo";
@@ -20,7 +20,10 @@ import {
   getInterstitialSettingsFromTeamData,
 } from "./src/ads/adSettings";
 import { DEFAULT_ALERT_THRESHOLDS } from "./src/utils/medicalScale";
-import { mergeReadState, monthAgo, monthWindow } from "./src/utils/historyLoading";
+import { mergeReadState, monthWindow } from "./src/utils/historyLoading";
+import { dailyReportScope } from "./src/utils/dailyReportScope";
+import { subscribeUnreviewedReports, subscribeRosterLatestReports } from "./src/services/dailyReportReadService";
+import { useDailyReportHistory } from "./src/hooks/useDailyReportHistory";
 import { useHistoryData } from "./src/hooks/useHistoryData";
 import { subscribeLoadingState, subscribeLoadingSummary, subscribeLatestReports, subscribePostReadStates, subscribePinnedPosts } from "./src/services/historyDataService";
 
@@ -33,7 +36,6 @@ import {
 import {
   subscribeProjects,
   subscribeHighlightProjects,
-  subscribeDailyReports,
   subscribeNotices,
   subscribeWorkspacePosts,
   subscribePersonalEvents,
@@ -88,6 +90,9 @@ function AppContent() {
   const [tagGroups, setTagGroups] = useState([]);
   const [notices, setNotices] = useState([]);
   const [dailyReports, setDailyReports] = useState([]);
+  const [alertReports, setAlertReports] = useState([]);
+  const [membersResolved, setMembersResolved] = useState(null);
+  const [foreground, setForeground] = useState(AppState.currentState !== "background" && AppState.currentState !== "inactive");
   const [personalEvents, setPersonalEvents] = useState([]);
   const [clubEvents, setClubEvents] = useState([]); // ★ 追加：カレンダー用の部活予定
   const [teamName, setTeamName] = useState("ロード中...");
@@ -133,9 +138,18 @@ function AppContent() {
     dailyReportCommentSettings?.uid === user?.uid);
   const dailyReportCommentsEnabled = dailyReportCommentSettingsReady &&
     dailyReportCommentSettings.enabled === true;
+  const reportScope = useMemo(() => dailyReportScope(
+    authorized && membersResolved?.teamId === activeTeamId && membersResolved?.uid === user?.uid ? user.uid : "", userProfiles),
+  [activeTeamId, user?.uid, authorized, membersResolved, userProfiles]);
+  const reportScopeKey = JSON.stringify(reportScope);
+  const reportManager = ["owner", "admin", "staff"].includes(reportScope.role);
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (state) => setForeground(state === "active"));
+    return () => sub.remove();
+  }, []);
   useEffect(() => {
     let active = true;
-    setLoadingState(null); setLoadingSummary({}); setLatestReports([]); setPostReads({});
+    setLoadingState(null); setLoadingSummary({}); setLatestReports([]); setPostReads({}); setAlertReports([]);
     setProjects([]); setHighlightProjects([]); setPosts([]); setNotices([]); setDailyReports([]); setClubEvents([]); setPersonalEvents([]); setTagGroups([]); setCurrentParams({});
     setCalendarWindow(monthWindow());
     setWorkspaceChannel(""); setPinnedPosts([]);
@@ -150,11 +164,20 @@ function AppContent() {
     return () => { active = false; stop(); };
   }, [activeTeamId, user?.uid, authorized, optimize]);
   useEffect(() => {
-    if (!optimize || !authorized || currentScreen !== "Roster") { setLatestReports([]); return undefined; }
+    if (!authorized || !reportScope.ready || !foreground || currentScreen !== "Roster") { setLatestReports([]); return undefined; }
     let active = true;
-    const stop = subscribeLatestReports(activeTeamId, (value) => { if (active) setLatestReports(value); }, () => {});
+    const receive = (value) => { if (active) setLatestReports(value); };
+    const stop = optimize ? subscribeLatestReports(activeTeamId, receive, () => {})
+      : subscribeRosterLatestReports(activeTeamId, userProfiles, receive, () => {});
     return () => { active = false; stop(); };
-  }, [activeTeamId, authorized, optimize, currentScreen]);
+  }, [activeTeamId, authorized, optimize, currentScreen, reportScopeKey, foreground, userProfiles]);
+  useEffect(() => {
+    setAlertReports([]);
+    if (!authorized || optimize || !reportScope.ready || !reportManager || !foreground || currentScreen !== "WorkspaceHome") return undefined;
+    let active = true;
+    const stop = subscribeUnreviewedReports(activeTeamId, reportScope, (value) => { if (active) setAlertReports(value); }, () => {});
+    return () => { active = false; stop(); };
+  }, [activeTeamId, authorized, optimize, currentScreen, reportScopeKey, foreground]);
   useEffect(() => {
     if (!optimize || !authorized || currentScreen !== "WorkspaceHome" || !workspaceChannel) { setPinnedPosts([]); return undefined; }
     let active = true;
@@ -173,7 +196,7 @@ function AppContent() {
   const historiesActive = optimize && authorized;
   const postHistory = useHistoryData(activeTeamId, "workspacePosts", historiesActive && currentScreen === "WorkspaceHome" && Boolean(workspaceChannel), { uid: user?.uid, channel: workspaceChannel }, setPosts);
   const noticeHistory = useHistoryData(activeTeamId, "notices", historiesActive && currentScreen === "NoticeBoard", {}, setNotices);
-  const reportHistory = useHistoryData(activeTeamId, "dailyReports", historiesActive && currentScreen === "Diary", { since: monthAgo() }, setDailyReports);
+  const reportHistory = useDailyReportHistory(activeTeamId, authorized && currentScreen === "Diary", setDailyReports, reportScope);
   const clubHistory = useHistoryData(activeTeamId, "clubEvents", historiesActive && currentScreen === "Calendar", calendarWindow, setClubEvents);
   const personalHistory = useHistoryData(activeTeamId, "personalEvents", historiesActive && currentScreen === "Calendar", { ...calendarWindow, uid: user?.uid }, setPersonalEvents);
   const videoScreen = ["ProjectList", "ProjectDetail", "TacticalNotes"].includes(currentScreen);
@@ -181,9 +204,9 @@ function AppContent() {
   const highlightHistory = useHistoryData(activeTeamId, "highlightProjects", historiesActive && videoScreen, {}, setHighlightProjects);
   useHistoryData(activeTeamId, "tagGroups", historiesActive && (videoScreen || currentScreen === "TagGroupEdit"), {}, setTagGroups);
   useEffect(() => {
+    if (currentScreen === "Diary") reportHistory.include(currentParams.reportId);
     if (!optimize) return;
     if (currentScreen === "WorkspaceHome") postHistory.include(currentParams.postId);
-    if (currentScreen === "Diary") reportHistory.include(currentParams.reportId);
     if (currentScreen === "NoticeBoard") noticeHistory.include(currentParams.noticeId);
   }, [optimize, currentScreen, workspaceChannel, currentParams.postId, currentParams.reportId, currentParams.noticeId, postHistory.include, reportHistory.include, noticeHistory.include]);
 
@@ -247,6 +270,7 @@ function AppContent() {
     setTeamName("チーム情報を読み込み中...");
     setClubMembers([]);
     setUserProfiles({});
+    setMembersResolved(null);
     setGrades(["1年生", "2年生", "3年生"]);
     setPositions(["GK", "CP", "マネージャー"]);
     setInterstitialSettings({ ...DEFAULT_INTERSTITIAL_SETTINGS });
@@ -309,6 +333,7 @@ function AppContent() {
         });
         setClubMembers(names);
         setUserProfiles(profiles);
+        setMembersResolved({ teamId: activeTeamId, uid: user.uid });
       });
 
       return () => {
@@ -327,7 +352,6 @@ function AppContent() {
     const stops = [
       subscribeProjects(activeTeamId, receive(setProjects)),
       subscribeHighlightProjects(activeTeamId, receive(setHighlightProjects)),
-      subscribeDailyReports(activeTeamId, receive(setDailyReports)),
       subscribeNotices(activeTeamId, receive(setNotices)),
       subscribeWorkspacePosts(activeTeamId, user.uid, receive(setPosts)),
       subscribePersonalEvents(user.uid, receive(setPersonalEvents)),
@@ -447,7 +471,7 @@ function AppContent() {
                   clubMembers={clubMembers}
                   alertThresholds={alertThresholds}
                   userProfiles={userProfiles}
-                  dailyReports={dailyReports}
+                  dailyReports={alertReports}
                 />
               )}
             </Stack.Screen>
@@ -477,7 +501,7 @@ function AppContent() {
                   dailyReportCommentsEnabled={dailyReportCommentsEnabled}
                   {...props}
                   key={activeTeamId}
-                  history={optimize ? reportHistory : null}
+                  history={reportHistory}
                   isAdmin={authIsAdmin}
                   currentUser={safeUserName}
                   currentUserUid={currentUserUid}
@@ -502,6 +526,7 @@ function AppContent() {
                   {...props}
                   key={activeTeamId}
                   optimize={optimize}
+                  reportReadsReady={authorized && reportScope.ready}
                   eventHistory={optimize ? { busy: clubHistory.busy || personalHistory.busy, error: clubHistory.error || personalHistory.error, retry: () => { clubHistory.retry(); personalHistory.retry(); } } : null}
                   onVisibleMonthChange={optimize ? (date) => setCalendarWindow(monthWindow(date)) : undefined}
                   isAdmin={authIsAdmin}
@@ -587,7 +612,7 @@ function AppContent() {
                   activeTeamId={activeTeamId}
                   clubMembers={clubMembers}
                   userProfiles={userProfiles}
-                  dailyReports={optimize ? latestReports : dailyReports}
+                  dailyReports={latestReports}
                   grades={grades}
                   positions={positions}
                   alertThresholds={alertThresholds}

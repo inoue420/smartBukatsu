@@ -48,6 +48,9 @@ function screenHarness(screen, overrides = {}, os = "android") {
     getUserTeams: async () => [], getTeamInviteCode: async () => "synthetic", subscribeTeamData: () => idle,
     getActiveDailyReportAttachments: () => [], validateUserContent: async (...args) => { writes.push(["validate", ...args]); return {}; },
     updateDailyReport: async (...args) => writes.push(["comment", ...args]),
+    appendDailyReportComment: async (...args) => writes.push(["comment", ...args]),
+    createDailyReport: async (...args) => { writes.push(["create", ...args]); return args[1]; },
+    editOwnDailyReport: async (...args) => writes.push(["edit", ...args]),
     updateDailyReportCommentSettings: async (...args) => writes.push(["setting", ...args]),
     submitSafetyReport: async (...args) => writes.push(["report", ...args]), ...overrides,
   };
@@ -59,20 +62,21 @@ function screenHarness(screen, overrides = {}, os = "android") {
     dailyReportCommentSettingsReady: true, dailyReportCommentsEnabled: true,
     userProfiles: { Coach: { uid: "coach", role: "owner" } }, clubMembers: [], dailyReports: [report],
     navigation: { setParams: idle }, route: { params: { reportId: "report" } }, setDailyReports: idle, setPosts: idle };
-  const file = path.join(root, `src/screens/${screen}.js`);
+  const file = path.join(root, `src/screens/${screen}.js`), storage = overrides.draftStorage || new Map();
   const modules = { react: h.react, "../AuthContext": { useAuth: () => auth },
     "react-native": Object.fromEntries(["View", "Text", "TextInput", "TouchableOpacity", "ScrollView", "Modal", "KeyboardAvoidingView", "ActivityIndicator", "Image", "Switch"].map(name => [name, name])),
     "react-native-safe-area-context": { SafeAreaView: "SafeAreaView" },
     "../services/firestoreService": services,
-    "../services/dailyReportAttachmentService": { getActiveDailyReportAttachments: () => [] },
+    "../services/dailyReportAttachmentService": { getActiveDailyReportAttachments: () => [], MAX_DAILY_REPORT_ATTACHMENTS: 2 },
     "../utils/medicalScale": require("../utils/medicalScale"),
+    "../utils/historyLoading": require("../utils/historyLoading"),
     "../utils/contentModeration": require("../utils/contentModeration"),
     "../ads/adSettings": require("../ads/adSettings"),
     "../ads/adDiagnostics": { formatAdDiagnostics: () => "" },
     "../constants/sportsCategories": require("../constants/sportsCategories"),
     "../firebase": { auth: { currentUser: { uid: "coach" } }, db: "synthetic" },
     "firebase/firestore": { doc: (...args) => args, getDoc: async () => ({ exists: () => false }) },
-    "@react-native-async-storage/async-storage": { __esModule: true, default: { getItem: async () => null, setItem: async () => {}, removeItem: async () => {} } },
+    "@react-native-async-storage/async-storage": { __esModule: true, default: { getItem: async (key) => storage.get(key) || null, setItem: async (key, value) => storage.set(key, value), removeItem: async (key) => storage.delete(key) } },
     "@react-navigation/native": { useFocusEffect: fn => h.react.useEffect(fn, [fn]) },
     "../ads/AdManager": { useAds: () => ({ diagnostics: {} }) },
     "../services/firestoreSubscription": { firestoreDiagnosticsEnabled: false },
@@ -83,7 +87,7 @@ function screenHarness(screen, overrides = {}, os = "android") {
   for (const match of fs.readFileSync(file, "utf8").matchAll(/from\s+["']([^"']+)["']/g)) modules[match[1]] ||= { __esModule: true, default: match[1] };
   const Component = load(file, modules).default;
   h.mount(() => Component(props));
-  return { h, alerts, writes, services, report,
+  return { h, alerts, writes, services, report, storage,
     change(changes, authChanges = {}) { props = { ...props, ...changes }; auth = { ...auth, ...authChanges }; return h.update(); },
     button(label) { return h.find(n => n.type === "TouchableOpacity" && h.text(n) === label); },
     input() { return h.find(n => n.type === "TextInput" && n.props.placeholder === "メッセージを入力..."); } };
@@ -101,6 +105,71 @@ for (const os of ["android", "ios"]) test(`${os}: OFF hides composer/needs-reply
   reason.props.onPress(); s.h.render(); await s.button("通報を送信").props.onPress();
   assert.equal(s.writes.filter(w => w[0] === "report").length, 1);
   s.change({ dailyReportCommentsEnabled: true }); assert.ok(s.input()); s.h.unmount();
+});
+
+test("a selected report follows live coach replies and review state", () => {
+  const s = screenHarness("DiaryScreen");
+  s.change({ dailyReports: [{ ...s.report, isReviewed: true, comments: [...s.report.comments, { id: "coach", uid: "coach", user: "Coach", text: "New live reply" }] }] });
+  assert.ok(s.h.text(s.h.render()).includes("New live reply")); s.h.unmount();
+});
+
+test("changing to an assigned coach closes an unrelated student's detail", () => {
+  const s = screenHarness("DiaryScreen"); assert.ok(s.input());
+  s.change({ isAdmin: false, userProfiles: { Coach: { uid: "coach", role: "staff", staffScope: "assigned" }, Student: { uid: "student", role: "member", assignedStaff: "Other coach" } } });
+  assert.equal(s.input(), null); s.h.unmount();
+});
+
+test("an uncertain comment acknowledgement reuses its ID on retry", async () => {
+  const ids = [], s = screenHarness("DiaryScreen", { appendDailyReportComment: async (_team, _report, comment) => {
+    ids.push(comment.id); if (ids.length === 1) throw new Error("Synthetic uncertain acknowledgement");
+  } });
+  s.input().props.onChangeText("Keep one comment"); s.h.render();
+  await s.button("送信").props.onPress(); s.h.render(); assert.equal(s.input().props.value, "Keep one comment");
+  await s.button("送信").props.onPress(); s.h.render(); assert.equal(ids.length, 2); assert.equal(ids[0], ids[1]);
+  assert.equal(s.input().props.value, ""); s.h.unmount();
+});
+
+test("a committed submission with different retry inputs preserves the new draft", async () => {
+  const s = screenHarness("DiaryScreen", { createDailyReport: async (_team, report) => ({ ...report, reflection: "Previously committed", existingSubmission: true }) });
+  await tick(); s.h.render();
+  const input = () => s.h.find(n => n.type === "TextInput" && n.props.placeholder?.startsWith("今日の練習"));
+  input().props.onChangeText("Changed after acknowledgement failure"); s.h.render(); await tick();
+  await s.button("この内容で1日の日報を提出する").props.onPress(); s.h.render();
+  assert.equal(input().props.value, "Changed after acknowledgement failure"); assert.equal(s.alerts.at(-1)[0], "前回の提出を確認しました"); s.h.unmount();
+});
+
+for (const os of ["android", "ios"]) test(`${os}: save failure preserves input; retry reuses ID and double tap makes one write`, async () => {
+  const pending = deferred(), ids = [];
+  const s = screenHarness("DiaryScreen", { createDailyReport: async (_team, report) => { ids.push(report.id); if (ids.length === 1) return pending.promise; return report; } }, os);
+  await tick(); s.h.render();
+  const input = () => s.h.find(n => n.type === "TextInput" && n.props.placeholder?.startsWith("今日の練習"));
+  input().props.onChangeText("Keep this draft"); s.h.render(); await tick();
+  const submit = () => s.h.find(n => n.type === "TouchableOpacity" && s.h.text(n) === "この内容で1日の日報を提出する");
+  assert.ok(submit()); const first = submit().props.onPress(); await tick(); s.h.render();
+  await submit().props.onPress(); assert.equal(ids.length, 1);
+  pending.reject(new Error("Synthetic unavailable")); await first; s.h.render();
+  assert.equal(input().props.value, "Keep this draft");
+  assert.equal(s.alerts.at(-1)[0], "提出を確認できませんでした");
+  await submit().props.onPress(); s.h.render(); assert.equal(ids.length, 2); assert.equal(ids[0], ids[1]);
+  assert.equal(input().props.value, ""); s.h.unmount();
+});
+
+test("offline submission remains a scoped persistent draft and is sent manually after reconnect", async () => {
+  const storage = new Map(), s = screenHarness("DiaryScreen", { draftStorage: storage });
+  await tick(); s.h.render();
+  s.change({ isOffline: true });
+  const input = () => s.h.find(n => n.type === "TextInput" && n.props.placeholder?.startsWith("今日の練習"));
+  input().props.onChangeText("Offline unsent draft"); s.h.render(); await tick();
+  const submit = () => s.h.find(n => n.type === "TouchableOpacity" && s.h.text(n) === "下書きを保持（未提出）");
+  await submit().props.onPress(); s.h.render();
+  assert.equal(s.alerts.at(-1)[0], "まだ提出されていません"); assert.equal(s.writes.filter(w => w[0] === "create").length, 0);
+  assert.equal(JSON.parse(storage.get("diary_draft_v2_team_coach")).reflection, "Offline unsent draft");
+  s.h.unmount(); const restored = screenHarness("DiaryScreen", { draftStorage: storage }); await tick(); restored.h.render();
+  assert.equal(restored.h.find(n => n.type === "TextInput" && n.props.placeholder?.startsWith("今日の練習")).props.value, "Offline unsent draft");
+  assert.equal(restored.writes.filter(w => w[0] === "create").length, 0);
+  restored.change({}, { activeTeamId: "other" }); await tick(); restored.h.render();
+  assert.equal(restored.h.find(n => n.type === "TextInput" && n.props.placeholder?.startsWith("今日の練習")).props.value, "");
+  assert.equal(JSON.parse(storage.get("diary_draft_v2_team_coach")).reflection, "Offline unsent draft"); restored.h.unmount();
 });
 
 test("ON sends a comment; OFF during validation prevents the write and keeps the draft", async () => {
@@ -150,12 +219,14 @@ test("App reads the gate from the existing team listener, defaults OFF, and igno
     "./src/NotificationContext": { useNotifications: () => ({ setNavigationHandler: idle }) },
     "./src/services/firestoreService": legacy, "./src/services/historyDataService": { subscribeLoadingState: watch("LoadingState") },
     "./src/hooks/useHistoryData": { useHistoryData: () => ({ include: idle }) },
+    "./src/hooks/useDailyReportHistory": { useDailyReportHistory: () => ({ include: idle }) },
+    "./src/utils/dailyReportScope": require("../utils/dailyReportScope"),
     "./src/utils/historyLoading": require("../utils/historyLoading"), "./src/utils/medicalScale": require("../utils/medicalScale"),
     "./src/ads/AdManager": { useAds: () => ({ configureInterstitial: idle }) }, "./src/ads/adSettings": require("../ads/adSettings"),
     "@react-navigation/native": { useNavigationContainerRef: () => ({}) },
     "@react-navigation/native-stack": { createNativeStackNavigator: () => ({ Screen: "Screen", Navigator: "Navigator" }) },
     "@react-native-community/netinfo": { __esModule: true, default: { addEventListener: () => idle } },
-    "react-native": { LogBox: { ignoreLogs: idle }, Platform: { OS: "android" } } };
+    "react-native": { AppState: { addEventListener: () => ({ remove: idle }) }, LogBox: { ignoreLogs: idle }, Platform: { OS: "android" } } };
   const file = path.join(root, "App.js");
   for (const match of fs.readFileSync(file, "utf8").matchAll(/from\s+["']([^"']+)["']/g)) modules[match[1]] ||= { __esModule: true, default: match[1] };
   const { AppContent } = load(file, modules, "\nexport { AppContent };\n"); h.mount(AppContent);
