@@ -21,11 +21,13 @@ import {
   serverTimestamp,
   setDoc,
 } from "firebase/firestore";
-import { unregisterPushTokenForCurrentDevice } from "./services/notificationService";
+import { setPushRegistrationSession, unregisterPushTokenForCurrentDevice } from "./services/notificationService";
 import { measuredOnSnapshot } from "./services/firestoreSubscription";
 import { auth, db } from "./firebase";
 import {
+  createTeam,
   executeRegistration,
+  joinTeamWithInvite,
   switchActiveTeam,
 } from "./services/firestoreService";
 
@@ -45,12 +47,15 @@ export function AuthProvider({ children }) {
     useState(false);
   const [isEmailVerified, setIsEmailVerified] = useState(false);
   const authFlowRef = useRef(null);
+  const authUserRef = useRef(null);
   const teamSwitchRef = useRef(null);
   const [isTeamSwitching, setIsTeamSwitching] = useState(false);
 
   // Firebaseの認証状態を監視
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
+      authUserRef.current = u || null;
+      setPushRegistrationSession(u?.uid);
       teamSwitchRef.current = null;
       setIsTeamSwitching(false);
       setUser(u || null);
@@ -239,10 +244,15 @@ export function AuthProvider({ children }) {
     const signOut = async () => {
       try {
         await unregisterPushTokenForCurrentDevice();
-      } catch (error) {
-        console.log("ログアウト前の通知端末解除エラー:", error?.message);
+      } catch {
+        console.log("ログアウト前の通知端末解除に失敗しました。");
       }
-      await fbSignOut(auth);
+      try {
+        await fbSignOut(auth);
+      } catch (error) {
+        setPushRegistrationSession(auth.currentUser?.uid);
+        throw error;
+      }
     };
     const resendVerificationEmail = async () => {
       if (!auth.currentUser) {
@@ -259,21 +269,27 @@ export function AuthProvider({ children }) {
       setIsEmailVerified(verified);
       return verified;
     };
-    const selectTeam = async (teamId) => {
-      if (!user?.uid) throw new Error("ユーザー情報を確認できませんでした。");
+    const runTeamSelection = async (save) => {
+      if (!user?.uid || authUserRef.current !== user) {
+        throw new Error("ユーザー情報を確認できませんでした。");
+      }
       if (teamSwitchRef.current) {
         throw new Error("チームを切り替え中です。完了するまでお待ちください。");
       }
-      const request = { uid: user.uid, teamId };
+      const request = { uid: user.uid };
       teamSwitchRef.current = request;
       setIsTeamSwitching(true);
       try {
-        await switchActiveTeam(user.uid, teamId);
-        if (teamSwitchRef.current !== request) return;
+        const result = await save(user.uid);
+        if (teamSwitchRef.current !== request) {
+          throw new Error("ログイン状態が変わりました。チームを選び直してください。");
+        }
+        const teamId = result.teamId;
         // Reflect a successful save without waiting for the listener's render.
         setActiveTeamId(teamId);
         setHasSelectedTeam(true);
         setTeamAccessRevoked(false);
+        return result;
       } finally {
         if (teamSwitchRef.current === request) {
           teamSwitchRef.current = null;
@@ -281,6 +297,15 @@ export function AuthProvider({ children }) {
         }
       }
     };
+    const selectTeam = (teamId) => runTeamSelection(async (uid) => {
+      await switchActiveTeam(uid, teamId);
+      return { teamId };
+    });
+    // These operations have already persisted membership and activeTeamId.
+    const createAndSelectTeam = (teamName, name, sport) =>
+      runTeamSelection((uid) => createTeam(uid, teamName, name, sport));
+    const joinAndSelectTeam = (inviteCode, name) =>
+      runTeamSelection((uid) => joinTeamWithInvite(uid, inviteCode, name));
     return {
       user,
       userName, // ★追加：Contextで名前を配信
@@ -298,6 +323,8 @@ export function AuthProvider({ children }) {
       emailVerificationPending:
         Boolean(user) && emailVerificationRequired && !isEmailVerified,
       selectTeam,
+      createAndSelectTeam,
+      joinAndSelectTeam,
       signIn,
       signUp,
       resetPassword,

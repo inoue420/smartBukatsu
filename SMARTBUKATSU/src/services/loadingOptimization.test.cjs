@@ -2,10 +2,10 @@ const test = require("node:test"), assert = require("node:assert/strict");
 const fs = require("node:fs"), path = require("node:path"), vm = require("node:vm");
 const { transformSync } = require("@babel/core");
 const { monthWindow, mergeReadState, medicalDangerCount } = require("../utils/historyLoading");
-function load(file, modules, extra = "") {
+function load(file, modules, extra = "", timers = {}) {
   const code = transformSync(fs.readFileSync(file, "utf8") + extra, { configFile: false, babelrc: false, plugins: ["@babel/plugin-transform-react-jsx", "@babel/plugin-transform-modules-commonjs"] }).code;
   const module = { exports: {} };
-  vm.runInNewContext(code, { module, exports: module.exports, require: (name) => { assert.ok(name in modules, name); return modules[name]; }, console, Map, Set, setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {} });
+  vm.runInNewContext(code, { module, exports: module.exports, require: (name) => { assert.ok(name in modules, name); return modules[name]; }, console, Map, Set, setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {}, ...timers });
   return module.exports;
 }
 function hookHarness(pageReader = async () => ({ items: [], hasMore: false })) {
@@ -312,12 +312,15 @@ test("notification provider keeps summaries at startup and subscribes to the lis
   const idle = () => {};
   const service = {
     Notifications: { setNotificationHandler: idle, addNotificationResponseReceivedListener: () => ({ remove: idle }), getLastNotificationResponseAsync: async () => null },
-    getNotificationPermissionStatus: async () => "undetermined", setApplicationBadge: idle,
+    ensurePushTokenOwnership: async () => ({ status: "undetermined" }), setApplicationBadge: idle,
     registerPushToken: async () => ({}), ensureNotificationSummary: async () => {},
   };
   for (const name of ["Summary", "Preferences", "s"]) service["subscribeNotification" + name] = (...args) => { const item = { name, args, stops: 0 }; calls.push(item); return () => item.stops++; };
   const config = load(path.join(__dirname, "../notifications/notificationConfig.js"), {});
-  const { NotificationProvider } = load(path.join(__dirname, "../NotificationContext.js"), { react: { __esModule: true, default: h.react, ...h.react }, "./AuthContext": { useAuth: () => auth }, "./services/notificationService": service, "./notifications/notificationConfig": config });
+  const { NotificationProvider } = load(path.join(__dirname, "../NotificationContext.js"), { react: { __esModule: true, default: h.react, ...h.react },
+    "react-native": { AppState: { currentState: "active", addEventListener: () => ({ remove: idle }) }, Platform: { OS: "android" } },
+    "@react-native-community/netinfo": { __esModule: true, default: { addEventListener: () => idle } },
+    "./AuthContext": { useAuth: () => auth }, "./services/notificationService": { ...service, Notifications: { ...service.Notifications, addPushTokenListener: () => ({ remove: idle }) } }, "./notifications/notificationConfig": config });
   h.mount(NotificationProvider); assert.equal(calls.length, 2);
   calls[1].args[1](config.normalizeNotificationPreferences({ masterEnabled: true }));
   const oldSummary = calls[0]; oldSummary.args[1]({ unreadTotal: 7, unreadByTeam: {}, unreadBucketsVersion: 1, unreadBuckets: { '["notice","a"]': 7 } }); assert.equal(h.render().props.value.unreadTotal, 7);
@@ -339,15 +342,17 @@ test("notification center stops its list on blur and renews it on focus", () => 
 });
 
 function notificationProviderHarness(overrides = {}) {
-  const h = componentHarness(), calls = [], badges = [];
-  let uid = "a", handler;
+  const h = componentHarness(), calls = [], badges = [], pushListeners = [], appListeners = [], networkListeners = [];
+  const timers = new Map(); let timerId = 0;
+  let user = { uid: "a" }, handler;
   const config = load(path.join(__dirname, "../notifications/notificationConfig.js"), {});
   const service = {
     Notifications: {
       setNotificationHandler: value => { handler = value.handleNotification; },
       addNotificationResponseReceivedListener: () => ({ remove() {} }), getLastNotificationResponseAsync: async () => null,
+      addPushTokenListener: fn => { const sub = { fn, stopped: false }; pushListeners.push(sub); return { remove: () => { sub.stopped = true; } }; },
     },
-    getNotificationPermissionStatus: async () => "granted", setApplicationBadge: count => badges.push(count),
+    ensurePushTokenOwnership: async () => ({ status: "granted" }), setApplicationBadge: count => badges.push(count),
     registerPushToken: async () => ({ granted: true, status: "granted" }), ensureNotificationSummary: async () => {},
     saveNotificationPreferences: async value => value,
     ...overrides,
@@ -356,15 +361,18 @@ function notificationProviderHarness(overrides = {}) {
     const call = { name, args, stops: 0 }; calls.push(call); return () => call.stops++;
   };
   const { NotificationProvider } = load(path.join(__dirname, "../NotificationContext.js"), {
-    react: { __esModule: true, default: h.react, ...h.react }, "./AuthContext": { useAuth: () => ({ user: uid ? { uid } : null }) },
+    react: { __esModule: true, default: h.react, ...h.react }, "./AuthContext": { useAuth: () => ({ user }) },
+    "react-native": { AppState: { currentState: "active", addEventListener: (_name, fn) => { const sub = { fn, stopped: false }; appListeners.push(sub); return { remove: () => { sub.stopped = true; } }; } }, Platform: { OS: "android" } },
+    "@react-native-community/netinfo": { __esModule: true, default: { addEventListener: fn => { const sub = { fn, stopped: false }; networkListeners.push(sub); return () => { sub.stopped = true; }; } } },
     "./services/notificationService": service, "./notifications/notificationConfig": config,
-  });
+  }, "", { setTimeout: (fn, ms) => { timers.set(++timerId, { fn, ms }); return timerId; }, clearTimeout: id => timers.delete(id) });
   h.mount(NotificationProvider);
   const api = () => h.render().props.value;
   const preferences = value => { calls.findLast(call => call.name === "Preferences").args[1](config.normalizeNotificationPreferences(value)); h.render(); };
-  return { ...h, api, calls, badges, preferences,
+  return { ...h, api, calls, badges, preferences, pushListeners, appListeners, networkListeners, timers,
+    fireTimer(ms) { const entry = [...timers].find(([_id, timer]) => timer.ms === ms); assert.ok(entry, `no ${ms}ms timer`); timers.delete(entry[0]); entry[1].fn(); },
     foreground: category => handler({ request: { content: { data: { category, teamId: "a" } } } }),
-    account(value) { uid = value; h.update(); } };
+    account(value) { user = value ? { uid: value } : null; h.update(); } };
 }
 
 test("provider filters list and badge together, restores history and suppresses foreground delivery", async () => {
@@ -425,4 +433,96 @@ test("failed repair can be retried and late failures cannot affect a new account
   const oldReject = rejectLate; late.account("b"); oldReject(new Error("Late old-account failure"));
   await new Promise(setImmediate);
   assert.equal(late.api().notificationSummaryError, ""); late.unmount();
+});
+
+test("push lifecycle waits for preferences, refreshes on foreground/reconnect/native changes and removes listeners", async () => {
+  const registrations = [];
+  const h = notificationProviderHarness({ registerPushToken: async options => {
+    registrations.push(options); return { granted: true, status: "granted", nextRefreshInMs: 86400000 };
+  } });
+  await new Promise(setImmediate); assert.equal(registrations.length, 0);
+  h.preferences({ masterEnabled: true }); await new Promise(setImmediate); assert.equal(registrations.length, 1);
+  const app = h.appListeners.at(-1), network = h.networkListeners.at(-1), token = h.pushListeners.at(-1);
+  network.fn({ isConnected: true }); await new Promise(setImmediate); assert.equal(registrations.length, 1);
+  network.fn({ isConnected: false }); network.fn({ isConnected: true }); await new Promise(setImmediate);
+  assert.equal(registrations.length, 2);
+  app.fn("active"); await new Promise(setImmediate); assert.equal(registrations.length, 3);
+  token.fn({ type: "android", data: "synthetic-native" }); await new Promise(setImmediate);
+  assert.equal(registrations.at(-1).devicePushToken.data, "synthetic-native");
+  h.preferences({ masterEnabled: false }); await new Promise(setImmediate);
+  assert.ok(app.stopped && network.stopped && token.stopped);
+  const count = registrations.length; token.fn({ data: "obsolete" }); app.fn("active"); network.fn({ isConnected: true });
+  await new Promise(setImmediate); assert.equal(registrations.length, count);
+  h.unmount(); assert.ok(h.appListeners.every(sub => sub.stopped));
+});
+
+test("explicit notification enable consumes its successful registration without a second observer call", async () => {
+  let registrations = 0;
+  const h = notificationProviderHarness({ registerPushToken: async () => {
+    registrations++; return { granted: true, status: "granted", nextRefreshInMs: 86400000 };
+  } });
+  h.preferences({ masterEnabled: false }); await new Promise(setImmediate);
+  await h.api().enablePushNotifications(); h.render(); await new Promise(setImmediate);
+  assert.equal(h.api().preferences.masterEnabled, true); assert.equal(registrations, 1);
+  h.preferences({ masterEnabled: true }); await new Promise(setImmediate); assert.equal(registrations, 1);
+  h.unmount();
+});
+
+test("reading the current native token does not cause a second registration from its listener event", async () => {
+  let registrations = 0;
+  const token = { data: "synthetic-native", type: "android" };
+  const h = notificationProviderHarness({ registerPushToken: async () => {
+    registrations++; await Promise.resolve(); h.pushListeners.at(-1).fn(token);
+    return { granted: true, status: "granted", nextRefreshInMs: 86400000, nativeTokenKey: JSON.stringify([token.type, token.data]) };
+  } });
+  h.preferences({ masterEnabled: true }); await new Promise(setImmediate);
+  assert.equal(registrations, 1); h.unmount();
+});
+
+test("a previous account's push response cannot overwrite the new account's permission state", async () => {
+  let resolve;
+  const h = notificationProviderHarness({ registerPushToken: () => new Promise(done => { resolve = done; }) });
+  h.preferences({ masterEnabled: true }); await new Promise(setImmediate);
+  h.account("b"); resolve({ granted: true, status: "obsolete", nextRefreshInMs: 86400000 });
+  await new Promise(setImmediate); assert.notEqual(h.api().permissionStatus, "obsolete");
+  h.unmount();
+});
+
+test("push failures use bounded retries, then renew at the returned heartbeat interval", async () => {
+  let fail = true, registrations = 0;
+  const h = notificationProviderHarness({ registerPushToken: async () => {
+    registrations++; if (fail) throw new Error("synthetic offline");
+    return { granted: true, status: "granted", nextRefreshInMs: 86400000 };
+  } });
+  h.preferences({ masterEnabled: true }); await new Promise(setImmediate);
+  for (const delay of [30000, 120000, 600000]) { h.fireTimer(delay); await new Promise(setImmediate); }
+  assert.equal(registrations, 4); assert.equal(h.timers.size, 0);
+  fail = false; h.appListeners.at(-1).fn("active"); await new Promise(setImmediate);
+  assert.equal(registrations, 5); h.fireTimer(86400000); await new Promise(setImmediate);
+  assert.equal(registrations, 6); h.unmount(); assert.equal(h.timers.size, 0);
+});
+
+test("same-UID re-login discards an old enable result and registers the new session", async () => {
+  let save, registrations = 0;
+  const h = notificationProviderHarness({ registerPushToken: async () => {
+    registrations++; return { granted: true, status: "granted", nextRefreshInMs: 86400000 };
+  }, saveNotificationPreferences: value => new Promise(resolve => { save = () => resolve(value); }) });
+  h.preferences({ masterEnabled: false });
+  const enabling = h.api().enablePushNotifications(); await new Promise(setImmediate);
+  h.account("a"); save(); await enabling; h.render();
+  h.preferences({ masterEnabled: true }); await new Promise(setImmediate);
+  assert.equal(registrations, 2); h.unmount();
+});
+
+test("notification OFF still retries former-owner cleanup after network recovery without normal registration", async () => {
+  let repairs = 0, registrations = 0, fail = true;
+  const h = notificationProviderHarness({ ensurePushTokenOwnership: async () => {
+    repairs++; if (fail) throw new Error("synthetic offline"); return { status: "granted" };
+  }, registerPushToken: async () => { registrations++; return {}; } });
+  h.preferences({ masterEnabled: false }); await new Promise(setImmediate);
+  const network = h.networkListeners.at(-1); network.fn({ isConnected: false });
+  fail = false; network.fn({ isConnected: true }); await new Promise(setImmediate);
+  assert.equal(repairs, 2); assert.equal(registrations, 0);
+  assert.equal(h.api().preferences.masterEnabled, false); assert.equal(h.timers.size, 0);
+  h.unmount();
 });

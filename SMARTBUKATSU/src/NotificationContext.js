@@ -7,12 +7,14 @@ import React, {
   useRef,
   useState,
 } from "react";
+import { AppState, Platform } from "react-native";
+import NetInfo from "@react-native-community/netinfo";
 import { useAuth } from "./AuthContext";
 import {
   Notifications,
   dismissNotification as dismissNotificationRemote,
   ensureNotificationSummary,
-  getNotificationPermissionStatus,
+  ensurePushTokenOwnership,
   markNotificationRead,
   registerPushToken,
   saveNotificationPreferences,
@@ -66,6 +68,10 @@ export function NotificationProvider({ children }) {
   );
   const [permissionStatus, setPermissionStatus] = useState("undetermined");
   const [isSavingPreferences, setIsSavingPreferences] = useState(false);
+  const [preferencesUser, setPreferencesUser] = useState(null);
+  const pushEnableResultRef = useRef(null);
+  const currentUserRef = useRef(user);
+  currentUserRef.current = user;
   const navigationHandlerRef = useRef(null);
   const pendingNotificationRef = useRef(null);
   const summaryRetryRef = useRef(null);
@@ -113,13 +119,10 @@ export function NotificationProvider({ children }) {
   }, []);
 
   useEffect(() => {
-    getNotificationPermissionStatus()
-      .then(setPermissionStatus)
-      .catch(() => setPermissionStatus("undetermined"));
-  }, [user?.uid]);
-
-  useEffect(() => {
+    pushEnableResultRef.current = null;
+    setIsSavingPreferences(false);
     if (!user?.uid) {
+      setPreferencesUser(null);
       setNotifications([]);
       setSummary({ unreadTotal: 0, unreadByTeam: {} });
       setPreferences(DEFAULT_NOTIFICATION_PREFERENCES);
@@ -136,6 +139,7 @@ export function NotificationProvider({ children }) {
     setNotifications([]); setNotificationListHasMore(false);
     setSummary({ unreadTotal: 0, unreadByTeam: {} });
     setPreferences(DEFAULT_NOTIFICATION_PREFERENCES);
+    setPreferencesUser(null);
     setNotificationSummaryError("");
     let unsubscribeSummary = () => {};
     let summaryGeneration = 0;
@@ -160,7 +164,7 @@ export function NotificationProvider({ children }) {
     summaryRetryRef.current = restartSummary;
     const unsubscribePreferences = subscribeNotificationPreferences(
       user.uid,
-      (value) => { if (active) setPreferences(value); },
+      (value) => { if (active) { setPreferences(value); setPreferencesUser(user); } },
       handleSubscriptionError("通知設定"),
     );
     refreshNotificationSummary(false);
@@ -170,7 +174,7 @@ export function NotificationProvider({ children }) {
       unsubscribeSummary();
       unsubscribePreferences();
     };
-  }, [user?.uid, refreshNotificationSummary]);
+  }, [user, refreshNotificationSummary]);
   const startNotificationList = useCallback((count = 100) => {
     if (!user?.uid || !preferences.masterEnabled) return () => {};
     let active = true;
@@ -189,15 +193,76 @@ export function NotificationProvider({ children }) {
   }, [visibleSummary.unreadTotal]);
 
   useEffect(() => {
-    if (!user?.uid || !preferences.masterEnabled) return;
-    registerPushToken({ requestPermission: false })
-      .then((result) => {
-        if (result?.status) setPermissionStatus(result.status);
-      })
-      .catch((error) => {
-        console.log("プッシュトークン更新エラー:", error?.message);
-      });
-  }, [preferences.masterEnabled, user?.uid]);
+    const uid = user?.uid;
+    if (!uid || preferencesUser !== user) return undefined;
+    let active = true, timer, checking = false, pendingNativeToken;
+    let retries = 0;
+    const enabled = preferences.masterEnabled;
+    const foreground = () => !["background", "inactive"].includes(AppState.currentState);
+    const schedule = (milliseconds) => {
+      clearTimeout(timer);
+      if (active && foreground()) timer = setTimeout(() => refresh(), milliseconds);
+    };
+    const refresh = async (devicePushToken) => {
+      if (!active || !foreground()) return;
+      if (checking) { if (devicePushToken) pendingNativeToken = devicePushToken; return; }
+      checking = true;
+      clearTimeout(timer);
+      try {
+        const result = enabled
+          ? await registerPushToken({ requestPermission: false, devicePushToken })
+          : await ensurePushTokenOwnership();
+        if (!active || sessionUidRef.current !== uid) return;
+        // Reading the native token can emit its existing value. Do not treat
+        // that event as a second change after this registration completes.
+        if (pendingNativeToken && JSON.stringify([pendingNativeToken.type, pendingNativeToken.data]) === result.nativeTokenKey) {
+          pendingNativeToken = null;
+        }
+        setPermissionStatus(result.status || result.reason || "undetermined");
+        retries = 0;
+        if (enabled && result.granted && result.nextRefreshInMs) schedule(result.nextRefreshInMs);
+      } catch {
+        if (active && sessionUidRef.current === uid) {
+          console.log("プッシュトークン更新に失敗しました。通信復旧後に再試行します。");
+          if (retries < 3) schedule([30000, 120000, 600000][retries++]);
+        }
+      } finally {
+        checking = false;
+        if (pendingNativeToken && active) {
+          const token = pendingNativeToken;
+          pendingNativeToken = null;
+          refresh(token);
+        }
+      }
+    };
+    const enabledResult = pushEnableResultRef.current;
+    if (enabled && enabledResult?.user === user) {
+      pushEnableResultRef.current = null;
+      setPermissionStatus(enabledResult.result.status);
+      schedule(enabledResult.result.nextRefreshInMs || 24 * 60 * 60 * 1000);
+    } else {
+      refresh();
+    }
+    const appStateSubscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") { retries = 0; refresh(); }
+      else clearTimeout(timer);
+    });
+    let connected;
+    const unsubscribeNetwork = NetInfo.addEventListener((state) => {
+      const next = state.isConnected === true && state.isInternetReachable !== false;
+      if (next && connected === false) { retries = 0; refresh(); }
+      connected = next;
+    });
+    const tokenSubscription = enabled && ["android", "ios"].includes(Platform.OS)
+      ? Notifications.addPushTokenListener((token) => refresh(token)) : null;
+    return () => {
+      active = false;
+      clearTimeout(timer);
+      appStateSubscription.remove();
+      unsubscribeNetwork();
+      tokenSubscription?.remove();
+    };
+  }, [preferences.masterEnabled, preferencesUser, user]);
 
   const dispatchNotification = useCallback((notification) => {
     if (navigationHandlerRef.current) {
@@ -274,23 +339,26 @@ export function NotificationProvider({ children }) {
   }, []);
 
   const enablePushNotifications = useCallback(async () => {
-    const uid = user?.uid;
     setIsSavingPreferences(true);
     try {
       const result = await registerPushToken({ requestPermission: true });
-      if (sessionUidRef.current !== uid) return result;
+      if (currentUserRef.current !== user) return result;
       setPermissionStatus(result?.status || result?.reason || "undetermined");
       if (!result?.granted) return result;
+      pushEnableResultRef.current = { user, result };
       const saved = await saveNotificationPreferences({
         ...preferences,
         masterEnabled: true,
       });
-      if (sessionUidRef.current === user?.uid) setPreferences(saved);
+      if (currentUserRef.current === user) setPreferences(saved);
       return result;
+    } catch (error) {
+      if (pushEnableResultRef.current?.user === user) pushEnableResultRef.current = null;
+      throw error;
     } finally {
-      setIsSavingPreferences(false);
+      if (currentUserRef.current === user) setIsSavingPreferences(false);
     }
-  }, [preferences, user?.uid]);
+  }, [preferences, user]);
 
   const dismissNotification = useCallback(async (notificationId) => {
     await dismissNotificationRemote(notificationId);

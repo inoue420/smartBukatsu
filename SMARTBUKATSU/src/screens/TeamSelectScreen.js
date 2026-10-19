@@ -25,11 +25,9 @@ import { auth } from "../firebase";
 import { CUSTOM_SPORT_OPTIONS, SPORT_CATEGORIES, getSportsForCategory } from "../constants/sportsCategories";
 import {
   checkAccountDeletionEligibility,
-  createTeam,
   deleteCurrentUserAccount,
   getMaxTeamsForMemberships,
   getUserTeams,
-  joinTeamWithInvite,
   SHARP_RISE_MAX_TEAMS_PER_USER,
 } from "../services/firestoreService";
 
@@ -43,7 +41,8 @@ const roleLabels = {
 };
 
 const TeamSelectScreen = ({ navigation }) => {
-  const { user, userName, activeTeamId, teamIds, selectTeam, signOut, isTeamSwitching } = useAuth();
+  const { user, userName, activeTeamId, teamIds, selectTeam, createAndSelectTeam,
+    joinAndSelectTeam, signOut, isTeamSwitching } = useAuth();
   const { unreadByTeam } = useNotifications();
   const [teams, setTeams] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -176,12 +175,11 @@ const TeamSelectScreen = ({ navigation }) => {
     setIsCreating(true);
     let selected = false;
     try {
-      const result = await createTeam(user.uid, teamName, userName, {
+      const result = await createAndSelectTeam(teamName, userName, {
         category: sportCategory,
         name: sportName,
         customName: customSportName,
       });
-      await selectTeam(result.teamId);
       setTeamName("");
       setSportCategory("");
       setSportName("");
@@ -218,8 +216,7 @@ const TeamSelectScreen = ({ navigation }) => {
     setIsJoining(true);
     let selected = false;
     try {
-      const result = await joinTeamWithInvite(user.uid, inviteCode, userName);
-      await selectTeam(result.teamId);
+      const result = await joinAndSelectTeam(inviteCode, userName);
       setInviteCode("");
       await loadTeams();
       Alert.alert("チームに参加しました", "選択中のチームを切り替えました。");
