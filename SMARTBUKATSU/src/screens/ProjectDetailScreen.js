@@ -18,6 +18,7 @@ import {
   Switch,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import GuideHelpLink from "../components/GuideHelpLink";
 import { usePreventRemove, useIsFocused } from "@react-navigation/native";
 import { subscribeProjectsByIds } from "../services/historyDataService";
 import { Video, ResizeMode } from "expo-av";
@@ -1046,7 +1047,7 @@ const ProjectDetailScreen = ({
             <Text style={styles.headerTitle} numberOfLines={1}>
               {projectTitle}
             </Text>
-            <View style={{ width: 60 }} />
+            <GuideHelpLink topic="video-clip" light />
           </View>
         )}
 

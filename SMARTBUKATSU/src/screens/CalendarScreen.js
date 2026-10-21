@@ -3,6 +3,7 @@ import { useIsFocused } from "@react-navigation/native";
 import { useHistoryData } from "../hooks/useHistoryData";
 import { monthWindow } from "../utils/historyLoading";
 import HistoryLoadingControls from "../components/HistoryLoadingControls";
+import GuideHelpLink from "../components/GuideHelpLink";
 import {
   View,
   Text,
@@ -2156,7 +2157,7 @@ const CalendarScreen = ({
           <Text style={styles.backBtnText}>◁ ホーム</Text>
         </TouchableOpacity>
         <Text style={styles.headerTitle}>📅 カレンダー</Text>
-        <View style={{ width: 60 }} />
+        <GuideHelpLink topic="calendar" light />
       </View>
 
       {isOffline && (

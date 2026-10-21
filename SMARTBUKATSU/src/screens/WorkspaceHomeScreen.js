@@ -38,6 +38,7 @@ import {
 import { getFatigueScore, getPainScore } from "../utils/medicalScale";
 import { medicalDangerCount } from "../utils/historyLoading";
 import HistoryLoadingControls from "../components/HistoryLoadingControls";
+import GuideHelpLink from "../components/GuideHelpLink";
 import { useWorkspaceReactions } from "../hooks/useWorkspaceReactions";
 import { WORKSPACE_REACTION_EMOJIS, canViewWorkspaceReactionSenders, workspaceReactionSenders } from "../utils/workspaceReactions";
 import { memberGrades, channelRoleGroups, channelMemberAudience, needsGeneralAudienceUpgrade, canViewChannel, audienceForChannel } from "../../functions/workspaceAudience";
@@ -2286,8 +2287,10 @@ const WorkspaceHomeScreen = ({
 
         <View style={styles.channelSection}>
           <HistoryLoadingControls history={history} search={Boolean(searchQuery.trim())} />
+          <View style={styles.channelHelpRow}>
           <ScrollView
             horizontal
+            style={{ flex: 1 }}
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.channelScroll}
           >
@@ -2327,6 +2330,8 @@ const WorkspaceHomeScreen = ({
               </TouchableOpacity>
             )}
           </ScrollView>
+          <GuideHelpLink topic="communication" style={{ marginRight: 10 }} />
+          </View>
         </View>
 
         {pinnedPosts.length > 0 && (
@@ -2730,6 +2735,7 @@ const WorkspaceHomeScreen = ({
                     ? `「${editingChannel.name}」の設定`
                     : "新しいタブを作成"}
                 </Text>
+                <GuideHelpLink topic="notifications" style={{ marginTop: 8 }} />
               </View>
 
               <ScrollView
@@ -3218,6 +3224,7 @@ const styles = StyleSheet.create({
     borderBottomColor: COLORS.border,
   },
   channelScroll: { paddingHorizontal: 15 },
+  channelHelpRow: { flexDirection: "row", alignItems: "center" },
   channelTab: {
     backgroundColor: "#f0f0f0",
     paddingVertical: 8,

@@ -33,6 +33,7 @@ import { createClipPlaybackTransition } from "../utils/clipPlaybackTransition";
 import { CommonActions, useIsFocused } from "@react-navigation/native";
 import { subscribeHistoryDocument, subscribeProjectsByIds } from "../services/historyDataService";
 import HistoryLoadingControls from "../components/HistoryLoadingControls";
+import GuideHelpLink from "../components/GuideHelpLink";
 import { canReadNotes, canPostNotes, noteClipKey, toggleNoteClipSelection, buildNoteClips, buildNotePlaybackClips } from "../utils/tacticalNotes";
 import {
   createProject,
@@ -1937,7 +1938,12 @@ const ProjectListScreen = ({
             <Text style={styles.backButtonText}>{notePlayback ? "◁ 一覧" : notePicker ? "◁ ノート" : "◁ ホーム"}</Text>
           </TouchableOpacity>
           <Text style={styles.headerTitle}>{notePlayback ? "戦術ノート" : notePicker ? "場面を選択" : "🎬 動画"}</Text>
-          <View style={{ width: 60 }} />
+          <GuideHelpLink
+            topic={notePlayback ? "tactics-read" : notePicker ? "tactics"
+              : activeTab === "list" ? "video-create"
+              : selectedHighlightProject ? "video-filter" : "video-watch"}
+            light
+          />
         </View>
       )}
 

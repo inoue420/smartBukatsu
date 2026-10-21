@@ -8,6 +8,7 @@ import { subscribeTacticalNoteSummaries, getTacticalNoteSummaryPage, ensureTacti
   saveTacticalNote, deleteTacticalNote, updateTacticalNoteDescription } from "../services/firestoreService";
 import { canReadNotes, canPostNotes, canManageNote, noteClipKey, mergeNoteClips, localDate, getNoteConfirmationSelection, isNoteSummaryCurrent } from "../utils/tacticalNotes";
 import TacticalClipPlayer from "../components/TacticalClipPlayer";
+import GuideHelpLink from "../components/GuideHelpLink";
 import { PhaseTwoSummary, PhaseTwoEditor, PhaseTwoDetail } from "../components/TacticalNotePhaseTwo";
 
 const emptyDraft = () => ({ title: "", description: "", assigneeUids: [], clips: [], sourceProjectId: "", images: [], tasks: {} });
@@ -275,6 +276,7 @@ export default function TacticalNotesScreen({ route, navigation, projects = [], 
   </SafeAreaView>;
   if (selected && !draft && (activityView || !selected.clips.length)) return <SafeAreaView style={s.page}><ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={s.content}>
     <Button title={selected.clips.length ? "◁ 動画へ戻る" : "◁ 一覧へ戻る"} disabled={busy || activityBusy} onPress={() => leaveActivity(() => { if (selected.clips.length) setActivityView(false); else setSelectedId(null); })} />
+    <GuideHelpLink topic="tactics-read" />
     <Text style={s.heading}>{selected.title}</Text><Text>{selected.description}</Text>
     <Text style={s.info}>確認対象者：{names(selected.assigneeUids)} · 保護者以外に公開</Text>
     {canManageNote(profile, currentUserUid, selected) && <View style={s.row}><Button title="編集" disabled={busy || activityBusy || selectedLoading || !!selectedError} onPress={() => leaveActivity(editSelected)} /><Button title="削除" disabled={busy || activityBusy || selectedLoading || !!selectedError} onPress={() => leaveActivity(remove)} /></View>}
@@ -326,7 +328,10 @@ export default function TacticalNotesScreen({ route, navigation, projects = [], 
       keyboardDismissMode={draft ? (Platform.OS === "ios" ? "interactive" : "on-drag") : undefined}
       contentContainerStyle={[s.content, draft && s.editorContent]}>
     <Button title="◁ 前の画面へ戻る" variant="primary" disabled={busy} onPress={() => navigation.goBack()} />
-    <Text style={s.heading}>戦術ノート</Text>
+    <View style={s.headingRow}>
+      <Text style={s.heading}>戦術ノート</Text>
+      <GuideHelpLink topic="tactics" />
+    </View>
     <Text style={s.info}>保護者以外のチーム全員に公開されます。担当者の指定は閲覧範囲を制限しません。</Text>
     {!!error && <Text style={s.error}>{error}</Text>}
     {!!selectedError && draft && <Text style={s.error}>{selectedError}</Text>}
@@ -402,6 +407,7 @@ const s = StyleSheet.create({
   editorActions: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 10,
     paddingHorizontal: 15, paddingVertical: 8, backgroundColor: "#fff", borderTopWidth: 1, borderTopColor: "#e2e8f0" },
   heading: { fontSize: 20, fontWeight: "bold", color: "#333", marginVertical: 10 },
+  headingRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 8 },
   info: { color: "#666", marginVertical: 8, lineHeight: 22 }, error: { color: "#b42318", marginVertical: 12 },
   label: { fontSize: 15, fontWeight: "bold", color: "#333", marginVertical: 8 }, row: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   card: {

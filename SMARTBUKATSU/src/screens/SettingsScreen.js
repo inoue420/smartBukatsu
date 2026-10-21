@@ -70,6 +70,8 @@ import {
 } from "../ads/adSettings";
 import { MEDICAL_SCALE_MAX } from "../utils/medicalScale";
 import { CUSTOM_SPORT_OPTIONS, SPORT_CATEGORIES, getCategoryLabel, getSportsForCategory } from "../constants/sportsCategories";
+import { SMARTBUKATSU_GUIDE_URL } from "../constants/helpLinks";
+import GuideHelpLink from "../components/GuideHelpLink";
 import {
   SMARTBUKATSU_PRIVACY_URL,
   SMARTBUKATSU_SUPPORT_URL,
@@ -1492,6 +1494,21 @@ const SettingsScreen = ({
         </View>
 
         <ScrollView style={styles.content} keyboardShouldPersistTaps="handled">
+          <View style={styles.card}>
+            <Text style={styles.legalTitle}>使い方</Text>
+            <TouchableOpacity
+              style={[styles.legalButton, styles.legalButtonLast]}
+              onPress={() =>
+                openExternalPage(SMARTBUKATSU_GUIDE_URL, "操作ガイド・Q＆A")
+              }
+              accessibilityRole="link"
+              accessibilityHint="公式サイトの操作ガイドをブラウザーで開きます"
+            >
+              <Text style={styles.legalButtonText}>操作ガイド・Q＆A</Text>
+              <Text style={styles.legalButtonArrow}>›</Text>
+            </TouchableOpacity>
+          </View>
+
           {!isStaffOrAbove ? (
             <>
               <Text style={styles.sectionDescription}>
@@ -1685,6 +1702,7 @@ const SettingsScreen = ({
                 onToggle={() => toggleSection("teamInfo")}
                 title="🏟️ 所属チーム情報・入部用コード"
               >
+                <GuideHelpLink topic="members" />
                 <Text style={styles.label}>現在のチーム名</Text>
                 <View style={styles.addMemberRow}>
                   <TextInput
@@ -2152,6 +2170,7 @@ const SettingsScreen = ({
                 onToggle={() => toggleSection("member")}
                 title="👥 部員リスト・権限・担当管理"
               >
+                <GuideHelpLink topic="permissions" />
                 <Text
                   style={[
                     styles.hintText,
@@ -2464,6 +2483,7 @@ const SettingsScreen = ({
             onToggle={() => toggleSection("notifications")}
             title="🔔 プッシュ通知"
           >
+            <GuideHelpLink topic="notifications" />
             <Text style={styles.subText}>
               通知する項目とチームを選択できます。OFFにした通知は、通知センターと未読件数にも表示されません。ONに戻すと履歴を再表示できます。
             </Text>
