@@ -17,6 +17,7 @@ const accepted = (messages) => ({ ok: true, status: 200, json: async () => ({ da
 function harness(options = {}) {
   const documents = new Map();
   const requests = [], logs = [], waits = [], timeouts = [], writes = [];
+  const scheduledFunctions = [];
   let clockMillis = Date.UTC(2026, 9, 6, 3);
   let transactionQueue = Promise.resolve();
   let h;
@@ -84,7 +85,11 @@ function harness(options = {}) {
     setTimeout: (callback, milliseconds) => { waits.push(milliseconds); clockMillis += milliseconds; callback(); },
     require(name) {
       if (name === "firebase-admin/firestore") return { getFirestore: () => firestore, Timestamp: { now: () => timestamp(1000), fromMillis: timestamp } };
-      if (name === "firebase-functions/v2/firestore" || name === "firebase-functions/v2/scheduler") return { onDocumentWritten: (_config, handler) => handler, onSchedule: (_config, handler) => handler };
+      if (name === "firebase-functions/v2/firestore") return { onDocumentWritten: (_config, handler) => handler };
+      if (name === "firebase-functions/v2/scheduler") return { onSchedule: (config, handler) => {
+        scheduledFunctions.push({ config, handler });
+        return handler;
+      } };
       if (name === "firebase-functions/v2/https") return { onCall: (_config, handler) => handler, HttpsError: Error };
       if (name === "firebase-functions/logger") return Object.fromEntries(["info", "warn", "error"].map((level) => [level, (message, fields) => logs.push({ level, message, ...fields })]));
       if (name === "./notificationCore") return require("./notificationCore");
@@ -105,6 +110,7 @@ function harness(options = {}) {
     .map(([key, value]) => [key, JSON.parse(JSON.stringify(value))]);
   h = {
     documents, requests, logs, waits, timeouts, writes, notifications,
+    scheduledFunctions, exportedFunctions: module.exports,
     advance: (milliseconds) => { clockMillis += milliseconds; },
     seedUser(uid, role = "member", devices = ["device"]) {
       documents.set(`teams/team/members/${uid}`, { role, name: "Synthetic member" });
@@ -130,7 +136,6 @@ function harness(options = {}) {
         data: { before: { exists: before != null, data: () => before }, after: { exists: true, data: () => after || defaults[kind] } },
       });
     },
-    reminders: () => module.exports.sendScheduledEventReminders(),
   };
   documents.set("teams/team", { name: "Synthetic team", dailyReportCommentsEnabled: true, channels: [{ id: "channel", name: "Synthetic channel", notificationRecipientUids: ["member0", "member1", "actor"] }] });
   h.seedUser("actor", "staff");
@@ -374,7 +379,7 @@ for (const kind of ["notice", "schedule", "post", "diary", "join"]) {
     h.documents.set("teams/team/members/member1", { role: "staff" });
     await h.run(kind);
     assert.equal(h.requests.length, 1);
-    const expectedScreen = ["schedule", "reminder"].includes(kind) ? "Calendar" : kind === "notice" ? "NoticeBoard" : kind === "diary" ? "Diary" : kind === "join" ? "Roster" : "WorkspaceHome";
+    const expectedScreen = kind === "schedule" ? "Calendar" : kind === "notice" ? "NoticeBoard" : kind === "diary" ? "Diary" : kind === "join" ? "Roster" : "WorkspaceHome";
     for (const message of h.requests.flat()) {
       assert.equal(message.data.screen, expectedScreen);
       assert.equal(message.channelId, "smartbukatsu-notifications");
@@ -389,13 +394,32 @@ for (const kind of ["notice", "schedule", "post", "diary", "join"]) {
   });
 }
 
-test("retired schedule reminder sends nothing and leaves notifications/counters unchanged", async () => {
+test("retired schedule reminder is not exported or scheduled; notification cleanup remains scheduled", () => {
   const h = harness({ count: 2 });
-  h.documents.set("teams/team/clubEvents/schedule", { date: "2026-10-07", title: "Synthetic reminder" });
-  await h.reminders();
+  assert.equal(Object.hasOwn(h.exportedFunctions, "sendScheduledEventReminders"), false);
+  assert.equal(h.scheduledFunctions.length, 1);
+  const [{ config, handler }] = h.scheduledFunctions;
+  assert.equal(handler, h.exportedFunctions.deleteExpiredNotifications);
+  assert.equal(config.region, "asia-northeast1");
+  assert.equal(config.schedule, "45 3 * * *");
+  assert.equal(config.timeZone, "Asia/Tokyo");
   assert.equal(h.requests.length, 0);
   assert.equal(h.writes.length, 0);
   assert.equal(h.notifications().length, 0);
+});
+
+test("ordinary schedule notifications keep the JST date boundary after reminder removal", async () => {
+  const h = harness({ count: 1 });
+  h.advance(Date.UTC(2026, 9, 6, 15) - Date.UTC(2026, 9, 6, 3));
+  await h.run("schedule", "yesterday", null, { authorUid: "actor", title: "Synthetic past schedule", date: "2026-10-06" });
+  assert.equal(h.requests.length, 0);
+  assert.equal(h.notifications().length, 0);
+  await h.run("schedule", "today", null, { authorUid: "actor", title: "Synthetic current schedule", date: "2026-10-07" });
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.notifications().length, 1);
+  assert.equal(h.requests[0][0].data.category, "schedule");
+  assert.equal(h.requests[0][0].data.screen, "Calendar");
+  assert.equal(JSON.parse(h.requests[0][0].data.targetParams).date, "2026-10-07");
 });
 
 test("push badge excludes disabled categories, disabled teams and retired reminders", async () => {

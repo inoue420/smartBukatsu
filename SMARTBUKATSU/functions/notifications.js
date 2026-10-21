@@ -779,19 +779,6 @@ function getJstDateString(date) {
   return `${values.year}-${values.month}-${values.day}`;
 }
 
-const sendScheduledEventReminders = onSchedule(
-  {
-    region: REGION,
-    schedule: "0 18 * * *",
-    timeZone: "Asia/Tokyo",
-    timeoutSeconds: 540,
-    memory: "512MiB",
-  },
-  // Keep the deployed endpoint compatible; it no longer reads data or sends.
-  // Removing the scheduler itself is a separate production operation.
-  async () => {},
-);
-
 async function updateNotificationState(uid, notificationId, action) {
   const userRef = firestore.collection("users").doc(uid);
   const notificationRef = userRef
@@ -1047,7 +1034,6 @@ module.exports = {
   notifyClubEventWritten,
   notifyWorkspacePostWritten,
   handleDailyReportWritten,
-  sendScheduledEventReminders,
   registerPushToken,
   unregisterPushToken,
   updateNotificationPreferences,
