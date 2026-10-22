@@ -3,6 +3,8 @@ const path = require("path");
 const dotenvFlow = require("dotenv-flow");
 const dotenvExpand = require("dotenv-expand");
 const appJson = require("./app.json");
+const { captureConfigEnabled, captureFirebaseConfig } = require("./src/config/captureEnvironment");
+const isCaptureConfig = captureConfigEnabled(process.env);
 
 const ADMOB_SAMPLE_ANDROID_APP_ID =
   "ca-app-pub-3940256099942544~3347511713";
@@ -11,7 +13,7 @@ const ADMOB_SAMPLE_IOS_APP_ID =
 const CONSENT_SDK_PROGUARD_RULE =
   "-keep class com.google.android.gms.internal.consent_sdk.** { *; }";
 
-dotenvExpand.expand(
+if (!isCaptureConfig) dotenvExpand.expand(
   dotenvFlow.config({
     path: path.resolve(__dirname),
     default_node_env: "development",
@@ -20,12 +22,12 @@ dotenvExpand.expand(
 
 module.exports = ({ config }) => {
   const androidMapsApiKey =
-    process.env.EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_API_KEY ||
-    process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY;
+    !isCaptureConfig && (process.env.EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_API_KEY ||
+    process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY);
   const iosMapsApiKey =
-    process.env.EXPO_PUBLIC_GOOGLE_MAPS_IOS_API_KEY ||
-    process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY;
-  const androidGoogleServicesFile = process.env.GOOGLE_SERVICES_JSON;
+    !isCaptureConfig && (process.env.EXPO_PUBLIC_GOOGLE_MAPS_IOS_API_KEY ||
+    process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY);
+  const androidGoogleServicesFile = !isCaptureConfig && process.env.GOOGLE_SERVICES_JSON;
   const locationPermissionMessage =
     "場所検索とピン調整のために位置情報の利用を許可してください。";
   const expoPlugins = [...(appJson.expo.plugins || [])];
@@ -33,10 +35,10 @@ module.exports = ({ config }) => {
   const isDevelopmentBuild = appVariant === "development";
   const isProductionBuild = appVariant === "production";
   const androidAdMobAppId =
-    process.env.EXPO_PUBLIC_ADMOB_ANDROID_APP_ID ||
+    (isCaptureConfig ? ADMOB_SAMPLE_ANDROID_APP_ID : process.env.EXPO_PUBLIC_ADMOB_ANDROID_APP_ID) ||
     (!isProductionBuild ? ADMOB_SAMPLE_ANDROID_APP_ID : null);
   const iosAdMobAppId =
-    process.env.EXPO_PUBLIC_ADMOB_IOS_APP_ID ||
+    (isCaptureConfig ? ADMOB_SAMPLE_IOS_APP_ID : process.env.EXPO_PUBLIC_ADMOB_IOS_APP_ID) ||
     (!isProductionBuild ? ADMOB_SAMPLE_IOS_APP_ID : null);
 
   if (!androidAdMobAppId || !iosAdMobAppId) {
@@ -208,6 +210,8 @@ module.exports = ({ config }) => {
       messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
       appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID,
       measurementId: process.env.EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID,
+
+      ...(isCaptureConfig ? { ...captureFirebaseConfig(), captureMode: true } : {}),
 
       eas: {
         projectId: "e741f7bd-7361-4112-aa43-06b192f2be13",

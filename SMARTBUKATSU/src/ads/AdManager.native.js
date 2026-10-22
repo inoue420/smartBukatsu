@@ -9,6 +9,7 @@ import React, {
   useState,
 } from "react";
 import { Platform, StatusBar } from "react-native";
+import { isCaptureEnvironment } from "../firebase";
 import mobileAds, {
   AdEventType,
   AdsConsent,
@@ -201,6 +202,7 @@ export const AdsProvider = ({ children }) => {
   }, [tryShowInterstitial]);
 
   useEffect(() => {
+    if (isCaptureEnvironment) return;
     let active = true;
     let retryTimer = null;
     let initializationRetryTimer = null;
