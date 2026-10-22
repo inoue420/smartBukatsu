@@ -71,6 +71,7 @@ import {
 import { MEDICAL_SCALE_MAX } from "../utils/medicalScale";
 import { CUSTOM_SPORT_OPTIONS, SPORT_CATEGORIES, getCategoryLabel, getSportsForCategory } from "../constants/sportsCategories";
 import { SMARTBUKATSU_GUIDE_URL } from "../constants/helpLinks";
+import { openGuideUrl } from "../utils/openGuide";
 import GuideHelpLink from "../components/GuideHelpLink";
 import {
   SMARTBUKATSU_PRIVACY_URL,
@@ -1424,7 +1425,11 @@ const SettingsScreen = ({
 
   const openExternalPage = async (url, pageName) => {
     try {
-      await Linking.openURL(url);
+      if (url === SMARTBUKATSU_GUIDE_URL) {
+        await openGuideUrl(url);
+      } else {
+        await Linking.openURL(url);
+      }
     } catch (error) {
       console.log(`${pageName}を開けませんでした:`, error);
       Alert.alert(

@@ -1,5 +1,6 @@
 import React from "react";
-import { Alert, Linking, StyleSheet, Text, TouchableOpacity } from "react-native";
+import { Alert, StyleSheet, Text, TouchableOpacity } from "react-native";
+import { openGuideUrl } from "../utils/openGuide";
 import {
   SMARTBUKATSU_GUIDE_TOPICS,
   SMARTBUKATSU_GUIDE_URL,
@@ -13,7 +14,7 @@ export default function GuideHelpLink({ topic, light = false, style }) {
 
   const openGuide = async () => {
     try {
-      await Linking.openURL(url);
+      await openGuideUrl(url);
     } catch {
       Alert.alert(
         "操作ガイドを開けません",
