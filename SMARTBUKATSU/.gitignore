@@ -52,3 +52,6 @@
 Thumbs.db
 .idea/
 *.iml
+
+# Android capture tools, downloads, and unreviewed screenshots
+/.codex-temp/android-capture/

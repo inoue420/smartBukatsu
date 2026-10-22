@@ -10,7 +10,7 @@ import {
 } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { measuredOnSnapshot } from "./firestoreSubscription";
-import { auth, cloudFunctions, db } from "../firebase";
+import { auth, cloudFunctions, db, isCaptureEnvironment } from "../firebase";
 import { normalizeNotificationPreferences } from "../notifications/notificationConfig";
 
 const EAS_PROJECT_ID = "e741f7bd-7361-4112-aa43-06b192f2be13";
@@ -151,6 +151,7 @@ export async function configureAndroidNotificationChannel() {
 
 export function registerPushToken({ requestPermission = false, devicePushToken,
   initializePreferencesEnabled = true } = {}) {
+  if (isCaptureEnvironment) return Promise.resolve({ granted: false, reason: "capture-local-only" });
   if (!new Set(["android", "ios"]).has(Platform.OS)) {
     return Promise.resolve({ granted: false, reason: "unsupported" });
   }
@@ -230,6 +231,7 @@ export function registerPushToken({ requestPermission = false, devicePushToken,
 }
 
 export async function ensurePushTokenOwnership() {
+  if (isCaptureEnvironment) return { granted: false, reason: "capture-local-only" };
   const session = pushSession;
   if (!isCurrentPushSession(session) || !["android", "ios"].includes(Platform.OS)) {
     return { granted: false, reason: "unsupported" };
@@ -251,6 +253,7 @@ export async function ensurePushTokenOwnership() {
 }
 
 export function unregisterPushTokenForCurrentDevice() {
+  if (isCaptureEnvironment) return Promise.resolve();
   const uid = auth.currentUser?.uid;
   // Invalidate immediately, so no queued/in-flight registration can restore it.
   pushSession = { uid, signingOut: true };
