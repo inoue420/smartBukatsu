@@ -113,16 +113,22 @@ service cloud.firestore {
     match /notificationPushTokens/{tokenHash} {
       allow read, write: if false;
     }
+    // Operator data is available only through membership-checked callable APIs.
+    match /operatorGuidanceHistory/{id} { allow read, write: if false; }
+    match /operatorGuidanceRequests/{id} { allow read, write: if false; }
+    match /operatorGuidanceMessages/{id} { allow read, write: if false; }
 
     match /teams/{teamId} {
       allow get: if isMember(teamId);
       allow list: if false;
 
       allow create: if signedIn() && request.resource.data.createdBy == uid()
+        && (!request.resource.data.keys().hasAny(['originalCreatorUid']) || request.resource.data.originalCreatorUid == uid())
         && request.resource.data.get('dailyReportCommentsEnabled', false) is bool
         && (request.resource.data.get('dailyReportCommentsEnabled', false) == false
           || request.resource.data.get('dailyReportCommentsUpdatedAt', null) == request.time);
       allow update: if isManager(teamId)
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['originalCreatorUid'])
         && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['dailyReportCommentsEnabled', 'dailyReportCommentsUpdatedAt'])
           || (getRole(teamId) in ['owner', 'admin']
             && request.resource.data.get('dailyReportCommentsEnabled', false) is bool

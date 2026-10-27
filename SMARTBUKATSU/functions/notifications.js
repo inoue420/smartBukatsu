@@ -131,11 +131,12 @@ async function collectExpoPushForUser({
     return [];
   }
 
-  const tokensSnapshot = await firestore
+  let tokensQuery = firestore
     .collection("users")
     .doc(uid)
-    .collection("pushTokens")
-    .get();
+    .collection("pushTokens");
+  if (notification.category === "operatorGuidance") tokensQuery = tokensQuery.limit(10);
+  const tokensSnapshot = await tokensQuery.get();
   const documentsByToken = new Map();
   for (const tokenDocument of tokensSnapshot.docs) {
     const token = tokenDocument.data()?.token || "";
@@ -180,12 +181,13 @@ function warnPushBatch(reason, count, httpStatus) {
   });
 }
 
-async function sendExpoPushBatch(entries, deadline) {
+async function sendExpoPushBatch(entries, deadline, report = () => {}) {
   let pending = entries;
   for (let attempt = 1; attempt <= EXPO_PUSH_MAX_ATTEMPTS; attempt += 1) {
     const remainingTime = deadline - Date.now();
     if (remainingTime <= 0) {
       warnPushBatch("send_budget_exhausted", pending.length);
+      report(pending, "failed", "send_budget_exhausted");
       return;
     }
     let response;
@@ -204,11 +206,13 @@ async function sendExpoPushBatch(entries, deadline) {
       // Expo may have accepted the request before the response was lost.
       // Replaying it could duplicate pushes; leave the in-app notification.
       warnPushBatch("unknown_response", pending.length);
+      report(pending, "unknown", "response_unknown");
       return;
     }
     if (!response.ok) {
       if (response.status !== 429 && !(response.status >= 500 && response.status < 600)) {
         warnPushBatch("http_rejected", pending.length, response.status);
+        report(pending, "failed", "http_rejected");
         return;
       }
     } else {
@@ -217,6 +221,7 @@ async function sendExpoPushBatch(entries, deadline) {
         responseBody = await response.json();
       } catch {
         warnPushBatch("unknown_response", pending.length);
+        report(pending, "unknown", "response_unknown");
         return;
       }
       const requestErrors = responseBody?.errors;
@@ -224,6 +229,7 @@ async function sendExpoPushBatch(entries, deadline) {
         // Retry only an explicit whole-request rate rejection, without tickets.
         if (responseBody?.data != null || !requestErrors.every((error) => error?.code === "TOO_MANY_REQUESTS")) {
           warnPushBatch("api_rejected", pending.length);
+          report(pending, "failed", "api_rejected");
           return;
         }
       } else {
@@ -233,6 +239,7 @@ async function sendExpoPushBatch(entries, deadline) {
         if (tickets.length !== pending.length) {
           // An incomplete or extra result cannot safely be mapped to tokens.
           warnPushBatch("invalid_ticket_count", pending.length);
+          report(pending, "unknown", "invalid_ticket_count");
           return;
         }
         const retryEntries = [];
@@ -241,10 +248,14 @@ async function sendExpoPushBatch(entries, deadline) {
         let unknownCount = 0;
         tickets.forEach((ticket, index) => {
           const entry = pending[index];
-          if (ticket?.status === "ok" && typeof ticket.id === "string" && ticket.id) return;
+          if (ticket?.status === "ok" && typeof ticket.id === "string" && ticket.id) {
+            report([entry], "accepted", ""); return;
+          }
           if (ticket?.status !== "error") {
             unknownCount += 1;
+            report([entry], "unknown", "unknown_ticket");
           } else if (ticket?.details?.error === "DeviceNotRegistered") {
+            report([entry], "unavailable", "device_not_registered");
             for (const document of entry.tokenDocuments) {
               invalidTokenDeletes.push(deletePushTokenDocument(document, entry.message.to));
             }
@@ -252,6 +263,7 @@ async function sendExpoPushBatch(entries, deadline) {
             retryEntries.push(entry);
           } else {
             rejectedCount += 1;
+            report([entry], "failed", "ticket_rejected");
           }
         });
         const cleanupResults = await Promise.allSettled(invalidTokenDeletes);
@@ -265,11 +277,13 @@ async function sendExpoPushBatch(entries, deadline) {
     if (pending.length === 0) return;
     if (attempt === EXPO_PUSH_MAX_ATTEMPTS) {
       warnPushBatch("retry_exhausted", pending.length);
+      report(pending, "failed", "retry_exhausted");
       return;
     }
     const retryDelay = 1000 * 2 ** (attempt - 1);
     if (Date.now() + retryDelay >= deadline) {
       warnPushBatch("send_budget_exhausted", pending.length);
+      report(pending, "failed", "send_budget_exhausted");
       return;
     }
     await waitForPushRetry(retryDelay);
@@ -277,16 +291,20 @@ async function sendExpoPushBatch(entries, deadline) {
 }
 
 async function sendExpoPushBatches(entries) {
+  const results = [];
+  const report = (items, status, reason) => items.forEach(() => results.push({ status, reason }));
   // Sequential batches also bound concurrent HTTP requests within an event.
   const deadline = Date.now() + EXPO_PUSH_SEND_BUDGET_MS;
   for (let start = 0; start < entries.length; start += EXPO_PUSH_BATCH_SIZE) {
     if (start > 0) await waitForPushRetry(EXPO_PUSH_BATCH_INTERVAL_MS);
     if (Date.now() >= deadline) {
       warnPushBatch("send_budget_exhausted", entries.length - start);
-      return;
+      report(entries.slice(start), "failed", "send_budget_exhausted");
+      return results;
     }
-    await sendExpoPushBatch(entries.slice(start, start + EXPO_PUSH_BATCH_SIZE), deadline);
+    await sendExpoPushBatch(entries.slice(start, start + EXPO_PUSH_BATCH_SIZE), deadline, report);
   }
+  return results;
 }
 
 function dailyReportCommentEventAllowed(teamData, eventTime) {
@@ -300,14 +318,17 @@ function dailyReportCommentEventAllowed(teamData, eventTime) {
   return seconds > changedAt.seconds || (seconds === changedAt.seconds && nanos >= changedAt.nanoseconds);
 }
 
-async function readNotificationSummary(transaction, userRef, summarySnapshot) {
+async function readNotificationSummary(transaction, userRef, summarySnapshot, maxUnread = 0) {
   const summary = summarySnapshot.data() || {};
   if (summary.unreadBucketsVersion === 1) return summary;
   // Every notification mutation also writes the summary, so a concurrent change
   // makes this transaction retry rather than publishing a stale repair.
-  const unread = await transaction.get(
-    userRef.collection("notifications").where("readAt", "==", null),
-  );
+  let query = userRef.collection("notifications").where("readAt", "==", null);
+  if (maxUnread) query = query.limit(maxUnread + 1);
+  const unread = await transaction.get(query);
+  if (maxUnread && unread.docs.length > maxUnread) {
+    throw new HttpsError("resource-exhausted", "通知集計の準備が必要です。", { reason: "guidance-summary-not-ready" });
+  }
   return summarizeUnreadNotifications(unread.docs.map((document) => document.data()));
 }
 
@@ -328,7 +349,7 @@ const ensureNotificationSummary = onCall(
   },
 );
 
-async function createNotificationForUser(uid, payload) {
+async function createNotificationForUser(uid, payload, { validate, report = false } = {}) {
   if (payload.category === "scheduleReminder") return [];
   const notificationId = safeDocumentId(payload.id);
   const userRef = firestore.collection("users").doc(uid);
@@ -354,6 +375,7 @@ async function createNotificationForUser(uid, payload) {
   };
 
   const transactionResult = await firestore.runTransaction(async (transaction) => {
+    if (validate) await validate(transaction);
     if (payload.category === NOTIFICATION_CATEGORIES.DIARY_REPLY) {
       const teamSnapshot = await transaction.get(firestore.collection("teams").doc(payload.teamId));
       if (!dailyReportCommentEventAllowed(teamSnapshot.data(), payload.sourceEventTime)) {
@@ -385,7 +407,7 @@ async function createNotificationForUser(uid, payload) {
     if (existingSnapshot.exists) return { created: false, unreadTotal: 0 };
 
     const summarySnapshot = await transaction.get(summaryRef);
-    const summaryData = await readNotificationSummary(transaction, userRef, summarySnapshot);
+    const summaryData = await readNotificationSummary(transaction, userRef, summarySnapshot, report ? 250 : 0);
     const preferencesSnapshot = await transaction.get(preferencesRef);
     const preferences = preferencesSnapshot.data() || {};
     const nextSummary = adjustUnreadSummary(summaryData, notification, 1);
@@ -402,13 +424,38 @@ async function createNotificationForUser(uid, payload) {
     };
   });
 
-  if (!transactionResult.created) return [];
-  return collectExpoPushForUser({
-    uid,
-    notification,
-    unreadTotal: transactionResult.unreadTotal,
-    preferences: transactionResult.preferences,
-  });
+  if (!transactionResult.created) return report ? { created: false, entries: [] } : [];
+  let entries;
+  try {
+    entries = await collectExpoPushForUser({ uid, notification,
+      unreadTotal: transactionResult.unreadTotal, preferences: transactionResult.preferences });
+  } catch (error) {
+    if (report) return { created: true, entries: [], preferences: transactionResult.preferences, preparationFailed: true };
+    throw error;
+  }
+  return report ? { created: true, entries, preferences: transactionResult.preferences } : entries;
+}
+
+// Internal transport adapter; excluded from the exported Cloud Functions.
+async function sendOperatorGuidanceNotification(uid, payload, validate) {
+  let prepared;
+  try { prepared = await createNotificationForUser(uid, payload, { validate, report: true }); }
+  catch (error) {
+    if (error.details?.reason === "guidance-summary-not-ready") return { status: "unavailable", reason: "summary_not_ready", notificationSaved: false };
+    throw error;
+  }
+  if (!prepared.created) return { status: "unavailable", reason: "notification_exists_or_membership_changed", notificationSaved: false };
+  if (prepared.preparationFailed) return { status: "failed", reason: "push_failed", notificationSaved: true };
+  if (!shouldSendPush(prepared.preferences, payload.category, payload.teamId)) {
+    return { status: "unavailable", reason: "notifications_off", notificationSaved: true };
+  }
+  if (!prepared.entries.length) return { status: "unavailable", reason: "no_device", notificationSaved: true };
+  const results = await sendExpoPushBatches(prepared.entries);
+  const counts = { accepted: 0, unavailable: 0, failed: 0, unknown: 0 };
+  results.forEach((result) => { counts[result.status] += 1; });
+  return { status: counts.accepted ? "accepted" : counts.failed || counts.unknown ? "failed" : "unavailable",
+    reason: counts.unknown ? "response_unknown" : counts.failed ? "push_failed" : counts.unavailable ? "device_not_registered" : "",
+    notificationSaved: true, deviceResults: counts };
 }
 
 async function fanOutToUids(uids, payload, retryFailures = false) {
@@ -1028,6 +1075,7 @@ const deleteExpiredNotifications = onSchedule(
 );
 
 module.exports = {
+  sendOperatorGuidanceNotification,
   ensureNotificationSummary,
   notifyTeamMemberCreated,
   notifyNoticeWritten,
