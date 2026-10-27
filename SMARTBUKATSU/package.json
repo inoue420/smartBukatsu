@@ -1,6 +1,6 @@
 {
   "name": "smrtbukatsu",
-  "version": "1.1.5",
+  "version": "1.1.6",
   "main": "index.js",
   "engines": {
     "node": "22.x || 24.x"
