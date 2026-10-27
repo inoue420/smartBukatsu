@@ -144,26 +144,34 @@ npx expo export --platform ios --max-workers 2 --output-dir dist/node24-check/io
 
 ## EAS Buildの段階移行
 
-ローカルの比較結果を評価し、development → preview → productionの順に進める。
-各プロファイルのnode値だけを検証済みの24系へ変更し、各段階でAndroid / iOSを確認する。
+当初はdevelopment → preview → productionの順に進める計画とした。
+2026-10-27、ユーザーからAndroid / iOS両方のdevelopment実機動作確認完了の報告を受けた。
+同日、ユーザーの明示指示によりpreviewを省略してproductionへ進み、iOSはTestFlightでリリースに近い動作を確認する方針へ変更した。
+previewは未検証・Node.js 20.20.0のまま維持し、Node.js 24移行済みとは扱わない。
+productionはAndroid / iOSとも24.22.1へ変更する。TestFlightはiOS向けのため、Androidのproduction成果物は別途テスト配布方法を決めて実機確認する。
 Node.js更新と関係しないSDK、React Native、ビルドイメージ、識別子、権限、署名、版数を同時変更しない。
 
 | プロファイル | 作業前のNode.js | 現在の指定 | 進行条件 |
 | --- | --- | --- | --- |
-| development | 20.20.0 | 24.22.1（設定準備のみ・ビルド未実施） | 既存失敗の扱いを確認、必要なcommitの明示承認 |
-| preview | 20.20.0 | 20.20.0 | developmentの両OSビルド・必要な動作確認 |
-| production | 20.20.0 | 20.20.0 | previewの検証結果を評価してから実施 |
+| development | 20.20.0 | 24.22.1（両OSビルド成功・ユーザー実機確認完了） | 完了。対象commitは9296b6ba |
+| preview | 20.20.0 | 20.20.0（今回省略・未検証） | ユーザー指示により今回の移行対象から除外 |
+| production | 20.20.0 | 24.22.1（設定変更済み・ビルド未実施） | ユーザーによるcommit後にビルド。iOSはTestFlight、Androidは別途テスト配布して確認 |
 
 `cli.requireCommit=true`を維持する。必要なcommitは、差分・結果・メッセージ案を提示して承認を得る。
+ユーザーの希望によりcommitはユーザー自身が行う。production対応では既存の専用作業ブランチをmasterの9296b6baへfast-forwardして再利用し、Codexによるcommitは行わない。
 CLIの自動commitやrequireCommit無効化で回避しない。push / PR / マージは別途承認。
 ビルド成功、JavaScript書き出し成功、実機成功、ストア公開はそれぞれ別の状態として記録する。
 
-既存のEAS CLI 16.32.0がNode.js 24.22.1でバージョン表示まで起動することを確認した。
-CLIの更新通知（25.3.0）は適用していない。24系のnvm配下へEAS CLIをグローバル追加する操作も行っていない。
-CLIの起動確認は、認証・クラウドビルドの成功を意味しない。
+初期確認では既存のEAS CLI 16.32.0をNode.js 24.22.1で直接起動した。
+その後、通常のeasがVolta経由でNode.js 20.20.0に固定されていることを確認したため、ユーザーの指示によりnvmの24.22.1側へ既存のVolta側と同じEAS CLI 25.3.0をグローバル導入した。Volta側は削除・変更していない。
+通常のeas --versionがeas-cli/25.3.0 win32-x64 node-v24.22.1になることをCodexとユーザー双方で確認済み。CLI 26.0.0への更新は今回行わない。
+nvmで別のNode.js版へ切り替えた場合、その版のグローバルCLIと実際のeasの参照先を再確認する。グローバルCLIは他のNode.js版へ自動で導入されない。
 
 実機では、起動・認証・チーム切替・データ表示・通知・添付・動画・地図・広告をAndroid / iOSで確認する。
-今回のビルド検証に、ストア提出・OTA配信・本番データ更新・実利用者への通知送信を含めない。
+productionビルドに自動提出オプションは付けない。TestFlightでの確認には、ビルド完了後にApp Store Connectへのアップロードと処理完了が必要であり、ビルド成功だけではTestFlightへ配信されない。
+同じ版数・ビルド番号での重複アップロードを避けるため、提出前に既存の提出状況を確認する。版数・ビルド番号の変更が必要な場合は対象と変更値を明示して別途判断し、自動増分を勝手に有効化しない。
+2026-10-27の読み取り確認では、直近のproductionビルドは両OSともアプリ版数1.1.5、iOS buildNumberは1.1.5、Android versionCodeは22だった。EASの保存番号もそれぞれ1.1.5 / 22で一致し、現状のままでは次のビルドでも同じ番号になる。TestFlight / Google Playへのアップロード済み最大番号は別途確認が必要であり、EASのビルド履歴だけでは提出済みとは判定しない。
+App Store / Google Playでの一般公開、OTA配信、本番データ更新、実利用者への通知送信は今回のビルド検証に含めない。
 
 ## 復旧
 
@@ -229,8 +237,18 @@ npmの警告:
 - inflight / rimraf / glob / uuidの非推奨警告は今回修正していない。
 
 Functionsのpackage.json / package-lock.json、firebase.json、Firestore / Storage Rules、app.config.jsは開始時とSHA256一致を確認した。
-Firebaseへのデプロイ、データ変更、EAS Build、実機確認、commit / push / PR、ストア提出、OTA配信は未実施。
-eas.jsonはdevelopmentのnode値のみ24.22.1へ準備し、preview / productionは20.20.0を維持している。
+初期のローカル検証完了時点では、Firebaseへのデプロイ、データ変更、EAS Build、実機確認、commit / push / PR、ストア提出、OTA配信は未実施だった。
+同時点のeas.jsonはdevelopmentのnode値のみ24.22.1へ準備し、preview / productionは20.20.0を維持していた。
+
+2026-10-27の後続状況:
+
+- ユーザーが初期変更をcommitし、PR #82をmasterへマージした。マージcommitは9296b6ba490523b6fc48dc3f8b55d94b9053f178。
+- 同commitのdevelopmentビルドはAndroid / iOSともFINISHEDを確認した。アプリ版数は両OSとも1.1.5、ビルド番号は両OSとも1。
+- AndroidのビルドID: 875d713d-f33b-437b-a55b-f7a5841f70e9。iOSのビルドID: 5013c6e0-81df-412b-97f4-b780670a0d84。
+- development用MetroをNode.js 24.22.1で起動し、アプリ名SMARTBUKATSU Dev、scheme smartbukatsu-dev、/statusの正常応答を確認した。
+- ユーザーからAndroid / iOS両方の実機動作確認完了の報告を受けた。Codexが端末操作を代行した結果ではない。
+- ユーザー指示によりpreviewを省略し、productionのnode値を24.22.1へ変更した。productionのcommit・ビルド・TestFlightアップロード・production実機確認は未実施。
+- このproduction対応でアプリ版数、buildNumber、versionCode、自動増分、Firebase FunctionsのNode.js 22指定は変更していない。
 
 詳細ログと比較用の一時スクリプトは `dist/sb-20261022-001-node24/` に置き、Gitの対象にはしない。
 
