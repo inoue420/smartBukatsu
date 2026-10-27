@@ -178,6 +178,8 @@ const SettingsScreen = ({
     adDiagnosticsAccess?.key === adMembershipKey &&
     adDiagnosticsAccess?.allowed,
   );
+  // Share the existing verified membership result; opening Settings adds no callable request.
+  const canSendGuidance = canViewAdDiagnostics;
 
   useFocusEffect(useCallback(() => {
     let active = true;
@@ -2499,6 +2501,19 @@ const SettingsScreen = ({
               <Text style={styles.saveBtnText}>通知設定を開く</Text>
             </TouchableOpacity>
           </SectionCard>
+
+          <TouchableOpacity style={styles.saveBtn} onPress={() => navigation.navigate("OperatorGuidanceInbox")}>
+            <Text style={styles.saveBtnText}>運営とのやり取り</Text>
+          </TouchableOpacity>
+
+          {canSendGuidance && <View>
+            <TouchableOpacity style={styles.saveBtn} onPress={() => navigation.navigate("OperatorGuidance", { mode: "send" })}>
+              <Text style={styles.saveBtnText}>ご案内を送信</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.saveBtn} onPress={() => navigation.navigate("OperatorGuidance", { mode: "history" })}>
+              <Text style={styles.saveBtnText}>送信履歴</Text>
+            </TouchableOpacity>
+          </View>}
 
           <SectionCard
             isExp={expanded.blockedUsers}

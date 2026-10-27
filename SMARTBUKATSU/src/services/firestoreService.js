@@ -368,6 +368,7 @@ export async function createTeam(uid, teamName, userName = "ゲスト", sport = 
   await setDoc(newTeamRef, {
     name: trimmedTeamName,
     createdBy: uid,
+    originalCreatorUid: uid,
     inviteCode: generatedInviteCode,
     createdAt: serverTimestamp(),
     grades: ["1年生", "2年生", "3年生"],

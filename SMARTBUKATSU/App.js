@@ -61,6 +61,10 @@ import CalendarScreen from "./src/screens/CalendarScreen";
 import RosterScreen from "./src/screens/RosterScreen";
 import NotificationCenterScreen from "./src/screens/NotificationCenterScreen";
 import NotificationSettingsScreen from "./src/screens/NotificationSettingsScreen";
+import OperatorGuidanceScreen from "./src/screens/OperatorGuidanceScreen";
+import OperatorGuidanceInboxScreen from "./src/screens/OperatorGuidanceInboxScreen";
+import OperatorGuidanceConversationScreen from "./src/screens/OperatorGuidanceConversationScreen";
+import { guidanceConversationTarget } from "./src/services/operatorGuidanceService";
 
 LogBox.ignoreLogs(["[expo-av]"]);
 const Stack = createNativeStackNavigator();
@@ -234,7 +238,21 @@ function AppContent() {
       "Diary",
       "NotificationCenter",
     ]);
-    return setNavigationHandler(async (notification) => {
+    let active = true, guidanceTimer;
+    const removeHandler = setNavigationHandler(async (notification) => {
+      if (notification?.category === "operatorGuidance") {
+        const target = guidanceConversationTarget(notification);
+        let attempts = 0;
+        const openConversation = () => {
+          if (!active) return;
+          const routes = navigationRef.getRootState()?.routeNames || [];
+          if (navigationRef.isReady() && routes.includes(target.screen)) { navigationRef.navigate(target.screen, target.params); return; }
+          if (++attempts < 20) guidanceTimer = setTimeout(openConversation, 100);
+          else Alert.alert("ご案内を開けませんでした", "設定の「運営とのやり取り」から確認してください。");
+        };
+        openConversation();
+        return;
+      }
       const requestedScreen = notification?.target?.screen || "WorkspaceHome";
       const screen = allowedScreens.has(requestedScreen)
         ? requestedScreen
@@ -262,7 +280,8 @@ function AppContent() {
         );
       }
     });
-  }, [activeTeamId, navigationRef, selectTeam, setNavigationHandler]);
+    return () => { active = false; clearTimeout(guidanceTimer); removeHandler(); };
+  }, [activeTeamId, navigationRef, selectTeam, setNavigationHandler, user?.uid]);
 
   // Basic team information does not depend on the history optimization gate.
   useEffect(() => {
@@ -661,8 +680,13 @@ function AppContent() {
               name="NotificationSettings"
               component={NotificationSettingsScreen}
             />
+            <Stack.Screen name="OperatorGuidance" component={OperatorGuidanceScreen} />
           </>
         )}
+        {user && !emailVerificationPending && <>
+          <Stack.Screen name="OperatorGuidanceInbox" component={OperatorGuidanceInboxScreen} />
+          <Stack.Screen name="OperatorGuidanceConversation" component={OperatorGuidanceConversationScreen} />
+        </>}
         </Stack.Navigator>
       </NavigationContainer>
       {authorized && !teamSelectionRequired && (

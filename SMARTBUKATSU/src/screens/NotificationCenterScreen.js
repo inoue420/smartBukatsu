@@ -132,7 +132,7 @@ export default function NotificationCenterScreen({ navigation }) {
                     style={styles.openButton}
                     onPress={() => openNotification(notification)}
                   >
-                    <Text style={styles.openButtonText}>対象を開く</Text>
+                    <Text style={styles.openButtonText}>{notification.category === "operatorGuidance" ? "案内・やり取りを見る" : "対象を開く"}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={styles.deleteButton}

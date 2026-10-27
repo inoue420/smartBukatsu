@@ -39,6 +39,11 @@ export const NOTIFICATION_CATEGORIES = {
     description: "SMARTBUKATSUからの重要なお知らせ",
     icon: "🔔",
   },
+  operatorGuidance: {
+    label: "運営からのご案内",
+    description: "運営からのご案内とやり取りの返信",
+    icon: "📖",
+  },
 };
 
 export const DEFAULT_NOTIFICATION_PREFERENCES = {

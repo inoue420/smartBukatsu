@@ -20,6 +20,21 @@ const { getStorage } = require("firebase-admin/storage");
 initializeApp();
 
 const firestore = getFirestore();
+const { createOperatorGuidanceBackend } = require("./operatorGuidanceBackend");
+const operatorGuidance = createOperatorGuidanceBackend({ firestore, Timestamp, FieldPath, HttpsError,
+  deliver: (...args) => require("./notifications").sendOperatorGuidanceNotification(...args) });
+for (const [name, handler] of Object.entries({
+  getOperatorGuidanceAccess: operatorGuidance.access, listOperatorGuidanceTargets: operatorGuidance.list,
+  listOperatorGuidanceHistory: operatorGuidance.history, sendOperatorGuidance: operatorGuidance.send,
+  getOperatorGuidanceUsage: operatorGuidance.usage,
+  listOperatorGuidanceInbox: operatorGuidance.inbox, getOperatorGuidanceConversation: operatorGuidance.conversation,
+  replyOperatorGuidance: operatorGuidance.reply,
+})) {
+  exports[name] = onCall({ region: "asia-northeast1", minInstances: 0, maxInstances: 2,
+    concurrency: ["sendOperatorGuidance", "getOperatorGuidanceUsage", "replyOperatorGuidance"].includes(name) ? 1 : 20,
+    timeoutSeconds: name === "sendOperatorGuidance" ? 360 : name === "replyOperatorGuidance" ? 120 : 60,
+    memory: "256MiB" }, handler);
+}
 const { createGuardianAbsenceBackend } = require("./guardianAbsenceBackend");
 const guardianAbsences = createGuardianAbsenceBackend({ firestore, FieldValue, HttpsError });
 exports.setGuardianChildren = onCall({ region: "asia-northeast1" }, guardianAbsences.setChildren);
@@ -107,6 +122,7 @@ const UID_IDENTITY_FIELDS = new Set([
   "userUid",
   "authorUid",
   "createdBy",
+  "originalCreatorUid",
   "updatedBy",
   "uploadedBy",
   "ownerId",
@@ -668,13 +684,14 @@ const getAccountDocumentUpdates = (data, context) => {
 
 const getAccountDeletionContext = async (uid) => {
   const userRef = firestore.collection("users").doc(uid);
-  const [userSnap, ownedTeamsSnapshot, tacticalTeamIds, loadingReadTeamIds, reactionTeamIds, guardianTeamIds] = await Promise.all([
+  const [userSnap, ownedTeamsSnapshot, tacticalTeamIds, loadingReadTeamIds, reactionTeamIds, guardianTeamIds, originallyCreatedTeams] = await Promise.all([
     userRef.get(),
     firestore.collection("teams").where("createdBy", "==", uid).get(),
     tacticalNotes.relatedTeamIds(uid),
     loadingOptimization.relatedTeamIds(uid),
     workspaceReactions.relatedTeamIds(uid),
     guardianAbsences.relatedTeamIds(uid),
+    firestore.collection("teams").where("originalCreatorUid", "==", uid).get(),
   ]);
   const userData = userSnap.exists ? userSnap.data() || {} : {};
   const teamIds = [
@@ -685,6 +702,7 @@ const getAccountDeletionContext = async (uid) => {
       ...loadingReadTeamIds,
       ...reactionTeamIds,
       ...guardianTeamIds,
+      ...originallyCreatedTeams.docs.map((snapshot) => snapshot.id),
     ]),
   ];
   const teamEntries = await Promise.all(
@@ -1849,6 +1867,7 @@ exports.deleteUserAccount = onCall(
       }
 
       await removeNotificationPushTokenRegistrations(uid);
+      await operatorGuidance.anonymizeAccount(uid);
       await firestore.recursiveDelete(context.userRef);
 
       await getAuth().deleteUser(uid);
@@ -2245,5 +2264,5 @@ exports.deleteExpiredCalendarAttachments = onSchedule(
   () => attachmentExpiry.cleanupExpired(),
 );
 
-const { handleDailyReportWritten: _dailyReportHandler, ...notificationFunctions } = require("./notifications");
+const { handleDailyReportWritten: _dailyReportHandler, sendOperatorGuidanceNotification: _guidanceTransport, ...notificationFunctions } = require("./notifications");
 Object.assign(exports, notificationFunctions);

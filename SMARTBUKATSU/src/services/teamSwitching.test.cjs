@@ -98,7 +98,7 @@ function appHarness() {
     "./src/services/dailyReportReadService": { subscribeUnreviewedReports: watch("Alerts"), subscribeRosterLatestReports: watch("RosterReports") },
     "./src/services/firestoreService": Object.fromEntries([...legacyNames, "TeamData", "TeamMembers"].map(name => ["subscribe" + name, watch(name)])),
     "./src/services/historyDataService": { ...Object.fromEntries(["LoadingSummary", "LatestReports", "PostReadStates", "PinnedPosts"].map(name => ["subscribe" + name, watch(name)])), subscribeLoadingState: gate.service.subscribeLoadingState },
-    "./src/AuthContext": { useAuth: () => auth }, "./src/NotificationContext": { useNotifications: () => ({ setNavigationHandler: idle }) },
+    "./src/AuthContext": { useAuth: () => auth }, "./src/NotificationContext": { useNotifications: () => ({ setNavigationHandler: () => idle }) },
   };
   const file = path.join(root, "App.js");
   for (const match of fs.readFileSync(file, "utf8").matchAll(/from\s+["']([^"']+)["']/g)) modules[match[1]] ||= { __esModule: true, default: match[1] };

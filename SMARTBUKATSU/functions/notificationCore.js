@@ -6,6 +6,7 @@ const NOTIFICATION_CATEGORIES = Object.freeze({
   WORKSPACE_POST: "workspacePost",
   MENTION: "mention",
   MEMBER_JOIN: "memberJoin",
+  OPERATOR_GUIDANCE: "operatorGuidance",
   SYSTEM: "system",
 });
 
