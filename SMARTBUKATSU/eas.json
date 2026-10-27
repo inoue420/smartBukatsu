@@ -30,7 +30,7 @@
       }
     },
     "production": {
-      "node": "20.20.0",
+      "node": "24.22.1",
       "environment": "production",
       "ios": {},
       "env": {
