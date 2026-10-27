@@ -2,6 +2,9 @@
   "name": "smrtbukatsu",
   "version": "1.1.5",
   "main": "index.js",
+  "engines": {
+    "node": "22.x || 24.x"
+  },
   "scripts": {
     "dev": "set APP_VARIANT=development&& expo start",
     "start": "expo start",
