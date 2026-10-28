@@ -124,11 +124,15 @@ service cloud.firestore {
 
       allow create: if signedIn() && request.resource.data.createdBy == uid()
         && (!request.resource.data.keys().hasAny(['originalCreatorUid']) || request.resource.data.originalCreatorUid == uid())
+        && request.resource.data.get('calendarWeekStartsOnMonday', false) is bool
         && request.resource.data.get('dailyReportCommentsEnabled', false) is bool
         && (request.resource.data.get('dailyReportCommentsEnabled', false) == false
           || request.resource.data.get('dailyReportCommentsUpdatedAt', null) == request.time);
       allow update: if isManager(teamId)
         && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['originalCreatorUid'])
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['calendarWeekStartsOnMonday'])
+          || (getRole(teamId) in ['owner', 'admin']
+            && request.resource.data.get('calendarWeekStartsOnMonday', false) is bool))
         && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['dailyReportCommentsEnabled', 'dailyReportCommentsUpdatedAt'])
           || (getRole(teamId) in ['owner', 'admin']
             && request.resource.data.get('dailyReportCommentsEnabled', false) is bool

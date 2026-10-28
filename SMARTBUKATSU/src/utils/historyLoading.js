@@ -15,13 +15,14 @@ function reportSubmissionKey(report) {
   const fields = ["date", "condition", "fatigue", "medicalScaleVersion", "isParticipating", "hasPain", "painDetails", "reflection", "achievement", "attachments", "memo", "highlightLink"];
   return JSON.stringify(fields.map((field) => canonical(report[field])));
 }
-function monthWindow(date = isoDate(new Date())) {
+function monthWindow(date = isoDate(new Date()), firstDay = 0) {
   const [year, month] = date.split("-").map(Number);
   // Include the adjacent days that are visible in the calendar grid.
+  const weekStart = firstDay === 1 ? 1 : 0;
   const first = new Date(year, month - 1, 1);
-  first.setDate(first.getDate() - first.getDay());
+  first.setDate(first.getDate() - (first.getDay() - weekStart + 7) % 7);
   const last = new Date(year, month, 0);
-  last.setDate(last.getDate() + 6 - last.getDay());
+  last.setDate(last.getDate() + (weekStart + 6 - last.getDay()) % 7);
   return { start: isoDate(first), end: isoDate(last) };
 }
 function mergeReadState(post, state = {}, profiles = {}) {

@@ -188,7 +188,7 @@ test("startup waits for the gate; navigation owns bounded listeners; rollback re
     "./src/utils/dailyReportScope": require("../utils/dailyReportScope"),
     "./src/services/dailyReportReadService": { subscribeUnreviewedReports: watch("unreviewed"), subscribeRosterLatestReports: watch("rosterFallback") },
     "./src/services/historyDataService": Object.fromEntries(["LoadingState", "LoadingSummary", "LatestReports", "PostReadStates", "PinnedPosts"].map((name) => ["subscribe" + name, watch(name)])),
-    "./src/AuthContext": { useAuth: () => auth }, "./src/NotificationContext": { useNotifications: () => ({ setNavigationHandler: idle }) },
+    "./src/AuthContext": { useAuth: () => auth }, "./src/NotificationContext": { useNotifications: () => ({ setNavigationHandler: () => idle }) },
   };
   function idle() {}
   const appPath = path.join(__dirname, "../../App.js");
@@ -197,6 +197,7 @@ test("startup waits for the gate; navigation owns bounded listeners; rollback re
   h.mount(AppContent);
   assert.equal(calls.filter((item) => legacyNames.some((name) => item.name === "legacy" + name) || item.name === "history").length, 0);
   assert.equal(calls.filter((item) => ["legacyTeamData", "legacyTeamMembers"].includes(item.name)).length, 2);
+  calls.find((item) => item.name === "legacyTeamData").args[1]({}); h.render();
   calls.find((item) => item.name === "legacyTeamMembers").args[1]([{ uid: "member", name: "M", role: "member" }]); h.render();
   const gate = calls.find((item) => item.name === "LoadingState");
   gate.args[1]({ ready: false, enabled: false, status: "preparing", schemaVersion: 1 }); h.render();

@@ -120,11 +120,12 @@ function AppContent() {
     DEFAULT_ABSENCE_DETAILS_VISIBLE,
   );
   const [dailyReportCommentSettings, setDailyReportCommentSettings] = useState(null);
+  const [calendarSettings, setCalendarSettings] = useState(null);
   const [isOffline, setIsOffline] = useState(false);
   const [posts, setPosts] = useState([]);
   const [currentScreen, setCurrentScreen] = useState("WorkspaceHome");
   const [currentParams, setCurrentParams] = useState({});
-  const [calendarWindow, setCalendarWindow] = useState(() => monthWindow());
+  const [calendarMonth, setCalendarMonth] = useState(undefined);
   const [loadingState, setLoadingState] = useState(null);
   const [loadingSummary, setLoadingSummary] = useState({});
   const [latestReports, setLatestReports] = useState([]);
@@ -142,6 +143,12 @@ function AppContent() {
     dailyReportCommentSettings?.uid === user?.uid);
   const dailyReportCommentsEnabled = dailyReportCommentSettingsReady &&
     dailyReportCommentSettings.enabled === true;
+  const calendarSettingsReady = Boolean(authorized &&
+    calendarSettings?.teamId === activeTeamId && calendarSettings?.uid === user?.uid);
+  const calendarWeekStartsOnMonday = calendarSettingsReady && calendarSettings.mondayStart === true;
+  const calendarFirstDay = calendarWeekStartsOnMonday ? 1 : 0;
+  const calendarWindow = useMemo(() => monthWindow(calendarMonth, calendarFirstDay),
+    [calendarMonth, calendarFirstDay]);
   const reportScope = useMemo(() => dailyReportScope(
     authorized && membersResolved?.teamId === activeTeamId && membersResolved?.uid === user?.uid ? user.uid : "", userProfiles),
   [activeTeamId, user?.uid, authorized, membersResolved, userProfiles]);
@@ -155,7 +162,7 @@ function AppContent() {
     let active = true;
     setLoadingState(null); setLoadingSummary({}); setLatestReports([]); setPostReads({}); setAlertReports([]);
     setProjects([]); setHighlightProjects([]); setPosts([]); setNotices([]); setDailyReports([]); setClubEvents([]); setPersonalEvents([]); setTagGroups([]); setCurrentParams({});
-    setCalendarWindow(monthWindow());
+    setCalendarMonth(undefined);
     setWorkspaceChannel(""); setPinnedPosts([]);
     if (!authorized) return undefined;
     const stop = subscribeLoadingState(activeTeamId, (value) => { if (active) setLoadingState({ ...value, _teamId: activeTeamId }); }, () => { if (active) setLoadingState({ _teamId: activeTeamId }); });
@@ -201,8 +208,8 @@ function AppContent() {
   const postHistory = useHistoryData(activeTeamId, "workspacePosts", historiesActive && currentScreen === "WorkspaceHome" && Boolean(workspaceChannel), { uid: user?.uid, channel: workspaceChannel }, setPosts);
   const noticeHistory = useHistoryData(activeTeamId, "notices", historiesActive && currentScreen === "NoticeBoard", {}, setNotices);
   const reportHistory = useDailyReportHistory(activeTeamId, authorized && currentScreen === "Diary", setDailyReports, reportScope);
-  const clubHistory = useHistoryData(activeTeamId, "clubEvents", historiesActive && currentScreen === "Calendar", calendarWindow, setClubEvents);
-  const personalHistory = useHistoryData(activeTeamId, "personalEvents", historiesActive && currentScreen === "Calendar", { ...calendarWindow, uid: user?.uid }, setPersonalEvents);
+  const clubHistory = useHistoryData(activeTeamId, "clubEvents", historiesActive && calendarSettingsReady && currentScreen === "Calendar", calendarWindow, setClubEvents);
+  const personalHistory = useHistoryData(activeTeamId, "personalEvents", historiesActive && calendarSettingsReady && currentScreen === "Calendar", { ...calendarWindow, uid: user?.uid }, setPersonalEvents);
   const videoScreen = ["ProjectList", "ProjectDetail", "TacticalNotes"].includes(currentScreen);
   const projectHistory = useHistoryData(activeTeamId, "projects", historiesActive && videoScreen, {}, setProjects);
   const highlightHistory = useHistoryData(activeTeamId, "highlightProjects", historiesActive && videoScreen, {}, setHighlightProjects);
@@ -296,12 +303,15 @@ function AppContent() {
     setAbsenceDeadlineDaysBefore(DEFAULT_ABSENCE_DEADLINE_DAYS_BEFORE);
     setAbsenceDetailsVisible(DEFAULT_ABSENCE_DETAILS_VISIBLE);
     setDailyReportCommentSettings(null);
+    setCalendarSettings(null);
     if (authorized) {
       let active = true;
       const unsubTeam = subscribeTeamData(activeTeamId, (data) => {
         if (!active) return;
         setDailyReportCommentSettings({ teamId: activeTeamId, uid: user.uid,
           enabled: data?.dailyReportCommentsEnabled === true });
+        setCalendarSettings({ teamId: activeTeamId, uid: user.uid,
+          mondayStart: data?.calendarWeekStartsOnMonday === true });
         if (data) {
           setTeamName(data.name || "名称未設定のチーム");
           setGrades(data.grades ?? ["1年生", "2年生", "3年生"]);
@@ -547,9 +557,10 @@ function AppContent() {
                   {...props}
                   key={activeTeamId}
                   optimize={optimize}
-                  reportReadsReady={authorized && reportScope.ready}
+                  reportReadsReady={authorized && reportScope.ready && calendarSettingsReady}
+                  calendarFirstDay={calendarFirstDay}
                   eventHistory={optimize ? { busy: clubHistory.busy || personalHistory.busy, error: clubHistory.error || personalHistory.error, retry: () => { clubHistory.retry(); personalHistory.retry(); } } : null}
-                  onVisibleMonthChange={optimize ? (date) => setCalendarWindow(monthWindow(date)) : undefined}
+                  onVisibleMonthChange={optimize ? setCalendarMonth : undefined}
                   isAdmin={authIsAdmin}
                   currentUser={safeUserName}
                   currentUserUid={currentUserUid}
@@ -644,6 +655,8 @@ function AppContent() {
             <Stack.Screen name="Settings">
               {(props) => (
                 <SettingsScreen
+                  calendarWeekStartsOnMonday={calendarWeekStartsOnMonday}
+                  calendarSettingsReady={calendarSettingsReady}
                   dailyReportCommentsEnabled={dailyReportCommentsEnabled}
                   dailyReportCommentSettingsReady={dailyReportCommentSettingsReady}
                   {...props}
