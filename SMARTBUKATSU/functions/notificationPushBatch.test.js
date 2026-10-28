@@ -394,15 +394,11 @@ for (const kind of ["notice", "schedule", "post", "diary", "join"]) {
   });
 }
 
-test("retired schedule reminder is not exported or scheduled; notification cleanup remains scheduled", () => {
+test("retired reminder is absent; reusable expiry cleanup registers no independent schedule", () => {
   const h = harness({ count: 2 });
   assert.equal(Object.hasOwn(h.exportedFunctions, "sendScheduledEventReminders"), false);
-  assert.equal(h.scheduledFunctions.length, 1);
-  const [{ config, handler }] = h.scheduledFunctions;
-  assert.equal(handler, h.exportedFunctions.deleteExpiredNotifications);
-  assert.equal(config.region, "asia-northeast1");
-  assert.equal(config.schedule, "45 3 * * *");
-  assert.equal(config.timeZone, "Asia/Tokyo");
+  assert.equal(h.scheduledFunctions.length, 0);
+  assert.equal(typeof h.exportedFunctions.deleteExpiredNotifications, "function");
   assert.equal(h.requests.length, 0);
   assert.equal(h.writes.length, 0);
   assert.equal(h.notifications().length, 0);

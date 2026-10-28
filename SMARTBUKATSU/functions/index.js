@@ -1554,41 +1554,6 @@ exports.applySupportCaseRetention = onDocumentUpdated(
   },
 );
 
-exports.deleteExpiredSupportCases = onSchedule(
-  {
-    region: "asia-northeast1",
-    schedule: "30 3 * * *",
-    timeZone: "Asia/Tokyo",
-    timeoutSeconds: 540,
-    memory: "512MiB",
-  },
-  async () => {
-    const now = Timestamp.now();
-    let deletedCaseCount = 0;
-
-    while (true) {
-      const expiredSnapshot = await firestore
-        .collection(SUPPORT_CASE_COLLECTION)
-        .where("deleteAfter", "<=", now)
-        .limit(100)
-        .get();
-      if (expiredSnapshot.empty) break;
-
-      let deletedInBatch = 0;
-      for (const caseSnapshot of expiredSnapshot.docs) {
-        const caseData = caseSnapshot.data() || {};
-        if (caseData.legalHold || caseData.status !== "resolved") continue;
-        await firestore.recursiveDelete(caseSnapshot.ref);
-        deletedCaseCount += 1;
-        deletedInBatch += 1;
-      }
-      if (deletedInBatch === 0 || expiredSnapshot.size < 100) break;
-    }
-
-    logger.info("Expired support cases deleted.", { deletedCaseCount });
-  },
-);
-
 exports.joinTeamWithInvite = onCall(
   {
     region: "asia-northeast1",
@@ -2264,5 +2229,14 @@ exports.deleteExpiredCalendarAttachments = onSchedule(
   () => attachmentExpiry.cleanupExpired(),
 );
 
-const { handleDailyReportWritten: _dailyReportHandler, sendOperatorGuidanceNotification: _guidanceTransport, ...notificationFunctions } = require("./notifications");
+const { handleDailyReportWritten: _dailyReportHandler, sendOperatorGuidanceNotification: _guidanceTransport,
+  deleteExpiredNotifications: runExpiredNotificationCleanup, ...notificationFunctions } = require("./notifications");
 Object.assign(exports, notificationFunctions);
+const { createDailyMaintenanceHandler } = require("./dailyMaintenanceBackend");
+exports.deleteExpiredNotifications = onSchedule({
+  region: "asia-northeast1", schedule: "45 3 * * *", timeZone: "Asia/Tokyo",
+  timeoutSeconds: 540, memory: "1GiB", cpu: 1, minInstances: 0, retryCount: 0, maxRetrySeconds: 0,
+}, createDailyMaintenanceHandler({
+  firestore, Timestamp, logger, supportCaseCollection: SUPPORT_CASE_COLLECTION,
+  cleanupNotifications: runExpiredNotificationCleanup,
+}));

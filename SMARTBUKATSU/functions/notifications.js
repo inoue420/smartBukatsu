@@ -1,6 +1,5 @@
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { onDocumentWritten } = require("firebase-functions/v2/firestore");
-const { onSchedule } = require("firebase-functions/v2/scheduler");
 const logger = require("firebase-functions/logger");
 const { getFirestore, Timestamp } = require("firebase-admin/firestore");
 const { createHash } = require("node:crypto");
@@ -1048,31 +1047,22 @@ async function deleteExpiredNotification(documentReference) {
   });
 }
 
-const deleteExpiredNotifications = onSchedule(
-  {
-    region: REGION,
-    schedule: "45 3 * * *",
-    timeZone: "Asia/Tokyo",
-    timeoutSeconds: 540,
-    memory: "512MiB",
-  },
-  async () => {
-    const usersSnapshot = await firestore.collection("users").get();
-    let remainingLimit = 400;
-    for (const userDocument of usersSnapshot.docs) {
-      if (remainingLimit <= 0) break;
-      const expiredSnapshot = await userDocument.ref
-        .collection("notifications")
-        .where("expiresAt", "<=", Timestamp.now())
-        .limit(remainingLimit)
-        .get();
-      for (const document of expiredSnapshot.docs) {
-        await deleteExpiredNotification(document.ref);
-        remainingLimit -= 1;
-      }
+async function deleteExpiredNotifications() {
+  const usersSnapshot = await firestore.collection("users").get();
+  let remainingLimit = 400;
+  for (const userDocument of usersSnapshot.docs) {
+    if (remainingLimit <= 0) break;
+    const expiredSnapshot = await userDocument.ref
+      .collection("notifications")
+      .where("expiresAt", "<=", Timestamp.now())
+      .limit(remainingLimit)
+      .get();
+    for (const document of expiredSnapshot.docs) {
+      await deleteExpiredNotification(document.ref);
+      remainingLimit -= 1;
     }
-  },
-);
+  }
+}
 
 module.exports = {
   sendOperatorGuidanceNotification,
