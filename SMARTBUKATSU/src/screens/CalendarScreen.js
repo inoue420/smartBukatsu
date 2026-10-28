@@ -508,6 +508,7 @@ const CalendarScreen = ({
   optimize = false,
   eventHistory = null,
   onVisibleMonthChange,
+  calendarFirstDay = 0,
   personalEvents = [],
   userProfiles = {},
   isOffline = false,
@@ -559,9 +560,10 @@ const CalendarScreen = ({
   );
   const focused = useIsFocused();
   const [visibleMonth, setVisibleMonth] = useState(selectedDate.substring(0, 7) + "-01");
+  useEffect(() => { onVisibleMonthChange?.(visibleMonth); }, [visibleMonth, onVisibleMonthChange]);
   const [calendarReports, setCalendarReports] = useState([]);
   const reportHistory = useHistoryData(activeTeamId, "dailyReports", reportReadsReady && focused,
-    { ...monthWindow(visibleMonth), authorUid: currentUserUid, author: currentUser }, setCalendarReports);
+    { ...monthWindow(visibleMonth, calendarFirstDay), authorUid: currentUserUid, author: currentUser }, setCalendarReports);
   const dailyReports = calendarReports;
 
   const [isClubModalVisible, setIsClubModalVisible] = useState(false);
@@ -2174,9 +2176,10 @@ const CalendarScreen = ({
       )}
 
       <Calendar
+        firstDay={calendarFirstDay}
         key={visibleMonth}
         current={visibleMonth}
-        onMonthChange={(month) => { setVisibleMonth(month.dateString); onVisibleMonthChange?.(month.dateString); }}
+        onMonthChange={(month) => setVisibleMonth(month.dateString)}
         onDayPress={(day) => setSelectedDate(day.dateString)}
         dayComponent={renderCalendarDay}
         theme={{ todayTextColor: COLORS.primary, arrowColor: "#555" }}
@@ -2876,7 +2879,7 @@ const CalendarScreen = ({
               {isMultiDay ? (
                 <View style={styles.multiDayContainer}>
                   <Text style={[styles.label, { color: COLORS.primary, textAlign: "center", marginBottom: 10 }]}>▼ カレンダーで予定日を選択 ▼</Text>
-                  <Calendar current={sortedClubSelectedDates[0] || selectedDate} onDayPress={(day) => toggleClubSelectedDate(day.dateString)} markedDates={clubSelectionMarkedDates} theme={{ todayTextColor: COLORS.primary, arrowColor: "#555" }} />
+                  <Calendar firstDay={calendarFirstDay} current={sortedClubSelectedDates[0] || selectedDate} onDayPress={(day) => toggleClubSelectedDate(day.dateString)} markedDates={clubSelectionMarkedDates} theme={{ todayTextColor: COLORS.primary, arrowColor: "#555" }} />
                   <Text style={styles.multiDateSummary}>選択中: {sortedClubSelectedDates.map((date) => date.replace(/-/g, "/")).join("?")}</Text>
                   <View style={{ marginTop: 15 }}>
                     <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 10 }}>
@@ -3203,6 +3206,7 @@ const CalendarScreen = ({
                   </TouchableOpacity>
                   {showPersonalEndDatePicker && (
                     <Calendar
+                      firstDay={calendarFirstDay}
                       onDayPress={(day) => {
                         setPersonalEndDate(day.dateString);
                         setShowPersonalEndDatePicker(false);

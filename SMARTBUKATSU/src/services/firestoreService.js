@@ -875,6 +875,13 @@ export async function updateTeamAdSettings(teamId, adSettings) {
   });
 }
 
+export async function updateCalendarWeekStartSettings(teamId, mondayStart) {
+  if (!teamId || typeof mondayStart !== "boolean") throw new Error("カレンダーの開始曜日が正しくありません。");
+  await updateDoc(doc(db, "teams", teamId), {
+    calendarWeekStartsOnMonday: mondayStart,
+  });
+}
+
 export async function addTeamArrayItem(teamId, field, value) {
   const teamRef = doc(db, "teams", teamId);
   const snap = await getDoc(teamRef);

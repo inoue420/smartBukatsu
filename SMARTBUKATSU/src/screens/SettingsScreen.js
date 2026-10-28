@@ -57,6 +57,7 @@ import {
   moderateWorkspaceContent,
   updateTeamAdSettings,
   updateDailyReportCommentSettings,
+  updateCalendarWeekStartSettings,
 } from "../services/firestoreService";
 import {
   DEFAULT_INTERSTITIAL_SETTINGS,
@@ -162,6 +163,8 @@ const SettingsScreen = ({
   setAbsenceDetailsVisible,
   dailyReportCommentsEnabled = false,
   dailyReportCommentSettingsReady = false,
+  calendarWeekStartsOnMonday = false,
+  calendarSettingsReady = false,
   setUserProfiles,
   posts = [],
   setPosts,
@@ -255,6 +258,7 @@ const SettingsScreen = ({
     currentUserProfile.role || (isAdmin ? "admin" : "member");
   const userRole = global.TEST_ROLE || currentMemberRole;
   const isSupervisor = ["owner", "admin"].includes(userRole);
+  const canManageCalendarSettings = ["owner", "admin"].includes(currentUserProfile.role);
   const isStaffOrAbove = ["owner", "staff", "admin"].includes(userRole);
   const canManageMemberVideoPermissions = isStaffOrAbove;
   const [selectedGuardianUid, setSelectedGuardianUid] = useState(null);
@@ -421,6 +425,7 @@ const SettingsScreen = ({
     teamInfo: false,
     absence: false,
     dailyReportComments: false,
+    calendar: false,
     alert: false,
     member: false,
     grade: false,
@@ -461,6 +466,26 @@ const SettingsScreen = ({
   const commentSaveRequestRef = useRef(0);
   const commentSettingsTeamRef = useRef(activeTeamId);
   commentSettingsTeamRef.current = activeTeamId;
+
+  const calendarSettingsScope = JSON.stringify([activeTeamId, user?.uid]);
+  const calendarSettingsScopeRef = useRef(calendarSettingsScope);
+  calendarSettingsScopeRef.current = calendarSettingsScope;
+  const calendarSaveRef = useRef(null);
+  const [isSavingCalendarSettings, setIsSavingCalendarSettings] = useState(false);
+  const [calendarSettingsDraft, setCalendarSettingsDraft] = useState({
+    scope: calendarSettingsScope, mondayStart: calendarWeekStartsOnMonday === true,
+  });
+  const calendarMondayDraft = calendarSettingsDraft.scope === calendarSettingsScope
+    ? calendarSettingsDraft.mondayStart : calendarWeekStartsOnMonday === true;
+
+  useEffect(() => {
+    calendarSaveRef.current = null;
+    setIsSavingCalendarSettings(false);
+    return () => { calendarSaveRef.current = null; };
+  }, [calendarSettingsScope]);
+  useEffect(() => {
+    setCalendarSettingsDraft({ scope: calendarSettingsScope, mondayStart: calendarWeekStartsOnMonday === true });
+  }, [calendarSettingsScope, calendarWeekStartsOnMonday, calendarSettingsReady]);
 
   useEffect(() => {
     commentSaveRequestRef.current += 1;
@@ -1279,6 +1304,29 @@ const SettingsScreen = ({
     }
   };
 
+  const handleSaveCalendarSettings = async () => {
+    if (!canManageCalendarSettings || !activeTeamId || !calendarSettingsReady || calendarSaveRef.current) return;
+    const request = { scope: calendarSettingsScope };
+    const mondayStart = calendarMondayDraft;
+    calendarSaveRef.current = request;
+    setIsSavingCalendarSettings(true);
+    try {
+      await updateCalendarWeekStartSettings(activeTeamId, mondayStart);
+      if (calendarSaveRef.current !== request || calendarSettingsScopeRef.current !== request.scope) return;
+      Alert.alert("保存完了", mondayStart
+        ? "このチームのカレンダーを月曜始まりにしました。"
+        : "このチームのカレンダーを日曜始まりにしました。");
+    } catch (error) {
+      if (calendarSaveRef.current !== request || calendarSettingsScopeRef.current !== request.scope) return;
+      Alert.alert("保存できませんでした", error?.message || "権限と通信状態を確認してください。");
+    } finally {
+      if (calendarSaveRef.current === request && calendarSettingsScopeRef.current === request.scope) {
+        calendarSaveRef.current = null;
+        setIsSavingCalendarSettings(false);
+      }
+    }
+  };
+
   const handleSaveDailyReportComments = async () => {
     if (!isSupervisor || !activeTeamId || !dailyReportCommentSettingsReady || isSavingDailyReportComments) return;
     const teamId = activeTeamId;
@@ -2024,6 +2072,36 @@ const SettingsScreen = ({
                   )}
                 </TouchableOpacity>
               </SectionCard>
+
+              {canManageCalendarSettings && (
+                <SectionCard
+                  isExp={expanded.calendar}
+                  onToggle={() => toggleSection("calendar")}
+                  title="📅 カレンダーの開始曜日"
+                >
+                  <View style={styles.switchRow}>
+                    <Text style={[styles.thresholdLabel, { flex: 1 }]}>カレンダーを月曜始まりにする</Text>
+                    <Switch
+                      accessibilityLabel="カレンダーを月曜始まりにする"
+                      value={calendarMondayDraft}
+                      onValueChange={(mondayStart) => setCalendarSettingsDraft({ scope: calendarSettingsScope, mondayStart })}
+                      disabled={!calendarSettingsReady || isSavingCalendarSettings}
+                      trackColor={{ false: "#d9d9d9", true: "#3498db" }}
+                    />
+                  </View>
+                  <Text style={styles.subText}>
+                    保存すると、このチームの全メンバーに適用されます。OFFは日曜始まりです。予定の日付や時刻は変わりません。
+                  </Text>
+                  <TouchableOpacity
+                    style={[styles.saveBtn, (!calendarSettingsReady || isSavingCalendarSettings) && { opacity: 0.7 }]}
+                    onPress={handleSaveCalendarSettings}
+                    disabled={!calendarSettingsReady || isSavingCalendarSettings}
+                  >
+                    {isSavingCalendarSettings ? <ActivityIndicator color="#fff" />
+                      : <Text style={styles.saveBtnText}>カレンダーの開始曜日を保存</Text>}
+                  </TouchableOpacity>
+                </SectionCard>
+              )}
 
               {isSupervisor && (
                 <SectionCard

@@ -217,7 +217,7 @@ test("App reads the gate from the existing team listener, defaults OFF, and igno
   const watch = name => (...args) => { calls.push({ name, args }); return idle; };
   const legacy = Object.fromEntries(["Projects", "HighlightProjects", "DailyReports", "Notices", "WorkspacePosts", "PersonalEvents", "ClubEvents", "TagGroups", "TeamData", "TeamMembers"].map(name => ["subscribe" + name, watch(name)]));
   const modules = { react: h.react, "./src/AuthContext": { useAuth: () => auth },
-    "./src/NotificationContext": { useNotifications: () => ({ setNavigationHandler: idle }) },
+    "./src/NotificationContext": { useNotifications: () => ({ setNavigationHandler: () => idle }) },
     "./src/services/firestoreService": legacy, "./src/services/historyDataService": { subscribeLoadingState: watch("LoadingState") },
     "./src/hooks/useHistoryData": { useHistoryData: () => ({ include: idle }) },
     "./src/hooks/useDailyReportHistory": { useDailyReportHistory: () => ({ include: idle }) },
