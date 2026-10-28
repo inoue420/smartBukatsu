@@ -3,8 +3,8 @@ import React from "react";
 const webAds = {
   adsInitialized: false,
   bannerAdUnitId: null,
-  recordScreenTransition: () => {},
-  showAfterDiarySubmission: () => {},
+  recordScreenTransition: async () => false,
+  showAfterDiarySubmission: async () => false,
   configureInterstitial: () => {},
 };
 

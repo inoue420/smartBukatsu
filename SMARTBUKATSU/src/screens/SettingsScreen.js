@@ -73,6 +73,7 @@ import { MEDICAL_SCALE_MAX } from "../utils/medicalScale";
 import { CUSTOM_SPORT_OPTIONS, SPORT_CATEGORIES, getCategoryLabel, getSportsForCategory } from "../constants/sportsCategories";
 import { SMARTBUKATSU_GUIDE_URL } from "../constants/helpLinks";
 import { openGuideUrl } from "../utils/openGuide";
+import { openAppReviewStore } from "../services/appReviewService";
 import GuideHelpLink from "../components/GuideHelpLink";
 import {
   SMARTBUKATSU_PRIVACY_URL,
@@ -1563,6 +1564,25 @@ const SettingsScreen = ({
               <Text style={styles.legalButtonArrow}>›</Text>
             </TouchableOpacity>
           </View>
+
+          {Platform.OS !== "web" && (
+            <View style={styles.card}>
+              <TouchableOpacity
+                style={[styles.legalButton, styles.legalButtonLast]}
+                onPress={async () => {
+                  try { await openAppReviewStore(); }
+                  catch {
+                    Alert.alert("ストアを開けませんでした", "通信状態を確認して、もう一度お試しください。");
+                  }
+                }}
+                accessibilityRole="link"
+                accessibilityHint="ストアの評価ページを開きます"
+              >
+                <Text style={styles.legalButtonText}>アプリを評価する</Text>
+                <Text style={styles.legalButtonArrow}>›</Text>
+              </TouchableOpacity>
+            </View>
+          )}
 
           {!isStaffOrAbove ? (
             <>

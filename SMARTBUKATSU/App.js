@@ -24,6 +24,7 @@ import { mergeReadState, monthWindow } from "./src/utils/historyLoading";
 import { dailyReportScope } from "./src/utils/dailyReportScope";
 import { subscribeUnreviewedReports, subscribeRosterLatestReports } from "./src/services/dailyReportReadService";
 import { useDailyReportHistory } from "./src/hooks/useDailyReportHistory";
+import { useAppReview } from "./src/hooks/useAppReview";
 import { useHistoryData } from "./src/hooks/useHistoryData";
 import { subscribeLoadingState, subscribeLoadingSummary, subscribeLatestReports, subscribePostReadStates, subscribePinnedPosts } from "./src/services/historyDataService";
 
@@ -70,10 +71,12 @@ LogBox.ignoreLogs(["[expo-av]"]);
 const Stack = createNativeStackNavigator();
 const DEFAULT_ABSENCE_DEADLINE_DAYS_BEFORE = 3;
 const DEFAULT_ABSENCE_DETAILS_VISIBLE = true;
+const REVIEW_COMPLETION_SCREENS = new Set(["Calendar", "Roster", "ProjectList", "TacticalNotes", "NoticeBoard"]);
 
 function AppContent() {
   const navigationRef = useNavigationContainerRef();
   const currentRouteNameRef = useRef();
+  const routeVisitRef = useRef({ at: Date.now(), version: 0 });
   const { configureInterstitial, recordScreenTransition, showAfterDiarySubmission } =
     useAds();
   const {
@@ -138,6 +141,12 @@ function AppContent() {
   const separateReads = Boolean(optimize && loadingState?.separateReads);
   const readStateAvailable = Boolean(loadingStateResolved && loadingState.schemaVersion === 1);
   const authorized = Boolean(user && activeTeamId && !emailVerificationPending);
+  const { cancelReview, completeInteraction, reviewNavigationChanged } = useAppReview({
+    uid: user?.uid,
+    enabled: Boolean(authorized && !authLoading && !isOffline && !teamSelectionRequired && !isTeamSwitching &&
+      loadingStateResolved && teamScope?.teamId === activeTeamId && teamScope?.uid === user?.uid),
+    screen: currentScreen,
+  });
   const dailyReportCommentSettingsReady = Boolean(authorized &&
     dailyReportCommentSettings?.teamId === activeTeamId &&
     dailyReportCommentSettings?.uid === user?.uid);
@@ -155,7 +164,10 @@ function AppContent() {
   const reportScopeKey = JSON.stringify(reportScope);
   const reportManager = ["owner", "admin", "staff"].includes(reportScope.role);
   useEffect(() => {
-    const sub = AppState.addEventListener("change", (state) => setForeground(state === "active"));
+    const sub = AppState.addEventListener("change", (state) => {
+      routeVisitRef.current = { at: Date.now(), version: routeVisitRef.current.version + 1 };
+      setForeground(state === "active");
+    });
     return () => sub.remove();
   }, []);
   useEffect(() => {
@@ -417,6 +429,7 @@ function AppContent() {
 
   const handleNavigationReady = () => {
     currentRouteNameRef.current = navigationRef.getCurrentRoute()?.name;
+    reviewNavigationChanged(currentRouteNameRef.current);
     setCurrentScreen(currentRouteNameRef.current);
     setCurrentParams(navigationRef.getCurrentRoute()?.params || {});
   };
@@ -424,6 +437,11 @@ function AppContent() {
   const handleNavigationStateChange = () => {
     const previousRouteName = currentRouteNameRef.current;
     const currentRouteName = navigationRef.getCurrentRoute()?.name;
+    const completedFeature = currentRouteName === "WorkspaceHome" &&
+      REVIEW_COMPLETION_SCREENS.has(previousRouteName) && Date.now() - routeVisitRef.current.at >= 30000;
+    const version = routeVisitRef.current.version + 1;
+    routeVisitRef.current = { at: Date.now(), version };
+    reviewNavigationChanged(currentRouteName);
 
     if (
       previousRouteName &&
@@ -433,7 +451,11 @@ function AppContent() {
       activeTeamId &&
       !emailVerificationPending
     ) {
-      recordScreenTransition();
+      void Promise.resolve(recordScreenTransition()).then(adShown => {
+        if (!adShown && completedFeature && routeVisitRef.current.version === version) {
+          void completeInteraction("WorkspaceHome");
+        }
+      });
     }
     currentRouteNameRef.current = currentRouteName;
     setCurrentScreen(currentRouteName);
@@ -442,7 +464,7 @@ function AppContent() {
 
   return (
     <SafeAreaProvider>
-      <NavigationArea style={{ flex: 1 }}>
+      <NavigationArea style={{ flex: 1 }} onTouchStart={cancelReview}>
       <NavigationContainer
         ref={navigationRef}
         onReady={handleNavigationReady}
@@ -546,7 +568,13 @@ function AppContent() {
                   setDailyReports={setDailyReports}
                   alertThresholds={alertThresholds}
                   clubMembers={clubMembers}
-                  onDiarySubmitted={showAfterDiarySubmission}
+                  onDiarySubmitted={async () => {
+                    const version = routeVisitRef.current.version;
+                    const adShown = await showAfterDiarySubmission();
+                    if (!adShown && routeVisitRef.current.version === version) {
+                      void completeInteraction("Diary");
+                    }
+                  }}
                 />
               )}
             </Stack.Screen>

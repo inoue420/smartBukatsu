@@ -95,6 +95,7 @@ function appHarness() {
     "./src/utils/dailyReportScope": require("../utils/dailyReportScope"),
     // This test stays on home; diary history has its own hook/integration tests.
     "./src/hooks/useDailyReportHistory": { useDailyReportHistory: () => ({ include: idle }) },
+    "./src/hooks/useAppReview": { useAppReview: () => ({ cancelReview: idle, completeInteraction: idle, reviewNavigationChanged: idle }) },
     "./src/services/dailyReportReadService": { subscribeUnreviewedReports: watch("Alerts"), subscribeRosterLatestReports: watch("RosterReports") },
     "./src/services/firestoreService": Object.fromEntries([...legacyNames, "TeamData", "TeamMembers"].map(name => ["subscribe" + name, watch(name)])),
     "./src/services/historyDataService": { ...Object.fromEntries(["LoadingSummary", "LatestReports", "PostReadStates", "PinnedPosts"].map(name => ["subscribe" + name, watch(name)])), subscribeLoadingState: gate.service.subscribeLoadingState },
