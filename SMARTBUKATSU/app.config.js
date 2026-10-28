@@ -82,10 +82,13 @@ module.exports = ({ config }) => {
     "expo-build-properties",
     {
       android: {
+        enableMinifyInReleaseBuilds: true,
+        enableShrinkResourcesInReleaseBuilds: true,
         extraProguardRules: CONSENT_SDK_PROGUARD_RULE,
       },
     },
   ]);
+  expoPlugins.push("./plugins/withAndroidR8Optimization");
   if (
     !expoPlugins.some((plugin) =>
       Array.isArray(plugin)
