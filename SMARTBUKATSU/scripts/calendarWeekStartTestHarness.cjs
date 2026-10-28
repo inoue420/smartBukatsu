@@ -110,6 +110,7 @@ function appHarness() {
     "./src/services/firestoreService": services,
     "./src/hooks/useHistoryData": { useHistoryData: (...args) => { histories.push(args); return { include: idle }; } },
     "./src/hooks/useDailyReportHistory": { useDailyReportHistory: () => ({ include: idle }) },
+    "./src/hooks/useAppReview": { useAppReview: () => ({ cancelReview: idle, completeInteraction: idle, reviewNavigationChanged: idle }) },
     "./src/services/dailyReportReadService": { subscribeUnreviewedReports: watch("Unreviewed"), subscribeRosterLatestReports: watch("RosterFallback") },
     "./src/services/historyDataService": Object.fromEntries(["LoadingState", "LoadingSummary", "LatestReports", "PostReadStates", "PinnedPosts"].map(name => ["subscribe" + name, watch(name)])),
     "./src/AuthContext": { useAuth: () => auth }, "./src/NotificationContext": { useNotifications: () => ({ setNavigationHandler }) } };

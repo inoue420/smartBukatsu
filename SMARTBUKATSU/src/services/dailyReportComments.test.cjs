@@ -221,6 +221,7 @@ test("App reads the gate from the existing team listener, defaults OFF, and igno
     "./src/services/firestoreService": legacy, "./src/services/historyDataService": { subscribeLoadingState: watch("LoadingState") },
     "./src/hooks/useHistoryData": { useHistoryData: () => ({ include: idle }) },
     "./src/hooks/useDailyReportHistory": { useDailyReportHistory: () => ({ include: idle }) },
+    "./src/hooks/useAppReview": { useAppReview: () => ({ cancelReview: idle, completeInteraction: idle, reviewNavigationChanged: idle }) },
     "./src/utils/dailyReportScope": require("../utils/dailyReportScope"),
     "./src/utils/historyLoading": require("../utils/historyLoading"), "./src/utils/medicalScale": require("../utils/medicalScale"),
     "./src/ads/AdManager": { useAds: () => ({ configureInterstitial: idle }) }, "./src/ads/adSettings": require("../ads/adSettings"),

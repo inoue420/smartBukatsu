@@ -10,6 +10,7 @@ import React, {
 } from "react";
 import { Platform, StatusBar } from "react-native";
 import { isCaptureEnvironment } from "../firebase";
+import { reviewPresentationGate } from "../services/reviewPresentationGate";
 import mobileAds, {
   AdEventType,
   AdsConsent,
@@ -97,6 +98,7 @@ export const AdsProvider = ({ children }) => {
   const interstitialLoadedRef = useRef(false);
   const interstitialLoadingRef = useRef(false);
   const interstitialShowingRef = useRef(false);
+  const releasePresentationRef = useRef(null);
   const loadInterstitialRef = useRef(() => {});
   const interstitialSettingsRef = useRef({
     ...DEFAULT_INTERSTITIAL_SETTINGS,
@@ -149,6 +151,9 @@ export const AdsProvider = ({ children }) => {
       return false;
     }
 
+    const releasePresentation = reviewPresentationGate.acquire("ad");
+    if (!releasePresentation) return false;
+    releasePresentationRef.current = releasePresentation;
     interstitialShowingRef.current = true;
     interstitialLoadedRef.current = false;
 
@@ -162,6 +167,8 @@ export const AdsProvider = ({ children }) => {
       void persistDailyState();
       return true;
     } catch (error) {
+      releasePresentationRef.current?.();
+      releasePresentationRef.current = null;
       interstitialShowingRef.current = false;
       if (__DEV__) {
         console.warn("インタースティシャル広告を表示できませんでした。", error);
@@ -184,7 +191,7 @@ export const AdsProvider = ({ children }) => {
       interstitialSettingsRef.current.dailyLimit === 0
     ) {
       navigationCountRef.current = 0;
-      return;
+      return Promise.resolve(false);
     }
 
     navigationCountRef.current += 1;
@@ -192,13 +199,14 @@ export const AdsProvider = ({ children }) => {
       navigationCountRef.current >=
         interstitialSettingsRef.current.navigationInterval
     ) {
-      void tryShowInterstitial();
+      return tryShowInterstitial();
     }
+    return Promise.resolve(false);
   }, [tryShowInterstitial]);
 
   const showAfterDiarySubmission = useCallback(() => {
-    if (!INTERSTITIAL_ADS_ENABLED) return;
-    void tryShowInterstitial();
+    if (!INTERSTITIAL_ADS_ENABLED) return Promise.resolve(false);
+    return tryShowInterstitial();
   }, [tryShowInterstitial]);
 
   useEffect(() => {
@@ -275,6 +283,8 @@ export const AdsProvider = ({ children }) => {
           if (Platform.OS === "ios") StatusBar.setHidden(true);
         }),
         interstitial.addAdEventListener(AdEventType.CLOSED, () => {
+          releasePresentationRef.current?.();
+          releasePresentationRef.current = null;
           interstitialLoadingRef.current = false;
           interstitialLoadedRef.current = false;
           interstitialShowingRef.current = false;
@@ -282,6 +292,8 @@ export const AdsProvider = ({ children }) => {
           scheduleReload();
         }),
         interstitial.addAdEventListener(AdEventType.ERROR, (error) => {
+          releasePresentationRef.current?.();
+          releasePresentationRef.current = null;
           interstitialLoadingRef.current = false;
           interstitialLoadedRef.current = false;
           interstitialShowingRef.current = false;
@@ -384,6 +396,8 @@ export const AdsProvider = ({ children }) => {
       if (retryTimer) clearTimeout(retryTimer);
       if (initializationRetryTimer) clearTimeout(initializationRetryTimer);
       subscriptions.forEach((unsubscribe) => unsubscribe());
+      releasePresentationRef.current?.();
+      releasePresentationRef.current = null;
       loadInterstitialRef.current = () => {};
       interstitialRef.current = null;
       if (Platform.OS === "ios") StatusBar.setHidden(false);

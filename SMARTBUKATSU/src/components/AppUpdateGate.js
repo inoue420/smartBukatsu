@@ -15,6 +15,7 @@ import {
   fetchAppUpdatePolicy,
   openAppStore,
 } from "../services/appUpdateService";
+import { reviewPresentationGate } from "../services/reviewPresentationGate";
 
 export default function AppUpdateGate() {
   const [policy, setPolicy] = useState(null);
@@ -26,6 +27,7 @@ export default function AppUpdateGate() {
 
   const updatePolicy = useCallback((nextPolicy) => {
     policyRef.current = nextPolicy;
+    reviewPresentationGate.setBlocked("app-update", Boolean(nextPolicy));
     if (isMountedRef.current) setPolicy(nextPolicy);
   }, []);
 
@@ -33,6 +35,7 @@ export default function AppUpdateGate() {
     if (isCheckingRef.current) return;
 
     isCheckingRef.current = true;
+    reviewPresentationGate.setBlocked("app-update", true);
     try {
       const nextPolicy = await fetchAppUpdatePolicy();
       updatePolicy(nextPolicy);
@@ -40,6 +43,7 @@ export default function AppUpdateGate() {
       console.warn("アプリ更新設定を取得できませんでした。", error?.message || error);
     } finally {
       isCheckingRef.current = false;
+      reviewPresentationGate.setBlocked("app-update", Boolean(policyRef.current));
     }
   }, [updatePolicy]);
 
