@@ -19,6 +19,9 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import GuideHelpLink from "../components/GuideHelpLink";
+import VideoViewingRegistrationModal, { ViewingProjectPicker } from "../components/VideoViewingRegistrationModal";
+import { useVideoViewingRegistration } from "../hooks/useVideoViewingRegistration";
+import { hasViewingTags, viewingPermissions } from "../utils/videoViewingGuidance";
 import { usePreventRemove, useIsFocused } from "@react-navigation/native";
 import { subscribeProjectsByIds } from "../services/historyDataService";
 import { Video, ResizeMode } from "expo-av";
@@ -37,6 +40,8 @@ import {
 const DEFAULT_TAGS = ["得点", "罰則", "2min", "ナイス"];
 const DEFAULT_CLIP_PRE_SECONDS = 5;
 const DEFAULT_CLIP_POST_SECONDS = 3;
+// Trial: set false and reload to restore the inline-only viewing guidance.
+const POST_PUBLISH_VIEWING_PROMPT_ENABLED = true;
 
 const normalizeClipSeconds = (value, fallback = 0) => {
   const parsed = Number(value);
@@ -57,6 +62,7 @@ const ProjectDetailScreen = ({
   projects: baseProjects,
   setProjects,
   tagGroups = [],
+  userProfiles = {},
 }) => {
   const focused = useIsFocused();
   const [referencedProjects, setReferencedProjects] = useState([]);
@@ -109,6 +115,20 @@ const ProjectDetailScreen = ({
   const [selectedQuickTags, setSelectedQuickTags] = useState([]);
   const [isRecordingTag, setIsRecordingTag] = useState(false);
   const isRecordingTagRef = useRef(false);
+  const [isSharingTags, setIsSharingTags] = useState(false);
+  const isSharingTagsRef = useRef(false);
+  const [viewingDialogOpen, setViewingDialogOpen] = useState(false);
+  const [postPublishPromptPending, setPostPublishPromptPending] = useState(null);
+  const [viewingDialogStartsWithPrompt, setViewingDialogStartsWithPrompt] = useState(false);
+  const [viewingChoices, setViewingChoices] = useState(null);
+  const [openingViewing, setOpeningViewing] = useState(false);
+  const openingViewingRef = useRef(false);
+  const viewingScreenActive = useRef(focused);
+  useEffect(() => {
+    viewingScreenActive.current = focused;
+    if (!focused) { setViewingDialogOpen(false); setViewingChoices(null); setPostPublishPromptPending(null); }
+    return () => { viewingScreenActive.current = false; };
+  }, [focused]);
   const [editingRecordedTag, setEditingRecordedTag] = useState(null);
   const [editingRecordedTags, setEditingRecordedTags] = useState([]);
   const [editingUseCustomClipDuration, setEditingUseCustomClipDuration] =
@@ -165,6 +185,27 @@ const ProjectDetailScreen = ({
   };
   const displayUserName = roleNameMap[userRole] || currentUser;
   const tagViewer = { userRole, canEditTags, currentUserUid, displayUserName };
+  const viewingProfile = Object.values(userProfiles).find((profile) => profile?.uid === currentUserUid) || {};
+  const viewingViewer = { ...tagViewer, userRole: global.TEST_ROLE || viewingProfile.role || userRole,
+    canUploadVideos: Boolean(viewingProfile.canUploadVideos) };
+  const viewingAccess = viewingPermissions(viewingViewer.userRole, viewingViewer.canUploadVideos);
+  const viewingVideo = { ...project, tags: localTags };
+  const hasTagsForViewing = hasViewingTags(viewingVideo, viewingViewer);
+  const viewingRegistration = useVideoViewingRegistration(activeTeamId, hasTagsForViewing ? [project.id] : [], focused);
+  useEffect(() => {
+    if (!postPublishPromptPending) return;
+    if (!POST_PUBLISH_VIEWING_PROMPT_ENABLED || !focused || !hasTagsForViewing || viewingRegistration.status === "error" ||
+        postPublishPromptPending.teamId !== activeTeamId || postPublishPromptPending.projectId !== project.id) {
+      setPostPublishPromptPending(null);
+      return;
+    }
+    if (isSharingTags || viewingRegistration.status !== "ready") return;
+    setPostPublishPromptPending(null);
+    if (viewingRegistration.byVideo[project.id]?.length || !(viewingAccess.canCreate || viewingAccess.canAdd)) return;
+    setViewingDialogStartsWithPrompt(true);
+    setViewingDialogOpen(true);
+  }, [postPublishPromptPending, focused, activeTeamId, hasTagsForViewing, isSharingTags, project.id,
+    viewingRegistration.status, viewingRegistration.byVideo, viewingAccess.canCreate, viewingAccess.canAdd]);
   const recordedTagStateRef = useRef(null);
   recordedTagStateRef.current = { tags: localTags, viewer: tagViewer };
 
@@ -249,6 +290,33 @@ const ProjectDetailScreen = ({
       isSavingClipSettingsRef.current = false;
     }
   }, [activeTeamId, postSec, preSec, project.id, setProjects]);
+
+  const openViewingProject = (target) => {
+    if (!viewingScreenActive.current) return;
+    setViewingChoices(null);
+    setViewingDialogOpen(false);
+    setIsPlaying(false);
+    navigation.navigate("ProjectList", { viewingProjectId: target.id, viewingTeamId: activeTeamId });
+  };
+
+  const handleViewTaggedScenes = async () => {
+    if (openingViewingRef.current || isRecordingTagRef.current || isSharingTagsRef.current ||
+        viewingRegistration.status !== "ready") return;
+    openingViewingRef.current = true; setOpeningViewing(true);
+    try {
+      if (hasUnsavedClipSettings && !(await saveGlobalClipSettings())) return;
+      if (!viewingScreenActive.current) return;
+      const matches = viewingRegistration.byVideo[project.id] || [];
+      if (matches.length === 1) openViewingProject(matches[0]);
+      else if (matches.length > 1) setViewingChoices(matches);
+      else if (viewingAccess.canCreate || viewingAccess.canAdd) {
+        setViewingDialogStartsWithPrompt(false);
+        setViewingDialogOpen(true);
+      }
+    } finally {
+      openingViewingRef.current = false; setOpeningViewing(false);
+    }
+  };
 
   usePreventRemove(hasUnsavedClipSettings, ({ data }) => {
     if (isSavingClipSettingsRef.current) return;
@@ -426,7 +494,7 @@ const ProjectDetailScreen = ({
   const executeAddTag = async () => {
     if (!canEditVideoTags) return;
     if (selectedQuickTags.length === 0) return;
-    if (isRecordingTagRef.current) return;
+    if (isRecordingTagRef.current || isSharingTagsRef.current) return;
     const label = selectedQuickTags.join(" + ");
 
     const newTag = {
@@ -473,7 +541,7 @@ const ProjectDetailScreen = ({
   };
 
   const handleBulkShareTags = async () => {
-    if (!canEditVideoTags) return;
+    if (!canEditVideoTags || isRecordingTagRef.current || isSharingTagsRef.current) return;
     const privateTagsCount = localTags.filter(
       (t) => t.status === "private" && isRecordedTagOwner(t, tagViewer),
     ).length;
@@ -487,26 +555,31 @@ const ProjectDetailScreen = ({
         {
           text: "公開する",
           onPress: async () => {
+            if (isSharingTagsRef.current || isRecordingTagRef.current) return;
+            isSharingTagsRef.current = true;
+            setIsSharingTags(true);
             const newTags = localTags.map((t) =>
               t.status === "private" && isRecordedTagOwner(t, tagViewer)
                 ? { ...t, status: "shared" }
                 : t,
             );
-            setLocalTags(newTags);
-
-            if (setProjects) {
-              setProjects((prev) =>
-                prev.map((p) =>
-                  p.id === project.id ? { ...p, tags: newTags } : p,
-                ),
-              );
-            }
-
             try {
               const safeTeamId = activeTeamId || "test_team";
               await updateProject(safeTeamId, project.id, { tags: newTags });
+              setLocalTags(newTags);
+              setProjects?.((prev) => prev.map((p) => p.id === project.id ? { ...p, tags: newTags } : p));
               showToast("📢 チーム全体に一括公開しました！");
-            } catch (error) {}
+              if (POST_PUBLISH_VIEWING_PROMPT_ENABLED && viewingScreenActive.current &&
+                  (viewingAccess.canCreate || viewingAccess.canAdd)) {
+                setPostPublishPromptPending({ teamId: activeTeamId, projectId: project.id });
+                viewingRegistration.retry();
+              }
+            } catch (error) {
+              Alert.alert("公開エラー", "タグを公開できませんでした。通信状態を確認して、もう一度お試しください。");
+            } finally {
+              isSharingTagsRef.current = false;
+              setIsSharingTags(false);
+            }
           },
         },
       ],
@@ -920,11 +993,11 @@ const ProjectDetailScreen = ({
               <TouchableOpacity
                 style={[
                   styles.recordTagBtn,
-                  (selectedQuickTags.length === 0 || isRecordingTag) &&
+                  (selectedQuickTags.length === 0 || isRecordingTag || isSharingTags) &&
                     styles.recordTagBtnDisabled,
                 ]}
                 onPress={executeAddTag}
-                disabled={selectedQuickTags.length === 0 || isRecordingTag}
+                disabled={selectedQuickTags.length === 0 || isRecordingTag || isSharingTags}
               >
                 <Text style={styles.recordTagBtnText}>
                   {isRecordingTag
@@ -942,12 +1015,27 @@ const ProjectDetailScreen = ({
           <TouchableOpacity
             style={styles.bulkShareBtn}
             onPress={handleBulkShareTags}
+            disabled={isSharingTags || isRecordingTag}
           >
             <Text style={styles.bulkShareBtnText}>
-              📢 自分のみのタグ({privateTagsCount}件)を一括公開
+              {isSharingTags ? "公開中…" : `📢 自分のみのタグ(${privateTagsCount}件)を一括公開`}
             </Text>
           </TouchableOpacity>
         )}
+
+        {hasTagsForViewing && <View style={styles.viewingGuide}>
+          {privateTagsCount > 0 && <Text style={styles.viewingGuideText}>自分のみのタグが{privateTagsCount}件あります。{canEditVideoTags ? "チームにも見せる場合は、上の「一括公開」から公開してください。" : "チームへの公開にはタグ編集の権限が必要です。"}閲覧への追加だけでは自動公開されません。</Text>}
+          {viewingRegistration.status === "error" ? <>
+            <Text style={styles.viewingGuideText}>閲覧への追加状況を確認できません。</Text>
+            <TouchableOpacity accessibilityRole="button" onPress={viewingRegistration.retry}><Text style={styles.viewingLink}>追加状況を再確認</Text></TouchableOpacity>
+          </> : viewingRegistration.status === "loading" ? <Text style={styles.viewingGuideText}>閲覧への追加状況を確認中…</Text> : (
+            viewingRegistration.byVideo[project.id]?.length || viewingAccess.canCreate || viewingAccess.canAdd ? (
+              <TouchableOpacity accessibilityRole="button" onPress={handleViewTaggedScenes} disabled={openingViewing || isRecordingTag || isSharingTags}>
+                <Text style={styles.viewingLink}>{openingViewing ? "準備中…" : "タグ付けした場面を見返す"}</Text>
+              </TouchableOpacity>
+            ) : <Text style={styles.viewingGuideText}>見返すには、動画追加の権限を持つメンバーに閲覧用プロジェクトへの追加を依頼してください。</Text>
+          )}
+        </View>}
 
         <RecordedTagsContainer
           style={isLandscape ? styles.fsRecordedTags : styles.listScroll}
@@ -1081,6 +1169,15 @@ const ProjectDetailScreen = ({
           <Text style={styles.toastText}>{toastMessage}</Text>
         </View>
       )}
+
+      {focused && viewingDialogOpen && <VideoViewingRegistrationModal teamId={activeTeamId} videos={[viewingVideo]} viewer={viewingViewer}
+        initialPrompt={viewingDialogStartsWithPrompt}
+        onBeforeRegister={async () => {
+          if (hasUnsavedClipSettings && !(await saveGlobalClipSettings())) return false;
+          return viewingScreenActive.current;
+        }}
+        onCompleted={openViewingProject} onClose={() => setViewingDialogOpen(false)} />}
+      {focused && viewingChoices && <ViewingProjectPicker projects={viewingChoices} onSelect={openViewingProject} onClose={() => setViewingChoices(null)} />}
 
       {/* ★ 修正：ツールバー（InputAccessoryView）を画面の一番外側に配置 */}
       {Platform.OS === "ios" && (
@@ -1291,6 +1388,9 @@ const ProjectDetailScreen = ({
 };
 
 const styles = StyleSheet.create({
+  viewingGuide: { backgroundColor: "#eaf5ff", borderRadius: 10, padding: 12, marginVertical: 10 },
+  viewingGuideText: { color: "#334e68", fontSize: 13, lineHeight: 20 },
+  viewingLink: { color: "#0077cc", fontSize: 14, fontWeight: "bold", paddingVertical: 12 },
   container: { flex: 1, backgroundColor: "#f0f2f5" },
   header: {
     height: 60,
