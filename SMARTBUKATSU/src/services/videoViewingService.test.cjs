@@ -201,7 +201,7 @@ for (const os of ["android", "ios"]) {
 
 function screenEnvironment(name, { role = "owner", registration = { status: "ready", byVideo: { a: [] }, retry: idle }, params = {}, os = "android", popupEnabled = true } = {}) {
   const h = hooks(), navigationCalls = [], alerts = [], writes = [], historyRequests = [];
-  let focused = true;
+  let focused = true, teamId = "team";
   const v = video("a", { tags: [{ id: "t", label: "得点", videoTime: 10, status: "private", uid: "self", user: "監督" }] });
   const props = { route: { params: { project: v, userRole: role, ...params } }, navigation: {
     navigate: (...args) => navigationCalls.push(args), setParams: value => Object.assign(props.route.params, value), goBack: idle,
@@ -212,7 +212,7 @@ function screenEnvironment(name, { role = "owner", registration = { status: "rea
     "react-native-youtube-iframe": { __esModule: true, default: "YoutubePlayer" },
     "expo-screen-orientation": { unlockAsync: async () => {}, lockAsync: async () => {}, OrientationLock: {} },
     "@react-navigation/native": { CommonActions: {}, useIsFocused: () => focused, usePreventRemove: idle },
-    "../AuthContext": { useAuth: () => ({ activeTeamId: "team", user: { uid: "self" } }) }, "../firebase": { auth: { currentUser: { uid: "self" } } },
+    "../AuthContext": { useAuth: () => ({ activeTeamId: teamId, user: { uid: "self" } }) }, "../firebase": { auth: { currentUser: { uid: "self" } } },
     "../utils/recordedTagPermissions": permissions, "../utils/videoViewingGuidance": guidance,
     "../utils/clipPlaybackTransition": require("../utils/clipPlaybackTransition"), "../utils/tacticalNotes": require("../utils/tacticalNotes"),
     "../hooks/useVideoViewingRegistration": { useVideoViewingRegistration: () => registration },
@@ -220,7 +220,11 @@ function screenEnvironment(name, { role = "owner", registration = { status: "rea
     "../components/HistoryLoadingControls": { __esModule: true, default: "HistoryLoadingControls" },
     "../components/GuideHelpLink": { __esModule: true, default: "GuideHelpLink" },
     "../components/VideoViewingRegistrationModal": { __esModule: true, default: "ViewingModal", ViewingProjectPicker: "ViewingPicker" },
-    "../services/firestoreService": { updateProject: (...args) => { const d = deferred(); writes.push({ args, ...d }); return d.promise; } },
+    "../services/firestoreService": {
+      updateProject: (...args) => { const d = deferred(); writes.push({ args, ...d }); return d.promise; },
+      updateHighlightProject: (...args) => { const d = deferred(); writes.push({ kind: "viewing-update", args, ...d }); return d.promise; },
+      deleteHighlightProject: (...args) => { const d = deferred(); writes.push({ kind: "viewing-delete", args, ...d }); return d.promise; },
+    },
   };
   const component = load(`src/screens/${name}.js`, modules, (source) => {
     if (popupEnabled) return source;
@@ -229,6 +233,7 @@ function screenEnvironment(name, { role = "owner", registration = { status: "rea
     return source.replace(flag, "const POST_PUBLISH_VIEWING_PROMPT_ENABLED = false;");
   }).default;
   h.mount(() => component(props)); return { h, props, navigationCalls, alerts, writes, historyRequests,
+    setTeam(value) { teamId = value; h.render(); h.render(); },
     setFocused(value) { focused = value; h.render(); h.render(); }, render() { h.render(); return h.render(); } };
 }
 test("video list shows scoped counts, opens registration with selected sources, and handles cross-screen viewing", () => {
@@ -437,3 +442,121 @@ test("failed preparation keeps the popup available; a late preparation cannot re
   const pending = button(e.h, "閲覧に追加する").onPress(); e.h.unmount(); d.resolve(true); await pending;
   assert.equal(e.requests.length, 0); assert.equal(e.completed.length, 0);
 });
+
+test("viewing management allows either individual permission without changing creation or registration rights", () => {
+  const expected = { owner: [true, true, true, true], admin: [true, true, true, true],
+    staff: [true, true, true, true], member: [false, true, true, true],
+    guardian: [false, true, true, true], captain: [true, true, true, true], unknown: [false, false, false, false] };
+  const combinations = [[false, false], [true, false], [false, true], [true, true]];
+  for (const [userRole, allowed] of Object.entries(expected)) {
+    combinations.forEach(([canUploadVideos, canEditTags], index) => {
+      const profile = { userRole, canUploadVideos, canEditTags };
+      assert.equal(guidance.canManageViewingProject(profile), allowed[index], JSON.stringify(profile));
+      const registration = guidance.viewingPermissions(userRole, canUploadVideos);
+      assert.equal(registration.canAdd, ["owner", "admin", "staff"].includes(userRole));
+      assert.equal(registration.canCreate, ["owner", "admin", "staff", "captain"].includes(userRole) ||
+        (["member", "guardian"].includes(userRole) && canUploadVideos));
+    });
+  }
+});
+
+function viewingEditorEnvironment(os, role, flags) {
+  const e = screenEnvironment("ProjectListScreen", { os, role });
+  Object.assign(e.props.userProfiles.self, flags);
+  e.project = { id: "viewing", title: "共有の閲覧プロジェクト", videoIds: ["a"], status: "active", createdBy: "other" };
+  e.props.highlightProjects = [e.project];
+  e.props.projects.push(video("b"));
+  e.render();
+  const sourceList = walk(e.h.tree, node => node.type === "FlatList")[0];
+  const sourceRow = sourceList.props.data.find(row => row.kind === "project");
+  e.sourceCard = sourceList.props.renderItem({ item: sourceRow });
+  button(e.h, "動画閲覧").onPress(); e.render();
+  e.card = () => walk(e.h.tree, node => node.type === "FlatList")[0].props.renderItem({ item: e.project });
+  e.open = () => { button({ tree: e.card() }, "⚙️").onPress(); e.render(); };
+  return e;
+}
+const viewingEditModal = e => walk(e.h.tree, node => node.type === "Modal" && node.props.visible &&
+  textOf(node).includes("プロジェクトの編集"))[0];
+const viewingDeleteConfirmation = e => e.alerts.at(-1)[2].find(item => item.text === "削除する");
+
+for (const os of ["android", "ios"]) {
+  test(`${os}: viewing edit entry follows both permission flags while source video management stays restricted`, () => {
+    for (const role of ["member", "guardian"]) {
+      for (const [canUploadVideos, canEditTags] of [[false, false], [true, false], [false, true], [true, true]]) {
+        const e = viewingEditorEnvironment(os, role, { canUploadVideos, canEditTags });
+        const gears = walk(e.card(), node => node.type === "TouchableOpacity" && textOf(node) === "⚙️");
+        assert.equal(gears.length, canUploadVideos || canEditTags ? 1 : 0, `${role}: ${canUploadVideos}/${canEditTags}`);
+        assert.equal(walk(e.sourceCard, node => node.type === "TouchableOpacity" && textOf(node) === "⚙️").length, 0);
+        if (gears.length) {
+          gears[0].props.onPress(); e.render();
+          assert.ok(viewingEditModal(e));
+          assert.ok(button({ tree: viewingEditModal(e) }, "🗑️ このプロジェクトを削除する"));
+        }
+        e.h.unmount();
+      }
+    }
+    for (const [role, allowed] of [["owner", true], ["admin", true], ["staff", true], ["captain", true], ["unknown", false]]) {
+      const e = viewingEditorEnvironment(os, role, { canUploadVideos: false, canEditTags: false });
+      assert.equal(walk(e.card(), node => node.type === "TouchableOpacity" && textOf(node) === "⚙️").length, allowed ? 1 : 0);
+      e.h.unmount();
+    }
+  });
+
+  for (const [role, flags] of [["member", { canUploadVideos: true }], ["guardian", { canEditTags: true }], ["captain", {}]]) {
+    test(`${os}: ${role} can edit and delete another creator's viewing project, retaining failed drafts and source data`, async () => {
+      const e = viewingEditorEnvironment(os, role, flags), sourceBefore = plain(e.props.projects);
+      e.open();
+      walk(viewingEditModal(e), node => node.type === "TextInput")[0].props.onChangeText("更新した閲覧プロジェクト");
+      const addVideo = walk(viewingEditModal(e), node => node.type === "TouchableOpacity" && textOf(node) === "b動画リンクあり")[0];
+      assert.ok(addVideo); addVideo.props.onPress(); e.render();
+      const failed = button({ tree: viewingEditModal(e) }, "変更を保存").onPress(); e.render();
+      assert.equal(e.writes[0].kind, "viewing-update");
+      assert.deepEqual(plain(e.writes[0].args), ["team", "viewing", { title: "更新した閲覧プロジェクト", videoIds: ["a", "b"] }]);
+      assert.equal(button({ tree: viewingEditModal(e) }, "保存中...").disabled, true);
+      e.writes[0].reject(new Error("offline")); await failed; e.render();
+      assert.equal(walk(viewingEditModal(e), node => node.type === "TextInput")[0].props.value, "更新した閲覧プロジェクト");
+      const saved = button({ tree: viewingEditModal(e) }, "変更を保存").onPress();
+      e.writes[1].resolve(); await saved; e.render(); assert.equal(viewingEditModal(e), undefined);
+
+      e.open(); button({ tree: viewingEditModal(e) }, "🗑️ このプロジェクトを削除する").onPress();
+      assert.equal(e.writes.length, 2, "confirmation must precede the deletion");
+      assert.equal(e.alerts.at(-1)[2].find(item => item.text === "キャンセル").style, "cancel");
+      const failedDelete = viewingDeleteConfirmation(e).onPress();
+      assert.deepEqual(plain(e.writes[2].args), ["team", "viewing"]);
+      assert.equal(e.writes[2].kind, "viewing-delete");
+      e.writes[2].reject(new Error("offline")); await failedDelete; e.render(); assert.ok(viewingEditModal(e));
+      button({ tree: viewingEditModal(e) }, "🗑️ このプロジェクトを削除する").onPress();
+      const deleted = viewingDeleteConfirmation(e).onPress(); e.writes[3].resolve(); await deleted; e.render();
+      assert.equal(viewingEditModal(e), undefined);
+      assert.deepEqual(plain(e.props.projects), sourceBefore);
+      assert.equal(e.writes.every(write => write.kind?.startsWith("viewing-")), true);
+      e.h.unmount();
+    });
+  }
+
+  test(`${os}: revoked permissions block a stale edit entry and saving an already open editor`, async () => {
+    const e = viewingEditorEnvironment(os, "member", { canUploadVideos: true });
+    const staleEntry = button({ tree: e.card() }, "⚙️").onPress;
+    e.props.userProfiles.self.canUploadVideos = false; e.render(); staleEntry(); e.render();
+    assert.equal(viewingEditModal(e), undefined);
+    e.props.userProfiles.self.canEditTags = true; e.render(); e.open();
+    const staleSave = button({ tree: viewingEditModal(e) }, "変更を保存").onPress;
+    e.props.userProfiles.self.canEditTags = false; e.render(); await staleSave();
+    assert.equal(e.writes.length, 0); assert.equal(e.alerts.at(-1)[0], "編集できません");
+    e.h.unmount();
+  });
+
+  test(`${os}: delete confirmation rechecks permissions, team and screen lifetime before writing`, async () => {
+    for (const invalidate of [
+      e => { e.props.userProfiles.self.canEditTags = false; e.render(); },
+      e => e.setTeam("other-team"), e => e.setFocused(false), e => e.h.unmount(),
+    ]) {
+      const e = viewingEditorEnvironment(os, "guardian", { canEditTags: true });
+      e.open(); button({ tree: viewingEditModal(e) }, "🗑️ このプロジェクトを削除する").onPress();
+      const confirm = viewingDeleteConfirmation(e).onPress;
+      invalidate(e); await confirm();
+      assert.equal(e.writes.length, 0); assert.equal(e.alerts.at(-1)[0], "編集できません");
+      e.h.unmount();
+    }
+  });
+}
