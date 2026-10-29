@@ -36,7 +36,7 @@ import HistoryLoadingControls from "../components/HistoryLoadingControls";
 import GuideHelpLink from "../components/GuideHelpLink";
 import VideoViewingRegistrationModal, { ViewingProjectPicker } from "../components/VideoViewingRegistrationModal";
 import { useVideoViewingRegistration } from "../hooks/useVideoViewingRegistration";
-import { hasViewingTags, viewingPermissions } from "../utils/videoViewingGuidance";
+import { canManageViewingProject, hasViewingTags, viewingPermissions } from "../utils/videoViewingGuidance";
 import { canReadNotes, canPostNotes, noteClipKey, toggleNoteClipSelection, buildNoteClips, buildNotePlaybackClips } from "../utils/tacticalNotes";
 import {
   createProject,
@@ -259,6 +259,14 @@ const ProjectListScreen = ({
     (["guardian", "member"].includes(userRole) && canEditTags);
 
   const { user, activeTeamId } = useAuth();
+  const viewingProjectAccess = useRef(null);
+  const editingHighlightTeamId = useRef(null);
+  useEffect(() => {
+    viewingProjectAccess.current = {
+      activeTeamId, currentUserUid, userRole, canUploadVideos, canEditTags, focused,
+    };
+    return () => { viewingProjectAccess.current = null; };
+  }, [activeTeamId, currentUserUid, userRole, canUploadVideos, canEditTags, focused]);
 
   const notePicker = route?.params?.notePicker;
   const useScrollableNotePicker = Boolean(notePicker) && NOTE_PICKER_SCROLL_LAYOUT;
@@ -308,6 +316,7 @@ const ProjectListScreen = ({
   const displayUserName = roleNameMap[userRole] || currentUser;
   const viewingViewer = { userRole, currentUserUid, displayUserName, canUploadVideos, canEditTags };
   const viewingAccess = viewingPermissions(userRole, canUploadVideos);
+  const canManageHighlightProject = canManageViewingProject(viewingViewer);
 
   const activeProjects = useMemo(() => {
     return projects.filter((p) => p.status !== "deleted");
@@ -1196,7 +1205,19 @@ const ProjectListScreen = ({
     }
   };
 
+  const checkViewingProjectEditAccess = (teamId) => {
+    const access = viewingProjectAccess.current;
+    if (!teamId || !access?.focused || access.activeTeamId !== teamId ||
+        access.currentUserUid !== currentUserUid || !canManageViewingProject(access)) {
+      Alert.alert("編集できません", "プロジェクトを編集する権限と、選択中のチームを確認してください。");
+      return false;
+    }
+    return true;
+  };
+
   const handleOpenEditHighlightProject = (item) => {
+    if (!checkViewingProjectEditAccess(activeTeamId)) return;
+    editingHighlightTeamId.current = activeTeamId;
     const activeVideoIds = new Set(activeProjects.map((project) => project.id));
     setEditingHighlightProject(item);
     setEditHighlightProjectTitle(item.title || "");
@@ -1217,6 +1238,8 @@ const ProjectListScreen = ({
   };
 
   const handleSaveHighlightProjectEdit = async () => {
+    const teamId = editingHighlightTeamId.current;
+    if (!checkViewingProjectEditAccess(teamId) || isSavingHighlightProjectEdit) return;
     const trimmedTitle = editHighlightProjectTitle.trim();
     if (!trimmedTitle) {
       return Alert.alert("エラー", "プロジェクト名を入力してください。");
@@ -1228,7 +1251,7 @@ const ProjectListScreen = ({
 
     setIsSavingHighlightProjectEdit(true);
     try {
-      await updateHighlightProject(activeTeamId, editingHighlightProject.id, {
+      await updateHighlightProject(teamId, editingHighlightProject.id, {
         title: trimmedTitle,
         videoIds: editHighlightVideoIds,
       });
@@ -1243,7 +1266,9 @@ const ProjectListScreen = ({
   };
 
   const handleDeleteHighlightProjectFromEdit = () => {
-    if (!editingHighlightProject) return;
+    const teamId = editingHighlightTeamId.current;
+    if (!editingHighlightProject || isSavingHighlightProjectEdit ||
+        !checkViewingProjectEditAccess(teamId)) return;
 
     Alert.alert(
       "削除の確認",
@@ -1254,14 +1279,11 @@ const ProjectListScreen = ({
           text: "削除する",
           style: "destructive",
           onPress: async () => {
+            // A native confirmation can outlive a permission or team change.
+            if (!checkViewingProjectEditAccess(teamId)) return;
             setIsSavingHighlightProjectEdit(true);
             try {
-              if (activeTeamId) {
-                await deleteHighlightProject(
-                  activeTeamId,
-                  editingHighlightProject.id,
-                );
-              }
+              await deleteHighlightProject(teamId, editingHighlightProject.id);
               if (selectedHighlightProjectId === editingHighlightProject.id) {
                 setSelectedHighlightProjectId(null);
               }
@@ -1548,10 +1570,12 @@ const ProjectListScreen = ({
           <Text style={styles.cardTitle} numberOfLines={1}>
             {item.title}
           </Text>
-          {canManageProject && (
+          {canManageHighlightProject && (
             <TouchableOpacity
               style={styles.editIconBtn}
               onPress={() => handleOpenEditHighlightProject(item)}
+              accessibilityRole="button"
+              accessibilityLabel={`「${item.title}」の閲覧用プロジェクトを編集`}
             >
               <Text style={styles.editIconText}>⚙️</Text>
             </TouchableOpacity>

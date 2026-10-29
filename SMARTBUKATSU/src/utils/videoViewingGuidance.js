@@ -8,6 +8,12 @@ function viewingPermissions(role, canUploadVideos = false) {
   };
 }
 
+function canManageViewingProject(viewer) {
+  return ["owner", "admin", "staff", "captain"].includes(viewer.userRole) ||
+    (["member", "guardian"].includes(viewer.userRole) &&
+      Boolean(viewer.canUploadVideos || viewer.canEditTags));
+}
+
 function canUseViewingVideo(video, viewer) {
   return Boolean(video?.id && video.status !== "deleted" && video.videoUrl) &&
     !(["member", "captain"].includes(viewer.userRole) && video.participants === "coach");
@@ -24,4 +30,4 @@ function ownPrivateTagCount(videos, viewer) {
   ).length, 0);
 }
 
-module.exports = { viewingPermissions, canUseViewingVideo, hasViewingTags, ownPrivateTagCount };
+module.exports = { viewingPermissions, canManageViewingProject, canUseViewingVideo, hasViewingTags, ownPrivateTagCount };
