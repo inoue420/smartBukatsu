@@ -12,6 +12,9 @@ const ADMOB_SAMPLE_IOS_APP_ID =
   "ca-app-pub-3940256099942544~1458002511";
 const CONSENT_SDK_PROGUARD_RULE =
   "-keep class com.google.android.gms.internal.consent_sdk.** { *; }";
+// Expo record options must remain readable after Android release optimization.
+const EXPO_RECORD_FIELD_PROGUARD_RULE =
+  "-keep @interface expo.modules.kotlin.records.Field { *; }";
 
 if (!isCaptureConfig) dotenvExpand.expand(
   dotenvFlow.config({
@@ -84,7 +87,10 @@ module.exports = ({ config }) => {
       android: {
         enableMinifyInReleaseBuilds: true,
         enableShrinkResourcesInReleaseBuilds: true,
-        extraProguardRules: CONSENT_SDK_PROGUARD_RULE,
+        extraProguardRules: [
+          CONSENT_SDK_PROGUARD_RULE,
+          EXPO_RECORD_FIELD_PROGUARD_RULE,
+        ].join("\n"),
       },
     },
   ]);
