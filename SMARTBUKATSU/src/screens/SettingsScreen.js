@@ -15,6 +15,7 @@ import {
   Clipboard,
   ActivityIndicator,
   Linking,
+  Share,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import * as Application from "expo-application";
@@ -73,6 +74,7 @@ import { MEDICAL_SCALE_MAX } from "../utils/medicalScale";
 import { CUSTOM_SPORT_OPTIONS, SPORT_CATEGORIES, getCategoryLabel, getSportsForCategory } from "../constants/sportsCategories";
 import { SMARTBUKATSU_GUIDE_URL } from "../constants/helpLinks";
 import { openGuideUrl } from "../utils/openGuide";
+import { invitationMessage, normalizeInviteCode } from "../utils/teamInvitation";
 import { openAppReviewStore } from "../services/appReviewService";
 import GuideHelpLink from "../components/GuideHelpLink";
 import {
@@ -249,6 +251,8 @@ const SettingsScreen = ({
     }
   };
   const [inviteCode, setInviteCode] = useState("読み込み中...");
+  const [inviteCodeTeamId, setInviteCodeTeamId] = useState(null);
+  const [isSharingInvite, setIsSharingInvite] = useState(false);
 
   const currentUserUid =
     currentUserUidProp || user?.uid || auth.currentUser?.uid || "";
@@ -409,7 +413,10 @@ const SettingsScreen = ({
     const fetchInvite = async () => {
       if (isStaffOrAbove) {
         const code = await getTeamInviteCode(activeTeamId);
-        if (isMounted) setInviteCode(code || "未発行");
+        if (isMounted) {
+          setInviteCode(code || "未発行");
+          setInviteCodeTeamId(activeTeamId);
+        }
       }
     };
     fetchInvite();
@@ -517,32 +524,39 @@ const SettingsScreen = ({
   }, [currentUser]);
 
   const [inputTeamName, setInputTeamName] = useState("読み込み中...");
+  const [invitationTeam, setInvitationTeam] = useState(null);
   const [teamCreatedBy, setTeamCreatedBy] = useState("");
   const [teamSportCategory, setTeamSportCategory] = useState("");
   const [teamSportName, setTeamSportName] = useState("");
   const [teamCustomSportName, setTeamCustomSportName] = useState("");
   const [isEditingTeamSport, setIsEditingTeamSport] = useState(false);
   useEffect(() => {
+    let active = true;
+    setInvitationTeam(null);
     if (activeTeamId) {
       const fetchTeamName = async () => {
         try {
           const teamRef = doc(db, "teams", activeTeamId);
           const teamSnap = await getDoc(teamRef);
+          if (!active) return;
           if (teamSnap.exists()) {
             const data = teamSnap.data();
             setInputTeamName(data.teamName || data.name || "");
+            setInvitationTeam({ id: activeTeamId, name: data.teamName || data.name || "チーム" });
             setTeamCreatedBy(data.createdBy || "");
             setTeamSportCategory(data.sportCategory || "ball_sports");
             setTeamSportName(data.sportName || "ハンドボール");
             setTeamCustomSportName(data.customSportName || "");
           }
         } catch (error) {
+          if (!active) return;
           console.log("チーム名取得エラー", error);
           setInputTeamName("エラー");
         }
       };
       fetchTeamName();
     }
+    return () => { active = false; };
   }, [activeTeamId]);
 
   const [myPosition, setMyPosition] = useState(
@@ -993,6 +1007,7 @@ const SettingsScreen = ({
           teamName: trimmedName,
           name: trimmedName,
         });
+        setInvitationTeam(current => current?.id === activeTeamId ? { id: activeTeamId, name: trimmedName } : current);
         Alert.alert(
           "保存完了",
           "チーム名を更新しました！\n※ホーム画面に戻ると反映されます。",
@@ -1379,6 +1394,26 @@ const SettingsScreen = ({
       "コピー完了",
       `${label}をコピーしました。部員に送ってください。`,
     );
+  };
+
+  const canShareInvite = isStaffOrAbove && inviteCodeTeamId === activeTeamId && invitationTeam?.id === activeTeamId && Boolean(normalizeInviteCode(inviteCode));
+  const shareTeamInvitation = async (copy = false) => {
+    if (!canShareInvite || isSharingInvite) return;
+    setIsSharingInvite(true);
+    try {
+      const message = invitationMessage(invitationTeam.name, inviteCode);
+      if (copy) {
+        const copied = await ExpoClipboard.setStringAsync(message);
+        if (!copied) throw new Error("Clipboard unavailable");
+        Alert.alert("コピー完了", "取得リンク・参加リンク・招待コードを含む招待文をコピーしました。");
+      } else {
+        await Share.share({ message }, { subject: "SMARTBUKATSUへのチーム招待" });
+      }
+    } catch {
+      Alert.alert("招待文を共有できません", "もう一度お試しください。招待コードをコピーして伝えることもできます。");
+    } finally {
+      setIsSharingInvite(false);
+    }
   };
 
   const handleLogout = () => {
@@ -1811,6 +1846,15 @@ const SettingsScreen = ({
                     部員に教える【招待コード】:
                   </Text>
                   <Text style={styles.idValueHighlight}>{inviteCode}</Text>
+                  <TouchableOpacity style={[styles.saveBtn, (!canShareInvite || isSharingInvite) && { opacity: 0.5 }]}
+                    disabled={!canShareInvite || isSharingInvite} onPress={() => shareTeamInvitation()}>
+                    <Text style={styles.saveBtnText}>部員を招待（LINE・メールなど）</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.copySubBtn} disabled={!canShareInvite || isSharingInvite}
+                    onPress={() => shareTeamInvitation(true)}>
+                    <Text style={styles.copySubBtnText}>招待文をコピー</Text>
+                  </TouchableOpacity>
+                  <Text style={styles.hintText}>アプリの取得・参加リンクと招待コードをまとめて送れます。送信先は共有画面で選択してください。</Text>
                   <TouchableOpacity
                     style={styles.copySubBtn}
                     onPress={() => copyToClipboard(inviteCode, "招待コード")}

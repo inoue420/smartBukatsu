@@ -25,6 +25,7 @@ import { dailyReportScope } from "./src/utils/dailyReportScope";
 import { subscribeUnreviewedReports, subscribeRosterLatestReports } from "./src/services/dailyReportReadService";
 import { useDailyReportHistory } from "./src/hooks/useDailyReportHistory";
 import { useAppReview } from "./src/hooks/useAppReview";
+import { useTeamInvitation } from "./src/hooks/useTeamInvitation";
 import { useHistoryData } from "./src/hooks/useHistoryData";
 import { subscribeLoadingState, subscribeLoadingSummary, subscribeLatestReports, subscribePostReadStates, subscribePinnedPosts } from "./src/services/historyDataService";
 
@@ -74,6 +75,7 @@ const DEFAULT_ABSENCE_DETAILS_VISIBLE = true;
 const REVIEW_COMPLETION_SCREENS = new Set(["Calendar", "Roster", "ProjectList", "TacticalNotes", "NoticeBoard"]);
 
 function AppContent() {
+  const { pendingInvitation, invitationReady } = useTeamInvitation();
   const navigationRef = useNavigationContainerRef();
   const currentRouteNameRef = useRef();
   const routeVisitRef = useRef({ at: Date.now(), version: 0 });
@@ -410,7 +412,7 @@ function AppContent() {
     return () => unsubscribe();
   }, []);
 
-  if (authLoading) {
+  if (authLoading || !invitationReady) {
     return (
       <View
         style={{
@@ -475,7 +477,7 @@ function AppContent() {
           <Stack.Screen name="Login" component={LoginScreen} />
         ) : emailVerificationPending ? (
           <Stack.Screen name="EmailVerification" component={EmailVerificationScreen} />
-        ) : teamSelectionRequired ? (
+        ) : teamSelectionRequired || pendingInvitation ? (
           <Stack.Screen name="TeamSelect" component={TeamSelectScreen} />
         ) : !activeTeamId && isResolvingTeam ? (
           <Stack.Screen name="LoadingTeam">
@@ -730,7 +732,7 @@ function AppContent() {
         </>}
         </Stack.Navigator>
       </NavigationContainer>
-      {authorized && !teamSelectionRequired && (
+      {authorized && !teamSelectionRequired && !pendingInvitation && (
         isTeamSwitching || !loadingStateResolved ||
         teamScope?.teamId !== activeTeamId || teamScope?.uid !== user?.uid
       ) && (

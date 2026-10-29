@@ -170,6 +170,7 @@ module.exports = ({ config }) => {
     plugins: expoPlugins,
     ios: {
       ...(appJson.expo.ios || {}),
+      associatedDomains: [...new Set([...(appJson.expo.ios?.associatedDomains || []), "applinks:sharprise.jp"])],
       icon: isDevelopmentBuild
         ? "./assets/icon_ios_dev.png"
         : appJson.expo.ios?.icon,
@@ -184,6 +185,18 @@ module.exports = ({ config }) => {
     },
     android: {
       ...(appJson.expo.android || {}),
+      intentFilters: [
+        ...(appJson.expo.android?.intentFilters || []),
+        {
+          action: "VIEW",
+          autoVerify: true,
+          data: [
+            { scheme: "https", host: "sharprise.jp", path: "/smartbukatsu/invite/" },
+            { scheme: "https", host: "sharprise.jp", path: "/smartbukatsu/invite" },
+          ],
+          category: ["BROWSABLE", "DEFAULT"],
+        },
+      ],
       ...(androidGoogleServicesFile
         ? { googleServicesFile: androidGoogleServicesFile }
         : {}),

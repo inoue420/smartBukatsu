@@ -20,6 +20,7 @@ import {
   reauthenticateWithCredential,
 } from "firebase/auth";
 import { useAuth } from "../AuthContext";
+import { useTeamInvitation } from "../hooks/useTeamInvitation";
 import { useNotifications } from "../NotificationContext";
 import { auth } from "../firebase";
 import { CUSTOM_SPORT_OPTIONS, SPORT_CATEGORIES, getSportsForCategory } from "../constants/sportsCategories";
@@ -41,6 +42,7 @@ const roleLabels = {
 };
 
 const TeamSelectScreen = ({ navigation }) => {
+  const { pendingInvitation, clearInvitation, storageError } = useTeamInvitation();
   const { user, userName, activeTeamId, teamIds, selectTeam, createAndSelectTeam,
     joinAndSelectTeam, signOut, isTeamSwitching } = useAuth();
   const { unreadByTeam } = useNotifications();
@@ -52,6 +54,9 @@ const TeamSelectScreen = ({ navigation }) => {
   const [sportName, setSportName] = useState("");
   const [customSportName, setCustomSportName] = useState("");
   const [inviteCode, setInviteCode] = useState("");
+  useEffect(() => {
+    if (pendingInvitation) setInviteCode(pendingInvitation.code);
+  }, [pendingInvitation?.id]);
   const [isCreating, setIsCreating] = useState(false);
   const [isJoining, setIsJoining] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
@@ -70,7 +75,8 @@ const TeamSelectScreen = ({ navigation }) => {
   const maxTeamsPerUser = getMaxTeamsForMemberships(teams);
   const joinTeamLimit = getMaxTeamsForMemberships(teams, inviteCode);
   const canCreateTeam = teamCount < maxTeamsPerUser;
-  const canJoinTeam = teamCount < joinTeamLimit;
+  const existingInviteTeam = teams.find(team => team.inviteCode === inviteCode.trim());
+  const canJoinTeam = teamCount < joinTeamLimit || Boolean(existingInviteTeam);
   const canEnterInviteCode = teamCount < SHARP_RISE_MAX_TEAMS_PER_USER;
   const canGoBack = navigation.canGoBack();
   const teamActionsBusy = Boolean(busyTeamId || isCreating || isJoining ||
@@ -201,7 +207,7 @@ const TeamSelectScreen = ({ navigation }) => {
   };
 
   const handleJoinTeam = async () => {
-    if (teamActionRef.current || teamActionsBusy) return;
+    if (teamActionRef.current || teamActionsBusy || (pendingInvitation && isLoading)) return;
     if (!canJoinTeam) {
       return Alert.alert(
         "上限に達しています",
@@ -216,12 +222,17 @@ const TeamSelectScreen = ({ navigation }) => {
     setIsJoining(true);
     let selected = false;
     try {
-      const result = await joinAndSelectTeam(inviteCode, userName);
-      setInviteCode("");
+      const result = existingInviteTeam
+        ? await selectTeam(existingInviteTeam.id).then(() => ({ teamId: existingInviteTeam.id }))
+        : await joinAndSelectTeam(inviteCode, userName);
+      const invitationCleared = !pendingInvitation || clearInvitation(pendingInvitation.id);
+      if (invitationCleared) setInviteCode("");
       await loadTeams();
       Alert.alert("チームに参加しました", "選択中のチームを切り替えました。");
-      setReturnTeamId(result.teamId);
-      selected = true;
+      if (invitationCleared) {
+        setReturnTeamId(result.teamId);
+        selected = true;
+      }
     } catch (error) {
       console.log("チーム参加エラー:", error);
       Alert.alert("エラー", error.message || "チームへの参加に失敗しました。");
@@ -485,7 +496,7 @@ const TeamSelectScreen = ({ navigation }) => {
             </View>
           </View>
 
-          {isLoading ? (
+          {!pendingInvitation && (isLoading ? (
             <View style={styles.loadingBox}>
               <ActivityIndicator size="large" color="#0077cc" />
             </View>
@@ -538,10 +549,20 @@ const TeamSelectScreen = ({ navigation }) => {
                 </View>
               )}
             </View>
-          )}
+          ))}
 
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>招待コードで参加</Text>
+            {pendingInvitation && (
+              <View style={{ marginBottom: 12 }}>
+                <Text>招待リンクからコードを入力しました。内容を確認して「参加する」を押してください。</Text>
+                {storageError && <Text>端末へ保存できませんでした。アプリを閉じた場合は招待リンクをもう一度押してください。</Text>}
+                <TouchableOpacity onPress={() => { clearInvitation(pendingInvitation.id); setInviteCode(""); }} disabled={teamActionsBusy}>
+                  <Text style={{ color: "#0077cc", marginTop: 10 }}>この招待を取り消す</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+            {pendingInvitation && isLoading && <ActivityIndicator accessibilityLabel="所属チームを確認中" />}
             <TextInput
               style={styles.input}
               placeholder="例: aB3xY7（大文字・小文字を区別）"
@@ -549,12 +570,12 @@ const TeamSelectScreen = ({ navigation }) => {
               onChangeText={setInviteCode}
               autoCapitalize="none"
               autoCorrect={false}
-              editable={canEnterInviteCode && !teamActionsBusy}
+              editable={(canEnterInviteCode || Boolean(existingInviteTeam)) && !teamActionsBusy}
             />
             <TouchableOpacity
               style={[styles.primaryBtn, (!canJoinTeam || teamActionsBusy) && styles.btnDisabled]}
               onPress={handleJoinTeam}
-              disabled={!canJoinTeam || teamActionsBusy}
+              disabled={!canJoinTeam || teamActionsBusy || Boolean(pendingInvitation && isLoading)}
             >
               {isJoining ? (
                 <ActivityIndicator color="#fff" />
@@ -564,7 +585,7 @@ const TeamSelectScreen = ({ navigation }) => {
             </TouchableOpacity>
           </View>
 
-          <View style={styles.section}>
+          {!pendingInvitation && <View style={styles.section}>
             <Text style={styles.sectionTitle}>監督として新規作成</Text>
             <TextInput
               style={styles.input}
@@ -594,7 +615,7 @@ const TeamSelectScreen = ({ navigation }) => {
                 <Text style={styles.primaryBtnText}>作成する</Text>
               )}
             </TouchableOpacity>
-          </View>
+          </View>}
 
           <View style={styles.accountDeleteContainer}>
             <Text style={styles.accountDeleteTitle}>アカウントの削除</Text>
