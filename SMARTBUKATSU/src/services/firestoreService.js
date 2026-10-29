@@ -532,13 +532,14 @@ export function subscribeHighlightProjects(teamId, callback) {
 export async function createHighlightProject(teamId, projectData) {
   if (!teamId) throw new Error("チームIDがありません。");
   const ref = collection(db, "teams", teamId, "highlightProjects");
-  await addDoc(ref, {
+  const created = await addDoc(ref, {
     ...projectData,
     teamId,
     status: projectData.status || "active",
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
+  return created.id;
 }
 
 export async function updateHighlightProject(teamId, projectId, updateData) {

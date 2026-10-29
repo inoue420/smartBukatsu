@@ -51,6 +51,13 @@ function mountNote(os, overrides = {}) {
     "@react-navigation/native": { CommonActions: {}, useIsFocused: () => true },
     "../services/historyDataService": { subscribeHistoryDocument: overrides.highlightLoader || ((_team, _name, _id, next) => { next(null); return () => {}; }), subscribeProjectsByIds: overrides.referenceLoader || ((_team, _ids, next) => { next([]); return () => {}; }) },
     "../components/HistoryLoadingControls": { __esModule: true, default: "HistoryLoadingControls" },
+    "../components/GuideHelpLink": { __esModule: true, default: "GuideHelpLink" },
+    "../components/VideoViewingRegistrationModal": { __esModule: true, default: "ViewingModal", ViewingProjectPicker: "ViewingPicker" },
+    "../utils/videoViewingGuidance": require("./videoViewingGuidance"),
+    "../hooks/useVideoViewingRegistration": { useVideoViewingRegistration: (_team, _ids, enabled) => {
+      assert.equal(enabled, false, "note playback/picking must not start registration checks");
+      return { status: "loading", byVideo: {}, retry() {} };
+    } },
     "../AuthContext": { useAuth: () => ({ user: { uid: "member" }, activeTeamId: "team" }) },
     "../utils/recordedTagPermissions": require("./recordedTagPermissions"),
     "../utils/clipPlaybackTransition": require("./clipPlaybackTransition"),

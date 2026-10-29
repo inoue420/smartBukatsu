@@ -28,12 +28,15 @@ import YoutubePlayer from "react-native-youtube-iframe";
 import * as ScreenOrientation from "expo-screen-orientation";
 
 import { useAuth } from "../AuthContext";
-import { canEditRecordedTag } from "../utils/recordedTagPermissions";
+import { canEditRecordedTag, canViewRecordedTag } from "../utils/recordedTagPermissions";
 import { createClipPlaybackTransition } from "../utils/clipPlaybackTransition";
 import { CommonActions, useIsFocused } from "@react-navigation/native";
 import { subscribeHistoryDocument, subscribeProjectsByIds } from "../services/historyDataService";
 import HistoryLoadingControls from "../components/HistoryLoadingControls";
 import GuideHelpLink from "../components/GuideHelpLink";
+import VideoViewingRegistrationModal, { ViewingProjectPicker } from "../components/VideoViewingRegistrationModal";
+import { useVideoViewingRegistration } from "../hooks/useVideoViewingRegistration";
+import { hasViewingTags, viewingPermissions } from "../utils/videoViewingGuidance";
 import { canReadNotes, canPostNotes, noteClipKey, toggleNoteClipSelection, buildNoteClips, buildNotePlaybackClips } from "../utils/tacticalNotes";
 import {
   createProject,
@@ -285,6 +288,14 @@ const ProjectListScreen = ({
 
   const [isSideUiVisible, setIsSideUiVisible] = useState(false);
   const [clipToastMessage, setClipToastMessage] = useState(null);
+  const [viewingDraftVideos, setViewingDraftVideos] = useState(null);
+  const [viewingChoices, setViewingChoices] = useState(null);
+  const viewingScreenActive = useRef(focused);
+  useEffect(() => {
+    viewingScreenActive.current = focused;
+    if (!focused) { setViewingDraftVideos(null); setViewingChoices(null); }
+    return () => { viewingScreenActive.current = false; };
+  }, [focused]);
 
   const roleNameMap = {
     owner: `${currentUser}(監督)`,
@@ -295,6 +306,8 @@ const ProjectListScreen = ({
     member: currentUser,
   };
   const displayUserName = roleNameMap[userRole] || currentUser;
+  const viewingViewer = { userRole, currentUserUid, displayUserName, canUploadVideos, canEditTags };
+  const viewingAccess = viewingPermissions(userRole, canUploadVideos);
 
   const activeProjects = useMemo(() => {
     return projects.filter((p) => p.status !== "deleted");
@@ -325,6 +338,13 @@ const ProjectListScreen = ({
         ),
     );
   }, [activeProjects, userRole]);
+
+  const taggedViewingVideos = visibleProjects.filter((video) => hasViewingTags(video, viewingViewer));
+  const viewingRevision = JSON.stringify(baseHighlightProjects.map((item) => [item.id, item.status, item.videoIds]));
+  const viewingRegistration = useVideoViewingRegistration(activeTeamId, taggedViewingVideos.map((video) => video.id),
+    focused && !notePicker && !notePlayback, viewingRevision);
+  const unregisteredViewingVideos = viewingRegistration.status === "ready"
+    ? taggedViewingVideos.filter((video) => !viewingRegistration.byVideo[video.id]?.length) : [];
 
   const projectGroups = useMemo(
     () => groupProjectsByTypeAndMonth(visibleProjects),
@@ -476,7 +496,7 @@ const ProjectListScreen = ({
       );
 
       p.tags.forEach((tag) => {
-        if (tag.status === "private" && tag.user !== displayUserName) return;
+        if (tag.status === "private" && !canViewRecordedTag(tag, viewingViewer)) return;
 
         const individualTags = tag.label
           .split("+")
@@ -512,7 +532,7 @@ const ProjectListScreen = ({
 
     clips.sort((a, b) => a.start - b.start);
     return { allClips: clips, availableTags: Array.from(tagSet).sort() };
-  }, [highlightClipProjects, displayUserName, getProjectTagGroup, notePlayback, projects]);
+  }, [highlightClipProjects, displayUserName, currentUserUid, getProjectTagGroup, notePlayback, projects]);
 
   const currentClips = useMemo(() => {
     if (selectedHighlightTags.length === 0) {
@@ -1096,6 +1116,52 @@ const ProjectListScreen = ({
     setIsPlaying(false);
   };
 
+  const handleOpenViewingProject = (project) => {
+    if (!viewingScreenActive.current) return;
+    if (Array.isArray(project.videoIds)) {
+      setReferencedHighlight(project);
+      setLoadedHighlightId(project.id);
+    }
+    setViewingChoices(null);
+    setViewingDraftVideos(null);
+    setActiveTab("summary");
+    handleOpenHighlightProject(project.id);
+  };
+
+  useEffect(() => {
+    const id = route?.params?.viewingProjectId;
+    if (!focused || !id || notePicker || notePlayback) return;
+    if (route.params.viewingTeamId === activeTeamId) handleOpenViewingProject({ id });
+    navigation.setParams({ viewingProjectId: undefined, viewingTeamId: undefined });
+  }, [focused, activeTeamId, route?.params?.viewingProjectId, route?.params?.viewingTeamId]);
+
+  const handleViewTaggedVideo = (video) => {
+    if (viewingRegistration.status !== "ready") return;
+    const matches = viewingRegistration.byVideo[video.id] || [];
+    if (matches.length === 1) handleOpenViewingProject(matches[0]);
+    else if (matches.length > 1) setViewingChoices(matches);
+    else if (viewingAccess.canCreate || viewingAccess.canAdd) setViewingDraftVideos([video]);
+  };
+
+  const renderViewingGuidance = () => {
+    if (!taggedViewingVideos.length) return null;
+    if (viewingRegistration.status === "error") return (
+      <View style={styles.viewingGuide}>
+        <Text style={styles.viewingGuideText}>閲覧への追加状況を確認できません。通信状態を確認してください。</Text>
+        <TouchableOpacity accessibilityRole="button" onPress={viewingRegistration.retry}><Text style={styles.viewingLink}>追加状況を再確認</Text></TouchableOpacity>
+      </View>
+    );
+    if (!unregisteredViewingVideos.length) return null;
+    return (
+      <View style={styles.viewingGuide}>
+        <Text style={styles.viewingGuideText}>表示中の動画のうち、タグを記録した動画が{unregisteredViewingVideos.length}件、閲覧用プロジェクトに未追加です。</Text>
+        {viewingAccess.canCreate || viewingAccess.canAdd ? (
+          <TouchableOpacity accessibilityRole="button" onPress={() => setViewingDraftVideos(unregisteredViewingVideos)}><Text style={styles.viewingLink}>閲覧用プロジェクトに追加する</Text></TouchableOpacity>
+        ) : <Text style={styles.viewingGuideText}>動画追加の権限を持つメンバーに、閲覧用プロジェクトへの追加を依頼してください。</Text>}
+      </View>
+    );
+  };
+
   const handleCreateHighlightProject = async () => {
     const trimmedTitle = highlightProjectTitle.trim();
     if (!trimmedTitle) {
@@ -1116,7 +1182,8 @@ const ProjectListScreen = ({
     setIsSavingHighlightProject(true);
     try {
       if (activeTeamId) {
-        await createHighlightProject(activeTeamId, newHighlightProject);
+        const id = await createHighlightProject(activeTeamId, newHighlightProject);
+        handleOpenViewingProject({ ...newHighlightProject, id });
       }
       setIsHighlightProjectModalVisible(false);
       setHighlightProjectTitle("");
@@ -1273,6 +1340,8 @@ const ProjectListScreen = ({
 
   const renderProjectItem = ({ item }) => {
     const normalizedType = normalizeProjectType(item);
+    const hasTags = hasViewingTags(item, viewingViewer);
+    const registered = Boolean(viewingRegistration.byVideo[item.id]?.length);
 
     return (
       <TouchableOpacity
@@ -1320,6 +1389,17 @@ const ProjectListScreen = ({
         {!item.videoUrl && (
           <Text style={styles.noUrlText}>※ 動画未設定</Text>
         )}
+        {hasTags && <View style={styles.viewingStatusRow}>
+          <Text style={styles.viewingStatus}>
+            {viewingRegistration.status === "ready" ? registered ? "閲覧に追加済み" : "閲覧に未追加"
+              : viewingRegistration.status === "error" ? "閲覧への追加状況を確認できません" : "閲覧への追加状況を確認中…"}
+          </Text>
+          {viewingRegistration.status === "ready" && (registered || viewingAccess.canCreate || viewingAccess.canAdd) && (
+            <TouchableOpacity accessibilityRole="button" onPress={(event) => { event?.stopPropagation?.(); handleViewTaggedVideo(item); }}>
+              <Text style={styles.viewingLink}>{registered ? "閲覧を開く" : "閲覧に追加する"}</Text>
+            </TouchableOpacity>
+          )}
+        </View>}
       </TouchableOpacity>
     );
   };
@@ -1505,8 +1585,20 @@ const ProjectListScreen = ({
         data={activeHighlightProjects}
         keyExtractor={(item) => item.id}
         renderItem={renderHighlightProjectItem}
+        ListHeaderComponent={renderViewingGuidance()}
         ListEmptyComponent={
-          <Text style={styles.emptyText}>プロジェクトがありません。</Text>
+          notePicker ? <Text style={styles.emptyText}>プロジェクトがありません。</Text> : highlightHistory?.busy ? <Text style={styles.emptyText}>閲覧用プロジェクトを読み込み中…</Text> : (
+            <View style={styles.viewingGuide}>
+              <Text style={styles.viewingGuideTitle}>タグ付けした場面を見返しましょう</Text>
+              <Text style={styles.viewingGuideText}>動画編集でタグを記録した後は、閲覧用プロジェクトに動画を追加すると、場面を探して再生できます。</Text>
+              {unregisteredViewingVideos.length > 0 && (viewingAccess.canCreate || viewingAccess.canAdd) ? (
+                <TouchableOpacity accessibilityRole="button" onPress={() => setViewingDraftVideos(unregisteredViewingVideos)}><Text style={styles.viewingLink}>閲覧用プロジェクトを作る</Text></TouchableOpacity>
+              ) : <>
+                <TouchableOpacity accessibilityRole="button" onPress={() => setActiveTab("list")}><Text style={styles.viewingLink}>タグ付けする動画を選ぶ</Text></TouchableOpacity>
+                {!viewingAccess.canCreate && <Text style={styles.viewingGuideText}>閲覧用プロジェクトの作成は、動画追加の権限を持つメンバーに依頼してください。</Text>}
+              </>}
+            </View>
+          )
         }
       />
     </>
@@ -2065,6 +2157,7 @@ const ProjectListScreen = ({
               data={projectHierarchyRows}
               keyExtractor={(item) => item.key}
               renderItem={renderProjectHierarchyItem}
+              ListHeaderComponent={renderViewingGuidance()}
               ListEmptyComponent={
                 <Text style={styles.emptyText}>動画がありません。</Text>
               }
@@ -2074,6 +2167,13 @@ const ProjectListScreen = ({
       </View>
       {scrollNotePickerDetail && currentClips.length > 0 && renderNoteSelectionControls()}
       </ScreenBody>
+
+      {focused && viewingDraftVideos && <VideoViewingRegistrationModal
+        teamId={activeTeamId} videos={viewingDraftVideos} viewer={viewingViewer}
+        onCompleted={(project) => { viewingRegistration.retry(); handleOpenViewingProject(project); }}
+        onClose={() => setViewingDraftVideos(null)}
+      />}
+      {focused && viewingChoices && <ViewingProjectPicker projects={viewingChoices} onSelect={handleOpenViewingProject} onClose={() => setViewingChoices(null)} />}
 
       {/* プロジェクト作成モーダル */}
       <Modal visible={isModalVisible} transparent={true} animationType="slide">
@@ -2496,6 +2596,12 @@ const ProjectListScreen = ({
 };
 
 const styles = StyleSheet.create({
+  viewingGuide: { backgroundColor: "#eaf5ff", borderRadius: 10, padding: 14, marginBottom: 12 },
+  viewingGuideTitle: { fontWeight: "bold", fontSize: 15, color: "#234e70", marginBottom: 6 },
+  viewingGuideText: { color: "#334e68", fontSize: 13, lineHeight: 20 },
+  viewingLink: { color: "#0077cc", fontWeight: "bold", fontSize: 13, paddingVertical: 10 },
+  viewingStatusRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", marginTop: 6 },
+  viewingStatus: { color: "#555", fontSize: 12 },
   container: { flex: 1, backgroundColor: "#f0f2f5" },
   header: {
     height: 60,
