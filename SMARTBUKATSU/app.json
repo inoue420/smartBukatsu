@@ -5,11 +5,11 @@
     "scheme": "smartbukatsu",
     "version": "1.1.7",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/icon_ios.png",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "splash": {
-      "image": "./assets/splash-icon.png",
+      "image": "./assets/icon_android.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
