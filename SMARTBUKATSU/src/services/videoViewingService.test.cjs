@@ -11,8 +11,8 @@ const deferred = () => { let resolve, reject; const promise = new Promise((a, b)
 const viewer = { userRole: "owner", currentUserUid: "self", displayUserName: "監督", canUploadVideos: false };
 const video = (id, patch = {}) => ({ id, title: id, videoUrl: "https://youtu.be/abcdefghijk", tags: [{ id: "t", label: "得点", videoTime: 10, status: "shared", uid: "self", user: "監督" }], ...patch });
 const snap = (items) => ({ docs: items.map(({ id, ...value }) => ({ id, data: () => value })) });
-function load(file, modules) {
-  const code = transformSync(fs.readFileSync(path.join(root, file), "utf8"), {
+function load(file, modules, prepare = (source) => source) {
+  const code = transformSync(prepare(fs.readFileSync(path.join(root, file), "utf8")), {
     configFile: false, babelrc: false, plugins: ["@babel/plugin-transform-react-jsx", "@babel/plugin-transform-modules-commonjs"],
   }).code;
   const module = { exports: {} };
@@ -199,7 +199,7 @@ for (const os of ["android", "ios"]) {
   });
 }
 
-function screenEnvironment(name, { role = "owner", registration = { status: "ready", byVideo: { a: [] }, retry: idle }, params = {}, os = "android" } = {}) {
+function screenEnvironment(name, { role = "owner", registration = { status: "ready", byVideo: { a: [] }, retry: idle }, params = {}, os = "android", popupEnabled = true } = {}) {
   const h = hooks(), navigationCalls = [], alerts = [], writes = [], historyRequests = [];
   let focused = true;
   const v = video("a", { tags: [{ id: "t", label: "得点", videoTime: 10, status: "private", uid: "self", user: "監督" }] });
@@ -222,7 +222,12 @@ function screenEnvironment(name, { role = "owner", registration = { status: "rea
     "../components/VideoViewingRegistrationModal": { __esModule: true, default: "ViewingModal", ViewingProjectPicker: "ViewingPicker" },
     "../services/firestoreService": { updateProject: (...args) => { const d = deferred(); writes.push({ args, ...d }); return d.promise; } },
   };
-  const component = load(`src/screens/${name}.js`, modules).default;
+  const component = load(`src/screens/${name}.js`, modules, (source) => {
+    if (popupEnabled) return source;
+    const flag = "const POST_PUBLISH_VIEWING_PROMPT_ENABLED = true;";
+    assert.ok(source.includes(flag));
+    return source.replace(flag, "const POST_PUBLISH_VIEWING_PROMPT_ENABLED = false;");
+  }).default;
   h.mount(() => component(props)); return { h, props, navigationCalls, alerts, writes, historyRequests,
     setFocused(value) { focused = value; h.render(); h.render(); }, render() { h.render(); return h.render(); } };
 }
@@ -273,6 +278,7 @@ test("failed tag publication keeps private tags and exposes a retry instead of c
   e.writes[0].reject(new Error("offline")); await publish; e.render();
   assert.ok(button(e.h, "📢 自分のみのタグ(1件)を一括公開"));
   assert.equal(e.alerts.at(-1)[0], "公開エラー");
+  assert.equal(walk(e.h.tree, node => node.type === "ViewingModal").length, 0);
 });
 
 test("repeat additions do not write; source deletions and removed tags prevent new creation", async () => {
@@ -328,4 +334,106 @@ test("leaving the tagging screen during duration save prevents late dialogs or n
   e.setFocused(false); e.writes[0].resolve(); await attempt; e.render();
   assert.equal(walk(e.h.tree, node => node.type === "ViewingModal").length, 0);
   assert.equal(e.navigationCalls.length, 0);
+});
+
+async function publishSuccessfully(e) {
+  const start = e.writes.length;
+  button(e.h, "📢 自分のみのタグ(1件)を一括公開").onPress();
+  const saving = e.alerts.at(-1)[2].find(item => item.text === "公開する").onPress();
+  e.writes[start].resolve(); await saving; e.render();
+}
+
+test("publication waits for server membership confirmation; dismissing retains the existing inline route", async () => {
+  let checks = 0;
+  const registration = { status: "ready", byVideo: { a: [] }, retry() { checks++; registration.status = "loading"; } };
+  const e = screenEnvironment("ProjectDetailScreen", { registration });
+  await publishSuccessfully(e);
+  assert.equal(checks, 1); assert.equal(walk(e.h.tree, node => node.type === "ViewingModal").length, 0);
+  registration.status = "ready"; e.render();
+  const popup = walk(e.h.tree, node => node.type === "ViewingModal")[0];
+  assert.equal(popup.props.initialPrompt, true);
+  e.render(); assert.equal(checks, 1);
+  popup.props.onClose(); e.render();
+  assert.equal(walk(e.h.tree, node => node.type === "ViewingModal").length, 0);
+  assert.ok(button(e.h, "タグ付けした場面を見返す"));
+  await button(e.h, "タグ付けした場面を見返す").onPress(); e.render();
+  assert.equal(walk(e.h.tree, node => node.type === "ViewingModal")[0].props.initialPrompt, false);
+  assert.equal(e.writes.length, 1);
+});
+
+test("a registered video, a failed lookup, and a member without upload permission do not receive the popup", async () => {
+  for (const situation of ["registered", "lookup-failed", "no-permission"]) {
+    let checks = 0;
+    const registration = { status: "ready", byVideo: { a: situation === "registered" ? [{ id: "existing" }] : [] },
+      retry() { checks++; if (situation === "lookup-failed") registration.status = "error"; } };
+    const e = screenEnvironment("ProjectDetailScreen", { registration,
+      role: situation === "no-permission" ? "member" : "owner", params: { canEditTags: true } });
+    await publishSuccessfully(e);
+    assert.equal(walk(e.h.tree, node => node.type === "ViewingModal").length, 0);
+    assert.equal(checks, situation === "no-permission" ? 0 : 1);
+    registration.status = "ready"; e.render();
+    assert.equal(walk(e.h.tree, node => node.type === "ViewingModal").length, 0);
+  }
+});
+
+test("leaving during post-publication checking cancels the popup even when the result arrives later", async () => {
+  const registration = { status: "ready", byVideo: { a: [] }, retry() { registration.status = "loading"; } };
+  const e = screenEnvironment("ProjectDetailScreen", { registration }); await publishSuccessfully(e);
+  e.setFocused(false); registration.status = "ready"; e.setFocused(true); e.render();
+  assert.equal(walk(e.h.tree, node => node.type === "ViewingModal").length, 0);
+  assert.equal(e.navigationCalls.length, 0);
+});
+
+test("a pending invitation belongs to the published video and cannot transfer to another video", async () => {
+  const registration = { status: "ready", byVideo: { a: [] }, retry() { registration.status = "loading"; } };
+  const e = screenEnvironment("ProjectDetailScreen", { registration }); await publishSuccessfully(e);
+  e.props.route.params.project = video("b"); e.props.projects = [video("b")]; e.render();
+  registration.status = "ready"; registration.byVideo = { b: [] }; e.render();
+  assert.equal(walk(e.h.tree, node => node.type === "ViewingModal").length, 0);
+});
+
+test("turning the trial flag off restores inline-only guidance without the additional lookup", async () => {
+  let checks = 0;
+  const e = screenEnvironment("ProjectDetailScreen", { popupEnabled: false,
+    registration: { status: "ready", byVideo: { a: [] }, retry() { checks++; } } });
+  await publishSuccessfully(e);
+  assert.equal(checks, 0);
+  assert.equal(walk(e.h.tree, node => node.type === "ViewingModal").length, 0);
+  assert.ok(button(e.h, "タグ付けした場面を見返す"));
+});
+
+test("recording a tag does not interrupt tagging with a popup", async () => {
+  const e = screenEnvironment("ProjectDetailScreen");
+  button(e.h, "得点").onPress(); e.render();
+  const saving = button(e.h, "「得点」で記録する").onPress();
+  e.writes[0].resolve(); await saving; e.render();
+  assert.equal(walk(e.h.tree, node => node.type === "ViewingModal").length, 0);
+});
+
+for (const os of ["android", "ios"]) {
+  test(`${os}: the optional popup advances to the existing form without saving or fetching destinations`, async () => {
+    const d = deferred(); let starts = 0, closes = 0;
+    const e = modalEnvironment(os, { initialPrompt: true, onBeforeRegister: () => { starts++; return d.promise; }, onClose: () => closes++ });
+    assert.equal(walk(e.h.tree, node => node.type === "TextInput").length, 0);
+    assert.equal(e.requests.length, 0); assert.equal(e.listCalls.length, 0);
+    const proceed = button(e.h, "閲覧に追加する").onPress;
+    const pending = proceed(); proceed(); e.h.render();
+    assert.equal(starts, 1); assert.equal(button(e.h, "あとで").disabled, true);
+    d.resolve(true); await pending; e.h.render();
+    assert.equal(walk(e.h.tree, node => node.type === "TextInput")[0].props.value, "a");
+    assert.ok(button(e.h, "追加して閲覧を開く"));
+    assert.equal(e.requests.length, 0); assert.equal(e.listCalls.length, 0);
+    const dismissed = modalEnvironment(os, { initialPrompt: true, onClose: () => closes++ });
+    button(dismissed.h, "あとで").onPress(); assert.equal(closes, 1);
+    assert.equal(dismissed.requests.length, 0);
+  });
+}
+
+test("failed preparation keeps the popup available; a late preparation cannot reopen an unmounted dialog", async () => {
+  const e = modalEnvironment("ios", { initialPrompt: true, onBeforeRegister: async () => false });
+  await button(e.h, "閲覧に追加する").onPress(); e.h.render();
+  assert.ok(button(e.h, "閲覧に追加する")); assert.equal(walk(e.h.tree, node => node.type === "TextInput").length, 0);
+  const d = deferred(); e.props.onBeforeRegister = () => d.promise; e.h.render();
+  const pending = button(e.h, "閲覧に追加する").onPress(); e.h.unmount(); d.resolve(true); await pending;
+  assert.equal(e.requests.length, 0); assert.equal(e.completed.length, 0);
 });

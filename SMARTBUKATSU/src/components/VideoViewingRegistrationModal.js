@@ -28,7 +28,8 @@ export function ViewingProjectPicker({ projects, onSelect, onClose }) {
   );
 }
 
-export default function VideoViewingRegistrationModal({ teamId, videos, viewer, onCompleted, onClose }) {
+export default function VideoViewingRegistrationModal({ teamId, videos, viewer, onCompleted, onClose,
+  initialPrompt = false, onBeforeRegister }) {
   const { canCreate, canAdd } = viewingPermissions(viewer.userRole, viewer.canUploadVideos);
   const candidates = videos.filter((video) => hasViewingTags(video, viewer));
   const [selectedIds, setSelectedIds] = useState(() => candidates.map((video) => video.id));
@@ -42,13 +43,16 @@ export default function VideoViewingRegistrationModal({ teamId, videos, viewer, 
   const [saveError, setSaveError] = useState("");
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
+  const [promptActive, setPromptActive] = useState(initialPrompt);
+  const [starting, setStarting] = useState(false);
+  const startingRef = useRef(false);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; };
   }, []);
   useEffect(() => {
-    if (mode !== "existing" || !canAdd) return undefined;
+    if (promptActive || mode !== "existing" || !canAdd) return undefined;
     let current = true;
     setLoading(true); setLoadError(""); setDestinationId("");
     listVideoViewingProjects(teamId).then((items) => {
@@ -57,12 +61,25 @@ export default function VideoViewingRegistrationModal({ teamId, videos, viewer, 
       if (current) { setLoadError("追加先を確認できません。通信状態を確認して再試行してください。"); setLoading(false); }
     });
     return () => { current = false; };
-  }, [teamId, mode, canAdd, attempt]);
+  }, [teamId, mode, canAdd, attempt, promptActive]);
   const selectedVideos = candidates.filter((video) => selectedIds.includes(video.id));
   const privateCount = ownPrivateTagCount(selectedVideos, viewer);
   const canPublish = ["owner", "admin", "staff", "captain"].includes(viewer.userRole) ||
     (["member", "guardian"].includes(viewer.userRole) && Boolean(viewer.canEditTags));
-  const close = () => { if (!savingRef.current) onClose(); };
+  const close = () => { if (!savingRef.current && !startingRef.current) onClose(); };
+  const beginRegistration = async () => {
+    if (startingRef.current || !(canCreate || canAdd)) return;
+    startingRef.current = true; setStarting(true); setSaveError("");
+    try {
+      const allowed = onBeforeRegister ? await onBeforeRegister() : true;
+      if (mounted.current && allowed !== false) setPromptActive(false);
+    } catch {
+      if (mounted.current) setSaveError("準備できませんでした。通信状態を確認して再試行してください。");
+    } finally {
+      startingRef.current = false;
+      if (mounted.current) setStarting(false);
+    }
+  };
   const save = async () => {
     if (savingRef.current) return;
     if ((mode === "new" && !canCreate) || (mode === "existing" && !canAdd)) return;
@@ -87,6 +104,25 @@ export default function VideoViewingRegistrationModal({ teamId, videos, viewer, 
       if (mounted.current) setSaving(false);
     }
   };
+  // Keep the same native Modal mounted when advancing to the existing form.
+  if (promptActive) return (
+    <Modal visible transparent animationType="slide" onRequestClose={close}>
+      <View style={styles.overlay}>
+        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.dialog}>
+          <Text style={styles.heading}>タグを公開しました</Text>
+          <Text style={styles.description}>この動画を「動画閲覧」に追加して、タグ付けした場面を見返しませんか？</Text>
+          <Text style={styles.description}>あとで追加する場合は、動画画面の案内からいつでも進めます。</Text>
+          {!!saveError && <Text accessibilityRole="alert" style={styles.error}>{saveError}</Text>}
+          <View style={styles.footer}>
+            <TouchableOpacity accessibilityRole="button" style={styles.cancel} onPress={close} disabled={starting}><Text>あとで</Text></TouchableOpacity>
+            {(canCreate || canAdd) && <TouchableOpacity accessibilityRole="button" style={[styles.primary, starting && styles.disabled]} onPress={beginRegistration} disabled={starting}>
+              <Text style={styles.primaryText}>{starting ? "準備中…" : "閲覧に追加する"}</Text>
+            </TouchableOpacity>}
+          </View>
+        </KeyboardAvoidingView>
+      </View>
+    </Modal>
+  );
   return (
     <Modal visible transparent animationType="slide" onRequestClose={close}>
       <View style={styles.overlay}>

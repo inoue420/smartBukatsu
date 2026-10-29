@@ -40,6 +40,8 @@ import {
 const DEFAULT_TAGS = ["得点", "罰則", "2min", "ナイス"];
 const DEFAULT_CLIP_PRE_SECONDS = 5;
 const DEFAULT_CLIP_POST_SECONDS = 3;
+// Trial: set false and reload to restore the inline-only viewing guidance.
+const POST_PUBLISH_VIEWING_PROMPT_ENABLED = true;
 
 const normalizeClipSeconds = (value, fallback = 0) => {
   const parsed = Number(value);
@@ -116,13 +118,15 @@ const ProjectDetailScreen = ({
   const [isSharingTags, setIsSharingTags] = useState(false);
   const isSharingTagsRef = useRef(false);
   const [viewingDialogOpen, setViewingDialogOpen] = useState(false);
+  const [postPublishPromptPending, setPostPublishPromptPending] = useState(null);
+  const [viewingDialogStartsWithPrompt, setViewingDialogStartsWithPrompt] = useState(false);
   const [viewingChoices, setViewingChoices] = useState(null);
   const [openingViewing, setOpeningViewing] = useState(false);
   const openingViewingRef = useRef(false);
   const viewingScreenActive = useRef(focused);
   useEffect(() => {
     viewingScreenActive.current = focused;
-    if (!focused) { setViewingDialogOpen(false); setViewingChoices(null); }
+    if (!focused) { setViewingDialogOpen(false); setViewingChoices(null); setPostPublishPromptPending(null); }
     return () => { viewingScreenActive.current = false; };
   }, [focused]);
   const [editingRecordedTag, setEditingRecordedTag] = useState(null);
@@ -188,6 +192,20 @@ const ProjectDetailScreen = ({
   const viewingVideo = { ...project, tags: localTags };
   const hasTagsForViewing = hasViewingTags(viewingVideo, viewingViewer);
   const viewingRegistration = useVideoViewingRegistration(activeTeamId, hasTagsForViewing ? [project.id] : [], focused);
+  useEffect(() => {
+    if (!postPublishPromptPending) return;
+    if (!POST_PUBLISH_VIEWING_PROMPT_ENABLED || !focused || !hasTagsForViewing || viewingRegistration.status === "error" ||
+        postPublishPromptPending.teamId !== activeTeamId || postPublishPromptPending.projectId !== project.id) {
+      setPostPublishPromptPending(null);
+      return;
+    }
+    if (isSharingTags || viewingRegistration.status !== "ready") return;
+    setPostPublishPromptPending(null);
+    if (viewingRegistration.byVideo[project.id]?.length || !(viewingAccess.canCreate || viewingAccess.canAdd)) return;
+    setViewingDialogStartsWithPrompt(true);
+    setViewingDialogOpen(true);
+  }, [postPublishPromptPending, focused, activeTeamId, hasTagsForViewing, isSharingTags, project.id,
+    viewingRegistration.status, viewingRegistration.byVideo, viewingAccess.canCreate, viewingAccess.canAdd]);
   const recordedTagStateRef = useRef(null);
   recordedTagStateRef.current = { tags: localTags, viewer: tagViewer };
 
@@ -291,7 +309,10 @@ const ProjectDetailScreen = ({
       const matches = viewingRegistration.byVideo[project.id] || [];
       if (matches.length === 1) openViewingProject(matches[0]);
       else if (matches.length > 1) setViewingChoices(matches);
-      else if (viewingAccess.canCreate || viewingAccess.canAdd) setViewingDialogOpen(true);
+      else if (viewingAccess.canCreate || viewingAccess.canAdd) {
+        setViewingDialogStartsWithPrompt(false);
+        setViewingDialogOpen(true);
+      }
     } finally {
       openingViewingRef.current = false; setOpeningViewing(false);
     }
@@ -548,6 +569,11 @@ const ProjectDetailScreen = ({
               setLocalTags(newTags);
               setProjects?.((prev) => prev.map((p) => p.id === project.id ? { ...p, tags: newTags } : p));
               showToast("📢 チーム全体に一括公開しました！");
+              if (POST_PUBLISH_VIEWING_PROMPT_ENABLED && viewingScreenActive.current &&
+                  (viewingAccess.canCreate || viewingAccess.canAdd)) {
+                setPostPublishPromptPending({ teamId: activeTeamId, projectId: project.id });
+                viewingRegistration.retry();
+              }
             } catch (error) {
               Alert.alert("公開エラー", "タグを公開できませんでした。通信状態を確認して、もう一度お試しください。");
             } finally {
@@ -1145,6 +1171,11 @@ const ProjectDetailScreen = ({
       )}
 
       {focused && viewingDialogOpen && <VideoViewingRegistrationModal teamId={activeTeamId} videos={[viewingVideo]} viewer={viewingViewer}
+        initialPrompt={viewingDialogStartsWithPrompt}
+        onBeforeRegister={async () => {
+          if (hasUnsavedClipSettings && !(await saveGlobalClipSettings())) return false;
+          return viewingScreenActive.current;
+        }}
         onCompleted={openViewingProject} onClose={() => setViewingDialogOpen(false)} />}
       {focused && viewingChoices && <ViewingProjectPicker projects={viewingChoices} onSelect={openViewingProject} onClose={() => setViewingChoices(null)} />}
 
