@@ -186,6 +186,7 @@ test("startup waits for the gate; navigation owns bounded listeners; rollback re
     "./src/hooks/useHistoryData": hook, "./src/services/firestoreService": legacy,
     "./src/hooks/useDailyReportHistory": dailyHook,
     "./src/hooks/useAppReview": { useAppReview: () => ({ cancelReview: idle, completeInteraction: idle, reviewNavigationChanged: idle }) },
+    "./src/hooks/useTeamInvitation": { useTeamInvitation: () => ({ invitationReady: true, pendingInvitation: null }) },
     "./src/utils/dailyReportScope": require("../utils/dailyReportScope"),
     "./src/services/dailyReportReadService": { subscribeUnreviewedReports: watch("unreviewed"), subscribeRosterLatestReports: watch("rosterFallback") },
     "./src/services/historyDataService": Object.fromEntries(["LoadingState", "LoadingSummary", "LatestReports", "PostReadStates", "PinnedPosts"].map((name) => ["subscribe" + name, watch(name)])),

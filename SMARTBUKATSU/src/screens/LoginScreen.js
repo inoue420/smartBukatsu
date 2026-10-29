@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -15,6 +15,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../AuthContext";
+import { useTeamInvitation } from "../hooks/useTeamInvitation";
 import {
   CUSTOM_SPORT_OPTIONS,
   SPORT_CATEGORIES,
@@ -28,6 +29,7 @@ import {
 
 const LoginScreen = () => {
   const { signIn, signUp, resetPassword } = useAuth();
+  const { pendingInvitation, clearInvitation, storageError } = useTeamInvitation();
   const [isLogin, setIsLogin] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -45,6 +47,13 @@ const LoginScreen = () => {
   const [inviteCode, setInviteCode] = useState(""); // 部員用
   const [eligibilityConfirmed, setEligibilityConfirmed] = useState(false);
   const [legalAccepted, setLegalAccepted] = useState(false);
+
+  useEffect(() => {
+    if (!pendingInvitation) return;
+    setInviteCode(pendingInvitation.code);
+    setRole("member");
+    setIsLogin(false);
+  }, [pendingInvitation?.id]);
 
   // ★ 追加：パスワードリセット用の状態
   const [isResetModalVisible, setIsResetModalVisible] = useState(false);
@@ -122,6 +131,10 @@ const LoginScreen = () => {
           },
         );
 
+        if (role === "member" && pendingInvitation) {
+          clearInvitation(pendingInvitation.id);
+        }
+
         Alert.alert(
           "確認メールを送信しました",
           "メール内のリンクを開いてメールアドレスを確認してください。",
@@ -183,7 +196,7 @@ const LoginScreen = () => {
     setSportCategory("");
     setSportName("");
     setCustomSportName("");
-    setInviteCode("");
+    setInviteCode(pendingInvitation?.code || "");
     setEligibilityConfirmed(false);
     setLegalAccepted(false);
   };
@@ -212,6 +225,17 @@ const LoginScreen = () => {
         >
           <View style={styles.card}>
             <Text style={styles.appTitle}>スマート部活 📱</Text>
+
+            {pendingInvitation && (
+              <View style={{ marginBottom: 18 }}>
+                <Text style={styles.label}>招待コードを受け取りました：{pendingInvitation.code}</Text>
+                <Text>初めての方はこのまま部員として登録してください。アカウントをお持ちの方は「ログイン」へ進むと、チーム参加へ引き継ぎます。</Text>
+                {storageError && <Text>端末へ保存できませんでした。アプリを閉じた場合は、招待リンクをもう一度押してください。</Text>}
+                <TouchableOpacity onPress={() => { clearInvitation(pendingInvitation.id); setInviteCode(""); }}>
+                  <Text style={[styles.label, { marginTop: 10 }]}>この招待を取り消す</Text>
+                </TouchableOpacity>
+              </View>
+            )}
 
             {/* タブ切り替え */}
             <View style={styles.tabContainer}>

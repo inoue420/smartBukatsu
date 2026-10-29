@@ -41,7 +41,7 @@ function renderHarness() {
     dirty = false; cursor = 0; effects = []; tree = component(); effects.forEach(fn => fn()); } return tree; }
   function all(predicate, node = tree) {
     if (!node || typeof node !== "object" || (node.type === "Modal" && node.props.visible === false)) return [];
-    return [...(predicate(node) ? [node] : []), ...(Array.isArray(node) ? node : node.children || []).flatMap(child => all(predicate, child))];
+    return [...(predicate(node) ? [node] : []), ...(Array.isArray(node) ? node : node.children || []).flatMap(child => all(predicate, child ?? null))];
   }
   function text(node) { if (node == null || typeof node === "boolean") return "";
     if (typeof node !== "object") return typeof node === "function" ? "" : String(node);
@@ -52,6 +52,8 @@ function renderHarness() {
 }
 
 function fillImports(file, modules) {
+  modules["../utils/teamInvitation"] ||= require("../src/utils/teamInvitation");
+  modules["./src/hooks/useTeamInvitation"] ||= { useTeamInvitation: () => ({ invitationReady: true, pendingInvitation: null }) };
   for (const match of fs.readFileSync(path.join(root, file), "utf8").matchAll(/from\s+["']([^"']+)["']/g)) {
     modules[match[1]] ||= { __esModule: true, default: match[1] };
   }
@@ -94,7 +96,7 @@ function screenHarness(screen, changes = {}, overrides = {}, os = "android") {
     byLabel(label) { return h.find(node => node.props?.accessibilityLabel === label); } };
 }
 
-function appHarness() {
+function appHarness(invitation = { invitationReady: true, pendingInvitation: null }) {
   const h = renderHarness(), subscriptions = [], histories = [];
   let auth = { user: { uid: "coach" }, userName: "Coach", activeTeamId: "a", selectTeam: idle }, route = { name: "WorkspaceHome" };
   const navigation = { getCurrentRoute: () => route }, setNavigationHandler = () => idle;
@@ -114,11 +116,13 @@ function appHarness() {
     "./src/services/dailyReportReadService": { subscribeUnreviewedReports: watch("Unreviewed"), subscribeRosterLatestReports: watch("RosterFallback") },
     "./src/services/historyDataService": Object.fromEntries(["LoadingState", "LoadingSummary", "LatestReports", "PostReadStates", "PinnedPosts"].map(name => ["subscribe" + name, watch(name)])),
     "./src/AuthContext": { useAuth: () => auth }, "./src/NotificationContext": { useNotifications: () => ({ setNavigationHandler }) } };
+  modules["./src/hooks/useTeamInvitation"] = { useTeamInvitation: () => invitation };
   fillImports("App.js", modules); const { AppContent } = load("App.js", modules, "\nexport { AppContent };"); h.mount(AppContent);
   return { h, subscriptions, histories, latest: name => subscriptions.findLast(sub => sub.name === name && !sub.stops),
     screen: name => h.find(node => node.type === "Screen" && node.props.name === name).children[0]({}).props,
     change(value) { auth = { ...auth, ...value }; h.update(); },
+    changeInvitation(value) { invitation = { ...invitation, ...value }; h.update(); },
     navigate(name) { route = { name }; h.find(node => node.type === "NavigationContainer").props.onStateChange(); h.render(); } };
 }
 
-module.exports = { load, loadCalendarSettingsService, screenHarness, appHarness };
+module.exports = { load, loadCalendarSettingsService, screenHarness, appHarness, renderHarness, fillImports };

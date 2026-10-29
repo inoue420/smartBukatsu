@@ -64,6 +64,7 @@ function screenHarness(screen, overrides = {}, os = "android") {
     navigation: { setParams: idle }, route: { params: { reportId: "report" } }, setDailyReports: idle, setPosts: idle };
   const file = path.join(root, `src/screens/${screen}.js`), storage = overrides.draftStorage || new Map();
   const modules = { react: h.react, "../AuthContext": { useAuth: () => auth },
+    "../utils/teamInvitation": require("../utils/teamInvitation"),
     "react-native": Object.fromEntries(["View", "Text", "TextInput", "TouchableOpacity", "ScrollView", "Modal", "KeyboardAvoidingView", "ActivityIndicator", "Image", "Switch"].map(name => [name, name])),
     "react-native-safe-area-context": { SafeAreaView: "SafeAreaView" },
     "../services/firestoreService": services,
@@ -217,6 +218,7 @@ test("App reads the gate from the existing team listener, defaults OFF, and igno
   const watch = name => (...args) => { calls.push({ name, args }); return idle; };
   const legacy = Object.fromEntries(["Projects", "HighlightProjects", "DailyReports", "Notices", "WorkspacePosts", "PersonalEvents", "ClubEvents", "TagGroups", "TeamData", "TeamMembers"].map(name => ["subscribe" + name, watch(name)]));
   const modules = { react: h.react, "./src/AuthContext": { useAuth: () => auth },
+    "./src/hooks/useTeamInvitation": { useTeamInvitation: () => ({ invitationReady: true, pendingInvitation: null }) },
     "./src/NotificationContext": { useNotifications: () => ({ setNavigationHandler: () => idle }) },
     "./src/services/firestoreService": legacy, "./src/services/historyDataService": { subscribeLoadingState: watch("LoadingState") },
     "./src/hooks/useHistoryData": { useHistoryData: () => ({ include: idle }) },

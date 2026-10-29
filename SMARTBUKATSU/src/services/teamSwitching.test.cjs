@@ -85,6 +85,7 @@ function appHarness() {
     "../services/historyDataService": { subscribeHistory: watch("History"), readHistoryPage: async () => ({ items: [], hasMore: false }), subscribeHistoryDocument: watch("Document") } });
   const modules = {
     react: h.react, "@react-navigation/native": { NavigationContainer: "NavigationContainer", useNavigationContainerRef: () => ({ getCurrentRoute: () => ({ name: "WorkspaceHome" }) }) },
+    "./src/hooks/useTeamInvitation": { useTeamInvitation: () => ({ invitationReady: true, pendingInvitation: null }) },
     "@react-navigation/native-stack": { createNativeStackNavigator: () => ({ Screen: "Screen", Navigator: "Navigator" }) },
     "react-native": { LogBox: { ignoreLogs: idle }, AppState: { currentState: "active", addEventListener: () => ({ remove: idle }) },
       Alert: { alert: idle }, Platform: { OS: "android" }, View: "View", Text: "Text", ActivityIndicator: "ActivityIndicator" },
@@ -184,6 +185,7 @@ async function screenHarness(os = "android", canGoBack = true) {
     reset: value => navigations.push({ teamId: auth.activeTeamId, route: value.routes[0].name }), getState: () => ({ routeNames: ["WorkspaceHome"] }) };
   const modules = {
     react: h.react, "react-native": { ActivityIndicator: "ActivityIndicator", Alert: { alert: (...args) => alerts.push(args) }, KeyboardAvoidingView: "KeyboardAvoidingView", Modal: "Modal", Platform: { OS: os }, ScrollView: "ScrollView", StyleSheet: { create: value => value }, Text: "Text", TextInput: "TextInput", TouchableOpacity: "TouchableOpacity", View: "View" },
+    "../hooks/useTeamInvitation": { useTeamInvitation: () => ({ pendingInvitation: null }) },
     "react-native-safe-area-context": { SafeAreaView: "SafeAreaView" }, "@react-navigation/native": { useFocusEffect: fn => h.react.useEffect(fn, [fn]) },
     "@react-native-async-storage/async-storage": { __esModule: true, default: {} }, "firebase/auth": {}, "../firebase": { auth: {} },
     "../AuthContext": { useAuth: () => auth }, "../NotificationContext": { useNotifications: () => ({ unreadByTeam: {} }) },

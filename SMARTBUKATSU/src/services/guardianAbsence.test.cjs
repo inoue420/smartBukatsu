@@ -65,6 +65,7 @@ function screenHarness(screen = "CalendarScreen", changes = {}, overrides = {}, 
     "../ads/AdManager": { useAds: () => ({ diagnostics: {} }) }, "../ads/adSettings": require("../ads/adSettings"),
     "../ads/adDiagnostics": { formatAdDiagnostics: () => "" }, "../services/firestoreSubscription": { firestoreDiagnosticsEnabled: false },
     "../constants/sportsCategories": require("../constants/sportsCategories"),
+    "../utils/teamInvitation": require("../utils/teamInvitation"),
     "@react-native-async-storage/async-storage": { __esModule: true, default: { getItem: async () => null, setItem: async () => {} } } };
   Object.assign(modules["react-native"], { StyleSheet: { create: (value) => value }, Platform: { OS: os },
     Alert: { alert: (...args) => alerts.push(args) }, Keyboard: { dismiss: idle }, Linking: {} });
