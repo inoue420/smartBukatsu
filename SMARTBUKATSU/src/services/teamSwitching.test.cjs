@@ -141,10 +141,13 @@ test("A -> B -> A resumes legacy data for absent settings and ignores old team c
 
 async function authHarness() {
   const h = componentHarness(), calls = [], switches = [], savedOperations = []; let authCallback;
+  const auth = { currentUser: null };
   const sdk = { doc: (...args) => args, getDoc: async () => ({ exists: () => true, data: () => ({}) }), setDoc: async () => {}, serverTimestamp: idle };
   const { AuthProvider } = load(path.join(root, "src/AuthContext.js"), { react: h.react,
-    "firebase/auth": { onAuthStateChanged: (_auth, fn) => { authCallback = fn; return idle; } }, "firebase/firestore": sdk,
-    "./firebase": { auth: {}, db: "demo" }, "./services/notificationService": { unregisterPushTokenForCurrentDevice: idle, setPushRegistrationSession: idle },
+    "firebase/auth": { onAuthStateChanged: (_auth, fn) => { authCallback = u => { auth.currentUser = u; return fn(u); }; return idle; } }, "firebase/firestore": sdk,
+    "@react-native-async-storage/async-storage": { __esModule: true, default: { getItem: async () => null } },
+    "./utils/pendingRegistration": require("../utils/pendingRegistration"),
+    "./firebase": { auth, db: "demo" }, "./services/notificationService": { unregisterPushTokenForCurrentDevice: idle, setPushRegistrationSession: idle },
     "./services/firestoreSubscription": { measuredOnSnapshot: (name, ref, next, error) => { const sub = { name, ref, next, error }; calls.push(sub); return idle; } },
     "./services/firestoreService": { switchActiveTeam: (uid, teamId) => { const result = deferred(); switches.push({ uid, teamId, ...result }); return result.promise; },
       ...Object.fromEntries(["createTeam", "joinTeamWithInvite"].map(name => [name, (...args) => { const result = deferred(); savedOperations.push({ name, args, ...result }); return result.promise; }])) },

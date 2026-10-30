@@ -347,7 +347,20 @@ export async function switchActiveTeam(uid, teamId) {
   await rememberTeamMembership(uid, teamId);
 }
 
-export async function createTeam(uid, teamName, userName = "ゲスト", sport = {}) {
+export function createRegistrationTeamIdentity() {
+  return { teamId: doc(collection(db, "teams")).id, teamInviteCode: generateInviteCode() };
+}
+
+function assertEmailVerified(uid) {
+  if (!uid || auth.currentUser?.uid !== uid || auth.currentUser.emailVerified !== true) {
+    const error = new Error("メールアドレスの確認を完了してから、チームへの参加・作成をお試しください。");
+    error.code = "auth/email-not-verified";
+    throw error;
+  }
+}
+
+export async function createTeam(uid, teamName, userName = "ゲスト", sport = {}, identity = null) {
+  assertEmailVerified(uid);
   if (!uid) throw new Error("ユーザー情報を確認できませんでした。");
   const trimmedTeamName = (teamName || "").trim();
   if (!trimmedTeamName) throw new Error("チーム名を入力してください。");
@@ -359,13 +372,21 @@ export async function createTeam(uid, teamName, userName = "ゲスト", sport = 
     throw new Error("競技名を入力してください。");
   }
 
-  await assertCanAddTeam(uid);
-
-  const newTeamRef = doc(collection(db, "teams"));
+  const newTeamRef = identity?.teamId ? doc(db, "teams", identity.teamId) : doc(collection(db, "teams"));
   const teamId = newTeamRef.id;
-  const generatedInviteCode = generateInviteCode();
+  const teamIds = await assertCanAddTeam(uid, teamId);
+  // A lost response or failed local cleanup must not create another team.
+  if (identity?.teamId && teamIds.includes(teamId)) {
+    const existing = await getDoc(newTeamRef);
+    if (!existing.exists() || existing.data().createdBy !== uid) {
+      throw new Error("作成済みチームを確認できませんでした。");
+    }
+    return { teamId, inviteCode: existing.data().inviteCode, type: "create" };
+  }
+  const generatedInviteCode = identity?.teamInviteCode || generateInviteCode();
+  const batch = writeBatch(db);
 
-  await setDoc(newTeamRef, {
+  batch.set(newTeamRef, {
     name: trimmedTeamName,
     createdBy: uid,
     originalCreatorUid: uid,
@@ -378,24 +399,26 @@ export async function createTeam(uid, teamName, userName = "ゲスト", sport = 
     ...(customSportName ? { customSportName } : {}),
   });
 
-  await setDoc(doc(db, "teams", teamId, "members", uid), {
+  batch.set(doc(db, "teams", teamId, "members", uid), {
     name: userName || "ゲスト",
     role: "admin",
     joinedAt: serverTimestamp(),
   });
 
-  await rememberTeamMembership(uid, teamId);
-  await setDoc(doc(db, "invites", generatedInviteCode), {
+  batch.set(doc(db, "users", uid), { activeTeamId: teamId, teamIds: arrayUnion(...teamIds, teamId) }, { merge: true });
+  batch.set(doc(db, "invites", generatedInviteCode), {
     teamId: teamId,
     active: true,
     createdBy: uid,
     createdAt: serverTimestamp(),
   });
+  await batch.commit();
 
   return { inviteCode: generatedInviteCode, teamId, type: "create" };
 }
 
 export async function joinTeamWithInvite(uid, inviteCodeInput, userName = "ゲスト") {
+  assertEmailVerified(uid);
   if (!uid) throw new Error("ユーザー情報を確認できませんでした。");
   const inviteCode = (inviteCodeInput || "").trim();
   if (!inviteCode) throw new Error("招待コードを入力してください。");
@@ -912,7 +935,7 @@ export async function executeRegistration(
   userName,
   teamName,
   inviteCodeInput,
-  { emailVerificationRequired = false, legalConsent = {}, sport = {} } = {},
+  { emailVerificationRequired = false, legalConsent = {}, sport = {}, deferTeam = false } = {},
 ) {
   if (
     legalConsent.minimumAgeConfirmed !== true ||
@@ -941,6 +964,8 @@ export async function executeRegistration(
     },
     { merge: true },
   );
+
+  if (deferTeam) return { type: "pending" };
 
   if (role === "admin") {
     return createTeam(uid, teamName, userName, sport);

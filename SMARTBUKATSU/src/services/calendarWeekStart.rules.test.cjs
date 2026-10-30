@@ -18,7 +18,7 @@ test("real rules: supervisor-only boolean, team isolation, shared reads, OFF/def
   const a = db.collection("teams").doc("calendar-team-a"), b = db.collection("teams").doc("calendar-team-b");
   const client = uid => {
     const app = initializeApp({ projectId, apiKey: "emulator-only", appId: "emulator-only" }, `calendar-${uid}`);
-    const value = sdk.getFirestore(app); sdk.connectFirestoreEmulator(value, "127.0.0.1", 8189, { mockUserToken: { sub: uid } });
+    const value = sdk.getFirestore(app); sdk.connectFirestoreEmulator(value, "127.0.0.1", 8189, { mockUserToken: { sub: uid, email_verified: true } });
     clients.push({ app, db: value }); return value;
   };
   const denied = promise => assert.rejects(promise, error => error.code === "permission-denied");

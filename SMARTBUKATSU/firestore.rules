@@ -4,6 +4,7 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     function signedIn() { return request.auth != null; }
+    function emailVerified() { return signedIn() && request.auth.token.get('email_verified', false) == true; }
     function uid() { return request.auth.uid; }
 
     function isMember(teamId) {
@@ -106,7 +107,7 @@ service cloud.firestore {
     match /invites/{code} {
       allow get: if signedIn();
       allow list: if false;
-      allow create: if signedIn() && request.resource.data.createdBy == uid();
+      allow create: if emailVerified() && request.resource.data.createdBy == uid();
       allow update, delete: if signedIn() && isManager(resource.data.teamId);
     }
 
@@ -122,7 +123,7 @@ service cloud.firestore {
       allow get: if isMember(teamId);
       allow list: if false;
 
-      allow create: if signedIn() && request.resource.data.createdBy == uid()
+      allow create: if emailVerified() && request.resource.data.createdBy == uid()
         && (!request.resource.data.keys().hasAny(['originalCreatorUid']) || request.resource.data.originalCreatorUid == uid())
         && request.resource.data.get('calendarWeekStartsOnMonday', false) is bool
         && request.resource.data.get('dailyReportCommentsEnabled', false) is bool
@@ -142,9 +143,9 @@ service cloud.firestore {
       match /members/{memberId} {
         allow get, list: if isMember(teamId);
 
-        allow create: if signedIn() && memberId == uid()
+        allow create: if emailVerified() && memberId == uid()
           && !request.resource.data.keys().hasAny(['childUids', 'childMemberships', 'manualChildren']) && (
-          (get(/databases/$(database)/documents/teams/$(teamId)).data.createdBy == uid()
+          (getAfter(/databases/$(database)/documents/teams/$(teamId)).data.createdBy == uid()
             && request.resource.data.role == 'admin')
           ||
           (inviteOk(request.resource.data.inviteCode, teamId)
