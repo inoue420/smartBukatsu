@@ -9,6 +9,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../AuthContext";
+import { useTeamInvitation } from "../hooks/useTeamInvitation";
 
 const EmailVerificationScreen = () => {
   const {
@@ -16,7 +17,11 @@ const EmailVerificationScreen = () => {
     refreshEmailVerification,
     resendVerificationEmail,
     signOut,
+    isEmailVerified,
+    pendingRegistration,
+    restartTeamRegistration,
   } = useAuth();
+  const { clearInvitation } = useTeamInvitation();
   const [activeAction, setActiveAction] = useState(null);
 
   const runAction = async (action, callback) => {
@@ -33,6 +38,9 @@ const EmailVerificationScreen = () => {
     runAction("refresh", async () => {
       try {
         const verified = await refreshEmailVerification();
+        if (verified && pendingRegistration?.role === "member" && pendingRegistration.invitationId) {
+          clearInvitation(pendingRegistration.invitationId);
+        }
         if (!verified) {
           Alert.alert(
             "確認待ちです",
@@ -42,8 +50,8 @@ const EmailVerificationScreen = () => {
       } catch (error) {
         console.log("メール確認状態の再取得エラー:", error);
         Alert.alert(
-          "確認できませんでした",
-          "通信状態を確認して、時間をおいてもう一度お試しください。",
+          "確認・登録を完了できませんでした",
+          error.message || "通信状態を確認して、もう一度お試しください。",
         );
       }
     });
@@ -86,9 +94,11 @@ const EmailVerificationScreen = () => {
         <View style={styles.iconCircle}>
           <Text style={styles.icon}>✉️</Text>
         </View>
-        <Text style={styles.title}>メールアドレスを確認してください</Text>
+        <Text style={styles.title}>{isEmailVerified ? "登録を完了してください" : "メールアドレスを確認してください"}</Text>
         <Text style={styles.description}>
-          登録したメールアドレス宛に確認メールを送信しました。メール内のリンクを開くまで、アプリの主要機能は利用できません。
+          {isEmailVerified
+            ? "メールアドレスの確認は完了しています。下のボタンを押して登録を完了してください。"
+            : "確認メールのリンクを開き、この画面で確認状態を再取得してください。チームへの参加・作成はメール確認後に完了します。"}
         </Text>
         <View style={styles.emailBox}>
           <Text style={styles.emailLabel}>送信先</Text>
@@ -97,7 +107,7 @@ const EmailVerificationScreen = () => {
           </Text>
         </View>
         <Text style={styles.hint}>
-          リンクを開いた後、この画面へ戻って確認状態を再取得してください。
+          {isEmailVerified ? "招待コードが無効な場合などは、チーム情報を入力し直せます。" : "リンクを開いた後、この画面へ戻って確認状態を再取得してください。"}
         </Text>
 
         <TouchableOpacity
@@ -108,9 +118,22 @@ const EmailVerificationScreen = () => {
           {activeAction === "refresh" ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <Text style={styles.primaryButtonText}>確認状態を再取得</Text>
+            <Text style={styles.primaryButtonText}>{isEmailVerified ? "登録を完了" : "確認状態を再取得"}</Text>
           )}
         </TouchableOpacity>
+
+        {isEmailVerified && pendingRegistration && (
+          <TouchableOpacity
+            style={[styles.secondaryButton, isBusy && styles.disabledButton]}
+            disabled={isBusy}
+            onPress={() => runAction("restart", async () => {
+              try { await restartTeamRegistration(); }
+              catch (error) { Alert.alert("入力画面へ戻れませんでした", error.message); }
+            })}
+          >
+            <Text style={styles.secondaryButtonText}>チーム情報を入力し直す</Text>
+          </TouchableOpacity>
+        )}
 
         <TouchableOpacity
           style={[styles.secondaryButton, isBusy && styles.disabledButton]}

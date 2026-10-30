@@ -1566,6 +1566,10 @@ exports.joinTeamWithInvite = onCall(
       throw new HttpsError("unauthenticated", "ログインが必要です。");
     }
 
+    if (request.auth.token?.email_verified !== true) {
+      throw new HttpsError("failed-precondition", "メールアドレスの確認を完了してから参加してください。");
+    }
+
     const inviteCode = String(request.data?.inviteCode || "").trim();
     const userName = String(request.data?.userName || "ゲスト").trim() || "ゲスト";
 

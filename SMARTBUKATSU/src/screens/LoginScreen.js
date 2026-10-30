@@ -128,12 +128,9 @@ const LoginScreen = () => {
               termsAccepted: true,
               privacyPolicyAcknowledged: true,
             },
+            invitationId: role === "member" ? pendingInvitation?.id : "",
           },
         );
-
-        if (role === "member" && pendingInvitation) {
-          clearInvitation(pendingInvitation.id);
-        }
 
         Alert.alert(
           "確認メールを送信しました",

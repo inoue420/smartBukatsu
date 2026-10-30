@@ -10,7 +10,7 @@ test("operator guidance with real transactions, Rules and production notificatio
   const app = adminApp.initializeApp({ projectId }, "guidance-server"), db = admin.getFirestore(app), clients = [];
   const client = (uid) => {
     const app = initializeApp({ projectId, apiKey: "emulator-only", appId: "emulator-only" }, `guidance-${uid}-${clients.length}`);
-    const value = sdk.getFirestore(app); sdk.connectFirestoreEmulator(value, "127.0.0.1", 8195, { mockUserToken: { sub: uid } });
+    const value = sdk.getFirestore(app); sdk.connectFirestoreEmulator(value, "127.0.0.1", 8195, { mockUserToken: { sub: uid, email_verified: true } });
     clients.push({ app, db: value }); return value;
   };
   const requests = [], waits = [];

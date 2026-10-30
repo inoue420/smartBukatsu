@@ -155,7 +155,7 @@ test("received code fills team participation without joining; failed join preser
   assert.equal(s.joined.length, 1); assert.deepEqual(s.cleared, []); assert.equal(s.input("例:").props.value, "Ab12Cd"); s.h.unmount();
 });
 
-test("signup still requires both consents; a successful member signup clears the received invitation", async () => {
+test("signup still requires both consents; the invitation remains until verified registration completes", async () => {
   const signups = [], s = screenEnvironment("LoginScreen", {}, { signUp: async (...args) => signups.push(args) });
   for (const [placeholder, value] of [["例: 山田", "Synthetic"], ["email@example.com", "synthetic@example.invalid"], ["パスワード", "synthetic-password"]]) {
     s.input(placeholder).props.onChangeText(value); s.h.render();
@@ -166,7 +166,8 @@ test("signup still requires both consents; a successful member signup clears the
   s.h.all(n => n.props.accessibilityRole === "checkbox")[1].props.onPress(); s.h.render();
   await s.button("登録して始める").props.onPress();
   assert.equal(signups.length, 1); assert.equal(signups[0][2].inviteCode, "Ab12Cd"); assert.equal(signups[0][2].role, "member");
-  assert.equal(signups[0][2].legalConsent.termsAccepted, true); assert.deepEqual(s.cleared, ["invite-1"]);
+  assert.equal(signups[0][2].legalConsent.termsAccepted, true); assert.deepEqual(s.cleared, []);
+  assert.equal(signups[0][2].invitationId, "invite-1");
   assert.match(s.alerts.at(-1)[0], /確認メール/); s.h.unmount();
 });
 
