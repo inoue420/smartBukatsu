@@ -97,6 +97,60 @@ test("repair is authenticated and cannot choose a different user via request dat
   assert.equal(h.summary().unreadTotal, 0); assert.equal(h.summary("b"), undefined);
 });
 
+const initializeRequest = (uid = "a") => ({ auth: { uid }, data: { expectedUid: uid, initializePreferences: true } });
+const preferencesPath = "users/a/notificationPreferences/default";
+
+test("native preparation creates ON only for an absent document and never replays saved notifications", async () => {
+  const h = harness(); h.add("savedGuidance", { category: "operatorGuidance" });
+  const original = h.documents.get("users/a/notifications/savedGuidance");
+  const result = await h.api.ensureNotificationSummary(initializeRequest());
+  assert.equal(result.preferencesInitialized, true);
+  const preferences = h.documents.get(preferencesPath);
+  assert.equal(preferences.masterEnabled, true);
+  assert.equal(preferences.categories.operatorGuidance, true);
+  assert.equal(getVisibleUnreadSummary(h.summary(), preferences).unreadTotal, 1);
+  assert.equal(h.documents.get("users/a/notifications/savedGuidance"), original);
+  const writes = h.stats.writes;
+  await Promise.all([h.api.ensureNotificationSummary(initializeRequest()), h.api.ensureNotificationSummary(initializeRequest())]);
+  assert.equal(h.stats.writes, writes);
+});
+
+test("preparation initializes settings even when the unread summary is already ready", async () => {
+  const h = harness(); await h.api.ensureNotificationSummary(h.request());
+  const summary = h.summary(), queries = h.stats.queries;
+  assert.equal(h.documents.has(preferencesPath), false, "legacy callers do not opt users in");
+  await h.api.ensureNotificationSummary(initializeRequest());
+  assert.equal(h.documents.get(preferencesPath).masterEnabled, true);
+  assert.equal(h.summary(), summary); assert.equal(h.stats.queries, queries);
+});
+
+test("all existing settings, including incomplete documents and category/team OFF, remain byte-for-byte unchanged", async () => {
+  for (const value of [{}, { masterEnabled: false }, { masterEnabled: true, categories: { operatorGuidance: false }, teamEnabled: { a: false }, updatedAt: 123 }]) {
+    const h = harness(); h.documents.set(preferencesPath, value);
+    await h.api.ensureNotificationSummary(initializeRequest());
+    assert.equal(h.documents.get(preferencesPath), value);
+  }
+});
+
+test("a concurrent explicit OFF save wins over default initialization", async () => {
+  const h = harness(), off = { masterEnabled: false, categories: { notice: false }, teamEnabled: { a: false } };
+  h.beforeCommit(() => h.documents.set(preferencesPath, off));
+  await h.api.ensureNotificationSummary(initializeRequest());
+  assert.equal(h.stats.retries, 1); assert.equal(h.documents.get(preferencesPath), off);
+});
+
+test("initialization requires the authenticated expected account and cannot select another user", async () => {
+  const h = harness();
+  for (const data of [{ initializePreferences: true }, { initializePreferences: true, expectedUid: "b" }]) {
+    await assert.rejects(h.api.ensureNotificationSummary({ auth: { uid: "a" }, data }), { code: "failed-precondition" });
+  }
+  await assert.rejects(h.api.ensureNotificationSummary({ data: initializeRequest().data }), { code: "unauthenticated" });
+  assert.equal(h.documents.size, 0);
+  const request = initializeRequest(); request.data.uid = "b";
+  await h.api.ensureNotificationSummary(request);
+  assert.equal(h.documents.has("users/b/notificationPreferences/default"), false);
+});
+
 for (const action of ["markNotificationRead", "dismissNotification"]) {
   test(`${action} repairs legacy counts and decrements once, including hidden history`, async () => {
     const h = harness(); h.add("hidden", { category: "workspaceReply" }); h.add("visible");

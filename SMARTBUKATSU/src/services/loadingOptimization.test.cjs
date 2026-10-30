@@ -344,7 +344,7 @@ test("notification center stops its list on blur and renews it on focus", () => 
   focused = true; h.update(); assert.equal(calls.length, 2); h.unmount(); assert.equal(calls[1].stops, 1);
 });
 
-function notificationProviderHarness(overrides = {}) {
+function notificationProviderHarness(overrides = {}, os = "android") {
   const h = componentHarness(), calls = [], badges = [], pushListeners = [], appListeners = [], networkListeners = [];
   const timers = new Map(); let timerId = 0;
   let user = { uid: "a" }, handler;
@@ -365,7 +365,7 @@ function notificationProviderHarness(overrides = {}) {
   };
   const { NotificationProvider } = load(path.join(__dirname, "../NotificationContext.js"), {
     react: { __esModule: true, default: h.react, ...h.react }, "./AuthContext": { useAuth: () => ({ user }) },
-    "react-native": { AppState: { currentState: "active", addEventListener: (_name, fn) => { const sub = { fn, stopped: false }; appListeners.push(sub); return { remove: () => { sub.stopped = true; } }; } }, Platform: { OS: "android" } },
+    "react-native": { AppState: { currentState: "active", addEventListener: (_name, fn) => { const sub = { fn, stopped: false }; appListeners.push(sub); return { remove: () => { sub.stopped = true; } }; } }, Platform: { OS: os } },
     "@react-native-community/netinfo": { __esModule: true, default: { addEventListener: fn => { const sub = { fn, stopped: false }; networkListeners.push(sub); return () => { sub.stopped = true; }; } } },
     "./services/notificationService": service, "./notifications/notificationConfig": config,
   }, "", { setTimeout: (fn, ms) => { timers.set(++timerId, { fn, ms }); return timerId; }, clearTimeout: id => timers.delete(id) });
@@ -377,6 +377,81 @@ function notificationProviderHarness(overrides = {}) {
     foreground: category => handler({ request: { content: { data: { category, teamId: "a" } } } }),
     account(value) { user = value ? { uid: value } : null; h.update(); } };
 }
+
+for (const os of ["android", "ios"]) {
+  test(`${os}: missing settings stay pending until the saved ON snapshot, then start permission/registration`, async () => {
+    const registrations = [], preparations = [];
+    const h = notificationProviderHarness({ ensureNotificationSummary: async uid => { preparations.push(uid); },
+      registerPushToken: async options => { registrations.push(options); return { granted: false, status: "denied" }; } }, os);
+    await new Promise(setImmediate);
+    assert.equal(h.api().preferencesReady, false); assert.equal(registrations.length, 0);
+    assert.deepEqual(preparations, ["a"]);
+    h.preferences({ masterEnabled: true }); await new Promise(setImmediate);
+    assert.equal(h.api().preferencesReady, true); assert.equal(h.api().preferences.masterEnabled, true);
+    assert.equal(registrations.length, 1); assert.equal(registrations[0].requestPermissionIfUndetermined, true);
+    assert.equal(h.api().permissionStatus, "denied", "OS denial does not rewrite the account preference");
+    h.preferences({ masterEnabled: false, categories: { operatorGuidance: false } }); await new Promise(setImmediate);
+    assert.equal(registrations.length, 1); assert.equal(h.api().preferences.masterEnabled, false);
+    h.unmount();
+  });
+}
+
+test("missing-settings initialization retries after failure/foreground/reconnect and stops after unmount", async () => {
+  let attempts = 0, fail = true;
+  const h = notificationProviderHarness({ ensureNotificationSummary: async () => { attempts++; if (fail) throw new Error("synthetic offline"); } });
+  await new Promise(setImmediate);
+  assert.ok(h.api().notificationSummaryError); assert.equal(h.api().preferencesReady, false);
+  h.fireTimer(30000); await new Promise(setImmediate); assert.equal(attempts, 2);
+  const network = h.networkListeners.at(-1); network.fn({ isConnected: false });
+  fail = false; network.fn({ isConnected: true }); await new Promise(setImmediate);
+  assert.equal(attempts, 3); assert.equal(h.api().notificationSummaryError, "");
+  h.appListeners.at(-1).fn("active"); await new Promise(setImmediate); assert.equal(attempts, 4);
+  h.unmount(); assert.equal(h.timers.size, 0);
+  network.fn({ isConnected: false }); network.fn({ isConnected: true }); await new Promise(setImmediate);
+  assert.equal(attempts, 4);
+});
+
+test("late initialization failure from a previous session with the same UID is ignored", async () => {
+  let rejectOld, attempts = 0;
+  const h = notificationProviderHarness({ ensureNotificationSummary: () => {
+    attempts++; return attempts === 1 ? new Promise((_resolve, reject) => { rejectOld = reject; }) : Promise.resolve();
+  } });
+  h.account("a"); await new Promise(setImmediate);
+  rejectOld(new Error("synthetic old session")); await new Promise(setImmediate);
+  assert.equal(h.api().notificationSummaryError, ""); assert.equal(h.api().preferencesReady, false);
+  h.unmount();
+});
+
+test("notification settings disable pending switches and offer explicit OS permission/registration recovery", async () => {
+  const h = componentHarness(), alerts = [];
+  const config = load(path.join(__dirname, "../notifications/notificationConfig.js"), {});
+  let permissionCalls = 0, refreshCalls = 0, permissionOptions;
+  const settings = { preferences: config.normalizeNotificationPreferences({ masterEnabled: true }), preferencesReady: false,
+    permissionStatus: "denied", notificationSummaryError: "準備を再試行", isSavingPreferences: false,
+    refreshNotificationSummary: () => { refreshCalls++; }, updatePreferences: async () => {},
+    enablePushNotifications: async options => { permissionCalls++; permissionOptions = options; return { granted: false }; } };
+  const { default: Screen } = load(path.join(__dirname, "../screens/NotificationSettingsScreen.js"), {
+    react: { __esModule: true, default: h.react, ...h.react },
+    "react-native": { StyleSheet: { create: value => value }, Alert: { alert: (...args) => alerts.push(args) }, Linking: { openSettings() {} },
+      ...Object.fromEntries(["ActivityIndicator", "ScrollView", "Switch", "Text", "TouchableOpacity", "View"].map(name => [name, name])) },
+    "react-native-safe-area-context": { SafeAreaView: "SafeAreaView" }, "../AuthContext": { useAuth: () => ({ user: { uid: "a" } }) },
+    "../NotificationContext": { useNotifications: () => settings }, "../notifications/notificationConfig": config,
+    "../services/firestoreService": { getUserTeams: async () => [{ id: "a", name: "Synthetic team" }] },
+  });
+  h.mount(Screen); await new Promise(setImmediate); h.render();
+  assert.equal(h.find(node => node.type === "Switch" && node.props.disabled !== true), null);
+  const error = h.find(node => node.type === "TouchableOpacity" && node.children.some(child => child?.children?.includes("準備を再試行")));
+  error.props.onPress(); assert.equal(refreshCalls, 1);
+  settings.preferencesReady = true; h.update();
+  assert.equal(h.find(node => node.type === "Switch").props.value, true);
+  const retry = h.find(node => node.type === "TouchableOpacity" && node.children.some(child => child?.children?.includes("通知の許可・端末登録を再確認する")));
+  await retry.props.onPress(); assert.equal(permissionCalls, 1);
+  assert.equal(permissionOptions.preservePreferences, true);
+  assert.equal(alerts[0][0], "通知が許可されていません");
+  settings.permissionStatus = "granted"; settings.pushRegistrationError = "端末登録失敗"; h.update();
+  assert.ok(h.find(node => node.type === "Text" && node.children.includes("端末登録失敗")));
+  h.unmount();
+});
 
 test("provider filters list and badge together, restores history and suppresses foreground delivery", async () => {
   const h = notificationProviderHarness();
@@ -470,6 +545,29 @@ test("explicit notification enable consumes its successful registration without 
   h.preferences({ masterEnabled: true }); await new Promise(setImmediate); assert.equal(registrations, 1);
   h.unmount();
 });
+
+for (const os of ["android", "ios"]) {
+  test(`${os}: permission/registration retry never saves preferences over a newer OFF choice`, async () => {
+    let resolveRegistration, registrationCalls = 0;
+    const saves = [];
+    const h = notificationProviderHarness({ registerPushToken: async () => {
+      registrationCalls++;
+      if (registrationCalls === 1) return { granted: false, status: "denied" };
+      return new Promise(resolve => { resolveRegistration = resolve; });
+    }, saveNotificationPreferences: async value => { saves.push(value); return value; } }, os);
+    h.preferences({ masterEnabled: true }); await new Promise(setImmediate);
+    const retry = h.api().enablePushNotifications({ preservePreferences: true });
+    await new Promise(setImmediate);
+    h.preferences({ masterEnabled: false, categories: { operatorGuidance: false }, teamEnabled: { a: false } });
+    resolveRegistration({ granted: true, status: "granted", nextRefreshInMs: 86400000 });
+    await retry; h.render();
+    assert.equal(saves.length, 0, "a registration retry must not rewrite account settings");
+    assert.equal(h.api().preferences.masterEnabled, false);
+    assert.equal(h.api().preferences.categories.operatorGuidance, false);
+    assert.equal(h.api().preferences.teamEnabled.a, false);
+    h.unmount();
+  });
+}
 
 test("reading the current native token does not cause a second registration from its listener event", async () => {
   let registrations = 0;

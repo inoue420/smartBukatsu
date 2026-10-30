@@ -24,6 +24,8 @@ let pushSession = null;
 let pushWork = Promise.resolve();
 let registrationCacheInvalid = false;
 const pendingRegistrations = new Map();
+let notificationPreparation = null;
+let permissionRequest = null;
 
 function enqueuePushWork(work) {
   const result = pushWork.then(work);
@@ -121,9 +123,30 @@ export function subscribeNotificationSummary(uid, onValue, onError) {
   );
 }
 
-export async function ensureNotificationSummary() {
-  const ensure = httpsCallable(cloudFunctions, "ensureNotificationSummary");
-  await ensure({});
+export function ensureNotificationSummary(expectedUid = auth.currentUser?.uid) {
+  if (!expectedUid || auth.currentUser?.uid !== expectedUid) {
+    return Promise.reject(new Error("ログイン状態が変わりました。"));
+  }
+  const session = pushSession;
+  if (notificationPreparation?.uid === expectedUid && notificationPreparation.session === session) {
+    return notificationPreparation.promise;
+  }
+  const promise = (async () => {
+    const initializePreferences = ["android", "ios"].includes(Platform.OS);
+    const ensure = httpsCallable(cloudFunctions, "ensureNotificationSummary");
+    const response = await ensure({ expectedUid, initializePreferences });
+    if (auth.currentUser?.uid !== expectedUid || pushSession !== session) {
+      throw new Error("ログイン状態が変わりました。");
+    }
+    if (initializePreferences && response.data?.preferencesInitialized !== true) {
+      throw new Error("通知設定の準備を確認できませんでした。");
+    }
+  })();
+  const entry = { uid: expectedUid, session, promise };
+  notificationPreparation = entry;
+  const cleanup = () => { if (notificationPreparation === entry) notificationPreparation = null; };
+  promise.then(cleanup, cleanup);
+  return promise;
 }
 
 export function subscribeNotificationPreferences(uid, onValue, onError) {
@@ -132,6 +155,9 @@ export function subscribeNotificationPreferences(uid, onValue, onError) {
     "notificationPreferences",
     doc(db, "users", uid, "notificationPreferences", "default"),
     (snapshot) => {
+      // Missing/cache-only documents are not an explicit OFF choice. The
+      // authenticated preparation transaction creates defaults before publishing.
+      if (!snapshot.exists() && ["android", "ios"].includes(Platform.OS)) return;
       onValue(normalizeNotificationPreferences(snapshot.data() || {}));
     },
     onError,
@@ -149,7 +175,7 @@ export async function configureAndroidNotificationChannel() {
   });
 }
 
-export function registerPushToken({ requestPermission = false, devicePushToken,
+export function registerPushToken({ requestPermission = false, requestPermissionIfUndetermined = false, devicePushToken,
   initializePreferencesEnabled = true } = {}) {
   if (isCaptureEnvironment) return Promise.resolve({ granted: false, reason: "capture-local-only" });
   if (!new Set(["android", "ios"]).has(Platform.OS)) {
@@ -161,7 +187,7 @@ export function registerPushToken({ requestPermission = false, devicePushToken,
   }
   // Token acquisition must not block logout when Expo is unreachable.
   // Coalesce equal triggers; serialize server registration with logout/cleanup.
-  const key = JSON.stringify([requestPermission, devicePushToken?.type,
+  const key = JSON.stringify([requestPermission, requestPermissionIfUndetermined, devicePushToken?.type,
     devicePushToken?.data, initializePreferencesEnabled]);
   const pending = pendingRegistrations.get(key);
   if (pending?.session === session) return pending.promise;
@@ -170,10 +196,17 @@ export function registerPushToken({ requestPermission = false, devicePushToken,
     await configureAndroidNotificationChannel();
     let permission = await Notifications.getPermissionsAsync();
     if (!isCurrentPushSession(session)) return { granted: false, reason: "session-changed" };
-    if (permission.status !== "granted" && requestPermission) {
-      permission = await Notifications.requestPermissionsAsync({
-        ios: { allowAlert: true, allowBadge: true, allowSound: true },
-      });
+    if (permission.status !== "granted" && (requestPermission ||
+        (requestPermissionIfUndetermined && permission.status === "undetermined"))) {
+      if (!permissionRequest) {
+        permissionRequest = Notifications.requestPermissionsAsync({
+          ios: { allowAlert: true, allowBadge: true, allowSound: true },
+        });
+        const pendingPermission = permissionRequest;
+        const cleanup = () => { if (permissionRequest === pendingPermission) permissionRequest = null; };
+        pendingPermission.then(cleanup, cleanup);
+      }
+      permission = await permissionRequest;
     }
     if (permission.status !== "granted") {
       await enqueuePushWork(clearPushRegistration);

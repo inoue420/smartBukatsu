@@ -335,16 +335,31 @@ const ensureNotificationSummary = onCall(
   { region: REGION, timeoutSeconds: 60, memory: "256MiB" },
   async (request) => {
     const uid = requireAuthenticatedUid(request);
+    const initializePreferences = request.data?.initializePreferences === true;
+    if ((request.data?.expectedUid && request.data.expectedUid !== uid) ||
+        (initializePreferences && request.data?.expectedUid !== uid)) {
+      throw new HttpsError("failed-precondition", "ログイン状態が変わりました。");
+    }
     const userRef = firestore.collection("users").doc(uid);
     const summaryRef = userRef.collection("notificationState").doc("summary");
+    const preferencesRef = userRef.collection("notificationPreferences").doc("default");
     await firestore.runTransaction(async (transaction) => {
       const snapshot = await transaction.get(summaryRef);
-      if (snapshot.data()?.unreadBucketsVersion === 1) return;
-      const summary = await readNotificationSummary(transaction, userRef, snapshot);
+      const preferences = initializePreferences ? await transaction.get(preferencesRef) : null;
+      const needsRepair = snapshot.data()?.unreadBucketsVersion !== 1;
+      const summary = needsRepair ? await readNotificationSummary(transaction, userRef, snapshot) : null;
+      // A concurrent OFF save makes this transaction retry; never fill or rewrite
+      // an existing document, even if some of its fields are missing.
+      if (initializePreferences && !preferences.exists) {
+        transaction.create(preferencesRef, {
+          masterEnabled: true, categories: DEFAULT_CATEGORY_PREFERENCES,
+          teamEnabled: {}, updatedAt: Timestamp.now(),
+        });
+      }
       // Replace aggregate maps so obsolete legacy team counters cannot survive.
-      transaction.set(summaryRef, { ...summary, updatedAt: Timestamp.now() });
+      if (needsRepair) transaction.set(summaryRef, { ...summary, updatedAt: Timestamp.now() });
     });
-    return { ready: true };
+    return { ready: true, preferencesInitialized: initializePreferences };
   },
 );
 

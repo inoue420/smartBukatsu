@@ -34,6 +34,7 @@ export default function NotificationCenterScreen({ navigation }) {
     notificationListError,
     notificationListHasMore,
     preferences,
+    preferencesReady,
     notificationSummaryError,
     refreshNotificationSummary,
   } = useNotifications();
@@ -88,7 +89,7 @@ export default function NotificationCenterScreen({ navigation }) {
             <Text style={styles.emptyIcon}>🔔</Text>
             <Text style={styles.emptyTitle}>通知はありません</Text>
             <Text style={styles.emptyText}>
-              {preferences?.masterEnabled === false
+              {preferencesReady === false ? "通知設定を確認しています。通信状態を確認してください。" : preferences?.masterEnabled === false
                 ? "通知設定がOFFのため、通知は表示されません。設定をONにすると履歴を再表示できます。"
                 : "通知設定がONのお知らせ、予定、返信などがここに表示されます。"}
             </Text>
