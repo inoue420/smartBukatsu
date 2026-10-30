@@ -78,6 +78,22 @@ test("operator guidance with real transactions, Rules and production notificatio
     const rules = await fetch(`http://${host}/emulator/v1/projects/${projectId}:securityRules`, { method: "PUT", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ rules: { files: [{ name: "firestore.rules", content: fs.readFileSync(path.join(__dirname, "../../firestore.rules"), "utf8") }] } }) });
     assert.equal(rules.ok, true, await rules.text());
+    await t.test("notification initialization uses real transactions and preserves concurrent OFF plus existing restrictions", async () => {
+      await seed();
+      const path = "users/synthetic-new/notificationPreferences/default";
+      const initialize = () => exports.exports.ensureNotificationSummary(req({ initializePreferences: true }, "synthetic-new"));
+      await Promise.all([initialize(), initialize()]);
+      const defaults = (await db.doc(path).get()).data();
+      assert.equal(defaults.masterEnabled, true); assert.equal(defaults.categories.operatorGuidance, true);
+      assert.equal(requests.length, 0, "preparation never resends guidance");
+      const off = { masterEnabled: false, categories: { operatorGuidance: false }, teamEnabled: { a: false } };
+      await db.doc(path).delete();
+      await Promise.all([initialize(), db.doc(path).set(off), initialize()]);
+      assert.deepEqual((await db.doc(path).get()).data(), off);
+      await initialize(); assert.deepEqual((await db.doc(path).get()).data(), off);
+      await assert.rejects(exports.exports.ensureNotificationSummary(req({ initializePreferences: true, expectedUid: "someone-else" })), error => error.code === "failed-precondition");
+      assert.equal(requests.length, 0);
+    });
     await t.test("all five endpoints deny outsiders, including activeTeamId and invite-code lookalikes", async () => {
       await seed(); await db.doc("users/outsider").set({ activeTeamId: "debug" });
       await db.doc("teams/lookalike").set({ inviteCode: "AWUH95" }); await db.doc("teams/lookalike/members/outsider").set({ role: "admin" });

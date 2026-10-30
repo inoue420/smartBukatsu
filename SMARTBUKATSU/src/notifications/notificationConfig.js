@@ -47,6 +47,8 @@ export const NOTIFICATION_CATEGORIES = {
 };
 
 export const DEFAULT_NOTIFICATION_PREFERENCES = {
+  // Safe loading state; missing documents are created ON by the server before
+  // they are published. Existing/malformed documents never inherit ON here.
   masterEnabled: false,
   categories: Object.keys(NOTIFICATION_CATEGORIES).reduce((result, key) => {
     result[key] = true;

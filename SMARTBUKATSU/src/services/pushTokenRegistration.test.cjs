@@ -25,7 +25,7 @@ function harness(options = {}) {
       AndroidImportance: { HIGH: 4 }, setNotificationChannelAsync: async () => {},
       getDevicePushTokenAsync: async () => ({ type: options.os || "android", data: "synthetic-native" }),
       getPermissionsAsync: async () => ({ status, ...permissionExtra }),
-      requestPermissionsAsync: async () => { permissionRequests++; status = "granted"; return { status, ...permissionExtra }; },
+      requestPermissionsAsync: async () => { permissionRequests++; await options.beforePermission?.(); status = options.permissionResponse || "granted"; return { status, ...permissionExtra }; },
       getExpoPushTokenAsync: async value => { expoOptions.push(value); await getTokenHook?.(); return { data: token }; },
     },
     "firebase/firestore": {}, "./firestoreSubscription": {},
@@ -55,6 +55,33 @@ function harness(options = {}) {
 }
 
 for (const os of ["android", "ios"]) {
+  test(`${os}: automatic registration asks only for undetermined permission and never changes a denial`, async () => {
+    const h = harness({ os, permissionResponse: "denied" }); h.permission("undetermined");
+    const result = await h.service.registerPushToken({ requestPermissionIfUndetermined: true });
+    assert.equal(result.granted, false); assert.equal(h.permissionRequests(), 1); assert.equal(h.calls.length, 0);
+    await h.service.registerPushToken({ requestPermissionIfUndetermined: true });
+    assert.equal(h.permissionRequests(), 1); assert.equal(h.calls.length, 0);
+    h.permission("granted"); await h.service.registerPushToken({ requestPermissionIfUndetermined: true });
+    assert.equal(h.permissionRequests(), 1); assert.equal(h.registrations().length, 1);
+  });
+
+  test(`${os}: allowing the first prompt registers the current account once`, async () => {
+    const h = harness({ os }); h.permission("undetermined");
+    await Promise.all([h.service.registerPushToken({ requestPermissionIfUndetermined: true }), h.service.registerPushToken({ requestPermissionIfUndetermined: true })]);
+    assert.equal(h.permissionRequests(), 1); assert.equal(h.registrations().length, 1);
+    assert.equal(h.registrations()[0].data.expectedUid, "synthetic-a");
+  });
+
+  test(`${os}: simultaneous explicit and automatic permission requests share the OS prompt`, async () => {
+    const waiting = deferred(), h = harness({ os, beforePermission: () => waiting.promise });
+    h.permission("undetermined");
+    const automatic = h.service.registerPushToken({ requestPermissionIfUndetermined: true });
+    const explicit = h.service.registerPushToken({ requestPermission: true });
+    await tick(); assert.equal(h.permissionRequests(), 1); assert.equal(h.calls.length, 0);
+    waiting.resolve(); await Promise.all([automatic, explicit]);
+    assert.equal(h.registrations().length, 1);
+  });
+
   test(`${os}: concurrent triggers and OFF -> ON observation register only once, then renew at 24 hours`, async () => {
     const h = harness({ os });
     await Promise.all([h.service.registerPushToken({ requestPermission: true }), h.service.registerPushToken(), h.service.registerPushToken()]);

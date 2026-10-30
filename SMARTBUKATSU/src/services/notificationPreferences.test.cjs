@@ -72,7 +72,7 @@ test("summary listener preserves buckets; authenticated repair calls only the ex
     "expo-notifications": {}, "firebase/firestore": { doc: (...args) => args },
     "firebase/functions": { httpsCallable: (_functions, name) => async data => { called = { name, data }; } },
     "./firestoreSubscription": { measuredOnSnapshot: (_name, _ref, next) => { receive = next; return () => { stopped = true; }; } },
-    "../firebase": { db: "db", cloudFunctions: "functions" },
+    "../firebase": { db: "db", cloudFunctions: "functions", auth: { currentUser: { uid: "synthetic" } } },
     "../notifications/notificationConfig": client,
   });
   let summary;
@@ -81,6 +81,60 @@ test("summary listener preserves buckets; authenticated repair calls only the ex
   assert.equal(summary.unreadBucketsVersion, 1);
   assert.equal(summary.unreadBuckets['["notice","a"]'], 5);
   await service.ensureNotificationSummary();
-  assert.deepEqual(plain(called), { name: "ensureNotificationSummary", data: {} });
+  assert.deepEqual(plain(called), { name: "ensureNotificationSummary", data: { expectedUid: "synthetic", initializePreferences: false } });
   stop(); assert.equal(stopped, true);
 });
+
+for (const os of ["android", "ios"]) {
+  test(`${os}: preparation is authenticated, coalesced, and waits for server support`, async () => {
+    const auth = { currentUser: { uid: "synthetic" } }, calls = [];
+    let finish;
+    const service = load("notificationService.js", {
+      "@react-native-async-storage/async-storage": {}, "react-native": { Platform: { OS: os } },
+      "expo-notifications": {}, "firebase/firestore": {}, "./firestoreSubscription": {},
+      "../firebase": { auth, db: "db", cloudFunctions: "functions" },
+      "../notifications/notificationConfig": client,
+      "firebase/functions": { httpsCallable: (_functions, name) => data => {
+        calls.push({ name, data }); return new Promise(resolve => { finish = resolve; });
+      } },
+    });
+    const first = service.ensureNotificationSummary("synthetic");
+    assert.equal(service.ensureNotificationSummary("synthetic"), first);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(plain(calls[0].data), { expectedUid: "synthetic", initializePreferences: true });
+    finish({ data: { ready: true } });
+    await assert.rejects(first, /準備を確認/);
+    const retry = service.ensureNotificationSummary("synthetic");
+    finish({ data: { ready: true, preferencesInitialized: true } }); await retry;
+    const late = service.ensureNotificationSummary("synthetic");
+    auth.currentUser = { uid: "other" };
+    finish({ data: { preferencesInitialized: true } }); await assert.rejects(late, /ログイン状態/);
+    await assert.rejects(service.ensureNotificationSummary("synthetic"), /ログイン状態/);
+    assert.equal(calls.length, 3);
+  });
+
+  test(`${os}: absent settings never publish OFF; saved ON/OFF and restrictions are preserved`, () => {
+    let receive;
+    const seen = [];
+    const service = load("notificationService.js", {
+      "@react-native-async-storage/async-storage": {}, "react-native": { Platform: { OS: os } },
+      "expo-notifications": {}, "firebase/firestore": { doc: (...args) => args },
+      "firebase/functions": {}, "../firebase": { db: "db" },
+      "../notifications/notificationConfig": client,
+      "./firestoreSubscription": { measuredOnSnapshot: (_name, _ref, next) => { receive = next; return () => {}; } },
+    });
+    service.subscribeNotificationPreferences("synthetic", value => seen.push(plain(value)));
+    for (const fromCache of [true, false]) receive({ exists: () => false, data: () => undefined, metadata: { fromCache } });
+    assert.equal(seen.length, 0);
+    const saved = { masterEnabled: false, categories: { operatorGuidance: false }, teamEnabled: { a: false } };
+    receive({ exists: () => true, data: () => saved });
+    assert.equal(seen.at(-1).masterEnabled, false);
+    saved.masterEnabled = true;
+    receive({ exists: () => true, data: () => saved });
+    assert.equal(seen.at(-1).masterEnabled, true);
+    assert.equal(seen.at(-1).categories.operatorGuidance, false);
+    assert.equal(seen.at(-1).teamEnabled.a, false);
+    receive({ exists: () => true, data: () => ({}) });
+    assert.equal(seen.at(-1).masterEnabled, false, "existing incomplete settings are not unset");
+  });
+}

@@ -31,7 +31,11 @@ export default function NotificationSettingsScreen({ navigation }) {
   const { user } = useAuth();
   const {
     preferences,
+    preferencesReady,
     permissionStatus,
+    pushRegistrationError,
+    notificationSummaryError,
+    refreshNotificationSummary,
     isSavingPreferences,
     updatePreferences,
     enablePushNotifications,
@@ -60,10 +64,10 @@ export default function NotificationSettingsScreen({ navigation }) {
     });
   }, [user?.uid]);
 
-  const toggleMaster = async (enabled) => {
+  const toggleMaster = async (enabled, options) => {
     try {
       if (enabled) {
-        const result = await enablePushNotifications();
+        const result = await enablePushNotifications(options);
         if (!result?.granted) {
           Alert.alert(
             "通知が許可されていません",
@@ -108,6 +112,11 @@ export default function NotificationSettingsScreen({ navigation }) {
         <View style={styles.headerSpacer} />
       </View>
       <ScrollView contentContainerStyle={styles.content}>
+        {!!notificationSummaryError && (
+          <TouchableOpacity onPress={() => refreshNotificationSummary()}>
+            <Text style={styles.infoText}>{notificationSummaryError}</Text>
+          </TouchableOpacity>
+        )}
         <View style={styles.infoCard}>
           <Text style={styles.infoTitle}>通知センターもこの設定に連動します</Text>
           <Text style={styles.infoText}>
@@ -120,10 +129,10 @@ export default function NotificationSettingsScreen({ navigation }) {
             <View style={styles.settingTextBox}>
               <Text style={styles.settingTitle}>プッシュ通知</Text>
               <Text style={styles.settingDescription}>
-                端末の通知権限: {permissionStatus}
+                {preferencesReady ? `端末の通知権限: ${permissionStatus}` : "通知設定を確認しています。"}
               </Text>
             </View>
-            {isSavingPreferences ? (
+            {isSavingPreferences || !preferencesReady ? (
               <ActivityIndicator color="#0077cc" />
             ) : (
               <Switch
@@ -134,6 +143,12 @@ export default function NotificationSettingsScreen({ navigation }) {
               />
             )}
           </View>
+          {preferencesReady && preferences.masterEnabled && (permissionStatus !== "granted" || !!pushRegistrationError) && (
+            <TouchableOpacity disabled={isSavingPreferences} onPress={() => toggleMaster(true, { preservePreferences: true })} style={{ padding: 15 }}>
+              <Text style={styles.infoText}>{pushRegistrationError || "プッシュ通知を受信するには、端末の通知許可と登録が必要です。"}</Text>
+              <Text style={styles.backButtonText}>通知の許可・端末登録を再確認する</Text>
+            </TouchableOpacity>
+          )}
         </View>
 
         <Text style={styles.sectionHeading}>通知する項目</Text>
@@ -153,7 +168,7 @@ export default function NotificationSettingsScreen({ navigation }) {
               <Switch
                 value={preferences.categories[key] !== false}
                 onValueChange={(enabled) => toggleCategory(key, enabled)}
-                disabled={isSavingPreferences}
+                disabled={isSavingPreferences || !preferencesReady}
               />
             </View>
           ))}
@@ -178,7 +193,7 @@ export default function NotificationSettingsScreen({ navigation }) {
                 <Switch
                   value={preferences.teamEnabled[team.id] !== false}
                   onValueChange={(enabled) => toggleTeam(team.id, enabled)}
-                  disabled={isSavingPreferences}
+                  disabled={isSavingPreferences || !preferencesReady}
                 />
               </View>
             ))

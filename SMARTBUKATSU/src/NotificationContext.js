@@ -67,6 +67,7 @@ export function NotificationProvider({ children }) {
     DEFAULT_NOTIFICATION_PREFERENCES,
   );
   const [permissionStatus, setPermissionStatus] = useState("undetermined");
+  const [pushRegistrationError, setPushRegistrationError] = useState("");
   const [isSavingPreferences, setIsSavingPreferences] = useState(false);
   const [preferencesUser, setPreferencesUser] = useState(null);
   const pushEnableResultRef = useRef(null);
@@ -89,17 +90,19 @@ export function NotificationProvider({ children }) {
   );
   const refreshNotificationSummary = useCallback(async (resubscribe = true) => {
     const uid = user?.uid;
-    if (!uid) return;
+    if (!uid) return false;
     if (resubscribe) summaryRetryRef.current?.();
     try {
-      await ensureNotificationSummary();
-      if (sessionUidRef.current === uid) setNotificationSummaryError("");
+      await ensureNotificationSummary(uid);
+      if (currentUserRef.current === user) setNotificationSummaryError("");
+      return true;
     } catch {
-      if (sessionUidRef.current === uid) {
-        setNotificationSummaryError("通知の未読件数を更新できませんでした。タップして再試行");
+      if (currentUserRef.current === user) {
+        setNotificationSummaryError("通知の準備ができませんでした。タップして再試行");
       }
+      return false;
     }
-  }, [user?.uid]);
+  }, [user]);
 
   useEffect(() => {
     Notifications.setNotificationHandler({
@@ -120,6 +123,8 @@ export function NotificationProvider({ children }) {
 
   useEffect(() => {
     pushEnableResultRef.current = null;
+    setPushRegistrationError("");
+    setPermissionStatus("undetermined");
     setIsSavingPreferences(false);
     if (!user?.uid) {
       setPreferencesUser(null);
@@ -194,7 +199,8 @@ export function NotificationProvider({ children }) {
 
   useEffect(() => {
     const uid = user?.uid;
-    if (!uid || preferencesUser !== user) return undefined;
+    if (!uid) return undefined;
+    const ready = preferencesUser === user;
     let active = true, timer, checking = false, pendingNativeToken;
     let retries = 0;
     const enabled = preferences.masterEnabled;
@@ -209,8 +215,12 @@ export function NotificationProvider({ children }) {
       checking = true;
       clearTimeout(timer);
       try {
+        if (!ready) {
+          if (!await refreshNotificationSummary(false)) throw new Error("notification preparation failed");
+          return;
+        }
         const result = enabled
-          ? await registerPushToken({ requestPermission: false, devicePushToken })
+          ? await registerPushToken({ requestPermissionIfUndetermined: true, devicePushToken })
           : await ensurePushTokenOwnership();
         if (!active || sessionUidRef.current !== uid) return;
         // Reading the native token can emit its existing value. Do not treat
@@ -219,10 +229,12 @@ export function NotificationProvider({ children }) {
           pendingNativeToken = null;
         }
         setPermissionStatus(result.status || result.reason || "undetermined");
+        setPushRegistrationError("");
         retries = 0;
         if (enabled && result.granted && result.nextRefreshInMs) schedule(result.nextRefreshInMs);
       } catch {
         if (active && sessionUidRef.current === uid) {
+          if (ready) setPushRegistrationError("通知の端末登録を確認できませんでした。通信状態を確認して再試行してください。");
           console.log("プッシュトークン更新に失敗しました。通信復旧後に再試行します。");
           if (retries < 3) schedule([30000, 120000, 600000][retries++]);
         }
@@ -236,7 +248,11 @@ export function NotificationProvider({ children }) {
       }
     };
     const enabledResult = pushEnableResultRef.current;
-    if (enabled && enabledResult?.user === user) {
+    if (!ready) {
+      // Startup already requested preparation. Retry if it failed or stalled;
+      // a saved preferences snapshot restarts this effect in the ready state.
+      schedule(30000);
+    } else if (enabled && enabledResult?.user === user) {
       pushEnableResultRef.current = null;
       setPermissionStatus(enabledResult.result.status);
       schedule(enabledResult.result.nextRefreshInMs || 24 * 60 * 60 * 1000);
@@ -253,7 +269,7 @@ export function NotificationProvider({ children }) {
       if (next && connected === false) { retries = 0; refresh(); }
       connected = next;
     });
-    const tokenSubscription = enabled && ["android", "ios"].includes(Platform.OS)
+    const tokenSubscription = ready && enabled && ["android", "ios"].includes(Platform.OS)
       ? Notifications.addPushTokenListener((token) => refresh(token)) : null;
     return () => {
       active = false;
@@ -262,7 +278,7 @@ export function NotificationProvider({ children }) {
       unsubscribeNetwork();
       tokenSubscription?.remove();
     };
-  }, [preferences.masterEnabled, preferencesUser, user]);
+  }, [preferences.masterEnabled, preferencesUser, user, refreshNotificationSummary]);
 
   const dispatchNotification = useCallback((notification) => {
     if (navigationHandlerRef.current) {
@@ -338,19 +354,26 @@ export function NotificationProvider({ children }) {
     }
   }, []);
 
-  const enablePushNotifications = useCallback(async () => {
+  const enablePushNotifications = useCallback(async ({ preservePreferences = false } = {}) => {
     setIsSavingPreferences(true);
     try {
       const result = await registerPushToken({ requestPermission: true });
       if (currentUserRef.current !== user) return result;
       setPermissionStatus(result?.status || result?.reason || "undetermined");
       if (!result?.granted) return result;
+      // Permission/registration recovery must not undo settings changed on
+      // another device while the OS dialog or network request was pending.
+      if (preservePreferences) {
+        setPushRegistrationError("");
+        return result;
+      }
       pushEnableResultRef.current = { user, result };
       const saved = await saveNotificationPreferences({
         ...preferences,
         masterEnabled: true,
       });
       if (currentUserRef.current === user) setPreferences(saved);
+      if (currentUserRef.current === user) setPushRegistrationError("");
       return result;
     } catch (error) {
       if (pushEnableResultRef.current?.user === user) pushEnableResultRef.current = null;
@@ -376,7 +399,9 @@ export function NotificationProvider({ children }) {
       unreadTotal: visibleSummary.unreadTotal,
       unreadByTeam: visibleSummary.unreadByTeam,
       preferences,
+      preferencesReady: !!user?.uid && preferencesUser === user,
       permissionStatus,
+      pushRegistrationError,
       isSavingPreferences,
       openNotification,
       dismissNotification,
@@ -394,7 +419,10 @@ export function NotificationProvider({ children }) {
       notificationSummaryError,
       refreshNotificationSummary,
       preferences,
+      preferencesUser,
+      user,
       permissionStatus,
+      pushRegistrationError,
       isSavingPreferences,
       openNotification,
       dismissNotification,
