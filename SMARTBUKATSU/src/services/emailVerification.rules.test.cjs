@@ -7,6 +7,7 @@ const projectId = "demo-loading-optimization", host = "127.0.0.1:8189";
 if (process.env.FIRESTORE_EMULATOR_HOST !== host || process.env.GCLOUD_PROJECT !== projectId) throw new Error("Use the dedicated local demo emulator.");
 
 test("email verification: real Rules, atomic team creation and existing participation transaction", async t => {
+  const currentRules = fs.readFileSync(path.join(__dirname, "../../firestore.rules"), "utf8");
   const response = await fetch(`http://${host}/emulator/v1/projects/${projectId}:securityRules`, { method: "PUT",
     headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rules: { files: [
       { name: "firestore.rules", content: fs.readFileSync(path.join(__dirname, "../../firestore.rules"), "utf8") }] } }) });
@@ -20,6 +21,38 @@ test("email verification: real Rules, atomic team creation and existing particip
   const denied = promise => assert.rejects(promise, error => error.code === "permission-denied");
   const sport = { category: "sports", name: "soccer" }, identity = { teamId: "verification-created-team", teamInviteCode: "Ax12bc" };
   try {
+    await t.test("pre-batch creator lookup rejects new registration; getAfter permits retrying the same registration", async () => {
+      const afterLookup = "getAfter(/databases/$(database)/documents/teams/$(teamId)).data.createdBy";
+      assert.ok(currentRules.includes(afterLookup));
+      const beforeLookup = "get(/databases/$(database)/documents/teams/$(teamId)).data.createdBy";
+      const oldRules = process.env.SMARTBUKATSU_COMPATIBILITY_RULES
+        ? fs.readFileSync(process.env.SMARTBUKATSU_COMPATIBILITY_RULES, "utf8")
+        : currentRules.replace(afterLookup, beforeLookup);
+      assert.equal(oldRules.split(beforeLookup).length - 1, 2);
+      // Only the first occurrence is the creator check for member creation;
+      // the second belongs to existing-member updates and stays unchanged.
+      const compatibleRules = oldRules.replace(beforeLookup, afterLookup);
+      const applyRules = async source => {
+        const result = await fetch(`http://${host}/emulator/v1/projects/${projectId}:securityRules`, { method: "PUT",
+          headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rules: { files: [{ name: "firestore.rules", content: source }] } }) });
+        assert.equal(result.ok, true, await result.text());
+      };
+      const value = client("compatibility-owner", true), stable = { teamId: "compatibility-new-team", teamInviteCode: "Cp12ab" };
+      await db.doc("users/compatibility-owner").set({ name: "Synthetic new owner", teamIds: [], emailVerificationRequired: true });
+      const service = loadTeamService(value, sdk, { currentUser: { uid: "compatibility-owner", emailVerified: true } });
+      try {
+        await applyRules(oldRules);
+        await denied(service.createTeam("compatibility-owner", "Synthetic team", "Synthetic owner", sport, stable));
+        for (const location of ["teams/compatibility-new-team", "teams/compatibility-new-team/members/compatibility-owner", "invites/Cp12ab"]) {
+          assert.equal((await db.doc(location).get()).exists, false);
+        }
+        assert.deepEqual((await db.doc("users/compatibility-owner").get()).data().teamIds, []);
+        await applyRules(compatibleRules);
+        const result = await service.createTeam("compatibility-owner", "Synthetic team", "Synthetic owner", sport, stable);
+        assert.equal(result.teamId, stable.teamId);
+        assert.equal((await service.getUserTeams("compatibility-owner"))[0].id, stable.teamId);
+      } finally { await applyRules(currentRules); }
+    });
     await db.doc("teams/verification-existing").set({ createdBy: "original-owner", name: "Synthetic existing" });
     await db.doc("invites/Ab12Cd").set({ teamId: "verification-existing", active: true, createdBy: "original-owner" });
     const unverified = client("unverified", false), verified = client("verified", true), missing = client("missing-claim");
