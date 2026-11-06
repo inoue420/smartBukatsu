@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import {
   NavigationContainer,
   useNavigationContainerRef,
@@ -135,7 +135,8 @@ function AppContent() {
   const [loadingSummary, setLoadingSummary] = useState({});
   const [latestReports, setLatestReports] = useState([]);
   const [postReads, setPostReads] = useState({});
-  const [workspaceChannel, setWorkspaceChannel] = useState("");
+  const [workspaceSelection, setWorkspaceSelection] = useState(null);
+  const [legacyWorkspaceReady, setLegacyWorkspaceReady] = useState(null);
   const [pinnedPosts, setPinnedPosts] = useState([]);
   const [teamScope, setTeamScope] = useState(null);
   const loadingStateResolved = loadingState?._teamId === activeTeamId;
@@ -143,6 +144,19 @@ function AppContent() {
   const separateReads = Boolean(optimize && loadingState?.separateReads);
   const readStateAvailable = Boolean(loadingStateResolved && loadingState.schemaVersion === 1);
   const authorized = Boolean(user && activeTeamId && !emailVerificationPending);
+  // A selection belongs to one team/account visit. Do not clear a child's
+  // selection in a parent effect, which runs after the child's mount effects.
+  const workspaceScope = useMemo(() => ({}), [activeTeamId, user?.uid, authorized]);
+  const workspaceScopeRef = useRef(workspaceScope);
+  workspaceScopeRef.current = workspaceScope;
+  const workspaceChannel = workspaceSelection?.scope === workspaceScope ? workspaceSelection.name : "";
+  const handleWorkspaceChannelChange = useCallback((name) => {
+    if (workspaceScopeRef.current !== workspaceScope) return;
+    setWorkspaceSelection((current) => current?.scope === workspaceScope && current.name === name
+      ? current : { scope: workspaceScope, name });
+  }, [workspaceScope]);
+  const workspaceMembersReady = Boolean(authorized && membersResolved?.teamId === activeTeamId &&
+    membersResolved?.uid === user?.uid && Object.values(userProfiles).some((profile) => profile.uid === user.uid));
   const { cancelReview, completeInteraction, reviewNavigationChanged } = useAppReview({
     uid: user?.uid,
     enabled: Boolean(authorized && !authLoading && !isOffline && !teamSelectionRequired && !isTeamSwitching &&
@@ -177,7 +191,7 @@ function AppContent() {
     setLoadingState(null); setLoadingSummary({}); setLatestReports([]); setPostReads({}); setAlertReports([]);
     setProjects([]); setHighlightProjects([]); setPosts([]); setNotices([]); setDailyReports([]); setClubEvents([]); setPersonalEvents([]); setTagGroups([]); setCurrentParams({});
     setCalendarMonth(undefined);
-    setWorkspaceChannel(""); setPinnedPosts([]);
+    setPinnedPosts([]);
     if (!authorized) return undefined;
     const stop = subscribeLoadingState(activeTeamId, (value) => { if (active) setLoadingState({ ...value, _teamId: activeTeamId }); }, () => { if (active) setLoadingState({ _teamId: activeTeamId }); });
     return () => { active = false; stop(); };
@@ -392,18 +406,22 @@ function AppContent() {
   useEffect(() => {
     if (!authorized || !loadingStateResolved || optimize) return undefined;
     let active = true;
+    setLegacyWorkspaceReady(null);
     const receive = (setter) => (value) => { if (active) setter(value); };
     const stops = [
       subscribeProjects(activeTeamId, receive(setProjects)),
       subscribeHighlightProjects(activeTeamId, receive(setHighlightProjects)),
       subscribeNotices(activeTeamId, receive(setNotices)),
-      subscribeWorkspacePosts(activeTeamId, user.uid, receive(setPosts)),
+      subscribeWorkspacePosts(activeTeamId, user.uid, (value) => {
+        if (!active) return;
+        setPosts(value); setLegacyWorkspaceReady(workspaceScope);
+      }),
       subscribePersonalEvents(user.uid, receive(setPersonalEvents)),
       subscribeClubEvents(activeTeamId, receive(setClubEvents)),
       subscribeTagGroups(activeTeamId, receive(setTagGroups)),
     ];
     return () => { active = false; stops.forEach((stop) => stop()); };
-  }, [user?.uid, activeTeamId, authorized, optimize, loadingStateResolved]);
+  }, [user?.uid, activeTeamId, authorized, optimize, loadingStateResolved, workspaceScope]);
 
   useEffect(() => {
     const unsubscribe = NetInfo.addEventListener((state) => {
@@ -507,12 +525,15 @@ function AppContent() {
               {(props) => (
                 <WorkspaceHomeScreen
                   {...props}
-                  key={activeTeamId}
+                  key={`${user.uid}:${activeTeamId}`}
                   history={optimize ? postHistory : null}
                   loadingSummary={optimize ? loadingSummary : null}
                   optimize={optimize}
                   separateReads={separateReads}
-                  onChannelChange={setWorkspaceChannel}
+                  onChannelChange={handleWorkspaceChannelChange}
+                  membersReady={workspaceMembersReady}
+                  postsLoading={!loadingStateResolved || (optimize
+                    ? !workspaceChannel || postHistory.busy : legacyWorkspaceReady !== workspaceScope)}
                   isAdmin={authIsAdmin}
                   currentUser={safeUserName}
                   currentUserUid={currentUserUid}

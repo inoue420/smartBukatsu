@@ -150,6 +150,8 @@ const WorkspaceHomeScreen = ({
   alertThresholds,
   userProfiles = {},
   grades = [],
+  membersReady = Boolean(currentUserUid && Object.values(userProfiles).some((profile) => profile?.uid === currentUserUid)),
+  postsLoading = false,
 }) => {
   const { activeTeamId, blockedUserUids = [] } = useAuth();
   const { unreadTotal } = useNotifications();
@@ -328,7 +330,8 @@ const WorkspaceHomeScreen = ({
 
   const [channels, setChannels] = useState(defaultChannels);
   const [channelsLoaded, setChannelsLoaded] = useState(false);
-  const [activeChannelId, setActiveChannelId] = useState("ch_1");
+  const [channelError, setChannelError] = useState("");
+  const [selectedChannelId, setActiveChannelId] = useState(null);
   const audienceSyncKeyRef = useRef(null);
 
   const [isLoading, setIsLoading] = useState(false);
@@ -342,15 +345,21 @@ const WorkspaceHomeScreen = ({
   useEffect(() => {
     setChannels(defaultChannels);
     setChannelsLoaded(false);
-    setActiveChannelId("ch_1");
+    setChannelError("");
+    setActiveChannelId(null);
     audienceSyncKeyRef.current = null;
   }, [activeTeamId]);
 
   useEffect(() => {
     if (!activeTeamId || isOffline) return;
 
+    let active = true;
+    setChannelError("");
     const teamRef = doc(db, "teams", activeTeamId);
     const unsubscribe = measuredOnSnapshot("workspaceTeam", teamRef, (docSnap) => {
+      if (!active) return;
+      // An empty local cache has not resolved the team's configured order yet.
+      if (!docSnap.exists() && docSnap.metadata?.fromCache) return;
       if (docSnap.exists()) {
         const data = docSnap.data();
         if (
@@ -365,12 +374,17 @@ const WorkspaceHomeScreen = ({
       }
       setChannelsLoaded(true);
     }, (error) => {
+      if (!active) return;
+      if (error?.code === "permission-denied") setChannelsLoaded(false);
+      setChannelError(error?.code === "permission-denied"
+        ? "掲示板の閲覧権限を確認してください。"
+        : "掲示板を読み込めませんでした。通信状態を確認してください。");
       if (error?.code !== "permission-denied") {
         console.log("Workspace team subscription error:", error);
       }
-    });
+    }, { includeMetadataChanges: true });
 
-    return () => unsubscribe();
+    return () => { active = false; unsubscribe(); };
   }, [activeTeamId, isOffline]);
 
   const needsGeneralUpgrade = channels.some(needsGeneralAudienceUpgrade);
@@ -383,13 +397,21 @@ const WorkspaceHomeScreen = ({
     });
   }, [activeTeamId, isOffline, isStaffOrAbove, channelsLoaded, needsGeneralUpgrade]);
 
-  const visibleChannels = channels.filter((ch) => {
+  const channelsReady = channelsLoaded && membersReady;
+  const visibleChannels = channelsReady ? channels.filter((ch) => {
     if (isStaffOrAbove) return true;
     return canViewChannel(ch, { ...currentUserProfile, role: userRole }, audienceMembers);
-  });
+  }) : [];
 
+  const notificationPost = route?.params?.postId && posts.find((post) => post.id === route.params.postId);
+  const notificationChannel = notificationPost && visibleChannels.find((channel) =>
+    channel.id === notificationPost.channelId || channel.name === notificationPost.channel);
   const activeChannelObj =
-    visibleChannels.find((c) => c.id === activeChannelId) || visibleChannels[0];
+    notificationChannel || visibleChannels.find((c) => c.id === selectedChannelId) || visibleChannels[0];
+  const activeChannelId = activeChannelObj?.id || "";
+  useEffect(() => {
+    if (activeChannelObj && selectedChannelId !== activeChannelObj.id) setActiveChannelId(activeChannelObj.id);
+  }, [activeChannelObj?.id, selectedChannelId]);
   useEffect(() => { onChannelChange?.(activeChannelObj?.name || ""); }, [activeChannelObj?.name, onChannelChange]);
 
   const audienceSyncKey = useMemo(
@@ -904,17 +926,19 @@ const WorkspaceHomeScreen = ({
 
   useEffect(() => {
     const targetPostId = route?.params?.postId;
-    if (!targetPostId) return;
+    if (!targetPostId || !channelsReady) return;
     const targetPost = posts.find((post) => post.id === targetPostId);
     if (!targetPost) return;
-    const targetChannel = channels.find(
+    const targetChannel = visibleChannels.find(
       (channel) =>
         channel.id === targetPost.channelId || channel.name === targetPost.channel,
     );
-    if (targetChannel) setActiveChannelId(targetChannel.id);
-    setExpandedPostId(targetPostId);
+    if (targetChannel) {
+      setActiveChannelId(targetChannel.id);
+      setExpandedPostId(targetPostId);
+    }
     navigation.setParams({ postId: undefined, replyId: undefined });
-  }, [channels, navigation, posts, route?.params?.postId]);
+  }, [channels, channelsReady, userProfiles, navigation, posts, route?.params?.postId]);
 
   useEffect(() => {
     if (!isOffline) {
@@ -2362,7 +2386,10 @@ const WorkspaceHomeScreen = ({
           }}
         >
           {regularPosts.length === 0 ? (
-            <Text style={styles.emptyText}>まだ投稿がありません。</Text>
+            <Text style={styles.emptyText}>{channelError || (!channelsReady
+              ? (isOffline ? "接続後に掲示板を読み込みます。" : "掲示板を読み込み中...")
+              : !activeChannelObj ? "表示できる掲示板がありません。"
+              : postsLoading ? "投稿を読み込み中..." : "まだ投稿がありません。")}</Text>
           ) : (
             regularPosts.map((post) => renderPostCard(post, false))
           )}
