@@ -56,6 +56,29 @@ test("Windows settings.gradle keeps CRLF and remains idempotent", async () => {
   assert.equal(await applyMod("settingsGradle", result), result);
 });
 
+test("root compiler classpath is pinned as well as the Kotlin property, with repeat prebuild and CRLF support", async () => {
+  for (const newline of ["\n", "\r\n"]) {
+    for (const quote of ['"', "'"]) {
+      for (const previous of ["", ":2.1.20", ":2.2.20"]) {
+        const original = ["buildscript {", "  dependencies {",
+          "    classpath('com.facebook.react:react-native-gradle-plugin')",
+          `    classpath(${quote}org.jetbrains.kotlin:kotlin-gradle-plugin${previous}${quote})`,
+          "  }", "}", 'apply plugin: "expo-root-project"', ""].join(newline);
+        const result = await applyMod("projectBuildGradle", original);
+        assert.equal(result, original.replace(`kotlin-gradle-plugin${previous}`, "kotlin-gradle-plugin:2.2.20"));
+        assert.equal(await applyMod("projectBuildGradle", result), result);
+      }
+    }
+  }
+});
+
+test("unknown or duplicate compiler classpaths stop generation", async () => {
+  await assert.rejects(applyMod("projectBuildGradle", "", "kotlin"), /Groovy project build\.gradle/);
+  await assert.rejects(applyMod("projectBuildGradle", "buildscript {}"), /exactly one/);
+  const line = "classpath('org.jetbrains.kotlin:kotlin-gradle-plugin')\n";
+  await assert.rejects(applyMod("projectBuildGradle", line + line), /exactly one/);
+});
+
 test("unexpected Gradle templates fail rather than silently omitting the compatibility fix", async () => {
   await assert.rejects(applyMod("settingsGradle", settings, "kotlin"), /Groovy settings\.gradle/);
   await assert.rejects(applyMod("settingsGradle", 'include(":app")\n'), /could not find pluginManagement/);

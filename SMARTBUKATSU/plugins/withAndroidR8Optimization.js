@@ -1,4 +1,4 @@
-const { withAppBuildGradle, withSettingsGradle } = require("expo/config-plugins");
+const { withAppBuildGradle, withProjectBuildGradle, withSettingsGradle } = require("expo/config-plugins");
 const { mergeContents } = require("@expo/config-plugins/build/utils/generateCode");
 
 const R8_OVERRIDE = `  // Google Mobile Ads 25.4.0 contains Kotlin 2.3 metadata.
@@ -13,6 +13,23 @@ const R8_OVERRIDE = `  // Google Mobile Ads 25.4.0 contains Kotlin 2.3 metadata.
   }`;
 
 module.exports = function withAndroidR8Optimization(config) {
+  config = withProjectBuildGradle(config, (gradleConfig) => {
+    if (gradleConfig.modResults.language !== "groovy") {
+      throw new Error("Android Kotlin compiler override requires a Groovy project build.gradle.");
+    }
+    // The SDK 54 property updates Kotlin/KSP settings but not this classpath.
+    // Without an explicit version, React Native supplies compiler 2.1.20.
+    const dependency = /classpath\(\s*(["'])org\.jetbrains\.kotlin:kotlin-gradle-plugin(?::[^"']+)?\1\s*\)/g;
+    const source = gradleConfig.modResults.contents;
+    if ([...source.matchAll(dependency)].length !== 1) {
+      throw new Error("Android Kotlin compiler override requires exactly one Kotlin Gradle plugin classpath dependency.");
+    }
+    gradleConfig.modResults.contents = source.replace(dependency, (_, quote) =>
+      `classpath(${quote}org.jetbrains.kotlin:kotlin-gradle-plugin:2.2.20${quote})`,
+    );
+    return gradleConfig;
+  });
+
   config = withSettingsGradle(config, (gradleConfig) => {
     if (gradleConfig.modResults.language !== "groovy") {
       throw new Error("Android R8 override requires a Groovy settings.gradle.");
