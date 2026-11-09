@@ -4,7 +4,8 @@ const { fillImports } = require("./calendarWeekStartTestHarness.cjs");
 
 function loadTeamService(db, sdk, auth, callable = () => async () => ({ data: { teamId: "joined" } })) {
   const modules = { "firebase/firestore": sdk, "firebase/functions": { httpsCallable: callable },
-    "../firebase": { db, auth, cloudFunctions: {} }, "../legal": { MINIMUM_USER_AGE: 13, LEGAL_POLICY_VERSION: "synthetic" } };
+    "../firebase": { db, auth, cloudFunctions: {} }, "../legal": { MINIMUM_USER_AGE: 13,
+      LEGAL_POLICY_VERSION: "synthetic-terms", PRIVACY_POLICY_VERSION: "synthetic-privacy" } };
   fillImports("src/services/firestoreService.js", modules);
   const filename = path.join(__dirname, "../src/services/firestoreService.js"), compiled = new Module(filename);
   compiled.filename = filename; compiled.require = name => modules[name];

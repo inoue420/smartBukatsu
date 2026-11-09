@@ -22,7 +22,7 @@ import {
 import { httpsCallable } from "firebase/functions";
 import { measuredOnSnapshot } from "./firestoreSubscription";
 import { auth, db, cloudFunctions } from "../firebase";
-import { LEGAL_POLICY_VERSION, MINIMUM_USER_AGE } from "../legal";
+import { LEGAL_POLICY_VERSION, PRIVACY_POLICY_VERSION, MINIMUM_USER_AGE } from "../legal";
 import { validateNote, contentFingerprint, validateTasks, noteAcknowledgementId, isNoteSummaryCurrent, timestampsEqual } from "../utils/tacticalNotes";
 import { uploadTacticalNoteImage } from "./tacticalNoteAttachmentService";
 import { sendWorkspaceReaction } from "./workspaceReactionService";
@@ -982,7 +982,7 @@ export async function executeRegistration(
         minimumAgeConfirmed: true,
         minorConsentRequirementAcknowledged: true,
         termsVersion: LEGAL_POLICY_VERSION,
-        privacyPolicyVersion: LEGAL_POLICY_VERSION,
+        privacyPolicyVersion: PRIVACY_POLICY_VERSION,
         acceptedAt: serverTimestamp(),
       },
     },

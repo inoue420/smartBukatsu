@@ -771,13 +771,13 @@ function AppContent() {
 export default function App() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <AdsProvider>
-        <AuthProvider>
+      <AuthProvider>
+        <AdsProvider>
           <NotificationProvider>
             <AppContent />
           </NotificationProvider>
-        </AuthProvider>
-      </AdsProvider>
+        </AdsProvider>
+      </AuthProvider>
       <AppUpdateGate />
     </GestureHandlerRootView>
   );

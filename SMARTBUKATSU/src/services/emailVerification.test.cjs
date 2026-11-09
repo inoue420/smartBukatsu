@@ -20,6 +20,24 @@ test("pending inputs survive relaunch, isolate accounts and exclude credentials/
   assert.equal(await createPendingRegistrationStore(storage).read("a"), null);
 });
 
+test("ad age eligibility reuses the user watch and never survives account changes or stale callbacks", async () => {
+  const current = { uid: "age-a", emailVerified: true };
+  const a = await authHarness(storageEnvironment(), current, { activeTeamId: "team" });
+  assert.equal(a.value().adProfileResolved, false);
+  const oldWatch = a.subscriptions.find(item => item.name === "authUser");
+  oldWatch.next({ exists: () => true, data: () => ({ legalConsent: { minimumAgeConfirmed: true, minimumAge: 13 } }) });
+  assert.equal(a.value().adProfileResolved, true); assert.equal(a.value().adMinimumAgeConfirmed, true);
+  assert.equal(a.subscriptions.filter(item => item.name === "authUser").length, 1);
+  await a.changeUser({ uid: "age-b", emailVerified: true });
+  assert.equal(a.value().adProfileResolved, false); assert.equal(a.value().adMinimumAgeConfirmed, false);
+  oldWatch.next({ exists: () => true, data: () => ({ legalConsent: { minimumAgeConfirmed: true, minimumAge: 13 } }) });
+  assert.equal(a.value().adProfileResolved, false);
+  const latest = a.subscriptions.findLast(item => item.name === "authUser");
+  latest.next({ exists: () => true, data: () => ({ legalConsent: { minimumAgeConfirmed: true, minimumAge: 12 } }) });
+  assert.equal(a.value().adProfileResolved, true); assert.equal(a.value().adMinimumAgeConfirmed, false);
+  await a.changeUser(null); assert.equal(a.value().adProfileResolved, false); a.h.unmount();
+});
+
 test("slow initial reads cannot overwrite newer saved inputs or resurrect a removed registration", async () => {
   const slow = deferred(), storage = storageEnvironment(); storage.getItem = () => slow.promise;
   const store = createPendingRegistrationStore(storage), reading = store.read("a"), saving = store.save("a", input("member"));
@@ -351,6 +369,8 @@ test("deferred registration writes consent/profile only; existing immediate call
   a.auth.currentUser.emailVerified = false;
   const result = await service.executeRegistration("synthetic", "admin", "User", "Team", "", { legalConsent: consent, deferTeam: true });
   assert.equal(result.type, "pending"); assert.equal(profiles.length, 1); assert.equal(a.data.size, 0);
+  assert.equal(profiles[0][1].legalConsent.termsVersion, "synthetic-terms");
+  assert.equal(profiles[0][1].legalConsent.privacyPolicyVersion, "synthetic-privacy");
   await assert.rejects(service.executeRegistration("synthetic", "member", "User", "", "Ab12Cd", { legalConsent: {} }), /利用条件/);
 });
 
