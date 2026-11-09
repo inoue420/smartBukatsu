@@ -88,6 +88,8 @@ module.exports = ({ config }) => {
     "expo-build-properties",
     {
       android: {
+        // SDK 54 supports this Kotlin/KSP pair and the ads SDK's 2.3 metadata.
+        kotlinVersion: "2.2.20",
         enableMinifyInReleaseBuilds: true,
         enableShrinkResourcesInReleaseBuilds: true,
         extraProguardRules: [

@@ -245,3 +245,48 @@ git diff --check
 公開後は直前のネイティブビルドへの切り戻しを基本とする。既存利用者の同意データや保護者ロールは書き換えていないため、データの復元処理は不要。ポリシーの公開文面は実際の提供版と整合させる。
 
 Android補正だけを外して16.4.0を使い続けると元の不整合が復活するため、補正を取り消す場合は年齢別配信も無効化するか、互換性を確認した修正版SDKへ揃える。postinstallとExpo検査だけを外して未修正のまま公開しない。
+
+## 2026-11-09：AndroidビルドのKotlin互換性修正
+
+ユーザーが提示した[EASビルド](https://expo.dev/accounts/inoue420/projects/SMARTBUKATSU/builds/d59c23f8-df44-45e9-b1fc-37a88ba05e30#run-gradlew)を読み取りで確認した。対象はcommit `d037ccda`、productionプロファイル、Android 1.1.11 / versionCode 28。JavaScriptバンドル生成後、`:react-native-google-mobile-ads:compileReleaseKotlin`で停止していた。
+
+広告SDK 25.4.0のKotlinメタデータは2.3.0だが、Expo SDK 54 / React Native 0.81.5の既定コンパイラは2.1.20であり、ログに `binary version of its metadata is 2.3.0, expected version is 2.1.0` が出ていた。Google公式配布物を保存せずメモリ上で確認したところ、25.3.0のplay-services-adsにも2.3.0メタデータが含まれるため、広告SDKを一つ前へ戻すだけでは解消しない。
+
+ユーザー承認後、`codex/fix-android-admob-kotlin`ブランチで次の変更を実施した。
+
+| ファイル | 変更内容 |
+| --- | --- |
+| `app.config.js` | 既存expo-build-propertiesのAndroid設定へkotlinVersion 2.2.20を追加。導入済みExpoのKSP対応表にある2.2.20-2.0.3との組み合わせを使用 |
+| `plugins/withAndroidR8Optimization.js` | settings.gradleのpluginManagement内、React Nativeのプラグイン解決前へR8 8.13.19のbuildscript依存を生成。再生成時に重複させず、CRLFを維持。Groovy以外・想定外のテンプレートはエラーで停止。既存のProGuard最適化指定は維持 |
+| `scripts/androidBuildCompatibility.test.cjs` | R8依存の配置、再適用・古い生成ブロックの更新、CRLF、未知のテンプレート拒否、既存ProGuard設定の保持、AndroidだけのKotlin指定とKSP対応表、iOS設定を変更しないことを検証 |
+| `docs/AD_AGE_TREATMENT.md` | 原因、変更範囲、検証結果、iOSへの影響、切り戻し方法を記録 |
+
+Kotlin 2.3.0を直接指定すると導入済みExpoのKSP対応表に存在しないため、2.2.20を選択した。[Kotlinのバイナリ互換性方針](https://kotlinlang.org/docs/kotlin-evolution-principles.html#evolving-the-binary-format)では次の言語リリースとの前方互換性を目指すが、保証はされていない。このプロジェクトと広告SDKの最終的な互換性は、実際のネイティブビルドで確認する必要がある。Kotlin 2.3形式に必要なR8の版は[Googleの対応表](https://developer.android.com/build/kotlin-support)、settings.gradleでの上書き方法は[R8公式手順](https://r8.googlesource.com/r8/+/refs/heads/main/README.md#Replacing-R8-in-Android-Gradle-plugin)に従った。メタデータ検査を無効にするオプションは追加していない。
+
+検証コマンド：
+
+```text
+git switch -c codex/fix-android-admob-kotlin
+node --test scripts/androidBuildCompatibility.test.cjs
+node scripts/patchAdMobAgeTreatment.cjs --check
+node --test scripts/androidBuildCompatibility.test.cjs scripts/patchAdMobAgeTreatment.test.cjs src/ads/adAgePolicy.test.cjs src/ads/AppBannerAd.test.cjs src/ads/adInitializationRecovery.test.cjs scripts/androidCapture/captureEnvironment.test.cjs
+# 以下のprebuildのみ dist/android-build-fix/prebuild を作業ディレクトリとして実行
+node node_modules/expo/bin/cli prebuild --platform android --no-install --template ./node_modules/expo/template.tgz
+git diff --check
+```
+
+prebuildは`SMARTBUKATSU_CAPTURE=1`、`APP_VARIANT=development`、`EXPO_NO_DOTENV=1`、`EXPO_OFFLINE=1`、`CI=1`で実行。検証フォルダには必要な設定・スクリプト・画像だけをコピーし、既存node_modulesをjunctionで参照した。環境ファイルはコピーせず、テスト用Firebase設定とGoogleのサンプル広告IDを使用。依存パッケージのインストールや更新は行わず、元のプロジェクトのandroidフォルダも生成していない。
+
+結果：新規6件を含む関連101テストがすべて成功。既存Android年齢補正の適用検査も成功。隔離prebuildで`android.kotlinVersion=2.2.20`、R8 8.13.19の依存1件、既存の難読化・リソース縮小とProGuardルールが生成されることを確認した。iOSのネイティブディレクトリは生成していない。
+
+検証時の途中失敗も記録する。最初に渡したWindowsドライブ形式のテンプレートパスをExpo CLIがGitHub URLとして扱ったため、ローカル相対パスへ修正。junction作成と画像キャッシュ生成はサンドボックスのアクセス拒否・EPERMで停止し、同じ検証を制限外で再実行して成功した。これらは検証環境による失敗であり、EASログのKotlinエラーとは別である。
+
+この検証はGradleによるネイティブコンパイル、KSP処理、R8実行、APK/AAB生成、実機の広告配信を実行していない。AndroidのEASネイティブ再ビルドと、テスト広告での年齢別設定・表示・キーボード開閉の確認が必要。今回の承認範囲にEAS再ビルドは含まれない。
+
+今回の差分はAndroid専用であり、この修正のためのiOS再ビルドは不要。ただし先行する16.4.0への広告SDK更新がiOSビルドへ未反映の場合、その更新を反映するためのiOSネイティブビルドは必要。OTAだけでネイティブSDKを更新することはできない。
+
+`app.json`、`eas.json`、package.json/lockfile、Expo/React Nativeの版、アプリバージョン・識別子、Firebaseの認証・Rules・Functions・データ、広告の年齢ポリシーとAndroid比較文字列補正は変更していない。LPの機能・料金説明に影響する変更もない。commit・push・PR・管理シート更新・EASビルド・配布は未実施。
+
+戻す場合は`app.config.js`のKotlin指定と、R8プラグインへ追加したsettings.gradle処理、新規テスト、本節だけを取り消す。既存のProGuard最適化・年齢補正や他の変更を一括で破棄しない。生成済みAndroidプロジェクトがある場合は承認のうえ修正前設定から再生成する。Firebaseデータの復元は不要で、元のKotlinビルドエラーは再発する。
+
+管理シート追記案（未書き込み）：2026-11-09、AndroidビルドのKotlin不整合を修正。Kotlin 2.2.20 / R8 8.13.19を指定、関連101テストと隔離prebuild成功。ネイティブ再ビルド・実機確認待ち。iOS/Firebase変更なし。ブランチ`codex/fix-android-admob-kotlin`、commit・PR未作成。対象行や書き込み先の列は未指定のため、確認・承認後に記録する。
