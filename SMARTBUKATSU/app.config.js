@@ -4,6 +4,7 @@ const dotenvFlow = require("dotenv-flow");
 const dotenvExpand = require("dotenv-expand");
 const appJson = require("./app.json");
 const { captureConfigEnabled, captureFirebaseConfig } = require("./src/config/captureEnvironment");
+const { assertAdMobAgeTreatmentPatched } = require("./scripts/patchAdMobAgeTreatment.cjs");
 const isCaptureConfig = captureConfigEnabled(process.env);
 
 const ADMOB_SAMPLE_ANDROID_APP_ID =
@@ -24,6 +25,8 @@ if (!isCaptureConfig) dotenvExpand.expand(
 );
 
 module.exports = ({ config }) => {
+  // npm --ignore-scripts must not silently produce an unprotected native build.
+  assertAdMobAgeTreatmentPatched();
   const androidMapsApiKey =
     !isCaptureConfig && (process.env.EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_API_KEY ||
     process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY);

@@ -6,6 +6,9 @@ const webAds = {
   recordScreenTransition: async () => false,
   showAfterDiarySubmission: async () => false,
   configureInterstitial: () => {},
+  privacyOptionsRequired: false,
+  showPrivacyOptions: async () => false,
+  onAdRequestsBlocked: () => {},
 };
 
 export const AdsProvider = ({ children }) => children;

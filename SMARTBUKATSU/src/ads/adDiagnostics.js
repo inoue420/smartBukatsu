@@ -24,11 +24,17 @@ const EVENTS = {
   "sdk-ready": { label: "広告の初期化が完了", sdk: "初期化完了", retry: "不要" },
   "sdk-error": { label: "広告の初期化に失敗", sdk: "初期化失敗" },
   "retry-scheduled": { label: "初期化の再試行を予約", retry: "待機中" },
-  "retry-exhausted": { label: "初期化の再試行が上限に到達", retry: "上限到達" },
+  "initialization-attempt": { label: "初期化の初回・自動再試行を開始" },
+  "recovery-attempt": { label: "復帰をきっかけとした再試行を開始" },
+  "recovery-scheduled": { label: "復帰後の再試行を予約", retry: "復帰再試行待ち" },
+  "retry-exhausted": { label: "初期の自動再試行が上限に到達・復帰待ち", retry: "復帰待ち" },
+  "retry-permanent": { label: "設定・SDKの修正待ち", retry: "自動再試行対象外" },
+  "retry-consent": { label: "広告要求不可・前面復帰時の同意確認待ち", retry: "同意確認待ち" },
   "banner-loading": { label: "バナーの読み込みを開始", banner: "読み込み中" },
   "banner-loaded": { label: "バナーの読み込みが成功", banner: "読み込み成功" },
   "banner-error": { label: "バナーの読み込みに失敗", banner: "読み込み失敗" },
-  "banner-keyboard-hidden": { label: "キーボード表示によりバナーを非表示", banner: "キーボード表示中" },
+  "banner-keyboard-hidden": { label: "キーボード表示によりバナーを非表示", bannerHidden: true },
+  "banner-keyboard-restored": { label: "バナーの表示を許可", bannerHidden: false },
 };
 
 export const createAdDiagnostics = (testAds, bannerConfigured) => ({
@@ -37,8 +43,11 @@ export const createAdDiagnostics = (testAds, bannerConfigured) => ({
   consent: "未確認",
   sdk: "未初期化",
   banner: "待機中",
+  bannerHidden: false,
   retry: "なし",
   attempts: 0,
+  initialAttempts: 0,
+  recoveryAttempts: 0,
   events: [],
 });
 
@@ -48,7 +57,9 @@ export const recordAdDiagnostic = (previous, event, error) => {
   return {
     ...previous,
     ...status,
-    attempts: previous.attempts + (event === "consent-start" ? 1 : 0),
+    attempts: previous.attempts + (["initialization-attempt", "recovery-attempt"].includes(event) ? 1 : 0),
+    initialAttempts: (previous.initialAttempts || 0) + (event === "initialization-attempt" ? 1 : 0),
+    recoveryAttempts: (previous.recoveryAttempts || 0) + (event === "recovery-attempt" ? 1 : 0),
     events: [
       ...previous.events,
       {
@@ -70,9 +81,10 @@ export const formatAdDiagnostics = (diagnostics, { platform, version, build }) =
     `バナーID: ${diagnostics.bannerConfigured ? "設定あり" : "未設定"}`,
     `同意確認: ${diagnostics.consent}`,
     `広告初期化: ${diagnostics.sdk}`,
-    `初期化試行: ${diagnostics.attempts}回 / 最大3回`,
+    `初期の自動試行: ${diagnostics.initialAttempts || 0}回 / 最大3回`,
+    `復帰をきっかけとした再試行: ${diagnostics.recoveryAttempts || 0}回`,
     `再試行: ${diagnostics.retry}`,
-    `バナー: ${diagnostics.banner}`,
+    `バナー: ${diagnostics.banner}${diagnostics.bannerHidden ? "（キーボード表示中・非表示）" : ""}`,
     "",
     "起動後の履歴（最新40件・時刻はUTC）",
     ...diagnostics.events.map(({ time, label, code }) =>

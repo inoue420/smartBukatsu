@@ -49,6 +49,7 @@ test("capture app config never reads dotenv or retains real Firebase/Maps/AdMob 
     if (name === "dotenv-expand") return { expand() { throw new Error("dotenv accessed"); } };
     if (name === "./app.json") return appJson;
     if (name === "./src/config/captureEnvironment") return guard;
+    if (name === "./scripts/patchAdMobAgeTreatment.cjs") return require("../patchAdMobAgeTreatment.cjs");
     throw new Error(`Unexpected module ${name}`);
   } });
   const config = module.exports({ config: {} });
@@ -122,6 +123,12 @@ test("capture AdProvider does not initialize consent, ads, or native network req
     Date, console, require(name) {
       if (name === "react") return { __esModule: true, default: react, ...react };
       if (name === "../firebase") return { isCaptureEnvironment: true };
+      if (name === "../AuthContext") return { useAuth: () => ({ user: { uid: "synthetic" },
+        adProfileResolved: true, adMinimumAgeConfirmed: true, currentMemberProfile: { role: "guardian" } }) };
+      if (name === "./adAgePolicy") return require("../../src/ads/adAgePolicy");
+      if (name === "./adInitializationRecovery") return require("../../src/ads/adInitializationRecovery");
+      if (name === "@react-native-community/netinfo") return { __esModule: true, default: { addEventListener: forbidden } };
+      if (name === "../services/reviewPresentationGate") return { reviewPresentationGate: { acquire: forbidden } };
       if (name === "react-native") return { Platform: { OS: "android", select: (value) => value.android }, StatusBar: {} };
       if (name === "react-native-google-mobile-ads") return { __esModule: true, default: forbidden,
         TestIds: { BANNER: "test", INTERSTITIAL: "test" }, InterstitialAd: { createForAdRequest: forbidden }, AdsConsent: { gatherConsent: forbidden } };

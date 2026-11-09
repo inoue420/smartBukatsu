@@ -8,19 +8,20 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { Platform, StatusBar } from "react-native";
+import { AppState, Platform, StatusBar } from "react-native";
+import NetInfo from "@react-native-community/netinfo";
 import { isCaptureEnvironment } from "../firebase";
+import { useAuth } from "../AuthContext";
 import { reviewPresentationGate } from "../services/reviewPresentationGate";
 import mobileAds, {
   AdEventType,
   AdsConsent,
   InterstitialAd,
-  MaxAdContentRating,
+  AgeRestrictedTreatment,
   TestIds,
 } from "react-native-google-mobile-ads";
 
 import {
-  ADS_REQUEST_CONFIGURATION,
   DEFAULT_INTERSTITIAL_SETTINGS,
   INTERSTITIAL_ADS_ENABLED,
   NON_PERSONALIZED_AD_REQUEST_OPTIONS,
@@ -31,8 +32,10 @@ import {
   getAdErrorCode,
   recordAdDiagnostic,
 } from "./adDiagnostics";
+import { resolveAdAgePolicy, createAdTaskQueue } from "./adAgePolicy";
+import { createInitializationRecovery, initializationFailureKind } from "./adInitializationRecovery";
 const DAILY_COUNT_STORAGE_KEY = "admob_interstitial_daily_count_v1";
-const INITIALIZATION_RETRY_DELAYS = [30000, 60000];
+const runAdTask = createAdTaskQueue();
 
 // Only known SDK codes are logged; messages can contain IDs or request details.
 export const logAdFailure = (stage, error) => {
@@ -78,12 +81,36 @@ const defaultAdsContext = {
   recordScreenTransition: () => {},
   showAfterDiarySubmission: () => {},
   configureInterstitial: () => {},
+  requestOptions: NON_PERSONALIZED_AD_REQUEST_OPTIONS,
+  adSessionKey: "",
+  privacyOptionsRequired: false,
+  showPrivacyOptions: async () => false,
+  onAdRequestsBlocked: () => {},
 };
 
 const AdsContext = createContext(defaultAdsContext);
 
 export const AdsProvider = ({ children }) => {
-  const [adsInitialized, setAdsInitialized] = useState(false);
+  const { user, loading, activeTeamId, isTeamSwitching, emailVerificationPending,
+    currentMemberProfile, adProfileResolved, adMinimumAgeConfirmed } = useAuth();
+  const agePolicy = resolveAdAgePolicy({
+    uid: user?.uid, profileResolved: adProfileResolved,
+    minimumAgeConfirmed: adMinimumAgeConfirmed, membershipRole: currentMemberProfile?.role,
+  });
+  const enabled = Boolean(user?.uid && adProfileResolved && !loading &&
+    !isTeamSwitching && !emailVerificationPending);
+  const [consentRevision, setConsentRevision] = useState(0);
+  const sessionKey = JSON.stringify([user?.uid || "", activeTeamId || "", agePolicy.audience, enabled, consentRevision]);
+  const latestSessionRef = useRef(sessionKey);
+  latestSessionRef.current = sessionKey;
+  const [readySession, setReadySession] = useState(null);
+  const [privacyBusy, setPrivacyBusy] = useState(false);
+  const privacyBusyRef = useRef(false);
+  const adsInitialized = enabled && !privacyBusy && readySession?.key === sessionKey;
+  const requestOptions = readySession?.key === sessionKey && readySession.freshConsent
+    ? agePolicy.requestOptions : NON_PERSONALIZED_AD_REQUEST_OPTIONS;
+  const privacyOptionsRequired = agePolicy.audience === "adult" &&
+    readySession?.key === sessionKey && readySession.privacyOptionsRequired;
   const [diagnostics, setDiagnostics] = useState(() =>
     createAdDiagnostics(useTestAds, bannerAdUnitId),
   );
@@ -131,6 +158,8 @@ export const AdsProvider = ({ children }) => {
   const tryShowInterstitial = useCallback(async () => {
     if (
       !INTERSTITIAL_ADS_ENABLED ||
+      !adsInitializedRef.current || privacyBusyRef.current ||
+      readySession?.key !== latestSessionRef.current ||
       !dailyStateLoadedRef.current ||
       interstitialShowingRef.current
     ) {
@@ -176,7 +205,7 @@ export const AdsProvider = ({ children }) => {
       loadInterstitialRef.current();
       return false;
     }
-  }, [persistDailyState, refreshDailyState]);
+  }, [persistDailyState, refreshDailyState, readySession]);
 
   const configureInterstitial = useCallback((settings) => {
     interstitialSettingsRef.current = normalizeInterstitialSettings(settings);
@@ -210,11 +239,16 @@ export const AdsProvider = ({ children }) => {
   }, [tryShowInterstitial]);
 
   useEffect(() => {
-    if (isCaptureEnvironment) return;
+    adsInitializedRef.current = false;
+    interstitialLoadedRef.current = false;
+    interstitialLoadingRef.current = false;
+    navigationCountRef.current = 0;
+    setReadySession(null);
+    setDiagnostics(createAdDiagnostics(useTestAds, bannerAdUnitId));
+    if (isCaptureEnvironment || !enabled) return;
     let active = true;
+    const isCurrent = () => active && latestSessionRef.current === sessionKey;
     let retryTimer = null;
-    let initializationRetryTimer = null;
-    let initializationAttempts = 0;
     const subscriptions = [];
 
     const loadDailyState = async () => {
@@ -249,7 +283,7 @@ export const AdsProvider = ({ children }) => {
     const scheduleReload = (delay = 1000) => {
       if (retryTimer) clearTimeout(retryTimer);
       retryTimer = setTimeout(() => {
-        if (active) loadInterstitialRef.current();
+        if (isCurrent()) loadInterstitialRef.current();
       }, delay);
     };
 
@@ -262,7 +296,7 @@ export const AdsProvider = ({ children }) => {
 
       loadInterstitialRef.current = () => {
         if (
-          !active ||
+          !isCurrent() || privacyBusyRef.current ||
           !adsInitializedRef.current ||
           interstitialLoadingRef.current ||
           interstitialLoadedRef.current ||
@@ -276,13 +310,16 @@ export const AdsProvider = ({ children }) => {
 
       subscriptions.push(
         interstitial.addAdEventListener(AdEventType.LOADED, () => {
+          if (!isCurrent()) return;
           interstitialLoadingRef.current = false;
           interstitialLoadedRef.current = true;
         }),
         interstitial.addAdEventListener(AdEventType.OPENED, () => {
+          if (!isCurrent()) return;
           if (Platform.OS === "ios") StatusBar.setHidden(true);
         }),
         interstitial.addAdEventListener(AdEventType.CLOSED, () => {
+          if (!isCurrent()) return;
           releasePresentationRef.current?.();
           releasePresentationRef.current = null;
           interstitialLoadingRef.current = false;
@@ -292,6 +329,7 @@ export const AdsProvider = ({ children }) => {
           scheduleReload();
         }),
         interstitial.addAdEventListener(AdEventType.ERROR, (error) => {
+          if (!isCurrent()) return;
           releasePresentationRef.current?.();
           releasePresentationRef.current = null;
           interstitialLoadingRef.current = false;
@@ -312,89 +350,108 @@ export const AdsProvider = ({ children }) => {
 
     const getConsentInfo = async () => {
       try {
-        return await AdsConsent.gatherConsent({
-          tagForUnderAgeOfConsent:
-            ADS_REQUEST_CONFIGURATION.tagForUnderAgeOfConsent,
-        });
+        return { info: await AdsConsent.gatherConsent(agePolicy.consentOptions), fresh: true };
       } catch (error) {
-        if (!active) return null;
+        if (!isCurrent()) return null;
         logAdFailure("consent-update", error);
         recordDiagnostic("consent-error", error);
 
         try {
-          return await AdsConsent.getConsentInfo();
+          // Cached device consent must not enable personalization for a new session.
+          return { info: await AdsConsent.getConsentInfo(), fresh: false, error };
         } catch (fallbackError) {
-          if (active) {
+          if (isCurrent()) {
             logAdFailure("consent-cache", fallbackError);
             recordDiagnostic("consent-cache-error", fallbackError);
           }
-          return null;
+          return { info: null, fresh: false, error };
         }
       }
     };
 
-    const scheduleInitializationRetry = () => {
-      const delay = INITIALIZATION_RETRY_DELAYS[initializationAttempts - 1];
-      if (!active) return;
-      if (delay === undefined) {
-        recordDiagnostic("retry-exhausted");
-        return;
-      }
-      recordDiagnostic("retry-scheduled");
-      initializationRetryTimer = setTimeout(() => {
-        initializationRetryTimer = null;
-        void initializeAds();
-      }, delay);
-    };
-
-    const initializeAds = async () => {
-      if (!active || adsInitializedRef.current) return;
+    const initializeAds = async ({ consentOnly }) => {
+      if (!isCurrent() || privacyBusyRef.current) return "transient";
+      if (adsInitializedRef.current) return "ready";
       if (!bannerAdUnitId && !interstitialAdUnitId) {
         console.warn("[AdMob] configuration: missing-ad-unit-id");
         recordDiagnostic("missing-id");
-        return;
+        return "permanent";
       }
-      initializationAttempts += 1;
-      recordDiagnostic("consent-start");
-      const consentInfo = await getConsentInfo();
-      if (!active) return;
-      if (!consentInfo?.canRequestAds) {
-        console.warn("[AdMob] consent: cannot-request-ads");
-        recordDiagnostic("consent-blocked");
-        scheduleInitializationRetry();
-        return;
-      }
-
+      let stage = "configuration";
       try {
-        recordDiagnostic("consent-allowed");
+        if (consentOnly) {
+          stage = "consent-check";
+          const info = await AdsConsent.getConsentInfo();
+          if (!isCurrent()) return "transient";
+          if (!info?.canRequestAds) {
+            recordDiagnostic("consent-blocked");
+            return "consent-blocked";
+          }
+        }
+        stage = "configuration";
         recordDiagnostic("sdk-start");
-        await mobileAds().setRequestConfiguration({
-          ...ADS_REQUEST_CONFIGURATION,
-          maxAdContentRating: MaxAdContentRating.G,
-        });
-        if (!active) return;
+        // Fail closed if JS is ever run without the required age-treatment API.
+        if (!AgeRestrictedTreatment?.TEEN) throw new Error("age-treatment-unavailable");
+        await mobileAds().setRequestConfiguration(agePolicy.requestConfiguration);
+        if (!isCurrent()) return "transient";
+        stage = "consent";
+        recordDiagnostic("consent-start");
+        const consent = await getConsentInfo();
+        if (!isCurrent()) return "transient";
+        if (!consent?.info?.canRequestAds) {
+          recordDiagnostic("consent-blocked");
+          return consent?.error ? initializationFailureKind(consent.error, stage) : "consent-blocked";
+        }
+        recordDiagnostic("consent-allowed");
 
+        stage = "initialization";
         await mobileAds().initialize();
-        if (!active) return;
+        if (!isCurrent()) return "transient";
 
         adsInitializedRef.current = true;
-        setAdsInitialized(true);
+        setReadySession({ key: sessionKey, freshConsent: consent.fresh,
+          privacyOptionsRequired: consent.info.privacyOptionsRequirementStatus === "REQUIRED" });
         recordDiagnostic("sdk-ready");
         loadInterstitialRef.current();
+        return "ready";
       } catch (error) {
-        if (!active) return;
+        if (!isCurrent()) return;
         logAdFailure("sdk-initialization", error);
         recordDiagnostic("sdk-error", error);
-        scheduleInitializationRetry();
+        const kind = initializationFailureKind(error, stage);
+        return stage === "consent-check" && kind !== "permanent" ? "consent-check-failed" : kind;
       }
     };
 
-    void initializeAds();
+    const recovery = createInitializationRecovery({
+      initialize: initializeAds, enqueue: runAdTask, isCurrent, onEvent: recordDiagnostic,
+      foreground: AppState.currentState === "active", now: Date.now,
+      setTimer: setTimeout, clearTimer: clearTimeout,
+    });
+    let appState = AppState.currentState;
+    const appSubscription = AppState.addEventListener("change", nextState => {
+      if (!isCurrent()) return;
+      const returned = nextState === "active" && appState !== "active";
+      appState = nextState;
+      recovery.setForeground(nextState === "active");
+      if (returned && !adsInitializedRef.current) {
+        // Suspended iOS apps may miss the offline -> online notification.
+        void NetInfo.refresh().catch(() => {});
+      }
+    });
+    subscriptions.push(() => appSubscription.remove());
+    subscriptions.push(NetInfo.addEventListener(state => {
+      if (!isCurrent()) return;
+      recovery.setOnline(state.isConnected === false || state.isInternetReachable === false
+        ? false : state.isConnected === true ? true : null);
+    }));
+    recovery.start();
 
     return () => {
       active = false;
+      recovery.stop();
+      adsInitializedRef.current = false;
       if (retryTimer) clearTimeout(retryTimer);
-      if (initializationRetryTimer) clearTimeout(initializationRetryTimer);
       subscriptions.forEach((unsubscribe) => unsubscribe());
       releasePresentationRef.current?.();
       releasePresentationRef.current = null;
@@ -402,12 +459,46 @@ export const AdsProvider = ({ children }) => {
       interstitialRef.current = null;
       if (Platform.OS === "ios") StatusBar.setHidden(false);
     };
-  }, [recordDiagnostic]);
+  }, [recordDiagnostic, agePolicy, sessionKey, enabled]);
+
+  const showPrivacyOptions = useCallback(async () => {
+    if (!privacyOptionsRequired || privacyBusyRef.current || !enabled) return false;
+    const key = sessionKey;
+    privacyBusyRef.current = true;
+    setPrivacyBusy(true);
+    try {
+      return await runAdTask(async () => {
+        if (latestSessionRef.current !== key) return false;
+        await AdsConsent.showPrivacyOptionsForm();
+        return latestSessionRef.current === key;
+      });
+    } catch (error) {
+      logAdFailure("privacy-options", error);
+      throw error;
+    } finally {
+      privacyBusyRef.current = false;
+      setPrivacyBusy(false);
+      // Recreate ads after changes to consent, even if the form failed.
+      setConsentRevision((value) => value + 1);
+    }
+  }, [privacyOptionsRequired, enabled, sessionKey]);
+
+  const onAdRequestsBlocked = useCallback(() => {
+    if (latestSessionRef.current !== sessionKey) return;
+    adsInitializedRef.current = false;
+    setReadySession(null);
+    setConsentRevision(value => value + 1);
+  }, [sessionKey]);
 
   const contextValue = useMemo(
     () => ({
       adsInitialized,
       bannerAdUnitId,
+      requestOptions,
+      adSessionKey: sessionKey,
+      privacyOptionsRequired: Boolean(privacyOptionsRequired),
+      showPrivacyOptions,
+      onAdRequestsBlocked,
       diagnostics,
       recordDiagnostic,
       recordScreenTransition,
@@ -416,6 +507,11 @@ export const AdsProvider = ({ children }) => {
     }),
     [
       adsInitialized,
+      requestOptions,
+      sessionKey,
+      privacyOptionsRequired,
+      showPrivacyOptions,
+      onAdRequestsBlocked,
       diagnostics,
       recordDiagnostic,
       configureInterstitial,

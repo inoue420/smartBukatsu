@@ -75,7 +75,7 @@ function fillImports(file, modules) {
   }
 }
 
-function screenHarness(screen, changes = {}, overrides = {}, os = "android") {
+function screenHarness(screen, changes = {}, overrides = {}, os = "android", ads = { diagnostics: {} }) {
   const h = renderHarness(), alerts = [], writes = [], histories = [];
   let auth = { activeTeamId: "a", teamIds: ["a", "b"], user: { uid: "coach" }, role: "admin" };
   let props = { currentUser: "Coach", currentUserUid: "coach", isAdmin: false,
@@ -101,7 +101,7 @@ function screenHarness(screen, changes = {}, overrides = {}, os = "android") {
     "../services/dailyReportAttachmentService": { getActiveDailyReportAttachments: () => [] },
     "../firebase": { auth: { currentUser: { uid: "coach" } }, db: "synthetic" },
     "firebase/firestore": { doc: (...args) => args, getDoc: async () => ({ exists: () => false }) },
-    "../ads/AdManager": { useAds: () => ({ diagnostics: {} }) }, "../ads/adSettings": require("../src/ads/adSettings"),
+    "../ads/AdManager": { useAds: () => ads }, "../ads/adSettings": require("../src/ads/adSettings"),
     "../ads/adDiagnostics": { formatAdDiagnostics: () => "" },
     "../services/firestoreSubscription": { firestoreDiagnosticsEnabled: false },
     "../constants/sportsCategories": require("../src/constants/sportsCategories"),

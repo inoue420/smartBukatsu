@@ -5,20 +5,26 @@ const path = require("node:path");
 const vm = require("node:vm");
 const { transformSync } = require("@babel/core");
 
-const code = transformSync(fs.readFileSync(path.join(__dirname, "AppBannerAd.native.js"), "utf8"), {
+const source = fs.readFileSync(path.join(__dirname, "AppBannerAd.native.js"), "utf8");
+const compile = source => transformSync(source, {
   configFile: false, babelrc: false,
   plugins: ["@babel/plugin-transform-react-jsx", "@babel/plugin-transform-modules-commonjs"],
 }).code;
+const code = compile(source);
 const flush = () => new Promise(setImmediate);
+const flattenStyle = style => Array.isArray(style)
+  ? Object.assign({}, ...style.map(flattenStyle)) : style || {};
 
 // Execute the real component; replace only React/native/SDK boundaries. Commit
-// refs before effects, including automatic native requests on keyboard remounts.
+// refs before effects. The separate native-lifetime model includes iOS Fabric's
+// display:none recycling; it does not execute UIKit/Fabric or SDK auto-refresh.
 function mountBanner(options = {}) {
   const slots = [], timers = new Map(), appListeners = new Set(), networkListeners = new Set();
   const keyboardListeners = new Map(), diagnostics = [], failures = [];
   let cursor = 0, dirty = true, effects = [], tree, bannerNode = null, instance = null;
   let clock = 100000, timerId = 0, keyboardVisible = Boolean(options.keyboardVisible);
   let automaticLoads = 0, manualLoads = 0, consentChecks = 0;
+  let nativeBannerNode = null, nativeMountLoads = 0, nativeRecycles = 0;
   let network = { isConnected: true, isInternetReachable: true };
   let consent = async () => ({ canRequestAds: true });
   const ads = { adsInitialized: true, bannerAdUnitId: "synthetic-banner",
@@ -80,7 +86,7 @@ function mountBanner(options = {}) {
     "./adSettings": { NON_PERSONALIZED_AD_REQUEST_OPTIONS: { requestNonPersonalizedAdsOnly: true } },
   };
   const module = { exports: {} };
-  vm.runInNewContext(code, { module, exports: module.exports, require(name) {
+  vm.runInNewContext(options.code || code, { module, exports: module.exports, require(name) {
     assert.ok(modules[name], `Unexpected import: ${name}`); return modules[name];
   }, Date: class extends Date { static now() { return clock; } },
   setTimeout(callback, delay) { const id = ++timerId; timers.set(id, { at: clock + delay, callback }); return id; },
@@ -91,6 +97,13 @@ function mountBanner(options = {}) {
     for (const child of node.children || []) { const found = findBanner(child); if (found) return found; }
     return null;
   };
+  const findNativeBanner = node => {
+    if (!node || typeof node !== "object") return null;
+    if (os === "ios" && flattenStyle(node.props?.style).display === "none") return null;
+    if (node.type === "BannerAd") return node;
+    for (const child of node.children || []) { const found = findNativeBanner(child); if (found) return found; }
+    return null;
+  };
   const render = () => {
     let passes = 0;
     while (dirty) {
@@ -98,7 +111,7 @@ function mountBanner(options = {}) {
       dirty = false; cursor = 0; effects = [];
       tree = module.exports.default();
       const next = findBanner(tree);
-      if (bannerNode && (!next || next.props.unitId !== bannerNode.props.unitId)) {
+      if (bannerNode && (!next || next.props.unitId !== bannerNode.props.unitId || next.props.key !== bannerNode.props.key)) {
         bannerNode.props.ref(null); instance = null;
       }
       if (next && !instance) {
@@ -106,12 +119,22 @@ function mountBanner(options = {}) {
         automaticLoads++; next.props.ref(instance);
       }
       bannerNode = next;
+      const nativeNext = findNativeBanner(tree);
+      const sameNativeAd = nativeBannerNode && nativeNext &&
+        nativeBannerNode.props.key === nativeNext.props.key && nativeBannerNode.props.unitId === nativeNext.props.unitId;
+      if (nativeBannerNode && !sameNativeAd) nativeRecycles++;
+      if (nativeNext && !sameNativeAd) nativeMountLoads++;
+      nativeBannerNode = nativeNext;
       effects.forEach((run) => run());
     }
   };
   const h = {
     render, timers, diagnostics, failures, ads, appListeners, networkListeners, keyboardListeners,
     get banner() { return bannerNode; },
+    get wrapper() { return tree; },
+    get wrapperStyle() { return flattenStyle(tree?.props.style); },
+    get nativeMountLoads() { return nativeMountLoads; },
+    get nativeRecycles() { return nativeRecycles; },
     get automaticLoads() { return automaticLoads; },
     get manualLoads() { return manualLoads; },
     get consentChecks() { return consentChecks; },
@@ -293,11 +316,26 @@ for (const action of ["unmount", "background", "keyboard", "sdk-disabled", "unit
 }
 
 for (const os of ["ios", "android"]) {
-  test(`${os}: keyboard hides the banner and closing it makes only one automatic request`, async () => {
-    const h = mountBanner({ os }); h.loaded(); h.keyboard(true); assert.equal(h.banner, null);
-    h.advance(60000); h.state("background"); h.state("active"); await h.settle(); assert.equal(h.manualLoads, 0);
-    h.keyboard(false); assert.ok(h.banner); assert.equal(h.automaticLoads, 2);
-    h.loaded(); h.advance(60000); await h.settle(); assert.equal(h.manualLoads, 0);
+  test(`${os}: normal keyboard cycles retain the banner without new requests and hide touch/accessibility`, async () => {
+    const h = mountBanner({ os }); h.loaded(); const ref = h.banner.props.ref;
+    for (let cycle = 0; cycle < 10; cycle++) {
+      h.keyboard(true); assert.ok(h.banner); assert.equal(h.banner.props.ref, ref);
+      assert.equal(h.wrapperStyle.height, 0); assert.equal(h.wrapperStyle.opacity, 0);
+      assert.equal(h.wrapperStyle.overflow, "hidden"); assert.notEqual(h.wrapperStyle.display, "none");
+      assert.equal(h.wrapper.props.collapsable, false); assert.equal(h.wrapper.props.removeClippedSubviews, false);
+      assert.equal(h.wrapper.props.contentContainerStyle.flexShrink, 0);
+      assert.equal(h.wrapper.props.pointerEvents, "none");
+      assert.equal(h.wrapper.props.accessibilityElementsHidden, true);
+      assert.equal(h.wrapper.props.importantForAccessibility, "no-hide-descendants");
+      h.advance(60000); h.keyboard(false); await h.settle();
+      assert.equal(h.wrapperStyle.height, undefined); assert.equal(h.wrapperStyle.opacity, undefined);
+      assert.equal(h.wrapperStyle.overflow, "hidden");
+      assert.equal(h.wrapper.props.pointerEvents, "auto");
+      assert.equal(h.wrapper.props.accessibilityElementsHidden, false);
+      assert.equal(h.wrapper.props.importantForAccessibility, "auto");
+    }
+    assert.equal(h.automaticLoads, 1); assert.equal(h.manualLoads, 0); assert.equal(h.consentChecks, 0);
+    assert.equal(h.nativeMountLoads, 1); assert.equal(h.nativeRecycles, 0); h.unmount();
   });
   for (const ads of [{ adsInitialized: false }, { bannerAdUnitId: null }]) {
     test(`${os}: missing SDK initialization or unit ID suppresses the banner and recovery`, async () => {
@@ -311,17 +349,42 @@ for (const os of ["ios", "android"]) {
 test("iOS: closing the keyboard in background is reconciled on return without a duplicate request", async () => {
   const h = mountBanner(); h.loaded(); h.keyboard(true); h.state("background"); h.advance(60000);
   h.setKnownKeyboard(false); h.state("active"); await h.settle();
-  assert.ok(h.banner); assert.equal(h.automaticLoads, 2); assert.equal(h.manualLoads, 0);
+  assert.ok(h.banner); assert.equal(h.automaticLoads, 1); assert.equal(h.manualLoads, 1);
+});
+
+test("the display:none lifecycle model matches the installed Fabric and ad-view source contracts", () => {
+  const read = name => fs.readFileSync(path.join(__dirname, "../../node_modules", name), "utf8");
+  const core = "react-native/ReactCommon/react/renderer/";
+  assert.match(read(core + "components/view/ConcreteViewShadowNode.h"),
+    /display\(\) == yoga::Display::None[\s\S]*?traits_\.set\(ShadowNodeTraits::Trait::Hidden\)/);
+  assert.match(read(core + "mounting/internal/sliceChildShadowNodeViewPairs.cpp"),
+    /#ifndef ANDROID[\s\S]*?check\(ShadowNodeTraits::Trait::Hidden\)\)\s*\{\s*continue;/);
+  assert.match(read("react-native/React/Fabric/Mounting/RCTComponentViewRegistry.mm"), /\[componentViewDescriptor\.view prepareForRecycle\]/);
+  assert.match(read("react-native-google-mobile-ads/ios/RNGoogleMobileAds/RNGoogleMobileAdsBannerView.mm"),
+    /- \(void\)prepareForRecycle\s*\{[\s\S]*?\[_banner removeFromSuperview\];\s*_banner = nil;/);
+  const view = read("react-native/React/Fabric/Mounting/ComponentViews/View/RCTViewComponentView.mm");
+  assert.match(view, /self\.layer\.opacity = \(float\)newViewProps\.opacity/);
+  assert.match(view, /clipsToBounds = newViewProps\.getClipsContentToBounds\(\)/);
+});
+
+test("regression: display:none retains JS but recycles the modeled iOS ad and requests again", () => {
+  const legacy = source.replace("hidden: { height: 0, opacity: 0 }", 'hidden: { display: "none" }');
+  assert.notEqual(legacy, source);
+  const h = mountBanner({ code: compile(legacy) }); h.loaded();
+  h.keyboard(true); assert.ok(h.banner); assert.equal(h.nativeRecycles, 1);
+  h.keyboard(false);
+  assert.equal(h.automaticLoads, 1); assert.equal(h.manualLoads, 0);
+  assert.equal(h.nativeMountLoads, 2); h.unmount();
 });
 
 test("iOS: returning while the keyboard opens keeps the banner hidden until the keyboard closes", async () => {
   const h = mountBanner(); h.loaded(); h.advance(30000);
-  h.keyboardEvent("keyboardWillShow"); assert.equal(h.banner, null);
+  h.keyboardEvent("keyboardWillShow"); assert.equal(h.wrapperStyle.height, 0);
   h.state("background"); h.state("active"); await h.settle();
-  assert.equal(h.banner, null); assert.equal(h.automaticLoads, 1);
-  h.keyboardEvent("keyboardDidShow"); assert.equal(h.banner, null);
-  h.keyboard(false); assert.ok(h.banner); assert.equal(h.automaticLoads, 2);
-  assert.equal(h.manualLoads, 0);
+  assert.equal(h.wrapperStyle.height, 0); assert.equal(h.automaticLoads, 1);
+  h.keyboardEvent("keyboardDidShow"); assert.equal(h.wrapperStyle.height, 0);
+  h.keyboard(false); await h.settle(); assert.ok(h.banner); assert.equal(h.automaticLoads, 1);
+  assert.equal(h.manualLoads, 1);
 });
 
 test("iOS: returning while the keyboard closes preserves the one new banner mount", async () => {
@@ -344,11 +407,67 @@ test("iOS: SDK initialization after return uses the first mount, not another for
   assert.equal(h.automaticLoads, 1); assert.equal(h.manualLoads, 0);
 });
 
-test("Android: background and reconnect events add no manual ad requests", async () => {
-  const h = mountBanner({ os: "android" }); h.failed(); h.network(false); h.advance(60000);
+test("Android: a healthy banner needs no manual requests on background return or reconnect", async () => {
+  const h = mountBanner({ os: "android" }); h.loaded(); h.network(false); h.advance(60000);
   h.state("background"); h.state("active"); h.network(true); await h.settle();
   assert.equal(h.manualLoads, 0); assert.equal(h.consentChecks, 0);
-  assert.equal(h.appListeners.size, 0); assert.equal(h.networkListeners.size, 0);
+  assert.equal(h.appListeners.size, 1); assert.equal(h.networkListeners.size, 1);
+});
+
+for (const os of ["ios", "android"]) {
+  for (const failureWhileHidden of [false, true]) {
+    test(`${os}: a failure ${failureWhileHidden ? "during" : "before"} keyboard display resumes only after closing and cooldown`, async () => {
+      const h = mountBanner({ os }); h.loaded();
+      if (!failureWhileHidden) h.failed();
+      h.keyboard(true); if (failureWhileHidden) h.failed();
+      h.advance(10000); h.keyboard(false); await h.settle();
+      assert.equal(h.automaticLoads, 1); assert.equal(h.manualLoads, 0);
+      h.advance(19999); await h.settle(); assert.equal(h.manualLoads, 0);
+      h.advance(1); await h.settle(); assert.equal(h.manualLoads, 1);
+      h.failed(); h.advance(3600000); await h.settle(); assert.equal(h.manualLoads, 1);
+      h.unmount();
+    });
+  }
+  test(`${os}: an audience change while hidden destroys the old banner and defers the new request`, () => {
+    const h = mountBanner({ os, ads: { adSessionKey: "adult" } }); const previous = h.banner;
+    h.keyboard(true); h.updateAds({ adSessionKey: "teen", requestOptions: { requestNonPersonalizedAdsOnly: true } });
+    assert.equal(h.banner, null); assert.equal(h.automaticLoads, 1);
+    const count = h.diagnostics.length; previous.props.onAdLoaded(); assert.equal(h.diagnostics.length, count);
+    h.keyboard(false); assert.equal(h.automaticLoads, 2);
+    assert.equal(h.banner.props.requestOptions.requestNonPersonalizedAdsOnly, true);
+    h.keyboard(true); const teen = h.banner; h.updateAds({ adsInitialized: false });
+    assert.equal(h.banner, null); const after = h.diagnostics.length;
+    teen.props.onAdFailedToLoad({ code: "network-error" }); assert.equal(h.diagnostics.length, after);
+    h.unmount();
+  });
+}
+
+test("Android: failed banner recovery coalesces foreground and network events", async () => {
+  const h = mountBanner({ os: "android" }); h.failed(); h.network(false);
+  h.state("background"); h.advance(60000); h.network(true); await h.settle();
+  assert.equal(h.manualLoads, 0); h.state("active"); h.network(false); h.network(true); await h.settle();
+  assert.equal(h.automaticLoads, 1); assert.equal(h.manualLoads, 1); assert.equal(h.consentChecks, 1);
+  h.unmount();
+});
+
+test("consent denied during recovery asks the provider to stop and discard ads", async () => {
+  let blocked = 0;
+  const h = mountBanner({ ads: { onAdRequestsBlocked: () => { blocked++; h.updateAds({ adsInitialized: false }); } } });
+  h.loaded(); h.advance(60000); h.setConsent(async () => ({ canRequestAds: false }));
+  h.state("background"); h.state("active"); await h.settle();
+  assert.equal(blocked, 1); assert.equal(h.banner, null); assert.equal(h.manualLoads, 0);
+  assert.equal(h.timers.size, 0); h.unmount();
+});
+
+test("hiding during a pending consent check retains recovery until keyboard close", async () => {
+  const h = mountBanner(); h.loaded(); h.advance(60000);
+  let resolve;
+  h.setConsent(() => new Promise(done => { resolve = done; }));
+  h.state("background"); h.state("active"); h.keyboard(true);
+  resolve({ canRequestAds: true }); await h.settle(); assert.equal(h.manualLoads, 0);
+  h.setConsent(async () => ({ canRequestAds: true }));
+  h.keyboard(false); await h.settle();
+  assert.equal(h.automaticLoads, 1); assert.equal(h.manualLoads, 1); h.unmount();
 });
 
 test("iOS: unmount removes listeners and a queued recovery timer", async () => {
@@ -357,4 +476,26 @@ test("iOS: unmount removes listeners and a queued recovery timer", async () => {
   assert.equal(h.timers.size, 0); assert.equal(h.appListeners.size, 0); assert.equal(h.networkListeners.size, 0);
   for (const listeners of h.keyboardListeners.values()) assert.equal(listeners.size, 0);
   h.advance(60000); await h.settle(); assert.equal(h.manualLoads, 0);
+});
+
+test("audience changes recreate the banner with new options and ignore old native callbacks", () => {
+  const h = mountBanner({ ads: { adSessionKey: "adult", requestOptions: {} } });
+  const adult = h.banner;
+  h.updateAds({ adSessionKey: "teen", requestOptions: { requestNonPersonalizedAdsOnly: true } });
+  assert.equal(h.automaticLoads, 2);
+  assert.equal(h.banner.props.requestOptions.requestNonPersonalizedAdsOnly, true);
+  const before = h.diagnostics.length;
+  adult.props.onAdLoaded(); adult.props.onAdFailedToLoad({ code: "no-fill" });
+  assert.equal(h.diagnostics.length, before); h.unmount();
+});
+
+test("an old audience's pending iOS recovery cannot reload the replacement banner", async () => {
+  const h = mountBanner({ ads: { adSessionKey: "adult", requestOptions: {} } });
+  h.loaded(); h.advance(60000);
+  let resolve;
+  h.setConsent(() => new Promise(done => { resolve = done; }));
+  h.state("background"); h.state("active");
+  h.updateAds({ adSessionKey: "teen", requestOptions: { requestNonPersonalizedAdsOnly: true } });
+  resolve({ canRequestAds: true }); await h.settle();
+  assert.equal(h.automaticLoads, 2); assert.equal(h.manualLoads, 0); h.unmount();
 });

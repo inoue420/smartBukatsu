@@ -46,6 +46,7 @@ export function AuthProvider({ children }) {
   const [blockedUserUids, setBlockedUserUids] = useState([]);
   const [role, setRole] = useState(null);
   const [membershipProfile, setMembershipProfile] = useState(null);
+  const [adAgeConfirmation, setAdAgeConfirmation] = useState(null);
   const [hasSelectedTeam, setHasSelectedTeam] = useState(false);
   const [teamAccessRevoked, setTeamAccessRevoked] = useState(false);
   const [emailVerificationRequired, setEmailVerificationRequired] =
@@ -77,6 +78,7 @@ export function AuthProvider({ children }) {
       verificationActionRef.current = null;
       setRole(null);
       setMembershipProfile(null);
+      setAdAgeConfirmation(null);
       setActiveTeamId(null);
       setTeamIds([]);
       setBlockedUserUids([]);
@@ -146,8 +148,13 @@ export function AuthProvider({ children }) {
     const ref = doc(db, "users", user.uid);
     let active = true;
     const unsub = measuredOnSnapshot("authUser", ref, (snap) => {
-      if (!active) return;
+      if (!active || authUserRef.current?.uid !== user.uid) return;
       const data = snap.data() || {};
+      setAdAgeConfirmation({
+        uid: user.uid,
+        minimumAgeConfirmed: data.legalConsent?.minimumAgeConfirmed === true &&
+          Number.isInteger(data.legalConsent?.minimumAge) && data.legalConsent.minimumAge >= 13,
+      });
       if (snap.exists()) {
         setEmailVerificationRequired(
           data.emailVerificationRequired === true,
@@ -479,6 +486,9 @@ export function AuthProvider({ children }) {
       teamIds,
       blockedUserUids,
       role,
+      adProfileResolved: Boolean(user?.uid && adAgeConfirmation?.uid === user.uid),
+      adMinimumAgeConfirmed: Boolean(user?.uid && adAgeConfirmation?.uid === user.uid &&
+        adAgeConfirmation.minimumAgeConfirmed),
       currentMemberProfile: membershipProfile?.teamId === activeTeamId && membershipProfile?.uid === user?.uid
         ? membershipProfile.data : null,
       isAdmin: role === "admin" || role === "owner", // ownerも管理者として扱うように強化
@@ -510,6 +520,7 @@ export function AuthProvider({ children }) {
     teamIds,
     blockedUserUids,
     role,
+    adAgeConfirmation,
     membershipProfile,
     hasSelectedTeam,
     emailVerificationRequired,

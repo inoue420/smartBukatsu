@@ -1,5 +1,6 @@
 export const MINIMUM_USER_AGE = 13;
 export const LEGAL_POLICY_VERSION = "2026-08-24";
+export const PRIVACY_POLICY_VERSION = "2026-11-09";
 
 export const SMARTBUKATSU_TERMS_URL =
   "https://sharprise.jp/smartbukatsu/terms.html";

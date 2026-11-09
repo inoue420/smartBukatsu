@@ -181,7 +181,7 @@ const SettingsScreen = ({
   setPosts,
 }) => {
   const { activeTeamId, teamIds = [], blockedUserUids = [], signOut, user, currentMemberProfile, userName } = useAuth();
-  const { diagnostics } = useAds();
+  const { diagnostics, privacyOptionsRequired, showPrivacyOptions } = useAds();
   const [isFirestoreDiagnosticsExpanded, setIsFirestoreDiagnosticsExpanded] = useState(false);
   const [firestoreDiagnosticsText, setFirestoreDiagnosticsText] = useState("");
   const [isAdDiagnosticsExpanded, setIsAdDiagnosticsExpanded] = useState(false);
@@ -2828,7 +2828,7 @@ const SettingsScreen = ({
             >
               <Text style={styles.subText}>
                 広告が表示されないときに、状態をコピーして相談先へ共有できます。
-                アプリ起動後の情報のみ表示し、再起動すると履歴はリセットされます。
+                現在の広告設定の情報を表示し、アカウント・チームの切り替えや再起動で履歴はリセットされます。
                 広告IDや個人情報は含みません。
               </Text>
               <TouchableOpacity
@@ -2846,6 +2846,20 @@ const SettingsScreen = ({
 
           <View style={styles.legalContainer}>
             <Text style={styles.legalTitle}>法務・サポート</Text>
+            {privacyOptionsRequired && (
+              <TouchableOpacity
+                style={styles.legalButton}
+                onPress={() => {
+                  void showPrivacyOptions().catch(() => {
+                    Alert.alert("広告のプライバシー設定", "設定を開けませんでした。時間をおいてもう一度お試しください。");
+                  });
+                }}
+                accessibilityRole="button"
+              >
+                <Text style={styles.legalButtonText}>広告のプライバシー設定</Text>
+                <Text style={styles.legalButtonArrow}>›</Text>
+              </TouchableOpacity>
+            )}
             <TouchableOpacity
               style={styles.legalButton}
               onPress={() => setIsSupportModalVisible(true)}
@@ -3094,6 +3108,7 @@ const SettingsScreen = ({
             >
               <Text style={styles.roleSelectTitle}>保護者</Text>
               <Text style={styles.roleSelectDesc}>
+                18歳以上の保護者に付与してください。
                 カレンダー・動画の閲覧と、設定された子供の不参加連絡ができます。個別許可時だけ動画追加・タグ編集ができます。
               </Text>
             </TouchableOpacity>
