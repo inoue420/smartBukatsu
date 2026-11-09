@@ -45,6 +45,7 @@ export function AuthProvider({ children }) {
   const [teamIds, setTeamIds] = useState([]);
   const [blockedUserUids, setBlockedUserUids] = useState([]);
   const [role, setRole] = useState(null);
+  const [membershipProfile, setMembershipProfile] = useState(null);
   const [hasSelectedTeam, setHasSelectedTeam] = useState(false);
   const [teamAccessRevoked, setTeamAccessRevoked] = useState(false);
   const [emailVerificationRequired, setEmailVerificationRequired] =
@@ -75,6 +76,7 @@ export function AuthProvider({ children }) {
       setVerificationRequested(false);
       verificationActionRef.current = null;
       setRole(null);
+      setMembershipProfile(null);
       setActiveTeamId(null);
       setTeamIds([]);
       setBlockedUserUids([]);
@@ -183,14 +185,17 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     if (!user?.uid || !activeTeamId) {
       setRole(null);
+      setMembershipProfile(null);
       return;
     }
     const ref = doc(db, "teams", activeTeamId, "members", user.uid);
     let active = true;
     setRole(null);
+    setMembershipProfile(null);
     const handleAccessRevoked = () => {
       if (!active) return;
       setRole(null);
+      setMembershipProfile(null);
       setActiveTeamId(null);
       setHasSelectedTeam(false);
       setTeamAccessRevoked(true);
@@ -206,6 +211,7 @@ export function AuthProvider({ children }) {
         }
         const data = snap.data() || {};
         setRole(data.role || null);
+        setMembershipProfile({ teamId: activeTeamId, uid: user.uid, data: { ...data, uid: user.uid } });
       },
       (error) => {
         if (error?.code === "permission-denied") {
@@ -473,6 +479,8 @@ export function AuthProvider({ children }) {
       teamIds,
       blockedUserUids,
       role,
+      currentMemberProfile: membershipProfile?.teamId === activeTeamId && membershipProfile?.uid === user?.uid
+        ? membershipProfile.data : null,
       isAdmin: role === "admin" || role === "owner", // ownerも管理者として扱うように強化
       teamSelectionRequired:
         teamAccessRevoked || (teamIds.length > 1 && !hasSelectedTeam),
@@ -502,6 +510,7 @@ export function AuthProvider({ children }) {
     teamIds,
     blockedUserUids,
     role,
+    membershipProfile,
     hasSelectedTeam,
     emailVerificationRequired,
     isEmailVerified,

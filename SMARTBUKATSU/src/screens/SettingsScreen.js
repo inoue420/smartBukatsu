@@ -27,9 +27,13 @@ import {
   getFirestoreDiagnosticsText,
 } from "../services/firestoreSubscription";
 import { useAuth } from "../AuthContext";
+import MembershipManagementModal, { AlumniArchiveModal } from "../components/MembershipManagementModal";
+import GradeOrderList from "../components/GradeOrderList";
+import { reorderTeamGrades } from "../services/gradeOrderService";
 import MedicalSafetyNotice from "../components/MedicalSafetyNotice";
 import { auth, db } from "../firebase";
 import { memberGrades } from "../../functions/workspaceAudience";
+import { createMemberProfiles, mergeMemberIdentity } from "../utils/memberProfiles";
 import { doc, getDoc, updateDoc } from "firebase/firestore";
 
 import {
@@ -41,6 +45,7 @@ import {
 import {
   getTeamInviteCode,
   getUserTeams,
+  getTeamMembersFromServer,
   SHARP_RISE_INVITE_CODE,
   subscribeTeamData,
   addTeamArrayItem,
@@ -153,7 +158,10 @@ const SettingsScreen = ({
   currentUserUid: currentUserUidProp = "",
   setCurrentUser,
   clubMembers = [],
+  setClubMembers,
   grades,
+  setGrades,
+  membershipBatchPending = false,
   positions,
   alertThresholds,
   setAlertThresholds,
@@ -172,7 +180,7 @@ const SettingsScreen = ({
   posts = [],
   setPosts,
 }) => {
-  const { activeTeamId, teamIds = [], blockedUserUids = [], signOut, user } = useAuth();
+  const { activeTeamId, teamIds = [], blockedUserUids = [], signOut, user, currentMemberProfile, userName } = useAuth();
   const { diagnostics } = useAds();
   const [isFirestoreDiagnosticsExpanded, setIsFirestoreDiagnosticsExpanded] = useState(false);
   const [firestoreDiagnosticsText, setFirestoreDiagnosticsText] = useState("");
@@ -256,6 +264,34 @@ const SettingsScreen = ({
 
   const currentUserUid =
     currentUserUidProp || user?.uid || auth.currentUser?.uid || "";
+  const [isRefreshingMembers, setIsRefreshingMembers] = useState(false);
+  const [memberRefreshMessage, setMemberRefreshMessage] = useState("");
+  const memberRefreshPending = useRef(false);
+  const memberRefreshVisit = useRef(null);
+  const memberRefreshKey = JSON.stringify([activeTeamId, currentUserUid]);
+  if (memberRefreshVisit.current?.key !== memberRefreshKey) memberRefreshVisit.current = { key: memberRefreshKey };
+  useEffect(() => {
+    const visit = memberRefreshVisit.current;
+    setIsRefreshingMembers(false); setMemberRefreshMessage(""); memberRefreshPending.current = false;
+    return () => { if (memberRefreshVisit.current === visit) memberRefreshVisit.current = null; };
+  }, [memberRefreshKey]);
+  const handleRefreshMembers = async () => {
+    if (memberRefreshPending.current || !activeTeamId || !currentUserUid || !setClubMembers || !setUserProfiles) return;
+    const visit = memberRefreshVisit.current;
+    memberRefreshPending.current = true; setIsRefreshingMembers(true); setMemberRefreshMessage("");
+    try {
+      const rows = await getTeamMembersFromServer(activeTeamId, currentUserUid);
+      if (memberRefreshVisit.current !== visit) return;
+      const identity = currentMemberProfile ? { ...currentMemberProfile, name: currentMemberProfile.name || userName || "名称未設定" } : null;
+      const { names, profiles } = createMemberProfiles(mergeMemberIdentity(rows, identity));
+      setClubMembers(names); setUserProfiles(profiles);
+      setMemberRefreshMessage(`${names.length}人分の最新情報を取得しました。`);
+    } catch {
+      if (memberRefreshVisit.current === visit) setMemberRefreshMessage("一覧を更新できませんでした。通信状態を確認して、もう一度お試しください。");
+    } finally {
+      if (memberRefreshVisit.current === visit) { memberRefreshPending.current = false; setIsRefreshingMembers(false); }
+    }
+  };
   const getMemberProfileByUid = (uid) =>
     Object.values(userProfiles).find((profile) => profile?.uid === uid) || {};
   const currentUserProfile = getMemberProfileByUid(currentUserUid);
@@ -428,6 +464,23 @@ const SettingsScreen = ({
 
   const [newGradeName, setNewGradeName] = useState("");
   const [newPositionName, setNewPositionName] = useState("");
+  const [isGradeDragging, setIsGradeDragging] = useState(false);
+  const [isGradeOrderBusy, setIsGradeOrderBusy] = useState(false);
+  const settingsScrollRef = useRef(null);
+  const gradeScrollState = useRef({ offset: 0, top: 0, height: 0, contentHeight: 0 });
+  const gradeOrderScope = JSON.stringify([activeTeamId, currentUserUid]);
+  const gradeOrderScopeRef = useRef(gradeOrderScope);
+  gradeOrderScopeRef.current = gradeOrderScope;
+  useEffect(() => {
+    gradeOrderScopeRef.current = gradeOrderScope;setIsGradeDragging(false);setIsGradeOrderBusy(false);
+    return () => { if (gradeOrderScopeRef.current === gradeOrderScope) gradeOrderScopeRef.current = null; };
+  }, [gradeOrderScope]);
+  const handleReorderGrades = async (before, after) => {
+    if (!isStaffOrAbove || !activeTeamId || membershipBatchPending) throw new Error('現在は並べ替えできません。');
+    const scope = gradeOrderScope;
+    await reorderTeamGrades(activeTeamId, before, after);
+    if (gradeOrderScopeRef.current === scope) setGrades?.(after);
+  };
 
   const [expanded, setExpanded] = useState({
     teamInfo: false,
@@ -577,6 +630,8 @@ const SettingsScreen = ({
   const [isRoleModalVisible, setIsRoleModalVisible] = useState(false);
   const [selectedMemberForRole, setSelectedMemberForRole] = useState(null);
   const [isChangingMemberRole, setIsChangingMemberRole] = useState(false);
+  const [membershipEditor, setMembershipEditor] = useState(null);
+  const [showAlumniArchive, setShowAlumniArchive] = useState(false);
   const [selectedGradeMemberUid, setSelectedGradeMemberUid] = useState(null);
   const [editingMemberGrades, setEditingMemberGrades] = useState([]);
   const [isSavingMemberGrade, setIsSavingMemberGrade] = useState(false);
@@ -633,6 +688,7 @@ const SettingsScreen = ({
     admin: { label: "監督", color: "#e74c3c", bg: "#fceeea" },
     staff: { label: "スタッフ", color: "#9b59b6", bg: "#f5eef8" },
     captain: { label: "キャプテン", color: "#e67e22", bg: "#fdf2e9" },
+    alumni: { label: "OB・OG", color: "#607d8b", bg: "#eceff1" },
     guardian: { label: "保護者", color: "#16a085", bg: "#e8f8f5" },
     member: { label: "一般部員", color: "#3498db", bg: "#ebf5fb" },
   };
@@ -1150,6 +1206,7 @@ const SettingsScreen = ({
   };
 
   const handleChangeRole = (newRole) => {
+    if (newRole === "alumni") { setMembershipEditor({ memberUid: selectedMemberForRole }); setIsRoleModalVisible(false); return; }
     if (!selectedMemberForRole) return;
 
     const previousRole = selectedMemberProfile.role || "member";
@@ -1215,6 +1272,8 @@ const SettingsScreen = ({
       Alert.alert("エラー", "保護者権限の更新に失敗しました。");
     }
   };
+
+  useEffect(() => { setMembershipEditor(null); setShowAlumniArchive(false); }, [activeTeamId, currentUserUid]);
 
   const handleOpenMemberGrade = (profile) => {
     if (!isStaffOrAbove || !profile.uid) return;
@@ -1584,7 +1643,11 @@ const SettingsScreen = ({
           <View style={{ width: 60 }} />
         </View>
 
-        <ScrollView style={styles.content} keyboardShouldPersistTaps="handled">
+        <ScrollView ref={settingsScrollRef} style={styles.content} keyboardShouldPersistTaps="handled" scrollEnabled={!isGradeDragging}
+          scrollEventThrottle={16}
+          onScroll={event => { gradeScrollState.current.offset = event.nativeEvent.contentOffset.y; }}
+          onLayout={event => { gradeScrollState.current.height = event.nativeEvent.layout.height; }}
+          onContentSizeChange={(_width, height) => { gradeScrollState.current.contentHeight = height; }}>
           <View style={styles.card}>
             <Text style={styles.legalTitle}>使い方</Text>
             <TouchableOpacity
@@ -2320,6 +2383,12 @@ const SettingsScreen = ({
                 title="👥 部員リスト・権限・担当管理"
               >
                 <GuideHelpLink topic="permissions" />
+                <Text>在籍メンバー：{sortedMembers.length}人</Text>
+                <TouchableOpacity style={styles.cancelBtn} accessibilityRole="button" accessibilityLabel="部員リストを最新の状態に更新"
+                  disabled={isRefreshingMembers || !setClubMembers || !setUserProfiles} onPress={handleRefreshMembers}>
+                  <Text>{isRefreshingMembers ? "更新中…" : "一覧を更新"}</Text>
+                </TouchableOpacity>
+                {!!memberRefreshMessage && <Text accessibilityRole="alert">{memberRefreshMessage}</Text>}
                 <Text
                   style={[
                     styles.hintText,
@@ -2524,6 +2593,14 @@ const SettingsScreen = ({
                       登録されている部員がいません。
                     </Text>
                   )}
+                  <TouchableOpacity style={[styles.memberItem, { borderBottomWidth: 0 }]} accessibilityRole="button"
+                    accessibilityLabel="OB・OG一覧を開く" onPress={() => setShowAlumniArchive(true)}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.memberName}>OB・OG</Text>
+                      <Text style={{ fontSize: 12, color: "#666" }}>卒業生の一覧を表示</Text>
+                    </View>
+                    <Text style={{ fontSize: 22, color: "#0077cc" }}>›</Text>
+                  </TouchableOpacity>
                 </View>
               </SectionCard>
 
@@ -2544,6 +2621,7 @@ const SettingsScreen = ({
                       styles.addMemberBtn,
                       { backgroundColor: "#f39c12" },
                     ]}
+                    disabled={isGradeOrderBusy || membershipBatchPending}
                     onPress={() =>
                       handleAddTeamArrayItem(
                         "grades",
@@ -2555,23 +2633,12 @@ const SettingsScreen = ({
                     <Text style={styles.addMemberBtnText}>追加</Text>
                   </TouchableOpacity>
                 </View>
-                <View style={styles.memberList}>
-                  {grades.map((g) => (
-                    <View key={g} style={styles.memberItem}>
-                      <Text style={styles.memberName}>{g}</Text>
-                      <TouchableOpacity
-                        onPress={() =>
-                          handleDeleteTeamArrayItem("grades", g, "学年・グループ")
-                        }
-                      >
-                        <Text style={styles.deleteText}>削除</Text>
-                      </TouchableOpacity>
-                    </View>
-                  ))}
-                  {grades.length === 0 && (
-                    <Text style={styles.emptyText}>登録がありません</Text>
-                  )}
-                </View>
+                <GradeOrderList key={gradeOrderScope} grades={grades} menuStyles={styles}
+                  disabled={!isStaffOrAbove || membershipBatchPending} onReorder={handleReorderGrades}
+                  scrollRef={settingsScrollRef} scrollStateRef={gradeScrollState}
+                  onDraggingChange={setIsGradeDragging} onBusyChange={setIsGradeOrderBusy}
+                  onEdit={group => { if (!isGradeOrderBusy && !membershipBatchPending) setMembershipEditor({ group }); }}
+                  onDelete={group => { if (!isGradeOrderBusy && !membershipBatchPending) handleDeleteTeamArrayItem("grades", group, "学年・グループ"); }} />
               </SectionCard>
 
               <SectionCard
@@ -2955,6 +3022,9 @@ const SettingsScreen = ({
         </KeyboardAvoidingView>
       </Modal>
 
+      {isStaffOrAbove && membershipEditor && <MembershipManagementModal key={`${activeTeamId}:${membershipEditor.group || membershipEditor.memberUid}`} teamId={activeTeamId} {...membershipEditor} profiles={userProfiles} menuStyles={styles} onClose={() => setMembershipEditor(null)} />}
+      {isStaffOrAbove && showAlumniArchive && <AlumniArchiveModal key={activeTeamId} teamId={activeTeamId} menuStyles={styles} onClose={() => setShowAlumniArchive(false)} />}
+
       <Modal
         visible={isRoleModalVisible}
         transparent={true}
@@ -3027,6 +3097,8 @@ const SettingsScreen = ({
                 カレンダー・動画の閲覧と、設定された子供の不参加連絡ができます。個別許可時だけ動画追加・タグ編集ができます。
               </Text>
             </TouchableOpacity>
+
+            {["member", "captain"].includes(selectedMemberProfile.role) && <TouchableOpacity style={styles.roleSelectBtn} onPress={() => handleChangeRole("alumni")}><Text style={styles.roleSelectTitle}>OB・OG</Text><Text style={styles.roleSelectDesc}>卒業年度・保護者の扱いを確認し、卒業生アーカイブへ移します。</Text></TouchableOpacity>}
 
             <TouchableOpacity
               style={[

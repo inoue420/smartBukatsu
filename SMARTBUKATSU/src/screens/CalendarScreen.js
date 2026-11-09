@@ -546,7 +546,7 @@ const CalendarScreen = ({
     .map((profile) => ({ ...profile, selectionKey: `member:${profile.uid}` }));
   const linkedChildren = [...registeredChildren, ...(currentUserProfile.manualChildren || [])
     .map((child) => ({ childId: child.id, name: child.name, role: "manual", selectionKey: `manual:${child.id}` }))];
-  const canSubmitAbsence = Boolean(resolvedUserRole) && (userRole !== "guardian" || linkedChildren.length > 0);
+  const canSubmitAbsence = userRole !== "alumni" && Boolean(resolvedUserRole) && (userRole !== "guardian" || linkedChildren.length > 0);
   const configuredAbsenceDeadlineDays = Number(absenceDeadlineDaysBefore);
   const safeAbsenceDeadlineDays =
     Number.isInteger(configuredAbsenceDeadlineDays) &&

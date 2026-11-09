@@ -4,7 +4,7 @@ const {
   isRecordedTagOwner, canViewRecordedTag, canEditRecordedTag,
 } = require("./recordedTagPermissions");
 
-for (const role of ["owner", "admin", "staff", "captain", "member", "guardian", "unknown"]) {
+for (const role of ["owner", "admin", "staff", "captain", "member", "guardian", "alumni", "unknown"]) {
   for (const permission of [false, true]) {
     test(`${role}, permission ${permission}: public and private tag access`, () => {
       const viewer = {

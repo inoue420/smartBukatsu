@@ -132,6 +132,16 @@ function harness({ os = "android", optimized = true, channels = [general], role 
   };
 }
 
+for (const os of ['android','ios']) test(`${os}: display renames retain the same history and pinned queries and show legacy posts`, () => {
+  const h = harness({ os, synchronous: true, channels: [other] });
+  const subscription = h.postSubscription(), pinned = h.last('PinnedPosts');
+  assert.equal(subscription.args[2].channel, '練習連絡');
+  h.emitSettings([{...other,displayName:'新しい掲示板名'}]);
+  assert.match(h.text(), /新しい掲示板名/);assert.equal(h.postSubscription(), subscription);assert.equal(h.last('PinnedPosts'), pinned);
+  h.page([{id:'legacy',channel:'練習連絡',content:'Historical post survives',user:'Member',authorUid:'member',createdAt:1,replies:[],isPinned:true}]);
+  assert.match(h.text(), /Historical post survives/);
+});
+
 for (const os of ["android", "ios"]) {
   test(`${os}: child-first startup reads General without a manual tab change`, () => {
     const h = harness({ os, synchronous: true });

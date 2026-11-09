@@ -1,5 +1,6 @@
 {
   "indexes": [
+    {"collectionGroup": "members", "queryScope": "COLLECTION", "fields": [{"fieldPath": "role", "order": "ASCENDING"}, {"fieldPath": "graduationFiscalYear", "order": "ASCENDING"}, {"fieldPath": "name", "order": "ASCENDING"}]},
     { "collectionGroup": "workspacePosts", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "visibleToUids", "arrayConfig": "CONTAINS" }, { "fieldPath": "channel", "order": "ASCENDING" }, { "fieldPath": "createdAt", "order": "DESCENDING" }] },
     { "collectionGroup": "workspacePosts", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "visibleToUids", "arrayConfig": "CONTAINS" }, { "fieldPath": "channel", "order": "ASCENDING" }, { "fieldPath": "isPinned", "order": "ASCENDING" }, { "fieldPath": "createdAt", "order": "DESCENDING" }] },
     { "collectionGroup": "dailyReports", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "date", "order": "DESCENDING" }, { "fieldPath": "createdAt", "order": "DESCENDING" }] },

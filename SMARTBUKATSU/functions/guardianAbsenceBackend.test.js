@@ -47,7 +47,7 @@ test("account deletion includes historical proxy teams after leaving a team", as
     firestore: { collection: (name) => name === "users" ? { doc: () => ({ get: async () => ({ exists: true, data: () => ({ teamIds: [] }) }) }) }
       : { where: () => ({ get: async () => ({ docs: [] }) }), doc: () => teamRef } },
     normalizeTeamIds: () => [], tacticalNotes: { relatedTeamIds: async () => [] }, loadingOptimization: { relatedTeamIds: async () => [] },
-    workspaceReactions: { relatedTeamIds: async () => [] }, guardianAbsences: { relatedTeamIds: async () => ["departed"] },
+    membership: { relatedTeamIds: async () => [] }, workspaceReactions: { relatedTeamIds: async () => [] }, guardianAbsences: { relatedTeamIds: async () => ["departed"] },
   });
   const context = await getContext("synthetic-person");
   assert.deepEqual(Array.from(context.teamIds), ["departed"]); assert.equal(context.teamEntries[0].teamId, "departed");

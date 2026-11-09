@@ -83,6 +83,15 @@ exports.updateLoadingUserPreferences = onDocumentWritten({
 exports.processLoadingPreparation = onDocumentWritten({
   document: "teams/{teamId}/loadingOptimization/state", region: "asia-northeast1", retry: true, timeoutSeconds: 300,
 }, loadingOptimization.handlePreparation);
+const { createMembershipBackend } = require("./membershipBackend");
+const membership = createMembershipBackend({ firestore, FieldValue, HttpsError });
+exports.listAlumniArchive = onCall({ region: "asia-northeast1", timeoutSeconds: 60, maxInstances: 3 }, membership.listAlumni);
+exports.manageTeamMembership = onCall({ region: "asia-northeast1", timeoutSeconds: 120, maxInstances: 3 }, membership.manage);
+exports.reconcileMembershipOperation = onDocumentWritten({
+  document: "teams/{teamId}/membershipOperations/{operationId}", region: "asia-northeast1", retry: true, timeoutSeconds: 300,
+}, async (event) => {
+  if (event.data?.after.data()?.status === "queued") await loadingOptimization.reconcileMembershipBatch(event.params.teamId, event.params.operationId);
+});
 exports.prepareLoadingOptimization = onCall({ region: "asia-northeast1", timeoutSeconds: 300 }, loadingOptimization.prepareCallable);
 exports.configureLoadingOptimization = onCall({ region: "asia-northeast1" }, loadingOptimization.configureCallable);
 const { createTacticalNoteBackend } = require("./tacticalNoteBackend");
@@ -684,7 +693,7 @@ const getAccountDocumentUpdates = (data, context) => {
 
 const getAccountDeletionContext = async (uid) => {
   const userRef = firestore.collection("users").doc(uid);
-  const [userSnap, ownedTeamsSnapshot, tacticalTeamIds, loadingReadTeamIds, reactionTeamIds, guardianTeamIds, originallyCreatedTeams] = await Promise.all([
+  const [userSnap, ownedTeamsSnapshot, tacticalTeamIds, loadingReadTeamIds, reactionTeamIds, guardianTeamIds, originallyCreatedTeams, membershipArchiveTeamIds] = await Promise.all([
     userRef.get(),
     firestore.collection("teams").where("createdBy", "==", uid).get(),
     tacticalNotes.relatedTeamIds(uid),
@@ -692,6 +701,7 @@ const getAccountDeletionContext = async (uid) => {
     workspaceReactions.relatedTeamIds(uid),
     guardianAbsences.relatedTeamIds(uid),
     firestore.collection("teams").where("originalCreatorUid", "==", uid).get(),
+    membership.relatedTeamIds(uid),
   ]);
   const userData = userSnap.exists ? userSnap.data() || {} : {};
   const teamIds = [
@@ -702,6 +712,7 @@ const getAccountDeletionContext = async (uid) => {
       ...loadingReadTeamIds,
       ...reactionTeamIds,
       ...guardianTeamIds,
+      ...membershipArchiveTeamIds,
       ...originallyCreatedTeams.docs.map((snapshot) => snapshot.id),
     ]),
   ];
@@ -1293,7 +1304,7 @@ exports.moderateWorkspaceContent = onCall(
       );
     }
 
-    const membersSnapshot = await teamRef.collection("members").get();
+    const membersSnapshot = await teamRef.collection("members").where("role", "in", ["owner", "admin", "staff"]).get();
     const managerUids = membersSnapshot.docs
       .filter((memberSnapshot) =>
         MEMBER_MANAGER_ROLES.has(memberSnapshot.data()?.role || "member"),
@@ -1605,6 +1616,7 @@ exports.joinTeamWithInvite = onCall(
         transaction.get(userRef),
       ]);
 
+      if (teamSnap.data()?.membershipBatchPending) throw new HttpsError("failed-precondition", "一括処理中です。完了後に再試行してください。");
       if (!teamSnap.exists) {
         throw new HttpsError("not-found", "招待先のチームが見つかりません。");
       }
@@ -1712,6 +1724,7 @@ exports.removeTeamMember = onCall(
       }
 
       const teamData = teamSnap.data() || {};
+      if (teamData.membershipBatchPending) throw new HttpsError("failed-precondition", "一括処理中です。完了後に再試行してください。");
       if (teamData.createdBy === targetUid) {
         throw new HttpsError(
           "failed-precondition",
@@ -1833,6 +1846,7 @@ exports.deleteUserAccount = onCall(
       for (const teamEntry of context.teamEntries) {
         anonymizedDocumentCount += await workspaceReactions.anonymizeTeam(teamEntry.teamRef, uid);
         anonymizedDocumentCount += await guardianAbsences.anonymizeTeam(teamEntry.teamRef, uid);
+        anonymizedDocumentCount += await membership.anonymizeTeam(teamEntry.teamRef, uid);
       }
 
       await removeNotificationPushTokenRegistrations(uid);
@@ -1920,6 +1934,7 @@ exports.transferTeamOwnership = onCall(
       }
 
       const teamData = teamSnap.data() || {};
+      if (teamData.membershipBatchPending) throw new HttpsError("failed-precondition", "一括処理中です。完了後に再試行してください。");
       const callerRole = callerMemberSnap.data()?.role || "member";
       const targetRole = targetMemberSnap.data()?.role || "member";
       if (
@@ -2002,6 +2017,7 @@ exports.deleteTeam = onCall(
     }
 
     const teamData = teamSnap.data() || {};
+    if (teamData.membershipBatchPending) throw new HttpsError("failed-precondition", "一括処理中です。完了後に再試行してください。");
     const callerRole = callerMemberSnap.data()?.role || "member";
     if (
       !["owner", "admin"].includes(callerRole) ||

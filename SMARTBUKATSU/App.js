@@ -22,6 +22,7 @@ import {
 import { DEFAULT_ALERT_THRESHOLDS } from "./src/utils/medicalScale";
 import { mergeReadState, monthWindow } from "./src/utils/historyLoading";
 import { dailyReportScope } from "./src/utils/dailyReportScope";
+import { createMemberProfiles, mergeMemberIdentity } from "./src/utils/memberProfiles";
 import { subscribeUnreviewedReports, subscribeRosterLatestReports } from "./src/services/dailyReportReadService";
 import { useDailyReportHistory } from "./src/hooks/useDailyReportHistory";
 import { useAppReview } from "./src/hooks/useAppReview";
@@ -84,6 +85,7 @@ function AppContent() {
   const {
     user,
     userName,
+    currentMemberProfile,
     activeTeamId,
     emailVerificationPending,
     teamSelectionRequired,
@@ -108,6 +110,10 @@ function AppContent() {
 
   const [clubMembers, setClubMembers] = useState([]);
   const [userProfiles, setUserProfiles] = useState({});
+  const memberRowsRef = useRef(null);
+  const memberIdentityRef = useRef(null);
+  memberIdentityRef.current = { teamId: activeTeamId, uid: user?.uid, profile: currentMemberProfile
+    ? { ...currentMemberProfile, name: currentMemberProfile.name || userName || "名称未設定" } : null };
 
   const [grades, setGrades] = useState(["1年生", "2年生", "3年生"]);
   const [positions, setPositions] = useState(["GK", "CP", "マネージャー"]);
@@ -131,6 +137,7 @@ function AppContent() {
   const [currentScreen, setCurrentScreen] = useState("WorkspaceHome");
   const [currentParams, setCurrentParams] = useState({});
   const [calendarMonth, setCalendarMonth] = useState(undefined);
+  const [membershipBatchPending, setMembershipBatchPending] = useState(false);
   const [loadingState, setLoadingState] = useState(null);
   const [loadingSummary, setLoadingSummary] = useState({});
   const [latestReports, setLatestReports] = useState([]);
@@ -324,7 +331,9 @@ function AppContent() {
     setTeamName("チーム情報を読み込み中...");
     setClubMembers([]);
     setUserProfiles({});
+    memberRowsRef.current = null;
     setMembersResolved(null);
+    setMembershipBatchPending(false);
     setGrades(["1年生", "2年生", "3年生"]);
     setPositions(["GK", "CP", "マネージャー"]);
     setInterstitialSettings({ ...DEFAULT_INTERSTITIAL_SETTINGS });
@@ -341,6 +350,7 @@ function AppContent() {
         setCalendarSettings({ teamId: activeTeamId, uid: user.uid,
           mondayStart: data?.calendarWeekStartsOnMonday === true });
         if (data) {
+          setMembershipBatchPending(data.membershipBatchPending === true);
           setTeamName(data.name || "名称未設定のチーム");
           setGrades(data.grades ?? ["1年生", "2年生", "3年生"]);
           setPositions(data.positions ?? ["GK", "CP", "マネージャー"]);
@@ -361,38 +371,17 @@ function AppContent() {
         }
       });
 
-      const unsubMembers = subscribeTeamMembers(activeTeamId, (membersData) => {
+      const receiveMembers = (membersData) => {
         if (!active) return;
-        const names = [];
-        const profiles = {};
-        membersData.forEach((m) => {
-          const displayName = m.name || "名称未設定";
-          let profileKey = displayName;
-          if (profiles[profileKey]) {
-            profileKey = `${displayName}_${m.uid.substring(0, 4)}`;
-          }
-          names.push(profileKey);
-          profiles[profileKey] = {
-            uid: m.uid,
-            name: displayName,
-            role: m.role || "member",
-            childUids: Array.isArray(m.childUids) ? m.childUids : [],
-            manualChildren: Array.isArray(m.manualChildren) ? m.manualChildren : [],
-            assignedStaff: m.assignedStaff || null,
-            staffScope: m.staffScope || "all",
-            canUploadVideos: Boolean(m.canUploadVideos),
-            canPostTacticalNotes: Boolean(m.canPostTacticalNotes),
-            canEditTags: Boolean(m.canEditTags),
-            canEditCalendar: Boolean(m.canEditCalendar),
-            grade: m.grade || "",
-            grades: m.grades,
-            position: m.position || "",
-          };
-        });
+        memberRowsRef.current = { teamId: activeTeamId, uid: user.uid, rows: membersData, receive: receiveMembers };
+        const own = memberIdentityRef.current;
+        const rows = own?.teamId === activeTeamId && own?.uid === user.uid ? mergeMemberIdentity(membersData, own.profile) : membersData;
+        const { names, profiles } = createMemberProfiles(rows);
         setClubMembers(names);
         setUserProfiles(profiles);
         setMembersResolved({ teamId: activeTeamId, uid: user.uid });
-      });
+      };
+      const unsubMembers = subscribeTeamMembers(activeTeamId, receiveMembers, user.uid);
 
       return () => {
         active = false;
@@ -401,6 +390,13 @@ function AppContent() {
       };
     }
   }, [user?.uid, activeTeamId, authorized]);
+
+  // Reuse authMembership's existing document watch for the caller's archived
+  // identity. No extra query, subscription or read is introduced here.
+  useEffect(() => {
+    const current = memberRowsRef.current;
+    if (authorized && current?.teamId === activeTeamId && current?.uid === user?.uid) current.receive(current.rows);
+  }, [currentMemberProfile, userName, activeTeamId, user?.uid, authorized]);
 
   // Preserve legacy history loading until preparation and explicit activation.
   useEffect(() => {
@@ -529,6 +525,7 @@ function AppContent() {
                   history={optimize ? postHistory : null}
                   loadingSummary={optimize ? loadingSummary : null}
                   optimize={optimize}
+                  membershipBatchPending={membershipBatchPending}
                   separateReads={separateReads}
                   onChannelChange={handleWorkspaceChannelChange}
                   membersReady={workspaceMembersReady}
@@ -706,6 +703,7 @@ function AppContent() {
             <Stack.Screen name="Settings">
               {(props) => (
                 <SettingsScreen
+                  membershipBatchPending={membershipBatchPending}
                   calendarWeekStartsOnMonday={calendarWeekStartsOnMonday}
                   calendarSettingsReady={calendarSettingsReady}
                   dailyReportCommentsEnabled={dailyReportCommentsEnabled}
