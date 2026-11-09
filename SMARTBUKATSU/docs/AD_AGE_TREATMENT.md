@@ -290,3 +290,48 @@ prebuildは`SMARTBUKATSU_CAPTURE=1`、`APP_VARIANT=development`、`EXPO_NO_DOTEN
 戻す場合は`app.config.js`のKotlin指定と、R8プラグインへ追加したsettings.gradle処理、新規テスト、本節だけを取り消す。既存のProGuard最適化・年齢補正や他の変更を一括で破棄しない。生成済みAndroidプロジェクトがある場合は承認のうえ修正前設定から再生成する。Firebaseデータの復元は不要で、元のKotlinビルドエラーは再発する。
 
 管理シート追記案（未書き込み）：2026-11-09、AndroidビルドのKotlin不整合を修正。Kotlin 2.2.20 / R8 8.13.19を指定、関連101テストと隔離prebuild成功。ネイティブ再ビルド・実機確認待ち。iOS/Firebase変更なし。ブランチ`codex/fix-android-admob-kotlin`、commit・PR未作成。対象行や書き込み先の列は未指定のため、確認・承認後に記録する。
+
+### 同日の再ビルド失敗：コンパイラの依存指定を追加
+
+前項の変更はユーザー側でPR #99としてマージされた。その後の[EASビルド](https://expo.dev/accounts/inoue420/projects/SMARTBUKATSU/builds/e4a207a6-1170-4da4-bd2a-f6c05b196eef#run-gradlew)はcommit `911555f3`、Android 1.1.11 / versionCode 28で再び同じKotlinエラーになった。
+
+ログのExpoRootProjectにはKotlin 2.2.20 / KSP 2.2.20-2.0.3が表示されるが、コンパイル失敗時のexpected metadataは2.1.0のままだった。前回のテストは生成設定を検査しており、実際のコンパイラ版を確認できていなかった。
+
+SDK 54の生成ルートbuild.gradleには`classpath('org.jetbrains.kotlin:kotlin-gradle-plugin')`という版指定のない依存がある。React NativeのGradleプラグインはKotlin Gradleプラグイン2.1.20をimplementation依存として提供する。このため、gradle.propertiesの値だけを変更しても実際のコンパイラは切り替わらない。別SDKでの[同じ仕組みの報告](https://github.com/expo/expo/issues/49668)も確認したが、このプロジェクトについてはローカル生成物・導入済みReact Nativeソース・今回のEASログを根拠とする。
+
+追加承認後、`codex/fix-android-kotlin-classpath`ブランチで次の3ファイルだけを変更した。
+
+- `plugins/withAndroidR8Optimization.js`：withProjectBuildGradleでルートの依存を`org.jetbrains.kotlin:kotlin-gradle-plugin:2.2.20`へ固定。対象宣言が1件でない場合やGroovy以外は停止。既存R8指定・ProGuard処理は維持。
+- `scripts/androidBuildCompatibility.test.cjs`：版なし・2.1.20・2.2.20の入力、両引用符、LF/CRLF、繰り返し生成、対象欠落・重複・非対応言語の拒否を追加検証。
+- `docs/AD_AGE_TREATMENT.md`：再失敗の原因、検証不足と追加修正、Gradle実解決確認を記録。
+
+関連103テストはすべて成功。既存Android年齢補正の検査と隔離Android prebuildも成功し、ルートbuild.gradleの明示的な2.2.20指定と既存R8 8.13.19指定を確認した。prebuildの環境・隔離場所は前項と同じで、元のプロジェクトにはandroidディレクトリを生成せず、パッケージの追加・更新も行っていない。
+
+さらに、公式Gradle 8.14.3と検証用Maven依存を`dist/android-build-fix/classpath-check/gradle-cache`へ取得した。既存Java 21の実行環境を読み取りで利用し、修正前・修正後の生成ルートGradleからKotlinのclasspath宣言を抽出した最小プロジェクトで比較した。React Nativeが供給する2.1.20依存を明示的に再現し、Gradleが実解決するKotlin GradleプラグインとkotlinCompilerClasspathのkotlin-compiler-embeddableを検査する。検証用プロジェクトは初回に通常依存用repositoriesを記載し忘れて失敗したため、検証フォルダ内だけにmavenCentralを補って再実行した。アプリ側の設定変更ではない。
+
+| 最小プロジェクト | 実解決したKotlin Gradleプラグイン | 実解決したコンパイラ | 結果 |
+| --- | --- | --- | --- |
+| 修正前の版なしclasspath | 2.1.20 | 2.1.20 | 旧版が選ばれることを再現、確認タスク成功 |
+| 修正後の明示的classpath | 2.2.20 | 2.2.20 | 新版への切り替えを確認、確認タスク成功 |
+
+追加検証コマンド：
+
+```text
+git switch -c codex/fix-android-kotlin-classpath
+node --test scripts/androidBuildCompatibility.test.cjs scripts/patchAdMobAgeTreatment.test.cjs src/ads/adAgePolicy.test.cjs src/ads/AppBannerAd.test.cjs src/ads/adInitializationRecovery.test.cjs scripts/androidCapture/captureEnvironment.test.cjs
+node scripts/patchAdMobAgeTreatment.cjs --check
+node --check plugins/withAndroidR8Optimization.js
+# コピーしたプラグインを使い、前項の隔離フォルダでAndroid prebuildを再実行
+node node_modules/expo/bin/cli prebuild --platform android --no-install --template ./node_modules/expo/template.tgz
+node dist/android-build-fix/classpath-check/prepare.cjs
+# JAVA_HOMEは既存Java 21、GRADLE_USER_HOMEは上記dist内のgradle-cache
+dist/android-build-fix/prebuild/android/gradlew.bat --project-dir dist/android-build-fix/classpath-check/baseline --no-daemon --console plain verifyCompiler
+dist/android-build-fix/prebuild/android/gradlew.bat --project-dir dist/android-build-fix/classpath-check/patched --no-daemon --console plain verifyCompiler
+git diff --check
+```
+
+この検証は依存解決の比較であり、実アプリ全体のKotlin/KSP/Composeコンパイル、R8実行、APK/AAB生成の成功を保証するものではない。EASのAndroid再ビルドと実機の広告表示・年齢別設定確認は引き続き必要。
+
+今回もiOS・Firebase・広告ポリシー・先行のAndroid年齢補正、app.config.js、app.json、eas.json、package.json/lockfileは変更していない。この追加修正のためにiOSを再ビルドする必要はない。commit・push・PR作成・EASビルド・管理シート更新は未実施。元に戻す場合は今回の3ファイルの差分だけを戻す。ただしコンパイラ不整合が再発する。データ復元は不要。
+
+管理シート追記案（未書き込み）：Android再ビルドで設定値と実コンパイラの不一致を確認。ルートKotlin Gradleプラグインの版を2.2.20へ固定。関連103テスト・隔離prebuild成功。最小Gradleプロジェクトで修正前2.1.20、修正後2.2.20のプラグイン・実コンパイラ選択を確認。EASネイティブ再ビルド・実機確認待ち。iOS/Firebase変更なし。ブランチ`codex/fix-android-kotlin-classpath`、commit・PR未作成。
