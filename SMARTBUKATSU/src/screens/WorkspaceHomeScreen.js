@@ -41,7 +41,9 @@ import HistoryLoadingControls from "../components/HistoryLoadingControls";
 import GuideHelpLink from "../components/GuideHelpLink";
 import { useWorkspaceReactions } from "../hooks/useWorkspaceReactions";
 import { WORKSPACE_REACTION_EMOJIS, canViewWorkspaceReactionSenders, workspaceReactionSenders } from "../utils/workspaceReactions";
-import { memberGrades, channelRoleGroups, channelMemberAudience, needsGeneralAudienceUpgrade, canViewChannel, audienceForChannel } from "../../functions/workspaceAudience";
+import { memberGrades, channelRoleGroups, channelMemberAudience, needsGeneralAudienceUpgrade, canViewChannel, audienceForChannel, channelDisplayName, channelAudienceSettings } from "../../functions/workspaceAudience";
+import { saveWorkspaceChannel } from "../services/workspaceChannelService";
+import { channelFormKey } from "../utils/workspaceChannel";
 import {
   getBlockedContentMessage,
   getContentWarningMessage,
@@ -152,6 +154,7 @@ const WorkspaceHomeScreen = ({
   grades = [],
   membersReady = Boolean(currentUserUid && Object.values(userProfiles).some((profile) => profile?.uid === currentUserUid)),
   postsLoading = false,
+  membershipBatchPending = false,
 }) => {
   const { activeTeamId, blockedUserUids = [] } = useAuth();
   const { unreadTotal } = useNotifications();
@@ -175,13 +178,13 @@ const WorkspaceHomeScreen = ({
   const displayUserName = roleNameMap[userRole] || currentUser;
 
   const isStaffOrAbove = ["owner", "staff", "admin"].includes(userRole);
-  const isGuardian = userRole === "guardian";
+  const isGuardian = ["guardian", "alumni"].includes(userRole);
   const canOpenTeamSelect = !isOffline;
   const canCreateChannel = isStaffOrAbove;
   const canPostToReadOnly = ["owner", "staff", "admin", "captain"].includes(
     userRole,
   );
-  const isReadEligible = userRole !== "guardian";
+  const isReadEligible = !["guardian", "alumni"].includes(userRole);
   const blockedUserUidSet = useMemo(
     () => new Set(blockedUserUids),
     [blockedUserUids],
@@ -244,7 +247,7 @@ const WorkspaceHomeScreen = ({
     () =>
       memberEntries
         .map(([, profile]) => profile)
-        .filter((profile) => profile.role !== "guardian"),
+        .filter((profile) => !["guardian", "alumni"].includes(profile.role)),
     [memberEntries],
   );
   const getChannelAllowedRoleGroups = (channel) => {
@@ -418,7 +421,7 @@ const WorkspaceHomeScreen = ({
     () =>
       JSON.stringify({
         activeTeamId,
-        channels,
+        channels: channelAudienceSettings(channels),
         members: memberEntries.map(([profileKey, profile]) => ({
           profileKey,
           uid: profile.uid,
@@ -433,6 +436,7 @@ const WorkspaceHomeScreen = ({
   useEffect(() => {
     if (
       !isStaffOrAbove ||
+      membershipBatchPending ||
       optimize ||
       !activeTeamId ||
       !channelsLoaded ||
@@ -479,6 +483,7 @@ const WorkspaceHomeScreen = ({
   }, [
     activeTeamId,
     audienceSyncKey,
+    membershipBatchPending,
     channels,
     channelsLoaded,
     isStaffOrAbove,
@@ -497,6 +502,16 @@ const WorkspaceHomeScreen = ({
   const [selectedGrades, setSelectedGrades] = useState([]);
   const [selectedMemberAudience, setSelectedMemberAudience] = useState("all");
   const [selectedNotificationRecipientUids, setSelectedNotificationRecipientUids] = useState([]);
+  const [isSavingChannel, setIsSavingChannel] = useState(false);
+  const channelInitialForm = useRef(null), channelSaveRef = useRef(null), channelScopeRef = useRef(null);
+  const channelScopeKey = JSON.stringify([activeTeamId, currentUserUid]);
+  if (channelScopeRef.current?.key !== channelScopeKey) channelScopeRef.current = { key: channelScopeKey };
+  useEffect(() => {
+    const visit = channelScopeRef.current;
+    setIsAddChannelModalVisible(false);setEditingChannel(null);setIsSavingChannel(false);
+    channelInitialForm.current = null;channelSaveRef.current = null;
+    return () => { if (channelScopeRef.current === visit) channelScopeRef.current = null; };
+  }, [channelScopeKey]);
 
   const [newPostText, setNewPostText] = useState("");
   const [expandedPostId, setExpandedPostId] = useState(null);
@@ -965,6 +980,7 @@ const WorkspaceHomeScreen = ({
   }, [isOffline]);
 
   const resetChannelForm = () => {
+    channelInitialForm.current = null;
     setIsAddChannelModalVisible(false);
     setEditingChannel(null);
     setNewChannelName("");
@@ -976,6 +992,8 @@ const WorkspaceHomeScreen = ({
   };
 
   const openAddChannelModal = () => {
+    if (!isStaffOrAbove || isOffline || membershipBatchPending || isSavingChannel) return;
+    channelInitialForm.current = null;
     setEditingChannel(null);
     setNewChannelName("");
     setNewChannelIsReadOnly(false);
@@ -987,9 +1005,9 @@ const WorkspaceHomeScreen = ({
   };
 
   const openEditChannelModal = (channel) => {
-    if (!isStaffOrAbove || isOffline) return;
+    if (!isStaffOrAbove || isOffline || membershipBatchPending || isSavingChannel) return;
     setEditingChannel(channel);
-    setNewChannelName(channel.name);
+    setNewChannelName(channelDisplayName(channel));
     setNewChannelIsReadOnly(Boolean(channel.isReadOnly));
     const groups = getChannelAllowedRoleGroups(channel);
     setSelectedMemberAudience(channelMemberAudience(channel, audienceMembers));
@@ -998,25 +1016,38 @@ const WorkspaceHomeScreen = ({
       ? [...(channel.allowedGrades || [])]
       : groups.some((group) => ["captain", "member"].includes(group)) ? [...grades] : []);
     setSelectedNotificationRecipientUids(channel.notificationRecipientUids || []);
+    channelInitialForm.current = channelFormKey({
+      isReadOnly: Boolean(channel.isReadOnly), memberAudience: channelMemberAudience(channel, audienceMembers),
+      roleGroups: groups.filter(group => ['staff','guardian'].includes(group)),
+      grades: channel.shareScope === 'grades' ? [...(channel.allowedGrades || [])] : groups.some(group => ['captain','member'].includes(group)) ? [...grades] : [],
+      notificationRecipientUids: channel.notificationRecipientUids || [],
+    });
     setIsAddChannelModalVisible(true);
   };
 
   const handleSaveChannel = async () => {
+    if (!isStaffOrAbove || isOffline || !activeTeamId || membershipBatchPending || channelSaveRef.current || channelScopeRef.current?.key !== channelScopeKey) return;
     const trimmedName = newChannelName.trim();
     if (trimmedName === "") return;
+    const onlyRename = editingChannel && trimmedName !== channelDisplayName(editingChannel) && channelInitialForm.current === channelFormKey({
+      isReadOnly: newChannelIsReadOnly, memberAudience: selectedMemberAudience, roleGroups: selectedRoleGroups,
+      grades: selectedGrades, notificationRecipientUids: selectedNotificationRecipientUids,
+    });
     const includesMembers = selectedMemberAudience === "all" ||
       (selectedMemberAudience === "grades" && selectedGrades.length > 0);
-    if (selectedRoleGroups.length === 0 && !includesMembers) {
+    if (!onlyRename && selectedRoleGroups.length === 0 && !includesMembers) {
       Alert.alert("共有範囲", "公開するスタッフ・部員・保護者を1つ以上選択してください。");
       return;
     }
 
-    setIsLoading(true);
+    const visit = channelScopeRef.current;
+    channelSaveRef.current = visit;setIsSavingChannel(true);
     const previousActiveChannelId = activeChannelId;
-    const nextChannel = {
+    const nextChannel = onlyRename ? { ...editingChannel, displayName: trimmedName } : {
       ...(editingChannel || {}),
       id: editingChannel?.id || "ch_" + Date.now().toString(),
       name: editingChannel?.name || trimmedName,
+      ...(editingChannel ? { displayName: trimmedName } : {}),
       isReadOnly: newChannelIsReadOnly,
       shareScope: selectedMemberAudience === "grades" ? "grades" : "roles",
       memberAudience: selectedMemberAudience,
@@ -1026,26 +1057,19 @@ const WorkspaceHomeScreen = ({
       allowedMemberUids: [],
       notificationRecipientUids: selectedNotificationRecipientUids,
     };
-    const updatedChannels = editingChannel
-      ? channels.map((channel) =>
-          channel.id === editingChannel.id ? nextChannel : channel,
-        )
-      : [...channels, nextChannel];
-
     try {
-      if (!isOffline && activeTeamId) {
-        const teamRef = doc(db, "teams", activeTeamId);
-        await updateDoc(teamRef, { channels: updatedChannels });
-      }
+      const updatedChannels = await saveWorkspaceChannel(activeTeamId, nextChannel, editingChannel, defaultChannels);
+      if (channelScopeRef.current !== visit || channelSaveRef.current !== visit) return;
       setChannels(updatedChannels);
       setActiveChannelId(nextChannel.id);
       resetChannelForm();
     } catch (error) {
+      if (channelScopeRef.current !== visit || channelSaveRef.current !== visit) return;
       setActiveChannelId(previousActiveChannelId);
       console.error("チャンネル保存エラー:", error);
-      Alert.alert("エラー", "チャンネルの保存に失敗しました。");
+      Alert.alert("保存できませんでした", error.message || "チャンネルの保存に失敗しました。");
     } finally {
-      setIsLoading(false);
+      if (channelScopeRef.current === visit && channelSaveRef.current === visit) { channelSaveRef.current = null;setIsSavingChannel(false); }
     }
   };
 
@@ -1053,13 +1077,13 @@ const WorkspaceHomeScreen = ({
     if (channel.id === "ch_1" || channel.id === "ch_diary") {
       Alert.alert(
         "エラー",
-        "「全体連絡」と「共有日記」はシステムに必要なため削除できません。",
+        "この掲示板はシステムに必要なため削除できません。",
       );
       return;
     }
     Alert.alert(
       "チャンネルの削除",
-      `タブ「${channel.name}」を削除しますか？\n（※このタブに投稿された内容は表示されなくなります）`,
+      `タブ「${channelDisplayName(channel)}」を削除しますか？\n（※このタブに投稿された内容は表示されなくなります）`,
       [
         { text: "キャンセル", style: "cancel" },
         {
@@ -1362,9 +1386,10 @@ const WorkspaceHomeScreen = ({
   };
 
   const handleShareToNotice = (post) => {
+    const label = channelDisplayName(channels.find(channel => channel.id === post.channelId || channel.name === post.channel)) || post.channel;
     Alert.alert(
       "掲示板へ共有",
-      `「${post.channel}」の投稿を掲示板に共有しますか？`,
+      `「${label}」の投稿を掲示板に共有しますか？`,
       [
         { text: "キャンセル", style: "cancel" },
         {
@@ -1374,7 +1399,7 @@ const WorkspaceHomeScreen = ({
             const noticeId = "notice_" + Date.now().toString();
             const newNotice = {
               id: noticeId,
-              title: `【${post.channel}より】${post.user} の投稿`,
+              title: `【${label}より】${post.user} の投稿`,
               content: post.content,
               date: new Date().toLocaleDateString("ja-JP"),
               author: displayUserName,
@@ -2341,7 +2366,7 @@ const WorkspaceHomeScreen = ({
                   ]}
                 >
                   {channel.shareScope === "team" ? "# " : "🔐 "}
-                  {channel.name} {channel.isReadOnly && "🔒"}
+                  {channelDisplayName(channel)} {channel.isReadOnly && "🔒"}
                 </Text>
               </TouchableOpacity>
             ))}
@@ -2400,7 +2425,7 @@ const WorkspaceHomeScreen = ({
             {!canPostToReadOnly && activeChannelObj.isReadOnly ? (
               <View style={styles.readOnlyContainer}>
                 <Text style={styles.readOnlyText}>
-                  ※「{activeChannelObj.name}
+                  ※「{channelDisplayName(activeChannelObj)}
                   」は管理者・キャプテンのみ投稿可能です。
                 </Text>
               </View>
@@ -2429,7 +2454,7 @@ const WorkspaceHomeScreen = ({
                   <TextInput
                     ref={mainInputRef}
                     style={styles.createPostInput}
-                    placeholder={`# ${activeChannelObj.name} に${isOffline ? "下書きを作成..." : "新しく投稿する..."}`}
+                    placeholder={`# ${channelDisplayName(activeChannelObj)} に${isOffline ? "下書きを作成..." : "新しく投稿する..."}`}
                     value={newPostText}
                     onChangeText={setNewPostText}
                     multiline
@@ -2455,7 +2480,7 @@ const WorkspaceHomeScreen = ({
         )}
       </KeyboardAvoidingView>
 
-      {isLoading && (
+      {(isLoading || isSavingChannel) && (
         <View style={styles.globalLoadingOverlay}>
           <ActivityIndicator size="large" color={COLORS.primary} />
           <Text style={styles.globalLoadingText}>通信中...</Text>
@@ -2738,6 +2763,7 @@ const WorkspaceHomeScreen = ({
         visible={isAddChannelModalVisible}
         transparent={true}
         animationType="fade"
+        onRequestClose={() => { if (!isSavingChannel) resetChannelForm(); }}
       >
         <View style={styles.modalOverlay}>
           <KeyboardAvoidingView
@@ -2759,18 +2785,19 @@ const WorkspaceHomeScreen = ({
               >
                 <Text style={[styles.modalTitle, { marginBottom: 0 }]}>
                   {editingChannel
-                    ? `「${editingChannel.name}」の設定`
+                    ? `「${channelDisplayName(editingChannel)}」の設定`
                     : "新しいタブを作成"}
                 </Text>
                 <GuideHelpLink topic="notifications" style={{ marginTop: 8 }} />
               </View>
 
               <ScrollView
+                pointerEvents={isSavingChannel ? 'none' : 'auto'}
                 showsVerticalScrollIndicator={false}
                 contentContainerStyle={{ padding: 20 }}
               >
                 <Text style={styles.inputLabel}>
-                  チャンネル名{" "}
+                  掲示板名{" "}
                   <Text style={{ color: COLORS.danger, fontSize: 12 }}>*</Text>
                 </Text>
                 <TextInput
@@ -2778,13 +2805,10 @@ const WorkspaceHomeScreen = ({
                   placeholder="例: 1年生専用"
                   value={newChannelName}
                   onChangeText={setNewChannelName}
-                  editable={!editingChannel}
+                  editable={isStaffOrAbove && !isSavingChannel && !membershipBatchPending}
+                  accessibilityLabel="掲示板名"
+                  maxLength={100}
                 />
-                {editingChannel && (
-                  <Text style={styles.fixedChannelNameNote}>
-                    初期チャンネルの名前は変更できません。
-                  </Text>
-                )}
 
                 <View style={styles.switchContainer}>
                   <View style={{ flex: 1, paddingRight: 15 }}>
@@ -2951,16 +2975,18 @@ const WorkspaceHomeScreen = ({
               >
                 <TouchableOpacity
                   style={styles.modalCancelBtn}
+                  disabled={isSavingChannel}
                   onPress={resetChannelForm}
                 >
                   <Text style={styles.modalCancelText}>キャンセル</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.modalSubmitBtn}
+                  disabled={isSavingChannel || !isStaffOrAbove || membershipBatchPending}
                   onPress={handleSaveChannel}
                 >
                   <Text style={styles.modalSubmitText}>
-                    {editingChannel ? "保存する" : "作成する"}
+                    {isSavingChannel ? "保存中…" : editingChannel ? "保存する" : "作成する"}
                   </Text>
                 </TouchableOpacity>
               </View>

@@ -3,7 +3,8 @@ const { onDocumentWritten } = require("firebase-functions/v2/firestore");
 const logger = require("firebase-functions/logger");
 const { getFirestore, Timestamp } = require("firebase-admin/firestore");
 const { createHash } = require("node:crypto");
-const { audienceForChannel } = require("./workspaceAudience");
+const { audienceForChannel, channelDisplayName } = require("./workspaceAudience");
+const { ACTIVE_MEMBER_QUERY_ROLES } = require("./membershipCore");
 const {
   NOTIFICATION_CATEGORIES,
   DEFAULT_CATEGORY_PREFERENCES,
@@ -94,7 +95,7 @@ async function getTeamContext(teamId, onMembersRead) {
   // finishes after the team-document read fails.
   const results = await Promise.allSettled([
     teamRef.get(),
-    teamRef.collection("members").get().then((snapshot) => {
+    teamRef.collection("members").where("role", "in", ACTIVE_MEMBER_QUERY_ROLES).get().then((snapshot) => {
       onMembersRead?.(snapshot.docs.length);
       return snapshot;
     }),
@@ -720,7 +721,7 @@ const notifyWorkspacePostWritten = onDocumentWritten(
             teamId,
             teamName,
             actorUid: actorUid(afterData),
-            title: `${channel.name || "チャンネル"}に新しい投稿があります`,
+            title: `${channelDisplayName(channel) || "チャンネル"}に新しい投稿があります`,
             body: afterData.content || "投稿を確認してください。",
             target: notificationTarget("WorkspaceHome", { postId }),
             source: { collection: "workspacePosts", documentId: postId },

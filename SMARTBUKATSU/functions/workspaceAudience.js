@@ -1,8 +1,16 @@
 // Pure shared logic: used by the app, notification delivery and audience repair.
 // Keep this module free of Node/Firebase dependencies so Metro can bundle it.
+const { isGuardianLike, ACTIVE_MEMBER_ROLES } = require("./membershipCore");
 const DEFAULT_ROLE_GROUPS = ["staff", "captain", "member"];
 const STAFF_ROLES = ["owner", "admin", "staff"];
 const MEMBER_AUDIENCES = ["all", "grades", "none"];
+
+// Keep the legacy name as the stable post/query key. Only the label is editable.
+const channelDisplayName = channel => (typeof channel?.displayName === 'string' && channel.displayName.trim()) || channel?.name || '';
+const channelAudienceSettings = channels => Array.isArray(channels) ? channels.map(channel => {
+  if (!channel || typeof channel !== 'object') return channel;
+  const { displayName, ...settings } = channel;return settings;
+}) : channels;
 
 function memberGrades(member) {
   // An explicit empty list clears membership; only legacy records use grade.
@@ -17,6 +25,7 @@ function needsGeneralAudienceUpgrade(channel) {
 
 function roleGroup(role) {
   if (STAFF_ROLES.includes(role)) return "staff";
+  if (role === "alumni") return "alumni";
   if (role === "guardian") return "guardian";
   return role === "captain" ? "captain" : "member";
 }
@@ -42,7 +51,7 @@ function channelMemberAudience(channel, members = []) {
 }
 
 function canViewChannel(channel, member, members = []) {
-  if (!member) return false;
+  if (!member || member.role === "alumni") return false;
   const groups = channelRoleGroups(channel, members);
   if (STAFF_ROLES.includes(member.role)) return groups.includes("staff");
   if (member.role === "guardian") return groups.includes("guardian");
@@ -59,10 +68,10 @@ function canViewChannel(channel, member, members = []) {
 
 function audienceForChannel(channel, members, authorUid = "") {
   const audience = members.filter((member) => canViewChannel(channel, member, members));
-  const visibleToUids = [...new Set([...audience.map((member) => member.uid), ...(authorUid ? [authorUid] : [])])].sort();
-  const readTargetUids = members.filter((member) => member.role !== "guardian" && visibleToUids.includes(member.uid))
+  const visibleToUids = [...new Set([...audience.map((member) => member.uid), ...(authorUid && members.some((m) => m.uid === authorUid && m.role !== "alumni") ? [authorUid] : [])])].sort();
+  const readTargetUids = members.filter((member) => !isGuardianLike(member.role) && visibleToUids.includes(member.uid))
     .map((member) => member.uid).sort();
   return { shareScope: channelMemberAudience(channel, members) === "grades" ? "grades" : "roles", visibleToUids, readTargetUids };
 }
 
-module.exports = { DEFAULT_ROLE_GROUPS, memberGrades, channelRoleGroups, channelMemberAudience, needsGeneralAudienceUpgrade, canViewChannel, audienceForChannel };
+module.exports = { ACTIVE_MEMBER_ROLES, DEFAULT_ROLE_GROUPS, memberGrades, channelRoleGroups, channelMemberAudience, needsGeneralAudienceUpgrade, canViewChannel, audienceForChannel, channelDisplayName, channelAudienceSettings };

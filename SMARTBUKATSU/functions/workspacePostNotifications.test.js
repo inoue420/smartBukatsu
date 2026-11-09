@@ -37,7 +37,7 @@ function harness(source = currentSource, options = {}) {
       id: location.split("/").at(-1),
       doc: (id) => reference(`${location}/${id}`),
       collection: (name) => reference(`${location}/${name}`),
-      where: (field, _operator, value) => reference(location, [...filters, [field, value]]),
+      where: (field, operator, value) => reference(location, [...filters, [field, value, operator]]),
       async get() {
         if (location === "teams/team") {
           teamReads += 1;
@@ -49,7 +49,7 @@ function harness(source = currentSource, options = {}) {
           }
           const docs = [...documents.keys()]
             .filter((key) => key.startsWith(`${location}/`) && key.split("/").length === location.split("/").length + 1)
-            .filter((key) => filters.every(([field, value]) => documents.get(key)[field] === value))
+            .filter((key) => filters.every(([field, value, operator]) => operator === "in" ? value.includes(documents.get(key)[field]) : documents.get(key)[field] === value))
             .map((key) => snapshot(reference(key)));
           if (location === "teams/team/members") {
             memberQueries += 1;
@@ -89,6 +89,7 @@ function harness(source = currentSource, options = {}) {
     "node:crypto": require("node:crypto"),
     "./notificationCore": require("./notificationCore"),
     "./workspaceAudience": require("./workspaceAudience"),
+    "./membershipCore": require("./membershipCore"),
   };
   vm.runInNewContext(source, {
     module,
@@ -125,6 +126,12 @@ function harness(source = currentSource, options = {}) {
 }
 
 const post = { authorUid: "author", channelId: "channel", content: "Post", replies: [], mentionedUids: [] };
+test('new notifications use the current board label while legacy post names and recipients stay compatible', async () => {
+  const h = harness();h.documents.get('teams/team').channels[0].displayName = 'New board label';
+  await h.run(null,{...post,channelId:undefined,channel:'General'});
+  assert.ok(h.notifications().length > 0);assert.equal(h.notifications().every(n => n.title === 'New board labelに新しい投稿があります'),true);
+  assert.deepEqual(h.counts(),{memberQueries:1,memberDocuments:4,teamReads:1});
+});
 const reply = { id: "reply", authorUid: "writer", content: "Reply" };
 const passiveChanges = {
   read: { readByUids: ["writer"], readBy: ["Test reader"] },
@@ -163,6 +170,17 @@ test("new post reaches public members and selected public managers, excluding th
   const h = harness();
   await h.run(null, post);
   assert.deepEqual(h.notifications().map((item) => item.uid).sort(), ["manager", "target", "writer"]);
+});
+
+test("legacy empty roles retain notifications with one roster query and archives remain excluded", async () => {
+  for (const role of ['', false, 0]) {
+    const h = harness();
+    h.documents.set('teams/team/members/writer', { role });
+    h.documents.set('teams/team/members/target', { role: 'alumni', archived: true });
+    await h.run(null, post);
+    assert.deepEqual(h.notifications().map(item => item.uid).sort(), ['manager', 'writer']);
+    assert.deepEqual(h.counts(), { memberQueries: 1, memberDocuments: 3, teamReads: 1 });
+  }
 });
 
 function gradeHarness(allowedRoleGroups = ["staff", "guardian"]) {

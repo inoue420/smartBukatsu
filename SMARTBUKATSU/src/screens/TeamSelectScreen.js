@@ -38,6 +38,7 @@ const roleLabels = {
   staff: "スタッフ",
   captain: "キャプテン",
   guardian: "保護者",
+  alumni: "OB・OG",
   member: "部員",
 };
 

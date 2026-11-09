@@ -1,3 +1,4 @@
+const { batchMembershipChange } = require("./membershipCore");
 const CHILD_ROLES = ["member", "captain", "staff"];
 const MANAGER_ROLES = ["owner", "admin", "staff"];
 const MEMBER_ROLES = [...MANAGER_ROLES, "captain", "member", "guardian"];
@@ -76,6 +77,7 @@ function createGuardianAbsenceBackend({ firestore, FieldValue, HttpsError, now =
         tx.get(firestore.collection("teams").doc(teamId)), tx.get(memberRef(teamId, uid)),
         tx.get(memberRef(teamId, guardianUid)), ...childUids.map((child) => tx.get(memberRef(teamId, child))),
       ]);
+      if (team.data()?.membershipBatchPending) fail("failed-precondition", "一括処理中です。完了後に再試行してください。");
       if (!team.exists || !caller.exists || !MANAGER_ROLES.includes(caller.data().role)) fail("permission-denied", "監督・スタッフのみ設定できます。");
       if (!guardian.exists || guardian.data().role !== "guardian") fail("failed-precondition", "保護者として登録されたメンバーを選んでください。");
       if (children.some((child) => !child.exists || !CHILD_ROLES.includes(child.data().role))) {
@@ -175,7 +177,7 @@ function createGuardianAbsenceBackend({ firestore, FieldValue, HttpsError, now =
   }
   async function membershipChanged(event) {
     const { before, after } = event.data || {};
-    if (!before?.exists) return;
+    if (!before?.exists || batchMembershipChange(before.data(), after.data())) return;
     const { teamId, uid } = event.params;
     if (!after.exists || (CHILD_ROLES.includes(before.data().role) && !CHILD_ROLES.includes(after.data().role))) {
       await removeLinks(teamId, uid, membershipKey(before), after.exists);

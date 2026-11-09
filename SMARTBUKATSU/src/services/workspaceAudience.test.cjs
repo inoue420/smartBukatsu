@@ -53,6 +53,13 @@ function screenHarness(screen, options = {}) {
     "../hooks/useWorkspaceReactions": { useWorkspaceReactions: () => ({}) },
     "../utils/workspaceReactions": require("../utils/workspaceReactions"),
     "../../functions/workspaceAudience": audience,
+    "../utils/workspaceChannel": require('../utils/workspaceChannel'),
+    "../services/workspaceChannelService": { saveWorkspaceChannel: async (team, next, before, fallback) => {
+      if (options.saveChannel) return options.saveChannel(team, next, before, fallback);
+      const current = options.channels?.length ? options.channels : fallback;
+      const channels = before ? current.map(channel => channel.id === next.id ? next : channel) : [...current, next];
+      options.channels = channels;writes.push({ ref: ['demo','teams',team], data: { channels } });return channels;
+    } },
     "../services/firestoreSubscription": { firestoreDiagnosticsEnabled: () => false,
       measuredOnSnapshot: (_name, _ref, next) => { next({ exists: () => true, data: () => ({ channels: options.channels || [] }) }); return idle; } },
   });
@@ -285,4 +292,53 @@ test("staff opening the unmarked system General requests its one-time upgrade; m
   assert.match(member.text(), /全体連絡/); assert.equal(member.migrations.length, 0);
   const explicit = screenHarness("WorkspaceHomeScreen", { channels: [{ ...channels[0], memberAudience: "grades" }] });
   assert.equal(explicit.migrations.length, 0);
+});
+
+for (const os of ['android','ios']) for (const role of ['owner','admin','staff']) test(`${os}: ${role} renames a board while retaining legacy post keys and exact access settings`, async () => {
+  const channel = { id: 'old', name: '1年生', allowedRoleGroups: ['captain'], notificationRecipientUids: ['coach'], allowedGrades: ['1年生'], custom: 'keep' };
+  const h = screenHarness('WorkspaceHomeScreen', { os, channels: [channel], profiles: { Coach: { uid: 'coach', name: 'Coach', role } } });
+  h.props.posts = [{ id: 'legacy', channel: '1年生', content: 'Old post remains', user: 'Coach', authorUid: 'coach', tags: [], replies: [] }];h.render();
+  h.button('🔐 1年生').props.onLongPress();h.render();
+  assert.equal(h.all(node => node.props?.accessibilityLabel === '掲示板名')[0].props.editable, true);
+  h.change('例: 1年生専用',' 2年生 ');await h.press('保存する');
+  assert.deepEqual(JSON.parse(JSON.stringify(h.writes[0].data.channels[0])), { ...channel, displayName: '2年生' });
+  assert.ok(h.button('🔐 2年生'));assert.match(h.text(), /Old post remains/);
+  assert.equal(h.all(node => node.props?.placeholder?.startsWith('# 2年生 に')).length, 1);
+  h.button('🔐 2年生').props.onLongPress();h.render();
+  assert.equal(h.all(node => node.props?.accessibilityLabel === '掲示板名')[0].props.value, '2年生');
+});
+test('members, captains, guardians and alumni cannot open the board name editor', () => {
+  for (const role of ['member','captain','guardian','alumni']) {
+    const channel = { id: 'all', name: 'General', memberAudience: 'all', allowedRoleGroups: ['staff','captain','member','guardian'] };
+    const h = screenHarness('WorkspaceHomeScreen', { channels: [channel], profiles: { Coach: { uid: 'coach', name: 'Coach', role } } });
+    const tab = h.all(node => node.type === 'TouchableOpacity' && h.text(node).startsWith('🔐 General'))[0];
+    tab?.props.onLongPress();h.render();
+    assert.equal(h.all(node => node.props?.accessibilityLabel === '掲示板名').length, 0);assert.equal(h.writes.length, 0);
+  }
+});
+test('renaming the system General preserves its identity, historical posts and delete protection', async () => {
+  const general = { id: 'ch_1', name: '全体連絡', memberAudience: 'all', allowedRoleGroups: ['staff','captain','member'], isReadOnly: true };
+  const h = screenHarness('WorkspaceHomeScreen', { channels: [general] });
+  h.button('🔐 全体連絡').props.onLongPress();h.render();h.change('例: 1年生専用','チーム連絡');await h.press('保存する');
+  assert.equal(h.writes[0].data.channels[0].id, 'ch_1');assert.equal(h.writes[0].data.channels[0].name, '全体連絡');
+  h.button('🔐 チーム連絡').props.onLongPress();h.render();
+  assert.equal(h.all(node => node.type === 'TouchableOpacity' && h.text(node).includes('このチャンネルを削除')).length, 0);
+});
+test('name-only edits do not restart the legacy audience scan', async () => {
+  const channel = { id: 'group', name: 'Group', memberAudience: 'all', allowedRoleGroups: ['staff','captain','member'] };
+  const h = screenHarness('WorkspaceHomeScreen', { optimize: false, channels: [channel], syncPosts: [] });
+  await new Promise(setImmediate);const count = h.audienceSyncs.length;
+  h.button('🔐 Group').props.onLongPress();h.render();h.change('例: 1年生専用','New label');await h.press('保存する');await new Promise(setImmediate);
+  assert.equal(h.audienceSyncs.length, count);
+});
+test('failed board renames retain the editable name for retry and never update a later user scope', async () => {
+  let fail = true, release;const pending = new Promise(resolve => { release = resolve; });
+  const channel = { id: 'old', name: 'Legacy', memberAudience: 'all', allowedRoleGroups: ['staff','captain','member'] };
+  const h = screenHarness('WorkspaceHomeScreen', { channels: [channel], saveChannel: async (_team, next) => { if (fail) throw new Error('offline');await pending;return [next]; } });
+  h.button('🔐 Legacy').props.onLongPress();h.render();h.change('例: 1年生専用','New label');await h.press('保存する');
+  assert.equal(h.all(node => node.props?.accessibilityLabel === '掲示板名')[0].props.value, 'New label');assert.equal(h.alerts.length, 1);
+  fail = false;const saving = h.button('保存する').props.onPress();h.render();
+  assert.equal(h.all(node => node.props?.accessibilityLabel === '掲示板名')[0].props.editable, false);
+  h.props.currentUserUid = 'member';h.render();release();await saving;h.render();
+  assert.doesNotMatch(h.text(), /New label/);assert.equal(h.alerts.length, 1);
 });

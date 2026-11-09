@@ -101,6 +101,7 @@ function appHarness() {
     "./src/services/firestoreService": Object.fromEntries([...legacyNames, "TeamData", "TeamMembers"].map(name => ["subscribe" + name, watch(name)])),
     "./src/services/historyDataService": { ...Object.fromEntries(["LoadingSummary", "LatestReports", "PostReadStates", "PinnedPosts"].map(name => ["subscribe" + name, watch(name)])), subscribeLoadingState: gate.service.subscribeLoadingState },
     "./src/AuthContext": { useAuth: () => auth }, "./src/NotificationContext": { useNotifications: () => ({ setNavigationHandler: () => idle }) },
+    "./src/utils/memberProfiles": require("../utils/memberProfiles"),
   };
   const file = path.join(root, "App.js");
   for (const match of fs.readFileSync(file, "utf8").matchAll(/from\s+["']([^"']+)["']/g)) modules[match[1]] ||= { __esModule: true, default: match[1] };
@@ -175,6 +176,19 @@ test("logout and old membership callbacks cannot restore an obsolete selection",
   const afterLogout = a.value().selectTeam("c"); await a.changeUser(null); a.h.render(); a.switches[1].resolve(); await assert.rejects(afterLogout, /ログイン状態/);
   a.user.next({ exists: () => true, data: () => ({ activeTeamId: "a" }) });
   assert.equal(a.value().activeTeamId, null); assert.equal(a.value().isTeamSwitching, false); a.h.unmount();
+});
+
+test('AuthProvider shares its existing membership snapshot and clears identity across teams and logout', async () => {
+  const a = await authHarness(), first = a.calls.find(sub => sub.name === 'authMembership');
+  const count = () => a.calls.filter(sub => sub.name === 'authMembership').length;
+  const initial = count();
+  first.next({ exists: () => true, data: () => ({ uid: 'incorrect-field', role: 'alumni', name: 'Synthetic Alumni', canEditTags: true }) });
+  a.h.render();assert.equal(a.value().currentMemberProfile.uid, 'member');assert.equal(a.value().currentMemberProfile.canEditTags, true);assert.equal(count(), initial);
+  a.user.next({ exists: () => true, data: () => ({ activeTeamId: 'b', teamIds: ['a', 'b'] }) });a.h.render();
+  assert.equal(a.value().currentMemberProfile, null);
+  first.next({ exists: () => true, data: () => ({ role: 'admin' }) });a.h.render();assert.equal(a.value().currentMemberProfile, null);
+  a.calls.findLast(sub => sub.name === 'authMembership').next({ exists: () => true, data: () => ({ role: 'member' }) });a.h.render();
+  assert.equal(a.value().currentMemberProfile.role, 'member');await a.changeUser(null);a.h.render();assert.equal(a.value().currentMemberProfile, null);a.h.unmount();
 });
 
 async function screenHarness(os = "android", canGoBack = true) {

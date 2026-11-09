@@ -16,7 +16,7 @@ test("real rules: only staff can change grades, and profile saves preserve a con
   const team = "grade-synthetic", root = db.collection("teams").doc(team), members = root.collection("members");
   const client = (uid) => {
     const app = initializeApp({ projectId: project, apiKey: "emulator-only", appId: "emulator-only" }, `grade-${uid}`), value = sdk.getFirestore(app);
-    sdk.connectFirestoreEmulator(value, "127.0.0.1", 8189, { mockUserToken: { sub: uid } }); clients.push({ app, db: value }); return value;
+    sdk.connectFirestoreEmulator(value, "127.0.0.1", 8189, { mockUserToken: { sub: uid, email_verified: true } }); clients.push({ app, db: value }); return value;
   };
   const denied = (promise) => assert.rejects(promise, (error) => error.code === "permission-denied");
   const ref = (value, uid) => sdk.doc(value, "teams", team, "members", uid);

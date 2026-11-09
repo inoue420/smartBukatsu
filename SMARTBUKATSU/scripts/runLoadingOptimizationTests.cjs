@@ -19,6 +19,7 @@ server.on("error", (error) => { logs += error.message; });
     }
     const tests = spawn(process.execPath, ["--test", process.argv[3] || "src/services/loadingOptimization.rules.test.cjs"], { windowsHide: true, stdio: "inherit", env: { ...process.env, FIRESTORE_EMULATOR_HOST: `127.0.0.1:${port}`, GCLOUD_PROJECT: project, METADATA_SERVER_DETECTION: "none" } });
     const code = await new Promise((resolve, reject) => { tests.on("exit", resolve); tests.on("error", reject); });
+    if (code) process.stderr.write(logs + "\n");
     process.exitCode = code;
   } catch (error) { process.stderr.write(error.message + "\n"); process.exitCode = 1; }
   finally { server.kill(); }

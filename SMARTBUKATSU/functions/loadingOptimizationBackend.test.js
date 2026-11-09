@@ -70,6 +70,7 @@ function harness(options = {}) {
       items = items.filter((item) => this.filters.every(([field, operation, value]) => {
         const actual = fieldValue(item.data(), field, item.id);
         if (operation === "==") return actual === value;
+        if (operation === "in") return value.includes(actual);
         if (operation === "!=") return actual !== undefined && actual !== value;
         if (operation === "array-contains") return (actual || []).includes(value);
         if (operation === "array-contains-any") return (actual || []).some((item) => value.includes(item));
@@ -161,6 +162,15 @@ test("disabled summaries read only their state and never load a roster or users"
     assert.equal(metric.skipReason, "optimization_disabled");
     for (const [name, value] of Object.entries(metric)) if (!["operation", "skipReason"].includes(name)) assert.equal(typeof value, "number", name);
   }
+});
+test('changing only a board display name never reads Firestore or restarts audience preparation', async () => {
+  const h = harness(), before = {channels:[{id:'board',name:'Old key',allowedRoleGroups:['staff']}]};
+  const after = {...before,channels:[{...before.channels[0],displayName:'New label'}]};
+  await h.backend.handleTeam(h.event('team',before,after));
+  assert.deepEqual(h.counts(),{reads:0,writes:0,queries:0,getAll:0});assert.equal(h.logs.length,0);
+  const changed = {...after,channels:[{...after.channels[0],allowedRoleGroups:['staff','member']}]};h.seed(base, changed);
+  await h.backend.handleTeam(h.event('team',after,changed));
+  assert.ok(h.counts().writes > 0);
 });
 
 test("cached context has a constant two-document cost and is isolated by revision", async () => {
@@ -698,12 +708,207 @@ test("late target work cannot update summaries or finish a replacement generatio
   await seedContent(h, "workspacePosts", "post", { authorUid: "b", user: "B", content: "@A", visibleToUids: ["a", "b"] });
   await blockUsers(h, "a", ["b"]); h.reset(); enabled = true;
   const before = h.documents.get(statePath);
-  await h.backend.handlePreparation({ params: { teamId: TEAM }, data: { after: { exists: true, data: () => before } } });
+  await assert.rejects(h.backend.handlePreparation({ params: { teamId: TEAM }, data: { after: { exists: true, data: () => before } } }), { code: 'aborted' });
   assert.equal(h.documents.get(statePath).preparationId, "replacement");
   assert.equal(h.documents.get(statePath).status, "preparing");
   assert.equal(h.trace.some((item) => item.type === "write" && item.path.includes("/loadingSummaries/")), false);
 });
 
+const preparationEvent = (after, before) => ({ params: { teamId: TEAM }, data: {
+  after: { exists: true, data: () => copy(after) }, ...(before ? { before: { exists: true, data: () => copy(before) } } : {}) } });
+async function membershipJob(h) {
+  h.seed(base, { ...h.documents.get(base), membershipBatchPending: true, membershipOperationId: 'recovery' });
+  h.seed(`${base}/membershipOperations/recovery`, { status: 'queued', action: 'graduate' });
+  await h.backend.reconcileMembershipBatch(TEAM, 'recovery');
+  return copy(h.documents.get(statePath));
+}
+test('a crashed worker redelivery rejects before lease expiry and resumes afterwards to unlock the exact job', async t => {
+  let now = 1000000; t.mock.method(Date, 'now', () => now);
+  const h = harness(), original = await membershipJob(h), event = preparationEvent(original);
+  h.seed(statePath, { ...original, lease: { token: 'crashed', expiresAt: now + 240000 } }); h.reset();
+  await assert.rejects(h.backend.handlePreparation(event), { code: 'aborted' });
+  assert.equal(logicalReads(h), 1); assert.equal(h.counts().writes, 0);
+  assert.equal(h.documents.get(base).membershipBatchPending, true);
+  now += 240001;
+  await h.backend.handlePreparation(event);
+  assert.equal(h.documents.get(statePath).stage, 1);
+  await finish(h);
+  assert.equal(h.documents.get(base).membershipBatchPending, false);
+  assert.equal(h.documents.get(`${base}/membershipOperations/recovery`).status, 'complete');
+  h.reset(); await h.backend.handlePreparation(event);
+  assert.equal(h.counts().writes, 0, 'completed old delivery cannot restart work');
+});
+test('lease/context-only writes perform zero SDK calls and stale checkpoint deliveries never process the next page', async () => {
+  const h = harness(), initial = await membershipJob(h);
+  h.reset(); await h.backend.handlePreparation(preparationEvent({ ...initial, lease: { token: 'claim', expiresAt: Date.now() + 360000 } }, initial));
+  await h.backend.handlePreparation(preparationEvent({ ...initial, contextShardCount: 2 }, initial));
+  assert.equal(h.trace.length, 0);
+  await h.backend.handlePreparation(preparationEvent(initial));
+  const progressed = copy(h.documents.get(statePath)); h.reset();
+  await h.backend.handlePreparation(preparationEvent(initial));
+  assert.equal(h.counts().writes, 0); assert.equal(logicalReads(h), 1);
+  assert.deepEqual(h.documents.get(statePath), progressed);
+});
+test('a same-generation replacement lease fences source writes and cannot be cleared by an older worker', async () => {
+  let enabled = false, reads = 0;
+  const h = harness({ onRead(path, docs) {
+    if (enabled && path === statePath && ++reads === 3) docs.set(path, { ...docs.get(path), lease: { token: 'replacement', expiresAt: Date.now() + 360000 } });
+  } });
+  const original = await membershipJob(h);
+  h.seed(`${base}/workspacePosts/p`, { channel: 'General', visibleToUids: [], readTargetUids: [] });
+  h.reset(); enabled = true;
+  await assert.rejects(h.backend.handlePreparation(preparationEvent(original)), { code: 'aborted' });
+  assert.equal(h.documents.get(statePath).lease.token, 'replacement');
+  assert.equal(h.trace.some(x => x.type === 'write' && x.path.endsWith('/workspacePosts/p')), false);
+  assert.equal(h.documents.get(base).membershipBatchPending, true);
+});
+test('new leases outlast the deployed execution deadline and internal tokens never enter metrics', async () => {
+  const h = harness(), original = await membershipJob(h), start = Date.now(); h.reset();
+  await h.backend.handlePreparation(preparationEvent(original));
+  // Trace only stores operation paths. Observe the claim separately through onRead.
+  const claims = [];
+  const another = harness({ onRead(path, docs) { if (path === statePath && docs.get(path)?.lease) claims.push(copy(docs.get(path).lease)); } });
+  const next = await membershipJob(another);
+  await another.backend.handlePreparation(preparationEvent(next));
+  assert.ok(claims.length); assert.ok(claims.every(x => x.expiresAt >= start + 360000));
+  assert.equal(JSON.stringify(another.logs).includes('leaseGuard'), false);
+});
+test('a transient failure releases only its own lease and retry preserves aggregate correctness', async () => {
+  let fail = false;
+  const h = harness({ onRead(path) { if (fail && path.endsWith('/workspacePosts/p')) { fail = false; throw new Error('synthetic outage'); } } });
+  const initial = await membershipJob(h);
+  h.seed(`${base}/workspacePosts/p`, { channel: 'General', visibleToUids: [], readTargetUids: [] }); fail = true;
+  await assert.rejects(h.backend.handlePreparation(preparationEvent(initial)), /synthetic outage/);
+  assert.equal(h.documents.get(statePath).lease, null);
+  await h.backend.handlePreparation(preparationEvent(initial)); await finish(h); await assertFreshAggregates(h);
+  assert.equal(h.documents.get(base).membershipBatchPending, false);
+});
+test('operator recovery reads three documents, preserves progress and resumes after the retry window without unlocking early', async () => {
+  const h = harness(), initial = await membershipJob(h);
+  h.seed(statePath, { ...initial, stage: 2, processed: 7, lease: { token: 'expired', expiresAt: 1 } }); h.reset();
+  const inspect = await h.backend.recoverMembershipBatch(TEAM, 'recovery', initial.preparationId);
+  assert.equal(inspect.resumable, true); assert.equal(logicalReads(h), 3); assert.equal(h.counts().writes, 0);
+  const before = copy(h.documents.get(statePath)); h.reset();
+  assert.equal((await h.backend.recoverMembershipBatch(TEAM, 'recovery', initial.preparationId, 'resume')).resumed, true);
+  assert.equal(logicalReads(h), 3); assert.equal(h.counts().writes, 1);
+  const resumed = h.documents.get(statePath);
+  assert.equal(resumed.stage, 2); assert.equal(resumed.processed, 7); assert.equal(resumed.preparationId, initial.preparationId);
+  assert.equal(h.documents.get(base).membershipBatchPending, true);
+  await h.backend.handlePreparation(preparationEvent(resumed, before)); await finish(h);
+  assert.equal(h.documents.get(base).membershipBatchPending, false);
+});
+test('recovery refuses an active worker, a different generation/job, completed and inconsistent states without writes', async () => {
+  const h = harness(), initial = await membershipJob(h);
+  for (const changes of [
+    { lease: { token: 'live', expiresAt: Date.now() + 360000 } },
+    { preparationId: 'new-generation' }, { membershipBatchId: 'different-job' }, { status: 'ready' },
+  ]) {
+    h.seed(statePath, { ...initial, ...changes }); h.reset();
+    await assert.rejects(h.backend.recoverMembershipBatch(TEAM, 'recovery', initial.preparationId, 'resume'), { code: 'failed-precondition' });
+    assert.equal(h.counts().writes, 0);
+  }
+  h.seed(statePath, initial); h.seed(base, { ...h.documents.get(base), membershipOperationId: 'other' }); h.reset();
+  await assert.rejects(h.backend.recoverMembershipBatch(TEAM, 'recovery', initial.preparationId, 'resume'), { code: 'failed-precondition' });
+  assert.equal(h.counts().writes, 0);
+});
+test('queued recovery touches only the exact job, then existing reconciliation starts it idempotently', async () => {
+  const h = harness(), initial = await membershipJob(h);
+  h.seed(statePath, { ...initial, status: 'ready', membershipBatchId: null });
+  h.seed(`${base}/membershipOperations/recovery`, { status: 'queued', action: 'graduate' }); h.reset();
+  await h.backend.recoverMembershipBatch(TEAM, 'recovery', initial.preparationId, 'resume');
+  assert.deepEqual(h.trace.filter(x => x.type === 'write').map(x => x.path), [`${base}/membershipOperations/recovery`]);
+  await h.backend.reconcileMembershipBatch(TEAM, 'recovery'); await finish(h);
+  assert.equal(h.documents.get(base).membershipBatchPending, false);
+});
+async function restoreJob(h, uid = 'a') {
+  h.seed(base, { ...h.documents.get(base), membershipBatchPending: true, membershipOperationId: 'restore-latest' });
+  h.seed(`${base}/membershipOperations/restore-latest`, { status: 'queued', action: 'restore', actorUid: 'operator', participantUids: ['operator', uid] });
+  await h.backend.reconcileMembershipBatch(TEAM, 'restore-latest');
+  const s = h.documents.get(statePath);
+  h.seed(statePath, { ...s, stage: s.preparationStages.indexOf('restoreLatest') });
+  return copy(h.documents.get(statePath));
+}
+test('restoration rebuilds latest condition for only one target before completing, with a constant scoped lookup', async t => {
+  for (const count of [100, 500]) {
+    const members = Array.from({ length: count }, (_, i) => ({ uid: 'u' + i, name: 'Name ' + i, profileKey: 'Name ' + i, role: 'member' }));
+    const h = harness({ members });
+    for (const member of members) {
+      h.seed(`${base}/dailyReports/report-${member.uid}`, { authorUid: member.uid, author: member.name, createdAt: new SyntheticTimestamp(10), fatigue: 3 });
+      if (member.uid !== 'u0') h.seed(`${base}/latestDailyReports/${member.uid}`, { id: 'preserve-' + member.uid });
+    }
+    const original = await restoreJob(h, 'u0');
+    assert.deepEqual(original.latestUids, ['u0']); h.reset();
+    await h.backend.handlePreparation(preparationEvent(original));
+    assert.equal(h.documents.get(`${base}/latestDailyReports/u0`).id, 'report-u0');
+    assert.equal(h.documents.get(`${base}/latestDailyReports/u0`).fatigue, 3);
+    assert.equal(h.documents.get(`${base}/membershipOperations/restore-latest`).status, 'processing');
+    assert.equal(h.documents.get(base).membershipBatchPending, true);
+    const queries = h.trace.filter(x => x.type === 'query');
+    assert.equal(queries.length, 2);
+    assert.deepEqual(queries.map(q => q.filters), [[['authorUid', '==', 'u0']], [['author', '==', 'Name 0']]]);
+    assert.equal(h.trace.some(x => x.type === 'write' && /latestDailyReports\/(?!u0$)/.test(x.path)), false);
+    assert.equal(h.logs.reduce((n, [, m]) => n + m.latestSearches, 0), 1);
+    t.diagnostic(`${count} active members: ${logicalReads(h)} logical reads / ${h.counts().writes} writes for the added restoreLatest step`);
+    await finish(h);
+    assert.equal(h.documents.get(`${base}/membershipOperations/restore-latest`).status, 'complete');
+    assert.equal(h.documents.get(base).membershipBatchPending, false);
+    h.reset(); await h.backend.reconcileMembershipBatch(TEAM, 'restore-latest'); await h.backend.handlePreparation(preparationEvent(original));
+    assert.equal(h.trace.some(x => x.type === 'query'), false);
+    assert.equal(h.counts().writes, 0);
+  }
+});
+test('a crash after the restored latest result commits does not repeat its historical lookup on redelivery', async () => {
+  let armed = false, stateReads = 0;
+  const h = harness({ onRead(path) {
+    if (armed && path === statePath && ++stateReads === 4) { armed = false; throw new Error('synthetic checkpoint failure'); }
+  } });
+  h.seed(`${base}/dailyReports/report`, { authorUid: 'a', createdAt: new SyntheticTimestamp(20), fatigue: 5 });
+  const initial = await restoreJob(h); h.reset(); armed = true;
+  await assert.rejects(h.backend.handlePreparation(preparationEvent(initial)), /synthetic checkpoint failure/);
+  assert.equal(h.documents.get(`${base}/latestDailyReports/a`).fatigue, 5);
+  assert.equal(h.documents.get(statePath).restoredLatestRevision, initial.preparationId);
+  assert.equal(h.documents.get(statePath).stage, initial.stage);
+  assert.equal(h.documents.get(base).membershipBatchPending, true);
+  const markerOnly = h.trace.filter(x => x.type === 'write' && x.path === statePath);
+  assert.ok(markerOnly.length > 0);
+  h.reset(); await h.backend.handlePreparation(preparationEvent(h.documents.get(statePath), initial));
+  assert.equal(h.trace.length, 0, 'marker/lease-only event must not start another retry chain');
+  await h.backend.handlePreparation(preparationEvent(initial));
+  assert.equal(h.trace.some(x => x.type === 'query'), false, 'committed target lookup is not repeated');
+  await finish(h); assert.equal(h.documents.get(base).membershipBatchPending, false);
+});
+test('restoration supports legacy name-only reports and pages past deleted reports without querying other authors', async () => {
+  const h = harness();
+  for (let i = 0; i < 25; i++) h.seed(`${base}/dailyReports/deleted-${i}`, { author: 'A', createdAt: new SyntheticTimestamp(100 + i), status: 'deleted' });
+  h.seed(`${base}/dailyReports/legacy`, { author: 'A', createdAt: new SyntheticTimestamp(2), fatigue: 4 });
+  h.seed(`${base}/dailyReports/other`, { authorUid: 'someone-else', createdAt: new SyntheticTimestamp(200), fatigue: 1 });
+  const initial = await restoreJob(h); h.reset();
+  await h.backend.handlePreparation(preparationEvent(initial));
+  assert.equal(h.documents.get(`${base}/latestDailyReports/a`).id, 'legacy');
+  assert.equal(h.documents.get(`${base}/latestDailyReports/a`).fatigue, 4);
+  const queries = h.trace.filter(x => x.type === 'query');
+  assert.equal(queries.length, 3);
+  assert.ok(queries.every(q => q.path.endsWith('/dailyReports') && q.filters.length === 1 && ['a', 'A'].includes(q.filters[0][2])));
+});
+test('no-report restoration completes without inventing a condition; other operations do not add a latest rebuild', async () => {
+  const h = harness(), initial = await restoreJob(h); h.reset();
+  await h.backend.handlePreparation(preparationEvent(initial)); await finish(h);
+  assert.equal(h.documents.has(`${base}/latestDailyReports/a`), false);
+  assert.equal(h.documents.get(base).membershipBatchPending, false);
+  for (const action of ['graduate', 'rename']) {
+    const other = harness();
+    other.seed(`${base}/membershipOperations/normal`, { status: 'queued', action });
+    await other.backend.reconcileMembershipBatch(TEAM, 'normal');
+    assert.equal(other.documents.get(statePath).preparationStages.includes('restoreLatest'), false);
+    assert.equal(other.documents.get(statePath).preparationStages.includes('latest'), false);
+  }
+});
+test('a malformed restoration target list never expands to all members', async () => {
+  const h = harness();
+  h.seed(`${base}/membershipOperations/bad`, { status: 'queued', action: 'restore', actorUid: 'operator', participantUids: ['operator', 'a', 'b'] }); h.reset();
+  await assert.rejects(h.backend.reconcileMembershipBatch(TEAM, 'bad'), { code: 'failed-precondition' });
+  assert.equal(h.counts().writes, 0);
+});
 test("a saved private plan does not turn a reordered block list into another preparation", async () => {
   const h = harness(); await blockUsers(h, "a", ["b", "c"]); await finish(h);
   const id = h.documents.get(statePath).preparationId;
@@ -711,4 +916,34 @@ test("a saved private plan does not turn a reordered block list into another pre
   assert.equal(h.documents.get(statePath).preparationId, id);
   assert.equal(h.counts().writes, 0);
   assert.equal(h.documents.get(statePath).ready, true);
+});
+
+test("a 50-person batch rebuilds context once and never reads archived identities, with 100 or 500 posts", async (t) => {
+  for (const count of [100, 500]) {
+    const active = [{ uid: 'coach', name: 'Coach', profileKey: 'Coach', role: 'admin', grades: [] }];
+    const graduates = Array.from({ length: 50 }, (_, i) => ({ uid: 'graduate' + i, name: 'Graduate ' + i, profileKey: 'Graduate ' + i, role: 'member', grades: ['Final'] }));
+    const h = harness({ members: [...active, ...graduates] });
+    h.seed(base, { ...h.documents.get(base), channels: [{ id: 'board', allowedRoleGroups: ['staff', 'member'], memberAudience: 'all' }], membershipBatchPending: true, membershipOperationId: 'one' });
+    h.seed(`${base}/membershipOperations/one`, { status: 'queued', action: 'graduate' });
+    for (const m of graduates) {
+      const before = h.documents.get(`${base}/members/${m.uid}`), after = { ...before, role: 'alumni', membershipOperationId: 'one' };
+      h.seed(`${base}/members/${m.uid}`, after);
+      await h.backend.handleMembership({ params: { teamId: TEAM, uid: m.uid }, data: { before: { data: () => before }, after: { data: () => after } } });
+    }
+    assert.equal(h.trace.length, 0, 'per-person triggers perform no SDK calls');
+    for (let i = 0; i < count; i++) h.seed(`${base}/workspacePosts/p${i}`, { channelId: 'board', authorUid: graduates[0].uid, visibleToUids: [...active, ...graduates].map((m) => m.uid), readTargetUids: graduates.map((m) => m.uid), replies: [] });
+    await h.backend.reconcileMembershipBatch(TEAM, 'one');
+    const revision = h.documents.get(statePath).preparationId;
+    await h.backend.reconcileMembershipBatch(TEAM, 'one');
+    assert.equal(h.documents.get(statePath).preparationId, revision);
+    assert.equal(h.documents.get(statePath).ready, true, 'paginated reads stay enabled during batch processing');
+    await finish(h);
+    assert.equal(h.logs.reduce((n, [, m]) => n + (m.contextRebuilds || 0), 0), 1);
+    assert.equal(h.trace.some((item) => item.type === 'read' && item.path.startsWith('users/graduate')), false);
+    assert.equal(h.trace.filter((item) => item.type === 'query' && item.path === `${base}/members`).reduce((n, item) => n + item.count, 0), 1);
+    assert.equal(h.documents.get(`${base}/membershipOperations/one`).status, 'complete');
+    assert.equal(h.documents.get(base).membershipBatchPending, false);
+    assert.deepEqual(h.documents.get(`${base}/workspacePosts/p0`).visibleToUids, ['coach']);
+    t.diagnostic(`${count} posts / 50 graduates: ${h.logs.reduce((n, [, m]) => n + m.reads, 0)} logical reads, ${h.logs.reduce((n, [, m]) => n + m.writes, 0)} writes, 1 context rebuild`);
+  }
 });

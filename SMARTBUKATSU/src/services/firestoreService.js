@@ -12,6 +12,7 @@ import {
   arrayUnion,
   arrayRemove,
   getDocs,
+  getDocsFromServer,
   runTransaction,
   where,
   writeBatch,
@@ -26,6 +27,7 @@ import { validateNote, contentFingerprint, validateTasks, noteAcknowledgementId,
 import { uploadTacticalNoteImage } from "./tacticalNoteAttachmentService";
 import { sendWorkspaceReaction } from "./workspaceReactionService";
 import { needsGeneralAudienceUpgrade } from "../../functions/workspaceAudience";
+import { ACTIVE_MEMBER_QUERY_ROLES } from "../../functions/membershipCore";
 const eventLastDate = (data) => [...(data.selectedDates || [])].sort().at(-1) || data.endDate || data.date;
 const clubAbsenceDate = (value) => {
   const match = /^(\d{4})[/-](\d{1,2})[/-](\d{1,2})(?:$|T| )/.exec(String(value || "").trim());
@@ -741,13 +743,13 @@ export async function deletePersonalEvent(uid, eventId) {
 // ==========================================
 // 👥 メンバー取得・プロフィール更新
 // ==========================================
-export function subscribeTeamMembers(teamId, callback) {
-  if (!teamId) return () => {};
-  const membersRef = collection(db, "teams", teamId, "members");
-  let active = true, generation = 0;
-  const stop = subscribeToTeamData("teamMembers", membersRef, async (snapshot) => {
-    const version = ++generation;
-    const promises = snapshot.docs.map(async (docSnap) => {
+function teamMemberQuery(teamId) {
+  // A document-ID OR branch asks production Firestore for an uncreatable
+  // key-only index. The caller's own identity comes from authMembership.
+  return query(collection(db, "teams", teamId, "members"), where("role", "in", ACTIVE_MEMBER_QUERY_ROLES));
+}
+async function teamMemberRows(snapshot) {
+  return Promise.all(snapshot.docs.map(async (docSnap) => {
       const uid = docSnap.id;
       const data = docSnap.data();
       let name = data.name;
@@ -760,10 +762,19 @@ export function subscribeTeamMembers(teamId, callback) {
           name = "名称未設定";
         }
       }
-      return { uid, name, ...data };
-    });
-
-    const membersData = await Promise.all(promises);
+      return { ...data, uid, name };
+  }));
+}
+export async function getTeamMembersFromServer(teamId, selfUid = "") {
+  if (!teamId) throw new Error("チームを選択してください。");
+  return teamMemberRows(await getDocsFromServer(teamMemberQuery(teamId, selfUid)));
+}
+export function subscribeTeamMembers(teamId, callback, selfUid = "") {
+  if (!teamId) return () => {};
+  let active = true, generation = 0;
+  const stop = subscribeToTeamData("teamMembers", teamMemberQuery(teamId, selfUid), async (snapshot) => {
+    const version = ++generation;
+    const membersData = await teamMemberRows(snapshot);
     if (active && version === generation) callback(membersData);
   });
   return () => { active = false; generation += 1; stop(); };
@@ -794,6 +805,19 @@ export async function updateMemberRoleConfig(teamId, uid, updateData) {
   });
 }
 
+export async function previewMembershipOperation(teamId, input) {
+  const operationId = doc(collection(db, "teams", teamId, "membershipOperations")).id;
+  return (await httpsCallable(cloudFunctions, "manageTeamMembership")({ teamId, operationId, ...input, phase: "preview" })).data;
+}
+export async function commitMembershipOperation(teamId, input, preview) {
+  return (await httpsCallable(cloudFunctions, "manageTeamMembership")({ teamId, ...input, operationId: preview.operationId, fingerprint: preview.fingerprint, phase: "commit" })).data;
+}
+export function subscribeMembershipOperation(teamId, operationId, next, error) {
+  return measuredOnSnapshot("membershipOperation", doc(db, "teams", teamId, "membershipOperations", operationId), (s) => next(s.data()), error);
+}
+export async function getAlumniPage(teamId, fiscalYear, cursor = null) {
+  return (await httpsCallable(cloudFunctions, "listAlumniArchive")({ teamId, fiscalYear, cursor })).data;
+}
 export async function removeTeamMember(teamId, targetUid) {
   if (!teamId || !targetUid) return;
 

@@ -66,6 +66,7 @@ const RosterScreen = ({
     admin: { label: "管理者", color: "#e74c3c", bg: "#fceeea" },
     staff: { label: "コーチ", color: "#9b59b6", bg: "#f5eef8" },
     captain: { label: "キャプテン", color: "#e67e22", bg: "#fdf2e9" },
+    alumni: { label: "OB・OG", color: "#607d8b", bg: "#eceff1" },
     member: { label: "部員", color: "#3498db", bg: "#ebf5fb" },
   };
 

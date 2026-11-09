@@ -43,7 +43,7 @@ function harness(options = {}) {
         if (options.failPreparationUid && location === `users/${options.failPreparationUid}/pushTokens`) throw new Error("synthetic preparation failure");
         if (location.split("/").length % 2 === 0) return snapshot(this);
         const docs = [...documents.keys()].filter((key) => key.startsWith(`${location}/`) && key.split("/").length === location.split("/").length + 1)
-          .filter((key) => filters.every(({ field, operator, value }) => operator === "==" ? documents.get(key)[field] === value : operator === "array-contains" && documents.get(key)[field]?.includes(value)))
+          .filter((key) => filters.every(({ field, operator, value }) => operator === "==" ? documents.get(key)[field] === value : operator === "in" ? value.includes(documents.get(key)[field]) : operator === "array-contains" && documents.get(key)[field]?.includes(value)))
           .slice(0, max).map((key) => snapshot(reference(key)));
         return { docs };
       },
@@ -94,6 +94,7 @@ function harness(options = {}) {
       if (name === "firebase-functions/logger") return Object.fromEntries(["info", "warn", "error"].map((level) => [level, (message, fields) => logs.push({ level, message, ...fields })]));
       if (name === "./notificationCore") return require("./notificationCore");
       if (name === "./workspaceAudience") return require("./workspaceAudience");
+      if (name === "./membershipCore") return require("./membershipCore");
       if (name === "node:crypto") return require(name);
       throw new Error(`Unexpected dependency: ${name}`);
     },

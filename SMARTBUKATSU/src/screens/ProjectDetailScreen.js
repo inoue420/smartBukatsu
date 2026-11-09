@@ -69,10 +69,13 @@ const ProjectDetailScreen = ({
   const projects = useMemo(() => [...new Map([...referencedProjects, ...(baseProjects || [])].map((item) => [item.id, item])).values()], [baseProjects, referencedProjects]);
   const {
     project: routeProject,
-    userRole = "member",
-    canEditTags = false,
+    userRole: routeUserRole = "member",
+    canEditTags: routeCanEditTags = false,
     editRecordedTagId,
   } = route.params || {};
+  const currentUserProfile = Object.values(userProfiles).find((profile) => profile?.uid === currentUserUid) || {};
+  const userRole = global.TEST_ROLE || currentUserProfile.role || routeUserRole;
+  const canEditTags = currentUserProfile.canEditTags !== undefined ? Boolean(currentUserProfile.canEditTags) : routeCanEditTags;
 
   const project =
     projects?.find((p) => p.id === routeProject?.id) || routeProject || {};
@@ -185,9 +188,7 @@ const ProjectDetailScreen = ({
   };
   const displayUserName = roleNameMap[userRole] || currentUser;
   const tagViewer = { userRole, canEditTags, currentUserUid, displayUserName };
-  const viewingProfile = Object.values(userProfiles).find((profile) => profile?.uid === currentUserUid) || {};
-  const viewingViewer = { ...tagViewer, userRole: global.TEST_ROLE || viewingProfile.role || userRole,
-    canUploadVideos: Boolean(viewingProfile.canUploadVideos) };
+  const viewingViewer = { ...tagViewer, canUploadVideos: Boolean(currentUserProfile.canUploadVideos) };
   const viewingAccess = viewingPermissions(viewingViewer.userRole, viewingViewer.canUploadVideos);
   const viewingVideo = { ...project, tags: localTags };
   const hasTagsForViewing = hasViewingTags(viewingVideo, viewingViewer);
@@ -239,13 +240,13 @@ const ProjectDetailScreen = ({
     }, 2000);
   };
 
-  const hasUnsavedClipSettings =
+  const hasUnsavedClipSettings = canEditVideoTags && (
     savedClipSettings.projectId !== project.id ||
     savedClipSettings.preSeconds !== preSec ||
-    savedClipSettings.postSeconds !== postSec;
+    savedClipSettings.postSeconds !== postSec);
 
   const saveGlobalClipSettings = useCallback(async () => {
-    if (!project.id || isSavingClipSettingsRef.current) return false;
+    if (!canEditVideoTags || !project.id || isSavingClipSettingsRef.current) return false;
 
     const nextPreSec = normalizeClipSeconds(preSec, DEFAULT_CLIP_PRE_SECONDS);
     const nextPostSec = normalizeClipSeconds(
@@ -289,7 +290,7 @@ const ProjectDetailScreen = ({
     } finally {
       isSavingClipSettingsRef.current = false;
     }
-  }, [activeTeamId, postSec, preSec, project.id, setProjects]);
+  }, [activeTeamId, canEditVideoTags, postSec, preSec, project.id, setProjects]);
 
   const openViewingProject = (target) => {
     if (!viewingScreenActive.current) return;
@@ -895,7 +896,7 @@ const ProjectDetailScreen = ({
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <View style={isLandscape ? styles.fsTagArea : styles.quickTagArea}>
+        {userRole !== "alumni" && <View style={isLandscape ? styles.fsTagArea : styles.quickTagArea}>
           <Text style={isLandscape ? styles.fsTagTitle : styles.quickTagTitle}>
             タグリスト: {activeTagGroupName} / 複数選択してから「記録」をタップ
             {!usesTagGroup ? " (長押しで削除)" : ""}
@@ -1009,7 +1010,7 @@ const ProjectDetailScreen = ({
               </TouchableOpacity>
             </>
           )}
-        </View>
+        </View>}
 
         {canEditVideoTags && privateTagsCount > 0 && (
           <TouchableOpacity
@@ -1170,7 +1171,7 @@ const ProjectDetailScreen = ({
         </View>
       )}
 
-      {focused && viewingDialogOpen && <VideoViewingRegistrationModal teamId={activeTeamId} videos={[viewingVideo]} viewer={viewingViewer}
+      {focused && viewingDialogOpen && (viewingAccess.canCreate || viewingAccess.canAdd) && <VideoViewingRegistrationModal teamId={activeTeamId} videos={[viewingVideo]} viewer={viewingViewer}
         initialPrompt={viewingDialogStartsWithPrompt}
         onBeforeRegister={async () => {
           if (hasUnsavedClipSettings && !(await saveGlobalClipSettings())) return false;
@@ -1189,7 +1190,7 @@ const ProjectDetailScreen = ({
       )}
 
       <Modal
-        visible={Boolean(editingRecordedTag)}
+        visible={Boolean(editingRecordedTag) && canEditVideoTags}
         onRequestClose={handleCloseRecordedTagEditor}
         transparent={true}
         animationType="fade"
@@ -1334,7 +1335,7 @@ const ProjectDetailScreen = ({
         )}
       </Modal>
       <Modal
-        visible={isAddQuickTagModalVisible}
+        visible={isAddQuickTagModalVisible && canEditVideoTags}
         transparent={true}
         animationType="fade"
         supportedOrientations={[

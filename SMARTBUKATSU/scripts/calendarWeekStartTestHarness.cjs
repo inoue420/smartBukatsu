@@ -3,14 +3,14 @@ const assert = require("node:assert/strict");
 const { transformSync } = require("@babel/core"), { parse } = require("@babel/parser");
 const root = path.join(__dirname, ".."), idle = () => {};
 
-function load(file, modules, extra = "") {
+function load(file, modules, extra = "", globals = {}) {
   const source = fs.readFileSync(path.join(root, file), "utf8");
   const code = transformSync(source + extra, { configFile: false, babelrc: false,
     plugins: ["@babel/plugin-transform-react-jsx", "@babel/plugin-transform-modules-commonjs"] }).code;
   const module = { exports: {} };
   vm.runInNewContext(code, { module, exports: module.exports, global: {}, console, Map, Set,
     setTimeout: () => 1, clearTimeout: idle, setInterval: () => 1, clearInterval: idle,
-    require(name) { assert.ok(name in modules, `Unexpected dependency: ${name}`); return modules[name]; } });
+    require(name) { assert.ok(name in modules, `Unexpected dependency: ${name}`); return modules[name]; }, ...globals });
   return module.exports;
 }
 
@@ -20,6 +20,21 @@ function loadCalendarSettingsService(db, sdk) {
     item.type === "ExportNamedDeclaration" && item.declaration?.id?.name === "updateCalendarWeekStartSettings").declaration;
   return new Function("db", "doc", "updateDoc", source.slice(node.start, node.end) + "\nreturn updateCalendarWeekStartSettings;")(
     db, sdk.doc, sdk.updateDoc);
+}
+
+function loadGradeOrderService(db, sdk) {
+  const source = fs.readFileSync(path.join(root, 'src/services/gradeOrderService.js'), 'utf8');
+  const node = parse(source, { sourceType: 'module' }).program.body.find(item =>
+    item.type === 'ExportNamedDeclaration' && item.declaration?.id?.name === 'reorderTeamGrades').declaration;
+  return new Function('db', 'doc', 'runTransaction', source.slice(node.start, node.end) + '\nreturn reorderTeamGrades;')(db, sdk.doc, sdk.runTransaction);
+}
+
+function loadWorkspaceChannelService(db, sdk) {
+  const source = fs.readFileSync(path.join(root, 'src/services/workspaceChannelService.js'), 'utf8');
+  const node = parse(source, { sourceType: 'module' }).program.body.find(item =>
+    item.type === 'ExportNamedDeclaration' && item.declaration?.id?.name === 'saveWorkspaceChannel').declaration;
+  return new Function('db', 'doc', 'runTransaction', 'channelDisplayName', 'channelSettingsKey', source.slice(node.start, node.end) + '\nreturn saveWorkspaceChannel;')(
+    db, sdk.doc, sdk.runTransaction, require('../functions/workspaceAudience').channelDisplayName, require('../src/utils/workspaceChannel').channelSettingsKey);
 }
 
 function renderHarness() {
@@ -52,6 +67,7 @@ function renderHarness() {
 }
 
 function fillImports(file, modules) {
+  if (file === 'App.js') modules["./src/utils/memberProfiles"] ||= require("../src/utils/memberProfiles");
   modules["../utils/teamInvitation"] ||= require("../src/utils/teamInvitation");
   modules["./src/hooks/useTeamInvitation"] ||= { useTeamInvitation: () => ({ invitationReady: true, pendingInvitation: null }) };
   for (const match of fs.readFileSync(path.join(root, file), "utf8").matchAll(/from\s+["']([^"']+)["']/g)) {
@@ -79,7 +95,9 @@ function screenHarness(screen, changes = {}, overrides = {}, os = "android") {
     "../hooks/useHistoryData": { useHistoryData: (...args) => { histories.push(args); return { busy: false }; } },
     "../utils/historyLoading": require("../src/utils/historyLoading"), "../utils/medicalScale": require("../src/utils/medicalScale"),
     "../../functions/workspaceAudience": require("../functions/workspaceAudience"),
+    "../utils/memberProfiles": require("../src/utils/memberProfiles"),
     "../services/firestoreService": services, "../services/calendarAttachmentService": { getActiveCalendarAttachments: () => [] },
+    "../services/gradeOrderService": { reorderTeamGrades: services.reorderTeamGrades },
     "../services/dailyReportAttachmentService": { getActiveDailyReportAttachments: () => [] },
     "../firebase": { auth: { currentUser: { uid: "coach" } }, db: "synthetic" },
     "firebase/firestore": { doc: (...args) => args, getDoc: async () => ({ exists: () => false }) },
@@ -109,6 +127,7 @@ function appHarness(invitation = { invitationReady: true, pendingInvitation: nul
     "./src/ads/AdManager": { useAds: () => ({ configureInterstitial: idle, recordScreenTransition: idle }) },
     "./src/ads/adSettings": require("../src/ads/adSettings"), "./src/utils/medicalScale": require("../src/utils/medicalScale"),
     "./src/utils/historyLoading": require("../src/utils/historyLoading"), "./src/utils/dailyReportScope": require("../src/utils/dailyReportScope"),
+    "./src/utils/memberProfiles": require("../src/utils/memberProfiles"),
     "./src/services/firestoreService": services,
     "./src/hooks/useHistoryData": { useHistoryData: (...args) => { histories.push(args); return { include: idle }; } },
     "./src/hooks/useDailyReportHistory": { useDailyReportHistory: () => ({ include: idle }) },
@@ -125,4 +144,4 @@ function appHarness(invitation = { invitationReady: true, pendingInvitation: nul
     navigate(name) { route = { name }; h.find(node => node.type === "NavigationContainer").props.onStateChange(); h.render(); } };
 }
 
-module.exports = { load, loadCalendarSettingsService, screenHarness, appHarness, renderHarness, fillImports };
+module.exports = { load, loadCalendarSettingsService, loadGradeOrderService, loadWorkspaceChannelService, screenHarness, appHarness, renderHarness, fillImports };

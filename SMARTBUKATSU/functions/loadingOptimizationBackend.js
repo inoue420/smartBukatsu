@@ -1,10 +1,15 @@
 const { SCHEMA_VERSION, lastEventDate, contributions, adjustSummary, audienceFor,
   contentChanges, latestReportData, validLatest, compareReports, stableStringify, postActorUids } = require("./loadingOptimizationCore");
-const { memberGrades } = require("./workspaceAudience");
+const { memberGrades, channelAudienceSettings } = require("./workspaceAudience");
+const { ACTIVE_MEMBER_QUERY_ROLES, batchMembershipChange, creationKey } = require("./membershipCore");
 const CONTEXT_VERSION = 3, SHARD_BYTES = 256 * 1024, MAX_CONTEXT_BYTES = 4 * 1024 * 1024;
 const SOURCE_KINDS = ["notices", "dailyReports", "workspacePosts"];
 const MEDICAL_SUMMARY_VERSION = 2;
 const POST_ACTOR_INDEX_VERSION = 1;
+// Exceed processLoadingPreparation's 300-second execution deadline.
+const PREPARATION_LEASE_MS = 360000;
+const preparationPosition = s => stableStringify(s && [s.status, s.preparationId, s.stage || 0,
+  s.cursor ?? null, s.queryIndex || 0, s.personalIndex || 0, s.processed || 0, s.resumeAt ?? null]);
 const chunksOf = (values) => Array.from({ length: Math.ceil(values.length / 30) }, (_, i) => values.slice(i * 30, i * 30 + 30));
 const maintained = (s) => s?.status === "preparing" || Boolean(s?.ready && s.enabled);
 const revision = () => Date.now() + "_" + require("node:crypto").randomUUID();
@@ -45,6 +50,13 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
     let attempts = 0;
     return firestore.runTransaction((tx) => { if (attempts++) m.retries++; return work(tx); });
   }
+  function assertPreparationLease(s, m) {
+    const guard = m.leaseGuard;
+    if (guard && (s?.status !== "preparing" || s.preparationId !== guard.preparationId ||
+        s.lease?.token !== guard.token || !(s.lease.expiresAt > Date.now()))) {
+      throw new HttpsError("aborted", "集計の実行権が更新されました。再配信で現在の処理を確認します。");
+    }
+  }
   function preparationFields(current, options = {}) {
     return { ready: false, enabled: false, separateReads: false, schemaVersion: SCHEMA_VERSION,
       status: "preparing", stage: 0, cursor: null, personalIndex: 0, processed: 0, lease: null,
@@ -71,7 +83,7 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
     const [team, excluded] = await Promise.all([read(teamRef(teamId), m, tx), read(exclusionsRef(teamId), m, tx)]);
     if (!team.exists) return null;
     const excludedUids = excluded.data()?.uids || {};
-    const snap = await read(teamRef(teamId).collection("members").orderBy(FieldPath.documentId()), m, tx);
+    const snap = await read(teamRef(teamId).collection("members").where("role", "in", ACTIVE_MEMBER_QUERY_ROLES).orderBy(FieldPath.documentId()), m, tx);
     const documents = snap.docs.filter((d) => !excludedUids[d.id]);
     const users = await Promise.all(documents.map((d) => read(firestore.collection("users").doc(d.id), m, tx)));
     const usedNames = new Set(), members = [];
@@ -117,6 +129,7 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
       if (s.medicalSummaryVersion !== MEDICAL_SUMMARY_VERSION) {
         await transact(m, async (tx) => {
           const current = (await read(stateRef(teamId), m, tx)).data();
+          assertPreparationLease(current, m);
           if (!maintained(current) || current.medicalSummaryVersion === MEDICAL_SUMMARY_VERSION) return;
           write(tx, "update", stateRef(teamId), preparationFields(current, desired(current)), m);
         });
@@ -131,6 +144,7 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
       }
       const result = await transact(m, async (tx) => {
         const current = (await read(stateRef(teamId), m, tx)).data();
+        assertPreparationLease(current, m);
         if (!maintained(current) || current.preparationId !== s.preparationId) return null;
         const stored = parseContext(await cachedPayload(teamId, current, m, tx), current.preparationId);
         if (stored) return stored;
@@ -140,17 +154,22 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
       return result || context(teamId, m, attempt + 1);
     }, existing);
   }
-  async function refreshLatest(teamId, member, expectedRevision, changeId = null, existing) {
+  async function refreshLatest(teamId, member, expectedRevision, changeId = null, existing, restoreOnce = false) {
     if (!member) return;
     return measured("latest", async (m) => {
       const reports = teamRef(teamId).collection("dailyReports"), target = teamRef(teamId).collection("latestDailyReports").doc(member.uid);
       await transact(m, async (tx) => {
         const s = (await read(stateRef(teamId), m, tx)).data();
+        assertPreparationLease(s, m);
         if (!maintained(s) || (expectedRevision !== undefined && s.preparationId !== expectedRevision)) return;
+        if (restoreOnce && s.restoredLatestRevision === expectedRevision) return;
+        const markRestored = () => {
+          if (restoreOnce) write(tx, "update", stateRef(teamId), { restoredLatestRevision: expectedRevision }, m);
+        };
         const old = await read(target, m, tx);
         const [identity, user] = await Promise.all([read(teamRef(teamId).collection("members").doc(member.uid), m, tx), read(firestore.collection("users").doc(member.uid), m, tx)]);
         const changed = changeId ? await read(reports.doc(changeId), m, tx) : null;
-        if (!identity.exists || !user.exists) { if (old.exists) write(tx, "delete", target, null, m); return; }
+        if (!identity.exists || !user.exists) { if (old.exists) write(tx, "delete", target, null, m); markRestored(); return; }
         const data = changed?.data(), candidate = data?.createdAt !== undefined && validLatest(data, member) ? latestReportData(data, changeId, member) : null;
         let next = null, search = !changeId;
         if (changeId) {
@@ -181,6 +200,9 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
         }
         if (next) { if (stableStringify(old.data()) !== stableStringify(next)) write(tx, "set", target, next, m); }
         else if (old.exists) write(tx, "delete", target, null, m);
+        // Commit the result and marker together, so a crash before the stage
+        // checkpoint cannot repeat the completed historical lookup.
+        markRestored();
       });
     }, existing);
   }
@@ -193,6 +215,7 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
       await transact(m, async (tx) => {
         authors = []; changedContext = false;
         const s = (await read(stateRef(teamId), m, tx)).data();
+        assertPreparationLease(s, m);
         if (!maintained(s)) return;
         if (s.preparationId !== ctx.preparationId || s.contextRevision !== ctx.preparationId) { changedContext = true; return; }
         const sourceSnap = await read(source, m, tx), oldSnap = await read(entry, m, tx);
@@ -235,6 +258,7 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
   async function prepare(teamId, options = {}, existing) {
     return measured("prepare", async (m) => transact(m, async (tx) => {
       const [team, snap] = await Promise.all([read(teamRef(teamId), m, tx), read(stateRef(teamId), m, tx)]);
+      assertPreparationLease(snap.data(), m);
       if (!team.exists) throw new HttpsError("not-found", "チームがありません。");
       write(tx, "set", stateRef(teamId), preparationFields(snap.data(), options === null ? desired(snap.data()) : options), m, { merge: true });
       return { ready: false, status: "preparing" };
@@ -242,21 +266,33 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
   }
   async function handlePreparation(event) {
     if (!event.data?.after.exists || event.data.after.data().status !== "preparing") return;
+    const delivered = event.data.after.data(), before = event.data.before?.data();
+    // Claim/release/context-only writes must not create their own retry chains.
+    if (before && preparationPosition(before) === preparationPosition(delivered)) return;
     return measured("preparation", async (m) => {
       const teamId = event.params.teamId, ref = stateRef(teamId), token = revision();
       const s = await transact(m, async (tx) => {
         const current = (await read(ref, m, tx)).data();
-        if (current?.status !== "preparing" || (current.lease?.expiresAt || 0) > Date.now()) return null;
-        write(tx, "update", ref, { lease: { token, expiresAt: Date.now() + 240000 } }, m); return current;
+        if (current?.status !== "preparing" || preparationPosition(current) !== preparationPosition(delivered)) return null;
+        // Acknowledging here would lose the only wake-up after a worker crash.
+        if ((current.lease?.expiresAt || 0) > Date.now()) throw new HttpsError("aborted", "集計の実行待ちです。再配信で続行します。");
+        write(tx, "update", ref, { lease: { token, expiresAt: Date.now() + PREPARATION_LEASE_MS } }, m); return current;
       });
       if (!s) return;
+      // Keep internal fencing tokens out of the existing metrics log.
+      Object.defineProperty(m, "leaseGuard", { value: { teamId, token, preparationId: s.preparationId } });
       try {
         const ctx = await context(teamId, m);
-        if (!ctx || ctx.preparationId !== s.preparationId) return;
+        if (!ctx || ctx.preparationId !== s.preparationId) throw new HttpsError("aborted", "集計の参照情報を再確認します。");
         const stages = s.preparationStages || ["audiences", "clubEvents", "personalEvents", "notices", "dailyReports", "workspacePosts", "entries", "latest", "cleanup"];
         const stage = stages[s.stage || 0];
         const next = { stage: s.stage || 0, cursor: null, queryIndex: 0, personalIndex: s.personalIndex || 0, processed: s.processed || 0, lease: null };
-        if (stage === "latest") {
+        if (stage === "restoreLatest") {
+          if (!Array.isArray(s.latestUids) || s.latestUids.length > 1) throw new HttpsError("failed-precondition", "復帰対象を確認してください。");
+          const member = ctx.members.find(member => member.uid === s.latestUids[0]);
+          if (member) await refreshLatest(teamId, member, ctx.preparationId, null, m, true);
+          next.stage++;
+        } else if (stage === "latest") {
           await Promise.all(ctx.members.filter((member) => !s.latestUids || s.latestUids.includes(member.uid)).map((member) => refreshLatest(teamId, member, ctx.preparationId, null, m))); next.stage++;
         } else if (stage === "targetPosts" || stage === "targetReports") {
           // The plan lives in the private context shards, never in the state
@@ -291,6 +327,7 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
             for (const item of snap.docs.filter((d) => !valid.has(d.id))) {
               await transact(m, async (tx) => {
                 const current = (await read(ref, m, tx)).data();
+                assertPreparationLease(current, m);
                 if (current?.preparationId === ctx.preparationId) write(tx, "delete", item.ref, null, m);
               });
             }
@@ -310,6 +347,7 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
               if (stage === "audiences") {
                 await transact(m, async (tx) => {
                   const currentState = (await read(ref, m, tx)).data();
+                  assertPreparationLease(currentState, m);
                   if (currentState?.preparationId !== ctx.preparationId || currentState.contextRevision !== ctx.preparationId) return;
                   const current = await read(item.ref, m, tx), data = current.data();
                   if (!data || data.status === "deleted" || data.moderationStatus === "hidden") return;
@@ -332,9 +370,18 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
         }
         await transact(m, async (tx) => {
           const current = (await read(ref, m, tx)).data();
-          if (current?.preparationId !== s.preparationId || current.lease?.token !== token) return;
+          assertPreparationLease(current, m);
           if (next.ready) Object.assign(next, { enabled: current.desiredEnabled === true, separateReads: current.desiredEnabled === true && current.desiredSeparateReads === true,
             ...(!s.preparationStages || stages.includes("workspacePosts") ? { postActorIndexVersion: POST_ACTOR_INDEX_VERSION } : {}) });
+          if (next.ready && current.membershipBatchId) {
+            const team = await read(teamRef(teamId), m, tx);
+            const job = teamRef(teamId).collection("membershipOperations").doc(current.membershipBatchId);
+            if (team.data()?.membershipOperationId === current.membershipBatchId) {
+              write(tx, "update", teamRef(teamId), { membershipBatchPending: false }, m);
+              write(tx, "update", job, { status: "complete", completedAt: FieldValue.serverTimestamp() }, m);
+            }
+            next.membershipBatchId = null;
+          }
           write(tx, "update", ref, next, m);
         });
       } catch (error) {
@@ -451,6 +498,7 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
   async function handleEventDate(event, existing) {
     if (!event.data?.after.exists) return;
     return measured("event_date", async (m) => transact(m, async (tx) => {
+      if (m.leaseGuard) assertPreparationLease((await read(stateRef(m.leaseGuard.teamId), m, tx)).data(), m);
       const ref = event.data.after.ref, current = await read(ref, m, tx), data = current.data();
       if (data && lastEventDate(data) && data.lastEventDate !== lastEventDate(data)) write(tx, "update", ref, { lastEventDate: lastEventDate(data) }, m);
     }), existing);
@@ -564,14 +612,75 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
       }
     });
   }
+  async function reconcileMembershipBatch(teamId, operationId) {
+    return measured("membership_batch", async (m) => transact(m, async (tx) => {
+      const jobRef = teamRef(teamId).collection("membershipOperations").doc(operationId);
+      const [job, state] = await Promise.all([read(jobRef, m, tx), read(stateRef(teamId), m, tx)]);
+      if (!job.exists || job.data().status !== "queued") return;
+      const ctx = await sourceContext(teamId, m, tx);
+      if (!ctx) throw new HttpsError("not-found", "チームがありません。");
+      const s = state.data(), next = preparationFields(s, desired(s));
+      const restoring = job.data().action === "restore";
+      // Server-recorded participants contain the actor and the single target.
+      // Account deletion may already have removed a participant; never expand
+      // an empty target list to the whole roster.
+      const latestUids = restoring ? [...new Set((job.data().participantUids || []).filter(uid => uid !== job.data().actorUid))] : null;
+      if (restoring && latestUids.length > 1) throw new HttpsError("failed-precondition", "復帰対象を確認してください。");
+      // Continue serving paginated histories while one batch reconciles.
+      Object.assign(next, { membershipBatchId: operationId, ready: Boolean(s?.ready && s.enabled),
+        enabled: Boolean(s?.ready && s.enabled), separateReads: Boolean(s?.ready && s.enabled && s.separateReads),
+        latestUids,
+        preparationStages: restoring ? ["audiences", "notices", "dailyReports", "workspacePosts", "entries", "restoreLatest", "cleanup"]
+          : job.data().action === "rename" ? ["audiences", "workspacePosts", "entries:workspacePosts", "complete"]
+          : ["audiences", "notices", "dailyReports", "workspacePosts", "entries", "cleanup"] });
+      write(tx, "set", stateRef(teamId), next, m, { merge: true });
+      publishContext(teamId, next, ctx, m, tx);
+      write(tx, "update", jobRef, { status: "processing" }, m);
+    }));
+  }
+  // Operator-only entry point; not exported as a remotely callable Function.
+  // Requires the exact inspected operation/generation, never clears a team lock.
+  async function recoverMembershipBatch(teamId, operationId, expectedPreparationId, mode = "inspect") {
+    const validId = value => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
+    if (!validId(teamId) || !validId(operationId) || typeof expectedPreparationId !== "string" ||
+        !/^[A-Za-z0-9_-]{1,200}$/.test(expectedPreparationId) || !["inspect", "resume"].includes(mode)) {
+      throw new HttpsError("invalid-argument", "対象操作と集計世代を明示してください。");
+    }
+    return measured("membership_recovery", async m => transact(m, async tx => {
+      const ref = stateRef(teamId), jobRef = teamRef(teamId).collection("membershipOperations").doc(operationId);
+      const [team, job, snapshot] = await Promise.all([read(teamRef(teamId), m, tx), read(jobRef, m, tx), read(ref, m, tx)]);
+      const s = snapshot.data(), j = job.data();
+      const owned = team.exists && job.exists && team.data().membershipBatchPending === true &&
+        team.data().membershipOperationId === operationId && s?.preparationId === expectedPreparationId;
+      const activeLease = (s?.lease?.expiresAt || 0) > Date.now();
+      const processing = j?.status === "processing" && s?.status === "preparing" && s.membershipBatchId === operationId;
+      const queued = j?.status === "queued" && s?.status !== "preparing";
+      const resumable = Boolean(owned && !activeLease && (processing || queued));
+      const result = { resumable, activeLease, operationStatus: j?.status || "missing", stateStatus: s?.status || "missing", resumed: false };
+      if (mode === "inspect") return result;
+      if (!resumable) throw new HttpsError("failed-precondition", "稼働中・世代変更・状態不整合のため再開しません。再確認してください。");
+      // A new resumeAt creates a durable state/job event even after Eventarc's
+      // retry window has elapsed. Progress and the original operation are kept.
+      write(tx, "update", processing ? ref : jobRef, processing
+        ? { lease: null, resumeAt: FieldValue.serverTimestamp() }
+        : { resumeAt: FieldValue.serverTimestamp() }, m);
+      return { ...result, resumed: true };
+    }));
+  }
   async function handleMembership(event) {
+    if (batchMembershipChange(event.data?.before.data(), event.data?.after.data())) return;
+    if (event.data?.before.exists && !event.data?.after.exists) {
+      const receipt = await teamRef(event.params.teamId).collection("membershipRemovals").doc(event.params.uid).get();
+      if (receipt.exists && receipt.data().creationKey === creationKey(event.data.before)) return;
+    }
     const relevant = (d) => d && [d.name, d.role, memberGrades(d).sort(), d.staffScope, d.assignedStaff];
     if (stableStringify(relevant(event.data?.before.data() || null)) === stableStringify(relevant(event.data?.after.data() || null))) return;
     await restartForReferenceChange(event.params.teamId, { kind: "member", uid: event.params.uid });
   }
   async function handleTeam(event) {
+    if (batchMembershipChange(event.data?.before.data(), event.data?.after.data())) return;
     if (!event.data?.after.exists) return;
-    if (stableStringify(event.data.before.data()?.channels) === stableStringify(event.data.after.data()?.channels)) return;
+    if (stableStringify(channelAudienceSettings(event.data.before.data()?.channels)) === stableStringify(channelAudienceSettings(event.data.after.data()?.channels))) return;
     await restartForReferenceChange(event.params.teamId, { kind: "channels" });
   }
   async function handleUser(event) {
@@ -581,6 +690,6 @@ function createLoadingOptimizationBackend({ firestore, FieldValue, FieldPath, Ht
     for (const teamId of teamIds) await restartForReferenceChange(teamId, { kind: "user", uid: event.params.uid });
   }
   return { process, context, refreshLatest, prepare, prepareCallable, configureCallable, handleContent, handleReadState,
-    handleEventDate, handleMembership, handleTeam, handlePreparation, handleUser, relatedTeamIds, anonymizeTeam };
+    handleEventDate, handleMembership, handleTeam, handlePreparation, handleUser, relatedTeamIds, anonymizeTeam, reconcileMembershipBatch, recoverMembershipBatch };
 }
 module.exports = { createLoadingOptimizationBackend };

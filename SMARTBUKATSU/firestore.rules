@@ -22,6 +22,14 @@ service cloud.firestore {
       return isMember(teamId) && getRole(teamId) in ['owner', 'admin', 'staff'];
     }
 
+    function canWriteVideoData(teamId) {
+      // Preserve legacy membership behavior; an explicit alumni role is read-only.
+      return isMember(teamId) && (
+        !exists(/databases/$(database)/documents/teams/$(teamId)/members/$(uid())) ||
+        get(/databases/$(database)/documents/teams/$(teamId)/members/$(uid())).data.get('role', 'member') != 'alumni'
+      );
+    }
+
     function noteReader(teamId) {
       return signedIn() && exists(/databases/$(database)/documents/teams/$(teamId)/members/$(uid()))
         && getRole(teamId) in ['owner', 'admin', 'staff', 'captain', 'member'];
@@ -130,6 +138,8 @@ service cloud.firestore {
         && (request.resource.data.get('dailyReportCommentsEnabled', false) == false
           || request.resource.data.get('dailyReportCommentsUpdatedAt', null) == request.time);
       allow update: if isManager(teamId)
+        && resource.data.get('membershipBatchPending', false) == false
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['membershipOperationId', 'membershipBatchPending'])
         && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['originalCreatorUid'])
         && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['calendarWeekStartsOnMonday'])
           || (getRole(teamId) in ['owner', 'admin']
@@ -138,12 +148,20 @@ service cloud.firestore {
           || (getRole(teamId) in ['owner', 'admin']
             && request.resource.data.get('dailyReportCommentsEnabled', false) is bool
             && request.resource.data.get('dailyReportCommentsUpdatedAt', null) == request.time));
-      allow delete: if isManager(teamId);
+      allow delete: if isManager(teamId) && resource.data.get('membershipBatchPending', false) == false;
 
+      match /membershipOperations/{operationId} {
+        allow read: if isManager(teamId);
+        allow write: if false;
+        match /beforeMembers/{memberId} { allow read: if isManager(teamId); allow write: if false; }
+      }
+      match /membershipRemovals/{memberId} { allow read, write: if false; }
       match /members/{memberId} {
         allow get, list: if isMember(teamId);
 
         allow create: if emailVerified() && memberId == uid()
+          && getAfter(/databases/$(database)/documents/teams/$(teamId)).data.get('membershipBatchPending', false) == false
+          && !request.resource.data.keys().hasAny(['archived', 'graduationFiscalYear', 'membershipOperationId'])
           && !request.resource.data.keys().hasAny(['childUids', 'childMemberships', 'manualChildren']) && (
           (getAfter(/databases/$(database)/documents/teams/$(teamId)).data.createdBy == uid()
             && request.resource.data.role == 'admin')
@@ -157,14 +175,22 @@ service cloud.firestore {
         );
 
         allow update: if isMember(teamId)
+          && get(/databases/$(database)/documents/teams/$(teamId)).data.get('membershipBatchPending', false) == false
+          && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['archived', 'graduationFiscalYear', 'membershipOperationId'])
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['role']) || request.resource.data.role in ['owner', 'admin', 'staff', 'captain', 'member', 'guardian'])
+          && (request.resource.data.get('role', 'member') != 'alumni' || (
+            (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['canUploadVideos']) || request.resource.data.get('canUploadVideos', false) != true)
+            && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['canEditTags']) || request.resource.data.get('canEditTags', false) != true)))
           && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['childUids', 'childMemberships', 'manualChildren'])
           && (isManager(teamId) || (memberId == uid()
           && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['grade', 'grades'])
-          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'canPostTacticalNotes', 'canEditCalendar'])
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'canPostTacticalNotes', 'canEditCalendar', 'canUploadVideos', 'canEditTags'])
             || (get(/databases/$(database)/documents/teams/$(teamId)).data.createdBy == uid()
               && request.resource.data.role == 'admin'
               && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role'])))));
-        allow delete: if isMember(teamId) && (memberId == uid() || isManager(teamId));
+        allow delete: if isMember(teamId)
+          && get(/databases/$(database)/documents/teams/$(teamId)).data.get('membershipBatchPending', false) == false
+          && (memberId == uid() || isManager(teamId));
       }
 
       match /absenceChildren/{childId} {
@@ -265,14 +291,16 @@ service cloud.firestore {
       }
 
       match /workspacePosts/{postId} {
-        allow read: if isMember(teamId);
-        allow create: if isMember(teamId)
+        allow read: if isMember(teamId) && getRole(teamId) != 'alumni';
+        allow create: if isMember(teamId) && getRole(teamId) != 'alumni'
           && request.resource.data.get('authorUid', '') == uid()
           && !request.resource.data.keys().hasAny(['reactionUserUids', 'reactionMigrationPending'])
           && request.resource.data.get('reactions', {}) == {}
           && request.resource.data.get('reactionPrivacyVersion', 1) == 1
           && !exists(/databases/$(database)/documents/teams/$(teamId)/workspacePostReactionDetails/$(postId));
-        allow update: if isMember(teamId)
+        allow update: if isMember(teamId) && getRole(teamId) != 'alumni'
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['shareScope', 'visibleToUids', 'readTargetUids'])
+            || get(/databases/$(database)/documents/teams/$(teamId)).data.get('membershipBatchPending', false) == false)
           && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
             'authorUid', 'reactions', 'reactionUserUids', 'reactionPrivacyVersion', 'reactionMigrationPending'
           ]);
@@ -323,7 +351,7 @@ service cloud.firestore {
             && uid() in parent.get('visibleToUids', [])
             && ownMap('readers') && ownMap('notificationReads') && ownMap('notificationDismissals')
             && (readers.diff(oldReaders).affectedKeys().size() == 0
-              || (getRole(teamId) != 'guardian' && uid() in parent.get('readTargetUids', []) && readers[uid()] == true))
+              || (!(getRole(teamId) in ['guardian', 'alumni']) && uid() in parent.get('readTargetUids', []) && readers[uid()] == true))
             && data.get('notificationReads', {}).get(uid(), []) is list
             && data.get('notificationDismissals', {}).get(uid(), []) is list;
         }
@@ -345,19 +373,23 @@ service cloud.firestore {
       }
 
       match /projects/{projectId} {
-        allow read, write: if isMember(teamId);
+        allow read: if isMember(teamId);
+        allow write: if canWriteVideoData(teamId);
 
         match /videos/{videoId} {
-          allow read, write: if isMember(teamId);
+          allow read: if isMember(teamId);
+          allow write: if canWriteVideoData(teamId);
 
           match /events/{videoEventId} {
-            allow read, write: if isMember(teamId);
+            allow read: if isMember(teamId);
+            allow write: if canWriteVideoData(teamId);
           }
         }
       }
 
       match /highlightProjects/{highlightProjectId} {
-        allow read, write: if isMember(teamId);
+        allow read: if isMember(teamId);
+        allow write: if canWriteVideoData(teamId);
       }
 
       match /tacticalNoteSummaries/{noteId} {
@@ -455,11 +487,13 @@ service cloud.firestore {
       }
 
       match /tagGroups/{tagGroupId} {
-        allow read, write: if isMember(teamId);
+        allow read: if isMember(teamId);
+        allow write: if canWriteVideoData(teamId);
       }
 
       match /tags/{tagId} {
-        allow read, write: if isMember(teamId);
+        allow read: if isMember(teamId);
+        allow write: if canWriteVideoData(teamId);
       }
     }
   }

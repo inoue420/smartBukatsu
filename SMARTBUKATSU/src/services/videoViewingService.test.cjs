@@ -53,7 +53,7 @@ const native = (os = "android", alerts = []) => new Proxy({ StyleSheet: { create
 }, { get: (target, name) => target[name] ?? name });
 
 test("guidance respects existing create/add roles and visible tags, including legacy ownership", () => {
-  for (const role of ["owner", "admin", "staff", "captain", "member", "guardian", "unknown"]) {
+  for (const role of ["owner", "admin", "staff", "captain", "member", "guardian", "alumni", "unknown"]) {
     for (const allowed of [false, true]) {
       const result = guidance.viewingPermissions(role, allowed);
       assert.equal(result.canAdd, ["owner", "admin", "staff"].includes(role));
@@ -61,6 +61,9 @@ test("guidance respects existing create/add roles and visible tags, including le
     }
   }
   assert.equal(guidance.hasViewingTags(video("a"), viewer), true);
+  const alumni = { ...viewer, userRole: 'alumni', canUploadVideos: true, canEditTags: true };
+  assert.equal(guidance.canManageViewingProject(alumni), false);
+  assert.equal(guidance.canUseViewingVideo(video('alumni-view'), alumni), true);
   for (const patch of [{ status: "deleted" }, { videoUrl: "" }, { tags: [] }, { tags: [{ uid: "other", user: "監督", status: "private" }] }]) {
     assert.equal(guidance.hasViewingTags(video("a", patch), viewer), false);
   }
@@ -275,6 +278,26 @@ test("failed/unfinished checks and insufficient permissions never offer an unreg
     assert.equal(walk(member.h.tree, node => node.type === "TouchableOpacity" && /^(タグ付けした場面を見返す|閲覧用プロジェクトに追加する)$/.test(textOf(node))).length, 0);
   }
 });
+for (const os of ["android", "ios"]) {
+  test(`${os}: graduation hides editing immediately despite stale route permissions and dirty clip settings`, async () => {
+    const e = screenEnvironment("ProjectDetailScreen", { os, role: "member", params: { canEditTags: true },
+      registration: { status: "ready", byVideo: { a: [{ id: "old" }] } } });
+    Object.assign(e.props.userProfiles.self, { canEditTags: true, canUploadVideos: true }); e.render();
+    const hasTagPalette = () => walk(e.h.tree, node => node.type === "Text" && textOf(node).startsWith("タグリスト:")).length;
+    assert.equal(hasTagPalette(), 1);
+    walk(e.h.tree, node => node.type === "TextInput" && node.props.value === "5")[0].props.onChangeText("8"); e.render();
+    e.props.userProfiles.self.role = "alumni"; e.render();
+    assert.equal(e.props.route.params.userRole, "member");
+    assert.equal(e.props.route.params.canEditTags, true);
+    assert.equal(hasTagPalette(), 0);
+    assert.equal(walk(e.h.tree, node => node.type === "TouchableOpacity" && /一括公開|で記録する/.test(textOf(node))).length, 0);
+    await button(e.h, "タグ付けした場面を見返す").onPress(); e.render();
+    assert.equal(e.writes.length, 0);
+    assert.deepEqual(plain(e.navigationCalls[0]), ["ProjectList", { viewingProjectId: "old", viewingTeamId: "team" }]);
+    e.h.unmount();
+  });
+}
+
 test("failed tag publication keeps private tags and exposes a retry instead of claiming success", async () => {
   const e = screenEnvironment("ProjectDetailScreen");
   button(e.h, "📢 自分のみのタグ(1件)を一括公開").onPress();
@@ -446,7 +469,7 @@ test("failed preparation keeps the popup available; a late preparation cannot re
 test("viewing management allows either individual permission without changing creation or registration rights", () => {
   const expected = { owner: [true, true, true, true], admin: [true, true, true, true],
     staff: [true, true, true, true], member: [false, true, true, true],
-    guardian: [false, true, true, true], captain: [true, true, true, true], unknown: [false, false, false, false] };
+    guardian: [false, true, true, true], captain: [true, true, true, true], alumni: [false, false, false, false], unknown: [false, false, false, false] };
   const combinations = [[false, false], [true, false], [false, true], [true, true]];
   for (const [userRole, allowed] of Object.entries(expected)) {
     combinations.forEach(([canUploadVideos, canEditTags], index) => {

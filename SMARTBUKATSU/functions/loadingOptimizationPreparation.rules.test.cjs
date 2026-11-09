@@ -7,6 +7,74 @@ if (process.env.FIRESTORE_EMULATOR_HOST !== "127.0.0.1:8189" || process.env.GCLO
   throw new Error("These tests require the dedicated local demo emulator.");
 }
 
+test('real emulator: crashed leases, duplicate deliveries, fenced old workers and operator recovery', { timeout: 120000 }, async () => {
+  const app = initializeApp({ projectId: process.env.GCLOUD_PROJECT }, 'lease-recovery'), db = getFirestore(app);
+  class HttpsError extends Error { constructor(code, message) { super(message); this.code = code; } }
+  const backend = createLoadingOptimizationBackend({ firestore: db, FieldValue, FieldPath, HttpsError });
+  const teamId = 'lease-' + Date.now(), team = db.collection('teams').doc(teamId);
+  const state = team.collection('loadingOptimization').doc('state'), job = team.collection('membershipOperations').doc('operation');
+  const event = (after, before) => ({ params: { teamId }, data: { after, ...(before ? { before } : {}) } });
+  const finish = async () => {
+    for (let i = 0; i < 30; i++) {
+      const snapshot = await state.get();
+      if (snapshot.data().status !== 'preparing') return;
+      await backend.handlePreparation(event(snapshot));
+    }
+    throw new Error('Synthetic operation did not finish');
+  };
+  try {
+    await team.set({ membershipBatchPending: true, membershipOperationId: 'operation', channels: [] });
+    await job.set({ status: 'queued', action: 'graduate' });
+    await backend.reconcileMembershipBatch(teamId, 'operation');
+    const original = await state.get(), generation = original.data().preparationId;
+    await state.update({ lease: { token: 'crashed', expiresAt: Date.now() + 360000 } });
+    const leased = await state.get();
+    await assert.rejects(backend.handlePreparation(event(original)), { code: 'aborted' });
+    await backend.handlePreparation(event(leased, original));
+    assert.equal((await state.get()).data().stage, 0);
+    assert.equal((await team.get()).data().membershipBatchPending, true);
+    await assert.rejects(backend.recoverMembershipBatch(teamId, 'operation', generation, 'resume'), { code: 'failed-precondition' });
+    await state.update({ lease: { token: 'crashed', expiresAt: 1 } });
+    await backend.handlePreparation(event(original));
+    assert.equal((await state.get()).data().stage, 1);
+    await backend.handlePreparation(event(original));
+    assert.equal((await state.get()).data().stage, 1, 'late original event cannot advance another page');
+    const prior = await state.get();
+    const outcomes = await Promise.allSettled([
+      backend.recoverMembershipBatch(teamId, 'operation', generation, 'resume'),
+      backend.recoverMembershipBatch(teamId, 'operation', 'wrong-generation', 'resume'),
+    ]);
+    assert.equal(outcomes[0].status, 'fulfilled'); assert.equal(outcomes[1].status, 'rejected');
+    const resumed = await state.get();
+    assert.equal((await job.get()).data().status, 'processing');
+    assert.equal((await team.get()).data().membershipBatchPending, true);
+    await backend.handlePreparation(event(resumed, prior)); await finish();
+    assert.equal((await job.get()).data().status, 'complete');
+    assert.equal((await team.get()).data().membershipBatchPending, false);
+    await backend.handlePreparation(event(original));
+    await assert.rejects(backend.recoverMembershipBatch(teamId, 'operation', generation, 'resume'), { code: 'failed-precondition' });
+    // Recreate work, then replace ownership while the old worker is between
+    // claiming the page and updating its first source transaction.
+    await team.update({ membershipBatchPending: true }); await job.set({ status: 'queued', action: 'graduate' });
+    await backend.reconcileMembershipBatch(teamId, 'operation');
+    await team.collection('workspacePosts').doc('post').set({ channel: 'General', visibleToUids: ['synthetic'] });
+    const current = await state.get(); let transactions = 0;
+    const oldWorker = createLoadingOptimizationBackend({ firestore: {
+      collection: (...args) => db.collection(...args),
+      runTransaction: async work => {
+        if (++transactions === 2) await state.update({ lease: { token: 'new-owner', expiresAt: Date.now() + 360000 } });
+        return db.runTransaction(work);
+      },
+    }, FieldValue, FieldPath, HttpsError });
+    await assert.rejects(oldWorker.handlePreparation(event(current)), { code: 'aborted' });
+    assert.equal((await state.get()).data().lease.token, 'new-owner');
+    assert.equal((await team.get()).data().membershipBatchPending, true);
+    await state.update({ lease: { token: 'new-owner', expiresAt: 1 } });
+    await backend.handlePreparation(event(current)); await finish();
+    assert.equal((await team.get()).data().membershipBatchPending, false);
+  } finally { await db.terminate(); await deleteApp(app); }
+});
+
 test("real emulator: targeted blocks, disappearing-page cursors, legacy backfill, assignments and actor cleanup", { timeout: 180000 }, async () => {
   const app = initializeApp({ projectId: process.env.GCLOUD_PROJECT }, "target-preparation"), db = getFirestore(app);
   class HttpsError extends Error { constructor(code, message) { super(message); this.code = code; } }
