@@ -9,9 +9,10 @@ function createPresentationGate(now = Date.now) {
   return {
     setBlocked(name, blocked) { if (blocked) blockers.add(name); else blockers.delete(name); },
     isBlocked: () => blockers.size > 0,
+    isBlockedExcept: name => [...blockers].some(blocker => blocker !== name),
     canReview,
     acquire(kind) {
-      if (active || (kind === "review" ? !canReview() : now() < reviewQuietUntil)) return null;
+      if (active || blockers.size > 0 || (kind === "review" ? !canReview() : now() < reviewQuietUntil)) return null;
       const token = {};
       active = token;
       if (kind === "ad") lastAdAt = now();

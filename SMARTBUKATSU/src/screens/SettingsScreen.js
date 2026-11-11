@@ -61,20 +61,11 @@ import {
   deleteTeam,
   transferTeamOwnership,
   moderateWorkspaceContent,
-  updateTeamAdSettings,
   updateDailyReportCommentSettings,
   updateCalendarWeekStartSettings,
 } from "../services/firestoreService";
-import {
-  DEFAULT_INTERSTITIAL_SETTINGS,
-  INTERSTITIAL_ADS_ENABLED,
-  INTERSTITIAL_DAILY_LIMIT_MAX,
-  INTERSTITIAL_DAILY_LIMIT_MIN,
-  INTERSTITIAL_NAVIGATION_INTERVAL_MAX,
-  INTERSTITIAL_NAVIGATION_INTERVAL_MIN,
-  getTeamAdSettingsForSave,
-  normalizeInterstitialSettings,
-} from "../ads/adSettings";
+import InterstitialSettingsPanel from "../components/InterstitialSettingsPanel";
+import { INTERSTITIAL_ADS_ENABLED } from "../ads/adSettings";
 import { MEDICAL_SCALE_MAX } from "../utils/medicalScale";
 import { CUSTOM_SPORT_OPTIONS, SPORT_CATEGORIES, getCategoryLabel, getSportsForCategory } from "../constants/sportsCategories";
 import { SMARTBUKATSU_GUIDE_URL } from "../constants/helpLinks";
@@ -166,8 +157,6 @@ const SettingsScreen = ({
   alertThresholds,
   setAlertThresholds,
   userProfiles = {},
-  interstitialSettings = DEFAULT_INTERSTITIAL_SETTINGS,
-  setInterstitialSettings,
   absenceDeadlineDaysBefore = 3,
   setAbsenceDeadlineDaysBefore,
   absenceDetailsVisible = true,
@@ -500,10 +489,6 @@ const SettingsScreen = ({
 
   const [myNewName, setMyNewName] = useState(currentUser);
 
-  const [adSettingsDraft, setAdSettingsDraft] = useState(() =>
-    normalizeInterstitialSettings(interstitialSettings),
-  );
-  const [isSavingAdSettings, setIsSavingAdSettings] = useState(false);
   const [isDeletingTeam, setIsDeletingTeam] = useState(false);
   const [isOwnershipTransferModalVisible, setIsOwnershipTransferModalVisible] =
     useState(false);
@@ -556,13 +541,6 @@ const SettingsScreen = ({
   useEffect(() => {
     setDailyReportCommentsDraft(dailyReportCommentsEnabled === true);
   }, [activeTeamId, dailyReportCommentsEnabled, dailyReportCommentSettingsReady]);
-
-  useEffect(() => {
-    setAdSettingsDraft(normalizeInterstitialSettings(interstitialSettings));
-  }, [
-    interstitialSettings.dailyLimit,
-    interstitialSettings.navigationInterval,
-  ]);
 
   useEffect(() => {
     setAbsenceDeadlineDraft(String(absenceDeadlineDaysBefore));
@@ -1141,35 +1119,6 @@ const SettingsScreen = ({
       }
     } finally {
       setIsChangingPassword(false);
-    }
-  };
-
-  const handleSaveAdSettings = async () => {
-    if (!isSupervisor || !activeTeamId) return;
-
-    const normalizedSettings = normalizeInterstitialSettings(adSettingsDraft);
-    setIsSavingAdSettings(true);
-    try {
-      await updateTeamAdSettings(
-        activeTeamId,
-        getTeamAdSettingsForSave(normalizedSettings),
-      );
-      setAdSettingsDraft(normalizedSettings);
-      setInterstitialSettings?.(normalizedSettings);
-      Alert.alert(
-        "保存完了",
-        normalizedSettings.dailyLimit === 0
-          ? "インタースティシャル広告を停止しました。"
-          : "インタースティシャル広告の表示頻度を更新しました。",
-      );
-    } catch (error) {
-      console.log("広告表示頻度の保存エラー:", error);
-      Alert.alert(
-        "エラー",
-        "広告表示頻度を保存できませんでした。権限と通信状態を確認してください。",
-      );
-    } finally {
-      setIsSavingAdSettings(false);
     }
   };
 
@@ -2263,59 +2212,6 @@ const SettingsScreen = ({
                 </SectionCard>
               )}
 
-              {INTERSTITIAL_ADS_ENABLED && isSupervisor && (
-                <SectionCard
-                  isExp={expanded.ads}
-                  onToggle={() => toggleSection("ads")}
-                  title="📢 インタースティシャル広告頻度"
-                >
-                  <Text style={styles.subText}>
-                    この設定はチーム全員に適用されます。新規日誌提出後の広告も、1日の表示上限に含まれます。
-                  </Text>
-                  <ThresholdSelector
-                    label="画面遷移何回ごとに表示するか"
-                    value={adSettingsDraft.navigationInterval}
-                    min={INTERSTITIAL_NAVIGATION_INTERVAL_MIN}
-                    max={INTERSTITIAL_NAVIGATION_INTERVAL_MAX}
-                    onChange={(value) =>
-                      setAdSettingsDraft((previous) => ({
-                        ...previous,
-                        navigationInterval: value,
-                      }))
-                    }
-                  />
-                  <ThresholdSelector
-                    label="1日の最大表示回数"
-                    value={adSettingsDraft.dailyLimit}
-                    min={INTERSTITIAL_DAILY_LIMIT_MIN}
-                    max={INTERSTITIAL_DAILY_LIMIT_MAX}
-                    onChange={(value) =>
-                      setAdSettingsDraft((previous) => ({
-                        ...previous,
-                        dailyLimit: value,
-                      }))
-                    }
-                  />
-                  <Text style={styles.hintText}>
-                    ※1日の最大表示回数を0にすると、日誌提出後を含むインタースティシャル広告を停止します。バナー広告は引き続き表示されます。
-                  </Text>
-                  <TouchableOpacity
-                    style={[
-                      styles.saveBtn,
-                      isSavingAdSettings && { opacity: 0.7 },
-                    ]}
-                    onPress={handleSaveAdSettings}
-                    disabled={isSavingAdSettings}
-                  >
-                    {isSavingAdSettings ? (
-                      <ActivityIndicator color="#fff" />
-                    ) : (
-                      <Text style={styles.saveBtnText}>広告頻度を保存</Text>
-                    )}
-                  </TouchableOpacity>
-                </SectionCard>
-              )}
-
               <SectionCard
                 isExp={expanded.alert}
                 onToggle={() => toggleSection("alert")}
@@ -2711,6 +2607,7 @@ const SettingsScreen = ({
             </TouchableOpacity>
           </SectionCard>
 
+          {INTERSTITIAL_ADS_ENABLED && canViewAdDiagnostics && Platform.OS !== "web" && <InterstitialSettingsPanel key={adMembershipKey} />}
           <TouchableOpacity style={styles.saveBtn} onPress={() => navigation.navigate("OperatorGuidanceInbox")}>
             <Text style={styles.saveBtnText}>運営とのやり取り</Text>
           </TouchableOpacity>

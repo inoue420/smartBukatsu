@@ -8,7 +8,7 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { AppState, Platform, StatusBar } from "react-native";
+import { AppState, Platform, StatusBar, Keyboard, InteractionManager } from "react-native";
 import NetInfo from "@react-native-community/netinfo";
 import { isCaptureEnvironment } from "../firebase";
 import { useAuth } from "../AuthContext";
@@ -22,10 +22,8 @@ import mobileAds, {
 } from "react-native-google-mobile-ads";
 
 import {
-  DEFAULT_INTERSTITIAL_SETTINGS,
   INTERSTITIAL_ADS_ENABLED,
   NON_PERSONALIZED_AD_REQUEST_OPTIONS,
-  normalizeInterstitialSettings,
 } from "./adSettings";
 import {
   createAdDiagnostics,
@@ -34,21 +32,13 @@ import {
 } from "./adDiagnostics";
 import { resolveAdAgePolicy, createAdTaskQueue } from "./adAgePolicy";
 import { createInitializationRecovery, initializationFailureKind } from "./adInitializationRecovery";
-const DAILY_COUNT_STORAGE_KEY = "admob_interstitial_daily_count_v1";
+import { createInterstitialController } from "./interstitialPolicy";
+import { fetchInterstitialSettings, saveInterstitialSettings } from "../services/interstitialSettingsService";
 const runAdTask = createAdTaskQueue();
 
 // Only known SDK codes are logged; messages can contain IDs or request details.
 export const logAdFailure = (stage, error) => {
   console.warn("[AdMob]", stage, getAdErrorCode(error));
-};
-
-const getLocalDateKey = () => {
-  const now = new Date();
-  return [
-    now.getFullYear(),
-    String(now.getMonth() + 1).padStart(2, "0"),
-    String(now.getDate()).padStart(2, "0"),
-  ].join("-");
 };
 
 const getProductionUnitId = (androidId, iosId) =>
@@ -80,7 +70,12 @@ const defaultAdsContext = {
   recordDiagnostic: () => {},
   recordScreenTransition: () => {},
   showAfterDiarySubmission: () => {},
-  configureInterstitial: () => {},
+  cancelInterstitial: () => {},
+  setInterstitialBlocked: () => {},
+  showAfterTagPublication: async () => false,
+  interstitialSettings: null,
+  refreshInterstitialSettings: async () => false,
+  saveGlobalInterstitialSettings: async () => { throw new Error("広告設定を変更できません。"); },
   requestOptions: NON_PERSONALIZED_AD_REQUEST_OPTIONS,
   adSessionKey: "",
   privacyOptionsRequired: false,
@@ -118,131 +113,136 @@ export const AdsProvider = ({ children }) => {
     setDiagnostics((previous) => recordAdDiagnostic(previous, event, error));
   }, []);
   const adsInitializedRef = useRef(false);
-  const dailyStateRef = useRef({ date: getLocalDateKey(), count: 0 });
-  const dailyStateLoadedRef = useRef(false);
-  const navigationCountRef = useRef(0);
+  const readySessionKeyRef = useRef(null);
+  readySessionKeyRef.current = adsInitialized ? sessionKey : null;
+  const [interstitialSettings, setInterstitialSettings] = useState(null);
+  const [inventoryRevision, setInventoryRevision] = useState(0);
+  const controllerRef = useRef(null);
+  if (!controllerRef.current) controllerRef.current = createInterstitialController({
+    storage: AsyncStorage, fetchPolicy: fetchInterstitialSettings, onPolicy: setInterstitialSettings,
+  });
+  const controller = controllerRef.current;
+  const enabledRef = useRef(false);
+  enabledRef.current = enabled && !privacyBusy;
+  const opportunityRef = useRef(0);
+  const reservationRef = useRef(null);
+  const loadedAtRef = useRef(0);
+  const loadedEpochRef = useRef(0);
   const interstitialRef = useRef(null);
   const interstitialLoadedRef = useRef(false);
   const interstitialLoadingRef = useRef(false);
   const interstitialShowingRef = useRef(false);
   const releasePresentationRef = useRef(null);
   const loadInterstitialRef = useRef(() => {});
-  const interstitialSettingsRef = useRef({
-    ...DEFAULT_INTERSTITIAL_SETTINGS,
-  });
+  const cancelInterstitial = useCallback(() => { opportunityRef.current++; }, []);
+  const setInterstitialBlocked = useCallback((key, value) => reviewPresentationGate.setBlocked(key, value), []);
+  const refreshInterstitialSettings = useCallback(() => controller.refresh(true), [controller]);
+  const saveGlobalInterstitialSettings = useCallback(async settings => {
+    const key = latestSessionRef.current;
+    const saved = await saveInterstitialSettings(user?.uid, settings);
+    if (key !== latestSessionRef.current) throw new Error("ログイン状態が変わりました。");
+    controller.applySaved(saved);
+    return saved;
+  }, [controller, user?.uid]);
 
-  const persistDailyState = useCallback(async () => {
-    try {
-      await AsyncStorage.setItem(
-        DAILY_COUNT_STORAGE_KEY,
-        JSON.stringify(dailyStateRef.current),
-      );
-    } catch (error) {
-      if (__DEV__) {
-        console.warn(
-          "インタースティシャル広告の表示回数を保存できませんでした。",
-          error,
-        );
+  useEffect(() => {
+    if (!INTERSTITIAL_ADS_ENABLED || isCaptureEnvironment) return;
+    controller.setUser(user?.uid && !emailVerificationPending ? user.uid : null);
+    void controller.initialize().then(() => controller.refresh());
+  }, [controller, user?.uid, emailVerificationPending]);
+  useEffect(() => {
+    if (!INTERSTITIAL_ADS_ENABLED || isCaptureEnvironment) return;
+    controller.setActive(enabled && !privacyBusy && AppState.currentState === "active" && !interstitialShowingRef.current);
+  }, [controller, enabled, privacyBusy]);
+  useEffect(() => {
+    if (!INTERSTITIAL_ADS_ENABLED || isCaptureEnvironment) return;
+    const app = AppState.addEventListener("change", state => {
+      cancelInterstitial();
+      controller.setActive(state === "active" && enabledRef.current && !interstitialShowingRef.current);
+      void controller.checkpoint();
+      if (state === "active") { void controller.refresh(); loadInterstitialRef.current(); }
+    });
+    const keyboard = Keyboard?.addListener?.("keyboardDidShow", cancelInterstitial);
+    // Local checkpoints only: this timer never reads Firebase or presents ads.
+    const timer = setInterval(() => { void controller.checkpoint(); }, 30000);
+    return () => { app.remove(); keyboard?.remove(); clearInterval(timer);
+      controller.setActive(false); void controller.checkpoint(); };
+  }, [controller, cancelInterstitial]);
+  useEffect(() => { loadInterstitialRef.current(); }, [interstitialSettings]);
+
+  const showAtOpportunity = useCallback((isCurrent = () => true, transition = null) => new Promise(resolve => {
+    const blocked = transition && reviewPresentationGate.isBlockedExcept
+      ? reviewPresentationGate.isBlockedExcept(transition.blockKey) : reviewPresentationGate.isBlocked?.();
+    if (!INTERSTITIAL_ADS_ENABLED || blocked || !enabledRef.current || !adsInitializedRef.current ||
+        readySessionKeyRef.current !== latestSessionRef.current || interstitialShowingRef.current ||
+        AppState.currentState !== "active" || privacyBusyRef.current || Keyboard?.isVisible?.() || !isCurrent()) return resolve(false);
+    // Freeze readiness at the operation itself. A later load or settings fetch
+    // may prepare the NEXT operation, never this one.
+    const opportunity = controller.snapshot();
+    if (!opportunity.healthy || opportunity.busy || opportunity.count >= 1) return resolve(false);
+    if (!opportunity.fresh) { void controller.refresh(); return resolve(false); }
+    const interstitial = interstitialRef.current, loadedEpoch = loadedEpochRef.current;
+    if (interstitialLoadedRef.current && Date.now() - loadedAtRef.current >= 3600000) {
+      interstitialLoadedRef.current = false; setInventoryRevision(value => value + 1); return resolve(false);
+    }
+    if (!interstitial || !interstitialLoadedRef.current) { loadInterstitialRef.current(); return resolve(false); }
+    const usageAtOpportunity = opportunity.usageMs;
+    const key = latestSessionRef.current, version = ++opportunityRef.current;
+    const safe = () => version === opportunityRef.current && key === latestSessionRef.current &&
+      readySessionKeyRef.current === key &&
+      interstitialRef.current === interstitial && interstitialLoadedRef.current && loadedEpochRef.current === loadedEpoch &&
+      controller.snapshot().date === opportunity.date && controller.snapshot().policyRevision === opportunity.policyRevision &&
+      Date.now() - loadedAtRef.current < 3600000 &&
+      enabledRef.current && AppState.currentState === "active" && !Keyboard?.isVisible?.() &&
+      !privacyBusyRef.current && adsInitializedRef.current && !reviewPresentationGate.isBlocked?.() && isCurrent();
+    let done = false;
+    const finish = result => { if (!done) { done = true; clearTimeout(timeout); resolve(result); } };
+    const timeout = setTimeout(() => { cancelInterstitial(); finish(false); }, 2000);
+    const attempt = async () => {
+      if (done || !INTERSTITIAL_ADS_ENABLED || !safe() || interstitialShowingRef.current) return finish(false);
+      if (!controller.snapshot().fresh) { void controller.refresh(); return finish(false); }
+      const reservation = await controller.reserve(safe, usageAtOpportunity);
+      if (!reservation) return finish(false);
+      const release = safe() && reviewPresentationGate.acquire("ad");
+      if (!release) { await reservation.finish(); return finish(false); }
+      clearTimeout(timeout);
+      releasePresentationRef.current = release;
+      reservationRef.current = { reservation, finish };
+      interstitialShowingRef.current = true;
+      interstitialLoadedRef.current = false;
+      controller.setActive(false);
+      try { await interstitial.show(); }
+      catch (error) {
+        if (reservationRef.current?.reservation !== reservation) return;
+        logAdFailure("interstitial-show", error);
+        reservationRef.current = null; releasePresentationRef.current?.(); releasePresentationRef.current = null;
+        interstitialShowingRef.current = false;
+        if (Platform.OS === "ios") StatusBar.setHidden(false);
+        controller.setActive(enabledRef.current && AppState.currentState === "active");
+        await reservation.finish(); finish(false); loadInterstitialRef.current();
       }
-    }
-  }, []);
-
-  const refreshDailyState = useCallback(() => {
-    const today = getLocalDateKey();
-    if (dailyStateRef.current.date !== today) {
-      dailyStateRef.current = { date: today, count: 0 };
-      void persistDailyState();
-    }
-  }, [persistDailyState]);
-
-  const tryShowInterstitial = useCallback(async () => {
-    if (
-      !INTERSTITIAL_ADS_ENABLED ||
-      !adsInitializedRef.current || privacyBusyRef.current ||
-      readySession?.key !== latestSessionRef.current ||
-      !dailyStateLoadedRef.current ||
-      interstitialShowingRef.current
-    ) {
-      return false;
-    }
-
-    refreshDailyState();
-    if (
-      interstitialSettingsRef.current.dailyLimit === 0 ||
-      dailyStateRef.current.count >= interstitialSettingsRef.current.dailyLimit
-    ) {
-      return false;
-    }
-
-    const interstitial = interstitialRef.current;
-    if (!interstitial || !interstitialLoadedRef.current) {
-      loadInterstitialRef.current();
-      return false;
-    }
-
-    const releasePresentation = reviewPresentationGate.acquire("ad");
-    if (!releasePresentation) return false;
-    releasePresentationRef.current = releasePresentation;
-    interstitialShowingRef.current = true;
-    interstitialLoadedRef.current = false;
-
-    try {
-      await interstitial.show();
-      dailyStateRef.current = {
-        date: getLocalDateKey(),
-        count: dailyStateRef.current.count + 1,
-      };
-      navigationCountRef.current = 0;
-      void persistDailyState();
-      return true;
-    } catch (error) {
-      releasePresentationRef.current?.();
-      releasePresentationRef.current = null;
-      interstitialShowingRef.current = false;
-      if (__DEV__) {
-        console.warn("インタースティシャル広告を表示できませんでした。", error);
-      }
-      loadInterstitialRef.current();
-      return false;
-    }
-  }, [persistDailyState, refreshDailyState, readySession]);
-
-  const configureInterstitial = useCallback((settings) => {
-    interstitialSettingsRef.current = normalizeInterstitialSettings(settings);
-    if (interstitialSettingsRef.current.dailyLimit === 0) {
-      navigationCountRef.current = 0;
-    }
-  }, []);
-
-  const recordScreenTransition = useCallback(() => {
-    if (
-      !INTERSTITIAL_ADS_ENABLED ||
-      interstitialSettingsRef.current.dailyLimit === 0
-    ) {
-      navigationCountRef.current = 0;
-      return Promise.resolve(false);
-    }
-
-    navigationCountRef.current += 1;
-    if (
-      navigationCountRef.current >=
-        interstitialSettingsRef.current.navigationInterval
-    ) {
-      return tryShowInterstitial();
-    }
-    return Promise.resolve(false);
-  }, [tryShowInterstitial]);
-
-  const showAfterDiarySubmission = useCallback(() => {
-    if (!INTERSTITIAL_ADS_ENABLED) return Promise.resolve(false);
-    return tryShowInterstitial();
-  }, [tryShowInterstitial]);
+    };
+    if (transition) void Promise.resolve().then(transition.wait).then(ended => {
+      if (ended === true) return attempt();
+      finish(false);
+    }).catch(() => finish(false));
+    else if (InteractionManager?.runAfterInteractions) InteractionManager.runAfterInteractions(() => { void attempt().catch(() => finish(false)); });
+    else void attempt().catch(() => finish(false));
+  }), [controller, cancelInterstitial]);
+  // Only explicit task boundaries enter this API; arbitrary navigation does not.
+  const recordScreenTransition = useCallback((event = {}) => {
+    const allowed = (event.to === "WorkspaceHome" && ["Calendar", "Roster", "ProjectList", "TacticalNotes", "NoticeBoard"].includes(event.from)) ||
+      (event.to === "ProjectList" && event.from === "ProjectDetail");
+    return allowed && !event.fromNotification && !event.opensPlayback && typeof event.waitForTransition === "function"
+      ? showAtOpportunity(event.isCurrent, { wait: event.waitForTransition, blockKey: event.navigationBlockKey }) : Promise.resolve(false);
+  }, [showAtOpportunity]);
+  const showAfterDiarySubmission = showAtOpportunity;
+  const showAfterTagPublication = showAtOpportunity;
 
   useEffect(() => {
     adsInitializedRef.current = false;
     interstitialLoadedRef.current = false;
     interstitialLoadingRef.current = false;
-    navigationCountRef.current = 0;
     setReadySession(null);
     setDiagnostics(createAdDiagnostics(useTestAds, bannerAdUnitId));
     if (isCaptureEnvironment || !enabled) return;
@@ -250,35 +250,6 @@ export const AdsProvider = ({ children }) => {
     const isCurrent = () => active && latestSessionRef.current === sessionKey;
     let retryTimer = null;
     const subscriptions = [];
-
-    const loadDailyState = async () => {
-      try {
-        const savedState = await AsyncStorage.getItem(
-          DAILY_COUNT_STORAGE_KEY,
-        );
-        if (savedState) {
-          const parsedState = JSON.parse(savedState);
-          if (
-            parsedState?.date === getLocalDateKey() &&
-            Number.isFinite(parsedState?.count)
-          ) {
-            dailyStateRef.current = {
-              date: parsedState.date,
-              count: Math.max(0, parsedState.count),
-            };
-          }
-        }
-      } catch (error) {
-        if (__DEV__) {
-          console.warn(
-            "インタースティシャル広告の表示回数を読み込めませんでした。",
-            error,
-          );
-        }
-      } finally {
-        dailyStateLoadedRef.current = true;
-      }
-    };
 
     const scheduleReload = (delay = 1000) => {
       if (retryTimer) clearTimeout(retryTimer);
@@ -297,7 +268,7 @@ export const AdsProvider = ({ children }) => {
       loadInterstitialRef.current = () => {
         if (
           !isCurrent() || privacyBusyRef.current ||
-          !adsInitializedRef.current ||
+          !adsInitializedRef.current || !controller.canPreload() ||
           interstitialLoadingRef.current ||
           interstitialLoadedRef.current ||
           interstitialShowingRef.current
@@ -305,21 +276,31 @@ export const AdsProvider = ({ children }) => {
           return;
         }
         interstitialLoadingRef.current = true;
-        interstitial.load();
+        try { interstitial.load(); }
+        catch (error) {
+          interstitialLoadingRef.current = false;
+          logAdFailure("interstitial-load", error); scheduleReload(30000);
+        }
       };
 
       subscriptions.push(
         interstitial.addAdEventListener(AdEventType.LOADED, () => {
           if (!isCurrent()) return;
           interstitialLoadingRef.current = false;
-          interstitialLoadedRef.current = true;
+          interstitialLoadedRef.current = true; loadedAtRef.current = Date.now(); loadedEpochRef.current++;
         }),
         interstitial.addAdEventListener(AdEventType.OPENED, () => {
           if (!isCurrent()) return;
+          reservationRef.current?.reservation.opened();
           if (Platform.OS === "ios") StatusBar.setHidden(true);
         }),
         interstitial.addAdEventListener(AdEventType.CLOSED, () => {
           if (!isCurrent()) return;
+          const pending = reservationRef.current; reservationRef.current = null;
+          // A close event also proves presentation if OPENED was not delivered.
+          pending?.reservation.opened();
+          void pending?.reservation.finish(); pending?.finish(true);
+          controller.setActive(enabledRef.current && AppState.currentState === "active");
           releasePresentationRef.current?.();
           releasePresentationRef.current = null;
           interstitialLoadingRef.current = false;
@@ -330,23 +311,21 @@ export const AdsProvider = ({ children }) => {
         }),
         interstitial.addAdEventListener(AdEventType.ERROR, (error) => {
           if (!isCurrent()) return;
+          const pending = reservationRef.current; reservationRef.current = null;
+          void pending?.reservation.finish(); pending?.finish(false);
+          controller.setActive(enabledRef.current && AppState.currentState === "active");
+          if (Platform.OS === "ios") StatusBar.setHidden(false);
           releasePresentationRef.current?.();
           releasePresentationRef.current = null;
           interstitialLoadingRef.current = false;
           interstitialLoadedRef.current = false;
           interstitialShowingRef.current = false;
-          if (__DEV__) {
-            console.warn(
-              "インタースティシャル広告の読み込みに失敗しました。",
-              error,
-            );
-          }
+          logAdFailure("interstitial-load", error);
           scheduleReload(30000);
         }),
       );
     }
 
-    void loadDailyState();
 
     const getConsentInfo = async () => {
       try {
@@ -449,6 +428,13 @@ export const AdsProvider = ({ children }) => {
 
     return () => {
       active = false;
+      cancelInterstitial();
+      const pending = reservationRef.current; reservationRef.current = null;
+      // An in-progress native presentation cannot be cancelled by changing JS
+      // sessions. Conservatively retain the cap even before its OPENED event.
+      if (interstitialShowingRef.current) pending?.reservation.opened();
+      void pending?.reservation.finish(); pending?.finish(false);
+      interstitialShowingRef.current = false;
       recovery.stop();
       adsInitializedRef.current = false;
       if (retryTimer) clearTimeout(retryTimer);
@@ -459,10 +445,10 @@ export const AdsProvider = ({ children }) => {
       interstitialRef.current = null;
       if (Platform.OS === "ios") StatusBar.setHidden(false);
     };
-  }, [recordDiagnostic, agePolicy, sessionKey, enabled]);
+  }, [recordDiagnostic, agePolicy, sessionKey, enabled, inventoryRevision]);
 
   const showPrivacyOptions = useCallback(async () => {
-    if (!privacyOptionsRequired || privacyBusyRef.current || !enabled) return false;
+    if (!privacyOptionsRequired || privacyBusyRef.current || interstitialShowingRef.current || !enabled) return false;
     const key = sessionKey;
     privacyBusyRef.current = true;
     setPrivacyBusy(true);
@@ -503,7 +489,12 @@ export const AdsProvider = ({ children }) => {
       recordDiagnostic,
       recordScreenTransition,
       showAfterDiarySubmission,
-      configureInterstitial,
+      interstitialSettings,
+      refreshInterstitialSettings,
+      saveGlobalInterstitialSettings,
+      cancelInterstitial,
+      setInterstitialBlocked,
+      showAfterTagPublication,
     }),
     [
       adsInitialized,
@@ -514,7 +505,12 @@ export const AdsProvider = ({ children }) => {
       onAdRequestsBlocked,
       diagnostics,
       recordDiagnostic,
-      configureInterstitial,
+      interstitialSettings,
+      refreshInterstitialSettings,
+      saveGlobalInterstitialSettings,
+      cancelInterstitial,
+      setInterstitialBlocked,
+      showAfterTagPublication,
       recordScreenTransition,
       showAfterDiarySubmission,
     ],

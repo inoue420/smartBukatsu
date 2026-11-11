@@ -20,6 +20,10 @@ const { getStorage } = require("firebase-admin/storage");
 initializeApp();
 
 const firestore = getFirestore();
+const { createInterstitialSettingsBackend } = require("./interstitialSettingsBackend");
+const interstitialSettings = createInterstitialSettingsBackend({ firestore, FieldValue, HttpsError });
+exports.getInterstitialAdAccess = onCall({ region: "asia-northeast1", maxInstances: 2 }, interstitialSettings.access);
+exports.setInterstitialAdSettings = onCall({ region: "asia-northeast1", maxInstances: 2 }, interstitialSettings.save);
 const { createOperatorGuidanceBackend } = require("./operatorGuidanceBackend");
 const operatorGuidance = createOperatorGuidanceBackend({ firestore, Timestamp, FieldPath, HttpsError,
   deliver: (...args) => require("./notifications").sendOperatorGuidanceNotification(...args) });

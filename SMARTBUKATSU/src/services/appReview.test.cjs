@@ -231,7 +231,9 @@ function navigationEnvironment() {
   let clock = 100000, route = "WorkspaceHome", adResult = false;
   const calls = [], currentRouteNameRef = { current: "Calendar" }, routeVisitRef = { current: { at: 70000, version: 0 } };
   const fn = vm.runInNewContext(`(${source.slice(handler.start, handler.end)})`, {
-    currentRouteNameRef, routeVisitRef, navigationRef: { getCurrentRoute: () => ({ name: route }) },
+    currentRouteNameRef, currentRouteKeyRef: { current: "calendar-key" }, navigationBlockKey: { current: Symbol("navigation") },
+    navigationTransitions: { current: require("../ads/navigationTransitionGate").createNavigationTransitionGate() },
+    routeVisitRef, notificationNavigationRef: { current: false }, navigationRef: { getCurrentRoute: () => ({ name: route, key: route + "-key" }) },
     REVIEW_COMPLETION_SCREENS: new Set(["Calendar", "Roster", "ProjectList", "TacticalNotes", "NoticeBoard"]),
     Date: { now: () => clock }, user: {}, activeTeamId: "synthetic", emailVerificationPending: false,
     reviewNavigationChanged: () => {}, recordScreenTransition: () => adResult,

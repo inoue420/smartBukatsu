@@ -80,7 +80,7 @@ test("the app places advertising inside authentication so SDK setup can read the
 function managerHarness(overrides = {}, options = {}) {
   const h = renderHarness(), calls = [], timers = new Map(); let timerId = 0;
   let clock = 100000, networkRefreshes = 0;
-  const appListeners = new Set(), networkListeners = new Set();
+  const appListeners = new Set(), networkListeners = new Set(), adListeners = new Map(), adCalls = [];
   const appState = { currentState: "active", addEventListener(_event, fn) {
     appListeners.add(fn); return { remove: () => appListeners.delete(fn) };
   } };
@@ -98,7 +98,7 @@ function managerHarness(overrides = {}, options = {}) {
   const { AdsProvider } = load("src/ads/AdManager.native.js", {
     react: h.react,
     "@react-native-async-storage/async-storage": { __esModule: true, default: { getItem: async () => null, setItem: async () => {} } },
-    "react-native": { AppState: appState, Platform: { OS: options.os || "android", select: value => value.android }, StatusBar: { setHidden: idle } },
+    "react-native": { InteractionManager: { runAfterInteractions: options.enqueue || (fn => fn()) }, AppState: appState, Platform: { OS: options.os || "android", select: value => value.android }, StatusBar: { setHidden: idle } },
     "@react-native-community/netinfo": { __esModule: true, default: {
       addEventListener(fn) { networkListeners.add(fn); fn(network); return () => networkListeners.delete(fn); },
       async refresh() { networkRefreshes++; for (const fn of networkListeners) fn(network); return network; },
@@ -107,7 +107,15 @@ function managerHarness(overrides = {}, options = {}) {
     "../services/reviewPresentationGate": { reviewPresentationGate: { acquire: () => idle } },
     "react-native-google-mobile-ads": { __esModule: true, default: () => sdk,
       AgeRestrictedTreatment: options.missingApi ? undefined : { TEEN: "teen" }, AdsConsent: consent,
-      TestIds: { BANNER: "synthetic-banner" }, AdEventType: {}, InterstitialAd: {} },
+      TestIds: { BANNER: "synthetic-banner", INTERSTITIAL: options.interstitial ? "synthetic-interstitial" : undefined },
+      AdEventType: Object.fromEntries(["LOADED", "OPENED", "CLOSED", "ERROR"].map(name => [name, name])),
+      InterstitialAd: { createForAdRequest(id, requestOptions) {
+        adCalls.push(["create", id, requestOptions]);
+        return { addAdEventListener(name, fn) { adListeners.set(name, fn); return () => { if (adListeners.get(name) === fn) adListeners.delete(name); }; },
+          load() { adCalls.push(["load"]); }, show() { adCalls.push(["show"]); return options.show ? options.show() : Promise.resolve(); } };
+      } } },
+    "./interstitialPolicy": { createInterstitialController: options => require("./interstitialPolicy").createInterstitialController({ ...options, now: () => clock }) },
+    "../services/interstitialSettingsService": { fetchInterstitialSettings: options.fetchSettings || (async () => ({ audience: "all", minimumUsageMinutes: 1 })), saveInterstitialSettings: async (_uid, value) => value },
     "./adSettings": require("./adSettings"), "./adAgePolicy": { resolveAdAgePolicy, createAdTaskQueue },
     "./adInitializationRecovery": require("./adInitializationRecovery"),
     "./adDiagnostics": { createAdDiagnostics, recordAdDiagnostic, getAdErrorCode },
@@ -124,7 +132,7 @@ function managerHarness(overrides = {}, options = {}) {
     }
     clock = end;
   };
-  return { h, calls, timers, appListeners, networkListeners, value: () => h.render().props.value,
+  return { h, calls, timers, appListeners, networkListeners, adCalls, emit: (name, value) => adListeners.get(name)?.(value), value: () => h.render().props.value,
     get networkRefreshes() { return networkRefreshes; },
     state(value) { appState.currentState = value; for (const fn of [...appListeners]) fn(value); h.render(); },
     network(value) { network = { isConnected: value, isInternetReachable: value }; for (const fn of [...networkListeners]) fn(network); h.render(); },
@@ -133,6 +141,100 @@ function managerHarness(overrides = {}, options = {}) {
     async settle() { for (let i = 0; i < 5; i++) { await tick(); h.render(); } },
     retry() { if (timers.size) advance(Math.max(0, Math.min(...[...timers.values()].map(t => t.at)) - clock)); } };
 }
+
+test("review regression: an ad unloaded at the opportunity cannot show when it loads during the wait", async () => {
+  const queued = [], e = managerHarness({}, { interstitial: true, enqueue: fn => queued.push(fn) });
+  await e.settle(); e.advance(60000);
+  const pending = e.value().showAfterDiarySubmission();
+  e.emit("LOADED"); queued.splice(0).forEach(fn => fn()); await e.settle();
+  const count = e.adCalls.filter(c => c[0] === "show").length;
+  e.emit("CLOSED"); await pending; e.h.unmount(); assert.equal(count, 0);
+});
+test("review regression: stale settings refreshed during the wait cannot revive that opportunity", async () => {
+  const queued = [], slow = deferred(); let reads = 0;
+  const e = managerHarness({}, { interstitial: true, enqueue: fn => queued.push(fn),
+    fetchSettings: () => ++reads === 1 ? Promise.resolve({ audience: "all", minimumUsageMinutes: 1 }) : slow.promise });
+  await e.settle(); e.emit("LOADED"); e.advance(16 * 60000);
+  const pending = e.value().showAfterDiarySubmission();
+  const refresh = e.value().refreshInterstitialSettings();
+  slow.resolve({ audience: "all", minimumUsageMinutes: 1 }); await refresh; await e.settle();
+  queued.splice(0).forEach(fn => fn()); await e.settle();
+  const count = e.adCalls.filter(c => c[0] === "show").length;
+  e.emit("CLOSED"); await pending; e.h.unmount(); assert.equal(count, 0);
+});
+test("review regression: native-stack advertising waits for transitionEnd, independent of InteractionManager", async () => {
+  const transition = deferred(), e = managerHarness({}, { interstitial: true });
+  await e.settle(); e.emit("LOADED"); e.advance(60000);
+  const pending = e.value().recordScreenTransition({ from: "Calendar", to: "WorkspaceHome",
+    waitForTransition: () => transition.promise, isCurrent: () => true });
+  await e.settle(); const before = e.adCalls.filter(c => c[0] === "show").length;
+  transition.resolve(true); await e.settle(); const after = e.adCalls.filter(c => c[0] === "show").length;
+  e.emit("CLOSED"); await pending; e.h.unmount(); assert.equal(before, 0); assert.equal(after, 1);
+});
+
+test("an opportunity skipped before load is available to the next operation only", async () => {
+  const queued = [], e = managerHarness({}, { interstitial: true, enqueue: fn => queued.push(fn) });
+  await e.settle(); e.advance(60000);
+  assert.equal(await e.value().showAfterDiarySubmission(), false);
+  e.emit("LOADED"); assert.equal(e.adCalls.some(c => c[0] === "show"), false);
+  const next = e.value().showAfterDiarySubmission(); queued.splice(0).forEach(fn => fn()); await e.settle();
+  assert.equal(e.adCalls.filter(c => c[0] === "show").length, 1);
+  e.emit("OPENED"); e.emit("CLOSED"); assert.equal(await next, true); e.h.unmount();
+});
+test("reloads or settings replacements during a transition invalidate the captured opportunity", async () => {
+  for (const change of ["inventory", "policy"]) {
+    const transition = deferred(), e = managerHarness({}, { interstitial: true });
+    await e.settle(); e.emit("LOADED"); e.advance(60000);
+    const pending = e.value().recordScreenTransition({ from: "Calendar", to: "WorkspaceHome", waitForTransition: () => transition.promise });
+    if (change === "inventory") { e.emit("ERROR", { code: "synthetic" }); e.emit("LOADED"); }
+    else { await e.value().refreshInterstitialSettings(); await e.settle(); }
+    transition.resolve(true); assert.equal(await pending, false);
+    assert.equal(e.adCalls.filter(c => c[0] === "show").length, 0); e.h.unmount();
+  }
+});
+test("a missing/late transitionEnd times out and never displays retroactively", async () => {
+  const transition = deferred(), e = managerHarness({}, { interstitial: true });
+  await e.settle(); e.emit("LOADED"); e.advance(60000);
+  const pending = e.value().recordScreenTransition({ from: "Calendar", to: "WorkspaceHome", waitForTransition: () => transition.promise });
+  e.advance(2000); assert.equal(await pending, false);
+  transition.resolve(true); await e.settle();
+  assert.equal(e.adCalls.filter(c => c[0] === "show").length, 0); e.h.unmount();
+});
+
+for (const os of ["android", "ios"]) test(`${os}: interstitial show resolution waits for close; duplicate opportunities and second daily ad are blocked`, async () => {
+  const e = managerHarness({}, { interstitial: true, os }); await e.settle();
+  e.emit("LOADED"); e.advance(60000);
+  let result;
+  const first = e.value().showAfterDiarySubmission().then(value => { result = value; return value; });
+  await e.settle(); assert.equal(e.adCalls.filter(call => call[0] === "show").length, 1);
+  assert.equal(result, undefined);
+  assert.equal(await e.value().showAfterDiarySubmission(), false);
+  e.emit("OPENED"); e.emit("CLOSED"); assert.equal(await first, true);
+  assert.equal(await e.value().showAfterDiarySubmission(), false); e.h.unmount();
+});
+test("interstitial display rejection and native error resume normally without a daily impression", async () => {
+  for (const failure of ["reject", "event"]) {
+    const e = managerHarness({}, { interstitial: true, show: failure === "reject" ? async () => { throw Error("synthetic"); } : undefined });
+    await e.settle(); e.emit("LOADED"); e.advance(60000);
+    const pending = e.value().showAfterDiarySubmission(); await e.settle();
+    if (failure === "event") e.emit("ERROR", { code: "internal-error" });
+    assert.equal(await pending, false);
+    e.emit("LOADED"); const next = e.value().showAfterDiarySubmission(); await e.settle();
+    assert.equal(e.adCalls.filter(call => call[0] === "show").length, 2);
+    if (failure === "event") { e.emit("OPENED"); e.emit("CLOSED"); }
+    await next; e.h.unmount();
+  }
+});
+test("interstitial never shows in background, after navigation cancellation, or on arbitrary/notification routes", async () => {
+  const e = managerHarness({}, { interstitial: true }); await e.settle(); e.emit("LOADED"); e.advance(60000);
+  e.state("background"); assert.equal(await e.value().showAfterDiarySubmission(), false); e.state("active");
+  const pending = e.value().showAfterDiarySubmission(() => false); assert.equal(await pending, false);
+  for (const event of [{ from: "WorkspaceHome", to: "Calendar" }, { from: "Calendar", to: "WorkspaceHome", fromNotification: true },
+    { from: "ProjectDetail", to: "ProjectList", opensPlayback: true }]) {
+    assert.equal(await e.value().recordScreenTransition(event), false);
+  }
+  assert.equal(e.adCalls.filter(call => call[0] === "show").length, 0); e.h.unmount();
+});
 
 for (const role of ["guardian", "member"]) test(`${role}: applies configuration before consent and exposes matching request options`, async () => {
   const a = managerHarness({ currentMemberProfile: { role } });
