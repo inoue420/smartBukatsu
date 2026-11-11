@@ -8,10 +8,10 @@ const idle = () => {};
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 
-test("only a resolved guardian membership proves adulthood; no other role does", () => {
+test("only the resolved account's server-confirmed adult record proves adulthood; team roles do not", () => {
   const base = { uid: "synthetic", profileResolved: true, minimumAgeConfirmed: true };
-  assert.equal(resolveAdAgePolicy({ ...base, membershipRole: "guardian" }).audience, "adult");
-  for (const role of ["member", "captain", "staff", "admin", "owner", "alumni", undefined]) {
+  assert.equal(resolveAdAgePolicy({ ...base, adultConfirmed: true }).audience, "adult");
+  for (const role of ["guardian", "member", "captain", "staff", "admin", "owner", "alumni", undefined]) {
     const value = resolveAdAgePolicy({ ...base, membershipRole: role });
     assert.equal(value.audience, "teen");
     assert.equal(value.requestConfiguration.ageRestrictedTreatment, "teen");
@@ -22,9 +22,9 @@ test("only a resolved guardian membership proves adulthood; no other role does",
 });
 
 test("missing/false age confirmation and unresolved or signed-out profiles stay child/G/NPA", () => {
-  for (const input of [{}, { uid: "a", membershipRole: "guardian" },
+  for (const input of [{}, { uid: "a", adultConfirmed: true },
     { uid: "a", profileResolved: true }, { uid: "a", profileResolved: true, minimumAgeConfirmed: false },
-    { profileResolved: true, minimumAgeConfirmed: true, membershipRole: "guardian" }]) {
+    { profileResolved: true, minimumAgeConfirmed: true, adultConfirmed: true }]) {
     const value = resolveAdAgePolicy(input);
     assert.equal(value.audience, "unknown");
     assert.equal(value.requestConfiguration.ageRestrictedTreatment, "child");
@@ -34,7 +34,7 @@ test("missing/false age confirmation and unresolved or signed-out profiles stay 
 });
 
 test("adult uses T, clears legacy child flags and delegates personalization to SDK consent", () => {
-  const value = resolveAdAgePolicy({ uid: "a", profileResolved: true, membershipRole: "guardian" });
+  const value = resolveAdAgePolicy({ uid: "a", profileResolved: true, adultConfirmed: true });
   assert.deepEqual(value.requestConfiguration, { ageRestrictedTreatment: "unspecified",
     tagForChildDirectedTreatment: false, tagForUnderAgeOfConsent: false, maxAdContentRating: "T" });
   assert.deepEqual(value.requestOptions, {});
@@ -44,7 +44,7 @@ test("adult uses T, clears legacy child flags and delegates personalization to S
 test("the installed advertising SDK validates and retains the age treatment of every policy", () => {
   const { validateAdRequestConfiguration } = loadAdSdkBridge();
   for (const input of [{}, { uid: "a", profileResolved: true, minimumAgeConfirmed: true },
-    { uid: "a", profileResolved: true, membershipRole: "guardian" }]) {
+    { uid: "a", profileResolved: true, adultConfirmed: true }]) {
     const expected = resolveAdAgePolicy(input).requestConfiguration;
     const actual = validateAdRequestConfiguration(expected);
     assert.equal(JSON.stringify(actual), JSON.stringify({ maxAdContentRating: expected.maxAdContentRating,
@@ -86,7 +86,7 @@ function managerHarness(overrides = {}, options = {}) {
   } };
   let network = { isConnected: true, isInternetReachable: true };
   let auth = { user: { uid: "synthetic-adult" }, activeTeamId: "a", loading: false,
-    adProfileResolved: true, adMinimumAgeConfirmed: true, currentMemberProfile: { role: "guardian" }, ...overrides };
+    adProfileResolved: true, adMinimumAgeConfirmed: true, adAdultConfirmed: true, currentMemberProfile: { role: "guardian" }, ...overrides };
   const sdk = { async setRequestConfiguration(value) { calls.push(["config", value]); if (options.configuration) await options.configuration(value); },
     async initialize() { calls.push(["initialize"]); if (options.initialize) await options.initialize(); } };
   const consent = {
@@ -237,7 +237,7 @@ test("interstitial never shows in background, after navigation cancellation, or 
 });
 
 for (const role of ["guardian", "member"]) test(`${role}: applies configuration before consent and exposes matching request options`, async () => {
-  const a = managerHarness({ currentMemberProfile: { role } });
+  const a = managerHarness({ adAdultConfirmed: role === "guardian", currentMemberProfile: { role } });
   assert.equal(a.value().adsInitialized, false); await a.settle();
   assert.equal(a.value().adsInitialized, true);
   assert.equal(a.calls[0][0], "config"); assert.equal(a.calls[1][0], "consent");
@@ -250,7 +250,7 @@ test("a slow adult consent result cannot enable ads for a teen account", async (
   const slow = deferred(); let first = true;
   const a = managerHarness({}, { gather: async () => { if (first) { first = false; return slow.promise; } return { canRequestAds: true }; } });
   await a.settle();
-  a.change({ user: { uid: "synthetic-teen" }, currentMemberProfile: { role: "member" } });
+  a.change({ user: { uid: "synthetic-teen" }, adAdultConfirmed: false, currentMemberProfile: { role: "member" } });
   assert.equal(a.value().adsInitialized, false);
   await a.settle(); assert.equal(a.calls.filter(call => call[0] === "config").length, 1);
   slow.resolve({ canRequestAds: true }); await a.settle();
@@ -263,21 +263,67 @@ test("a slow adult consent result cannot enable ads for a teen account", async (
 test("a pending SDK initialization cannot publish the previous adult's ready state", async () => {
   const slow = deferred(); let first = true;
   const a = managerHarness({}, { initialize: async () => { if (first) { first = false; await slow.promise; } } });
-  await a.settle(); a.change({ user: { uid: "synthetic-teen" }, currentMemberProfile: { role: "member" } });
+  await a.settle(); a.change({ user: { uid: "synthetic-teen" }, adAdultConfirmed: false, currentMemberProfile: { role: "member" } });
   assert.equal(a.value().adsInitialized, false); slow.resolve(); await a.settle();
   assert.equal(a.value().adsInitialized, true);
   assert.equal(a.value().requestOptions.requestNonPersonalizedAdsOnly, true); a.h.unmount();
 });
 
-test("adult -> team switching -> unknown/teen removes readiness immediately and reconfigures", async () => {
+test("real account age changes remove readiness immediately and reconfigure, while team selection preserves readiness", async () => {
   const a = managerHarness(); await a.settle(); assert.equal(a.value().adsInitialized, true);
-  a.change({ isTeamSwitching: true }); assert.equal(a.value().adsInitialized, false); await a.settle();
-  a.change({ isTeamSwitching: false, activeTeamId: "b", currentMemberProfile: null, adMinimumAgeConfirmed: false });
+  a.change({ isTeamSwitching: true }); assert.equal(a.value().adsInitialized, true); await a.settle();
+  a.change({ isTeamSwitching: false, activeTeamId: "b", currentMemberProfile: null });
+  assert.equal(a.value().adsInitialized, true);
+  a.change({ adAdultConfirmed: false, adMinimumAgeConfirmed: false });
+  assert.equal(a.value().adsInitialized, false);
   await a.settle(); assert.equal(a.calls.filter(call => call[0] === "config").at(-1)[1].maxAdContentRating, "G");
   a.change({ adMinimumAgeConfirmed: true }); assert.equal(a.value().adsInitialized, false);
   await a.settle(); assert.equal(a.value().requestOptions.requestNonPersonalizedAdsOnly, true);
   a.change({ user: null, adProfileResolved: false }); assert.equal(a.value().adsInitialized, false); await a.settle();
   a.h.unmount();
+});
+
+for (const os of ["android", "ios"]) {
+  for (const audience of ["adult", "teen", "unknown"]) test(`${os}: ${audience} keeps its ad session through same-team selection and other-team role changes`, async () => {
+    const a = managerHarness({ adAdultConfirmed: audience === "adult", adMinimumAgeConfirmed: audience !== "unknown" }, { os, interstitial: true });
+    await a.settle();
+    const first = a.value();
+    for (const change of [{ isTeamSwitching: true }, { isTeamSwitching: false },
+      { isTeamSwitching: true }, { activeTeamId: "b", currentMemberProfile: null },
+      { isTeamSwitching: false, currentMemberProfile: { role: "member" } },
+      { currentMemberProfile: { role: "guardian" } }]) {
+      a.change(change); await a.settle();
+      assert.equal(a.value().adsInitialized, true);
+      assert.equal(a.value().adSessionKey, first.adSessionKey);
+      assert.equal(a.value().requestOptions, first.requestOptions);
+    }
+    assert.equal(a.calls.filter(call => call[0] === "initialize").length, 1);
+    assert.equal(a.calls.filter(call => call[0] === "consent").length, 1);
+    assert.equal(a.adCalls.filter(call => call[0] === "create").length, 1); a.h.unmount();
+  });
+  test(`${os}: first ad waits for account verification and ignores later active-team guardian lookup`, async () => {
+    const a = managerHarness({ adProfileResolved: false, adAdultConfirmed: false, currentMemberProfile: null }, { os });
+    await a.settle(); assert.equal(a.calls.length, 0);
+    a.change({ adProfileResolved: true, adAdultConfirmed: true }); await a.settle();
+    assert.equal(a.value().adsInitialized, true); const key = a.value().adSessionKey;
+    a.change({ currentMemberProfile: { role: "guardian" } }); await a.settle();
+    assert.equal(a.value().adSessionKey, key);
+    assert.equal(a.calls.filter(call => call[0] === "initialize").length, 1); a.h.unmount();
+  });
+}
+
+test("team selection blocks interstitial presentation and invalidates old opportunities even after returning to the same team", async () => {
+  const transition = deferred(), a = managerHarness({}, { interstitial: true });
+  await a.settle(); a.emit("LOADED"); a.advance(60000);
+  const pending = a.value().recordScreenTransition({ from: "Calendar", to: "WorkspaceHome", waitForTransition: () => transition.promise });
+  a.change({ isTeamSwitching: true });
+  assert.equal(await a.value().showAfterDiarySubmission(), false);
+  a.change({ isTeamSwitching: false });
+  transition.resolve(true); assert.equal(await pending, false);
+  assert.equal(a.adCalls.filter(call => call[0] === "show").length, 0);
+  const next = a.value().showAfterDiarySubmission(); await a.settle();
+  assert.equal(a.adCalls.filter(call => call[0] === "show").length, 1);
+  a.emit("OPENED"); a.emit("CLOSED"); assert.equal(await next, true); a.h.unmount();
 });
 
 test("cached adult consent fallback forces NPA and consent refusal suppresses all ads", async () => {
@@ -367,8 +413,8 @@ test("network failure during consent retrieval with no usable cache remains reco
   assert.equal(countCalls(a, "initialize"), 0); a.h.unmount();
 });
 
-test("logout and team switching cancel an exhausted session's pending recovery", async () => {
-  for (const change of [{ user: null }, { isTeamSwitching: true }]) {
+test("logout or actual age invalidation cancels an exhausted session's pending recovery", async () => {
+  for (const change of [{ user: null }, { adProfileResolved: false }]) {
     const a = managerHarness({}, { initialize: async () => { throw networkError(); } });
     await exhaustInitialization(a); a.network(false); a.network(true); assert.equal(a.timers.size, 1);
     a.change(change); await a.settle(); const calls = a.calls.length;
@@ -381,7 +427,7 @@ test("logout and team switching cancel an exhausted session's pending recovery",
 test("banner consent revocation invalidates readiness, and a stale session cannot revoke its replacement", async () => {
   let allowed = true;
   const a = managerHarness({}, { gather: async () => ({ canRequestAds: allowed }) }); await a.settle();
-  const oldCallback = a.value().onAdRequestsBlocked; a.change({ activeTeamId: "b" }); await a.settle();
+  const oldCallback = a.value().onAdRequestsBlocked; a.change({ user: { uid: "replacement" } }); await a.settle();
   const key = a.value().adSessionKey; oldCallback(); await a.settle();
   assert.equal(a.value().adSessionKey, key); assert.equal(a.value().adsInitialized, true);
   allowed = false; a.value().onAdRequestsBlocked(); assert.equal(a.value().adsInitialized, false); await a.settle();

@@ -33,6 +33,7 @@ import {
   switchActiveTeam,
 } from "./services/firestoreService";
 import { createPendingRegistrationStore } from "./utils/pendingRegistration";
+import { subscribeAdAgeProfile } from "./services/adAgeProfileService";
 
 const AuthContext = createContext(null);
 const registrationStore = createPendingRegistrationStore(AsyncStorage);
@@ -150,11 +151,6 @@ export function AuthProvider({ children }) {
     const unsub = measuredOnSnapshot("authUser", ref, (snap) => {
       if (!active || authUserRef.current?.uid !== user.uid) return;
       const data = snap.data() || {};
-      setAdAgeConfirmation({
-        uid: user.uid,
-        minimumAgeConfirmed: data.legalConsent?.minimumAgeConfirmed === true &&
-          Number.isInteger(data.legalConsent?.minimumAge) && data.legalConsent.minimumAge >= 13,
-      });
       if (snap.exists()) {
         setEmailVerificationRequired(
           data.emailVerificationRequired === true,
@@ -489,6 +485,8 @@ export function AuthProvider({ children }) {
       adProfileResolved: Boolean(user?.uid && adAgeConfirmation?.uid === user.uid),
       adMinimumAgeConfirmed: Boolean(user?.uid && adAgeConfirmation?.uid === user.uid &&
         adAgeConfirmation.minimumAgeConfirmed),
+      adAdultConfirmed: Boolean(user?.uid && adAgeConfirmation?.uid === user.uid &&
+        adAgeConfirmation.adultConfirmed),
       currentMemberProfile: membershipProfile?.teamId === activeTeamId && membershipProfile?.uid === user?.uid
         ? membershipProfile.data : null,
       isAdmin: role === "admin" || role === "owner", // ownerも管理者として扱うように強化
@@ -531,6 +529,18 @@ export function AuthProvider({ children }) {
     verificationRequested,
     teamAccessRevoked,
   ]);
+
+  useEffect(() => {
+    if (!user?.uid || loading || api.emailVerificationPending) return undefined;
+    let active = true;
+    setAdAgeConfirmation(null);
+    const stop = subscribeAdAgeProfile(user.uid, profile => {
+      if (active && authUserRef.current === user) {
+        setAdAgeConfirmation(profile ? { uid: user.uid, ...profile } : null);
+      }
+    });
+    return () => { active = false; stop(); };
+  }, [user, loading, api.emailVerificationPending]);
 
   return <AuthContext.Provider value={api}>{children}</AuthContext.Provider>;
 }

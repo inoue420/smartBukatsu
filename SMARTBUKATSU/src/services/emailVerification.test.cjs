@@ -20,21 +20,28 @@ test("pending inputs survive relaunch, isolate accounts and exclude credentials/
   assert.equal(await createPendingRegistrationStore(storage).read("a"), null);
 });
 
-test("ad age eligibility reuses the user watch and never survives account changes or stale callbacks", async () => {
+test("ad age eligibility uses only the verified user profile and never survives account changes or stale callbacks", async () => {
   const current = { uid: "age-a", emailVerified: true };
   const a = await authHarness(storageEnvironment(), current, { activeTeamId: "team" });
   assert.equal(a.value().adProfileResolved, false);
   const oldWatch = a.subscriptions.find(item => item.name === "authUser");
   oldWatch.next({ exists: () => true, data: () => ({ legalConsent: { minimumAgeConfirmed: true, minimumAge: 13 } }) });
+  assert.equal(a.value().adProfileResolved, false);
+  const oldAgeWatch = a.ageSubscriptions.at(-1);
+  oldAgeWatch.next({ minimumAgeConfirmed: true, adultConfirmed: true });
   assert.equal(a.value().adProfileResolved, true); assert.equal(a.value().adMinimumAgeConfirmed, true);
+  assert.equal(a.value().adAdultConfirmed, true);
   assert.equal(a.subscriptions.filter(item => item.name === "authUser").length, 1);
   await a.changeUser({ uid: "age-b", emailVerified: true });
   assert.equal(a.value().adProfileResolved, false); assert.equal(a.value().adMinimumAgeConfirmed, false);
   oldWatch.next({ exists: () => true, data: () => ({ legalConsent: { minimumAgeConfirmed: true, minimumAge: 13 } }) });
+  oldAgeWatch.next({ minimumAgeConfirmed: true, adultConfirmed: true });
   assert.equal(a.value().adProfileResolved, false);
   const latest = a.subscriptions.findLast(item => item.name === "authUser");
   latest.next({ exists: () => true, data: () => ({ legalConsent: { minimumAgeConfirmed: true, minimumAge: 12 } }) });
+  a.ageSubscriptions.at(-1).next({ minimumAgeConfirmed: false, adultConfirmed: false });
   assert.equal(a.value().adProfileResolved, true); assert.equal(a.value().adMinimumAgeConfirmed, false);
+  assert.equal(a.value().adAdultConfirmed, false);
   await a.changeUser(null); assert.equal(a.value().adProfileResolved, false); a.h.unmount();
 });
 
@@ -43,6 +50,15 @@ test("slow initial reads cannot overwrite newer saved inputs or resurrect a remo
   const store = createPendingRegistrationStore(storage), reading = store.read("a"), saving = store.save("a", input("member"));
   slow.resolve(null); await reading; await saving; assert.equal((await store.read("a")).inviteCode, "Ab12Cd");
   await store.remove("a"); assert.equal(storage.values.size, 0);
+});
+
+test("team selection reuses the account's age subscription and confirmed adulthood", async () => {
+  const user = { uid: "age-team-user", emailVerified: true };
+  const a = await authHarness(storageEnvironment(), user, { teamIds: ["a", "b"], activeTeamId: "a" });
+  const age = a.ageSubscriptions.at(-1); age.next({ adultConfirmed: true, minimumAgeConfirmed: true });
+  await a.value().selectTeam("a"); await a.value().selectTeam("b");
+  assert.equal(a.value().adAdultConfirmed, true); assert.equal(a.value().adProfileResolved, true);
+  assert.equal(a.ageSubscriptions.length, 1); assert.equal(age.stopped, false); a.h.unmount();
 });
 
 test("failed persistence is reported and never clears a saved recovery record", async () => {
@@ -82,6 +98,11 @@ async function authHarness(storage = storageEnvironment(), existing = null, prof
     "firebase/firestore": { doc: (_db, _name, uid) => uid, getDoc: async uid => ({ exists: () => profiles.has(uid), data: () => profiles.get(uid) }),
       setDoc: async (uid, data) => { calls.push(["fallback", uid]); profiles.set(uid, data); }, serverTimestamp: () => "now" },
     "./services/notificationService": { unregisterPushTokenForCurrentDevice: idle, setPushRegistrationSession: idle },
+    "./services/adAgeProfileService": { subscribeAdAgeProfile(uid, next) {
+      const subscription = { uid, next, stopped: false };
+      (env.ageSubscriptions ||= []).push(subscription);
+      return () => { subscription.stopped = true; };
+    } },
     "./services/firestoreSubscription": { measuredOnSnapshot: (name, ref, next, error) => {
       const subscription = { name, ref, next, error, stopped: false };
       (env.subscriptions ||= []).push(subscription);
