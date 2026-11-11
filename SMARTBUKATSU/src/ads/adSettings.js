@@ -1,4 +1,4 @@
-export const INTERSTITIAL_ADS_ENABLED = false;
+export const INTERSTITIAL_ADS_ENABLED = true;
 
 export const NON_PERSONALIZED_AD_REQUEST_OPTIONS = Object.freeze({
   requestNonPersonalizedAdsOnly: true,

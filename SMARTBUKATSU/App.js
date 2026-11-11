@@ -15,10 +15,7 @@ const NavigationArea = Platform.OS === "ios" ? SafeAreaProvider : View;
 import { AdsProvider, useAds } from "./src/ads/AdManager";
 import AppBannerAd from "./src/ads/AppBannerAd";
 import AppUpdateGate from "./src/components/AppUpdateGate";
-import {
-  DEFAULT_INTERSTITIAL_SETTINGS,
-  getInterstitialSettingsFromTeamData,
-} from "./src/ads/adSettings";
+import { createNavigationTransitionGate } from "./src/ads/navigationTransitionGate";
 import { DEFAULT_ALERT_THRESHOLDS } from "./src/utils/medicalScale";
 import { mergeReadState, monthWindow } from "./src/utils/historyLoading";
 import { dailyReportScope } from "./src/utils/dailyReportScope";
@@ -79,9 +76,15 @@ function AppContent() {
   const { pendingInvitation, invitationReady } = useTeamInvitation();
   const navigationRef = useNavigationContainerRef();
   const currentRouteNameRef = useRef();
+  const currentRouteKeyRef = useRef();
+  const navigationBlockKey = useRef(Symbol("navigation-transition"));
+  const navigationTransitions = useRef(null);
   const routeVisitRef = useRef({ at: Date.now(), version: 0 });
-  const { configureInterstitial, recordScreenTransition, showAfterDiarySubmission } =
+  const notificationNavigationRef = useRef(false);
+  const { cancelInterstitial, setInterstitialBlocked, recordScreenTransition, showAfterDiarySubmission } =
     useAds();
+  if (!navigationTransitions.current) navigationTransitions.current = createNavigationTransitionGate(
+    active => setInterstitialBlocked?.(navigationBlockKey.current, active));
   const {
     user,
     userName,
@@ -95,6 +98,10 @@ function AppContent() {
     isTeamSwitching,
   } = useAuth();
   const { setNavigationHandler } = useNotifications();
+  useEffect(() => {
+    navigationTransitions.current.reset();
+    return () => navigationTransitions.current.reset();
+  }, [user?.uid, activeTeamId]);
 
   const [projects, setProjects] = useState([]);
   const [highlightProjects, setHighlightProjects] = useState([]);
@@ -120,9 +127,6 @@ function AppContent() {
 
   const [alertThresholds, setAlertThresholds] = useState({
     ...DEFAULT_ALERT_THRESHOLDS,
-  });
-  const [interstitialSettings, setInterstitialSettings] = useState({
-    ...DEFAULT_INTERSTITIAL_SETTINGS,
   });
   const [absenceDeadlineDaysBefore, setAbsenceDeadlineDaysBefore] = useState(
     DEFAULT_ABSENCE_DEADLINE_DAYS_BEFORE,
@@ -269,10 +273,6 @@ function AppContent() {
   }, [user, activeTeamId, emailVerificationPending]);
 
   useEffect(() => {
-    configureInterstitial(interstitialSettings);
-  }, [configureInterstitial, interstitialSettings]);
-
-  useEffect(() => {
     const allowedScreens = new Set([
       "WorkspaceHome",
       "NoticeBoard",
@@ -295,6 +295,8 @@ function AppContent() {
         openConversation();
         return;
       }
+      notificationNavigationRef.current = true;
+      cancelInterstitial?.();
       const requestedScreen = notification?.target?.screen || "WorkspaceHome";
       const screen = allowedScreens.has(requestedScreen)
         ? requestedScreen
@@ -336,7 +338,6 @@ function AppContent() {
     setMembershipBatchPending(false);
     setGrades(["1年生", "2年生", "3年生"]);
     setPositions(["GK", "CP", "マネージャー"]);
-    setInterstitialSettings({ ...DEFAULT_INTERSTITIAL_SETTINGS });
     setAbsenceDeadlineDaysBefore(DEFAULT_ABSENCE_DEADLINE_DAYS_BEFORE);
     setAbsenceDetailsVisible(DEFAULT_ABSENCE_DETAILS_VISIBLE);
     setDailyReportCommentSettings(null);
@@ -354,9 +355,6 @@ function AppContent() {
           setTeamName(data.name || "名称未設定のチーム");
           setGrades(data.grades ?? ["1年生", "2年生", "3年生"]);
           setPositions(data.positions ?? ["GK", "CP", "マネージャー"]);
-          setInterstitialSettings(
-            getInterstitialSettingsFromTeamData(data.adSettings),
-          );
           const configuredAbsenceDeadline = Number(
             data.absenceDeadlineDaysBefore,
           );
@@ -444,6 +442,7 @@ function AppContent() {
   const currentUserUid = user?.uid || "";
 
   const handleNavigationReady = () => {
+    currentRouteKeyRef.current = navigationRef.getCurrentRoute()?.key;
     currentRouteNameRef.current = navigationRef.getCurrentRoute()?.name;
     reviewNavigationChanged(currentRouteNameRef.current);
     setCurrentScreen(currentRouteNameRef.current);
@@ -458,6 +457,7 @@ function AppContent() {
     const version = routeVisitRef.current.version + 1;
     routeVisitRef.current = { at: Date.now(), version };
     reviewNavigationChanged(currentRouteName);
+    const waitForTransition = navigationTransitions.current.begin(currentRouteKeyRef.current, navigationRef.getCurrentRoute()?.key);
 
     if (
       previousRouteName &&
@@ -467,26 +467,44 @@ function AppContent() {
       activeTeamId &&
       !emailVerificationPending
     ) {
-      void Promise.resolve(recordScreenTransition()).then(adShown => {
+      void Promise.resolve(recordScreenTransition({
+        from: previousRouteName, to: currentRouteName,
+        fromNotification: notificationNavigationRef.current,
+        opensPlayback: Boolean(navigationRef.getCurrentRoute()?.params?.viewingProjectId),
+        waitForTransition,
+        navigationBlockKey: navigationBlockKey.current,
+        isCurrent: () => routeVisitRef.current.version === version &&
+          navigationRef.getCurrentRoute()?.name === currentRouteName,
+      })).then(adShown => {
         if (!adShown && completedFeature && routeVisitRef.current.version === version) {
           void completeInteraction("WorkspaceHome");
         }
       });
     }
+    notificationNavigationRef.current = false;
     currentRouteNameRef.current = currentRouteName;
+    currentRouteKeyRef.current = navigationRef.getCurrentRoute()?.key;
     setCurrentScreen(currentRouteName);
     setCurrentParams(navigationRef.getCurrentRoute()?.params || {});
   };
 
   return (
     <SafeAreaProvider>
-      <NavigationArea style={{ flex: 1 }} onTouchStart={cancelReview}>
+      <NavigationArea style={{ flex: 1 }} onTouchStart={() => { cancelReview(); cancelInterstitial?.(); }}>
       <NavigationContainer
         ref={navigationRef}
         onReady={handleNavigationReady}
         onStateChange={handleNavigationStateChange}
       >
-        <Stack.Navigator screenOptions={{ headerShown: false }}>
+        <Stack.Navigator screenOptions={{ headerShown: false }} screenListeners={{
+          transitionStart: event => navigationTransitions.current.start(event),
+          transitionEnd: event => navigationTransitions.current.end(event),
+          gestureCancel: event => {
+            const routes = navigationRef.getRootState()?.routes || [];
+            const index = routes.findIndex(route => route.key === event.target);
+            navigationTransitions.current.cancel(event, routes[index - 1]?.key);
+          },
+        }}>
         {!user ? (
           <Stack.Screen name="Login" component={LoginScreen} />
         ) : emailVerificationPending ? (
@@ -588,9 +606,10 @@ function AppContent() {
                   setDailyReports={setDailyReports}
                   alertThresholds={alertThresholds}
                   clubMembers={clubMembers}
-                  onDiarySubmitted={async () => {
+                  onDiarySubmitted={async (isCurrent) => {
                     const version = routeVisitRef.current.version;
-                    const adShown = await showAfterDiarySubmission();
+                    const adShown = await showAfterDiarySubmission(() =>
+                      routeVisitRef.current.version === version && navigationRef.getCurrentRoute()?.name === "Diary" && (!isCurrent || isCurrent()));
                     if (!adShown && routeVisitRef.current.version === version) {
                       void completeInteraction("Diary");
                     }
@@ -721,8 +740,6 @@ function AppContent() {
                   alertThresholds={alertThresholds}
                   setAlertThresholds={setAlertThresholds}
                   userProfiles={userProfiles}
-                  interstitialSettings={interstitialSettings}
-                  setInterstitialSettings={setInterstitialSettings}
                   absenceDeadlineDaysBefore={absenceDeadlineDaysBefore}
                   setAbsenceDeadlineDaysBefore={setAbsenceDeadlineDaysBefore}
                   absenceDetailsVisible={absenceDetailsVisible}

@@ -177,6 +177,7 @@ test("startup waits for the gate; navigation owns bounded listeners; rollback re
     "react-native": { AppState: { addEventListener: () => ({ remove() {} }) } } });
   const modules = {
     react, "@react-navigation/native": { NavigationContainer: "NavigationContainer", useNavigationContainerRef: () => navigation },
+    "./src/ads/navigationTransitionGate": require("../ads/navigationTransitionGate"),
     "@react-navigation/native-stack": { createNativeStackNavigator: () => ({ Screen: "Screen", Navigator: "Navigator" }) },
     "react-native": { AppState: { addEventListener: () => ({ remove() {} }) }, LogBox: { ignoreLogs() {} }, Platform: { OS: "android" }, View: "View", Text: "Text", ActivityIndicator: "ActivityIndicator" },
     "@react-native-community/netinfo": { __esModule: true, default: { addEventListener: () => () => {} } },

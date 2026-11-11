@@ -29,6 +29,7 @@ import YoutubePlayer from "react-native-youtube-iframe";
 import * as ScreenOrientation from "expo-screen-orientation";
 
 import { useAuth } from "../AuthContext";
+import { useAds } from "../ads/AdManager";
 import { auth } from "../firebase";
 import { updateProject } from "../services/firestoreService";
 import {
@@ -65,6 +66,9 @@ const ProjectDetailScreen = ({
   userProfiles = {},
 }) => {
   const focused = useIsFocused();
+  const { showAfterTagPublication, setInterstitialBlocked } = useAds();
+  const playbackBlockKey = useRef(Symbol("video-playback"));
+  const publicationAdBusy = useRef(false);
   const [referencedProjects, setReferencedProjects] = useState([]);
   const projects = useMemo(() => [...new Map([...referencedProjects, ...(baseProjects || [])].map((item) => [item.id, item])).values()], [baseProjects, referencedProjects]);
   const {
@@ -196,16 +200,17 @@ const ProjectDetailScreen = ({
   useEffect(() => {
     if (!postPublishPromptPending) return;
     if (!POST_PUBLISH_VIEWING_PROMPT_ENABLED || !focused || !hasTagsForViewing || viewingRegistration.status === "error" ||
-        postPublishPromptPending.teamId !== activeTeamId || postPublishPromptPending.projectId !== project.id) {
+        postPublishPromptPending.teamId !== activeTeamId || postPublishPromptPending.projectId !== project.id ||
+        postPublishPromptPending.uid !== currentUserUid) {
       setPostPublishPromptPending(null);
       return;
     }
-    if (isSharingTags || viewingRegistration.status !== "ready") return;
+    if (isSharingTags || publicationAdBusy.current || viewingRegistration.status !== "ready") return;
     setPostPublishPromptPending(null);
     if (viewingRegistration.byVideo[project.id]?.length || !(viewingAccess.canCreate || viewingAccess.canAdd)) return;
     setViewingDialogStartsWithPrompt(true);
     setViewingDialogOpen(true);
-  }, [postPublishPromptPending, focused, activeTeamId, hasTagsForViewing, isSharingTags, project.id,
+  }, [postPublishPromptPending, focused, activeTeamId, currentUserUid, hasTagsForViewing, isSharingTags, project.id,
     viewingRegistration.status, viewingRegistration.byVideo, viewingAccess.canCreate, viewingAccess.canAdd]);
   const recordedTagStateRef = useRef(null);
   recordedTagStateRef.current = { tags: localTags, viewer: tagViewer };
@@ -225,10 +230,29 @@ const ProjectDetailScreen = ({
 
   const [videoTime, setVideoTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [nativePlaying, setNativePlaying] = useState(false);
+  const playerIdentity = JSON.stringify([activeTeamId, currentUserUid, project.id, projectVideoUrl]);
+  const playerIdentityRef = useRef(playerIdentity);
+  playerIdentityRef.current = playerIdentity;
+  const resetPlayback = () => {
+    if (playerIdentityRef.current !== playerIdentity) return;
+    setIsPlaying(false); setNativePlaying(false);
+    setInterstitialBlocked?.(playbackBlockKey.current, false);
+  };
+  useEffect(() => { resetPlayback(); }, [playerIdentity]);
+  useEffect(() => {
+    setInterstitialBlocked?.(playbackBlockKey.current, focused && (isPlaying || nativePlaying));
+    return () => setInterstitialBlocked?.(playbackBlockKey.current, false);
+  }, [focused, isPlaying, nativePlaying, setInterstitialBlocked]);
+  const adSafety = useRef(null);
+
+  useEffect(() => { if (!focused) { resetPlayback(); void videoRef.current?.pauseAsync?.().catch(() => {}); } }, [focused]);
 
   const [isAddQuickTagModalVisible, setIsAddQuickTagModalVisible] =
     useState(false);
   const [newQuickTagName, setNewQuickTagName] = useState("");
+  adSafety.current = { focused, teamId: activeTeamId, projectId: project.id, uid: currentUserUid, isPlaying: isPlaying || nativePlaying,
+    modal: viewingDialogOpen || Boolean(viewingChoices) || Boolean(editingRecordedTag) || isAddQuickTagModalVisible };
 
   const showToast = (message) => {
     setToastMessage(message);
@@ -431,7 +455,12 @@ const ProjectDetailScreen = ({
   };
 
   const handlePlaybackStatusUpdate = (status) => {
+    if (playerIdentityRef.current !== playerIdentity) return;
+    if (!status.isLoaded) { resetPlayback(); return; }
     if (status.isLoaded) {
+      // Observe native controls without replacing the requested playback state
+      // while the player is buffering.
+      setNativePlaying(status.isPlaying === true);
       const currentTime = Math.floor(status.positionMillis / 1000);
       setVideoTime(currentTime);
       if (status.durationMillis) {
@@ -444,9 +473,10 @@ const ProjectDetailScreen = ({
   };
 
   const onYoutubeStateChange = useCallback((state) => {
+    if (playerIdentityRef.current !== playerIdentity) return;
     if (state === "playing") setIsPlaying(true);
     else if (state === "paused" || state === "ended") setIsPlaying(false);
-  }, []);
+  }, [playerIdentity]);
 
   const jumpToTime = async (seconds) => {
     if (youtubeVideoId && youtubeRef.current) {
@@ -542,11 +572,15 @@ const ProjectDetailScreen = ({
   };
 
   const handleBulkShareTags = async () => {
+    if (publicationAdBusy.current) return;
     if (!canEditVideoTags || isRecordingTagRef.current || isSharingTagsRef.current) return;
     const privateTagsCount = localTags.filter(
       (t) => t.status === "private" && isRecordedTagOwner(t, tagViewer),
     ).length;
     if (privateTagsCount === 0) return;
+    const scope = { teamId: activeTeamId, projectId: project.id, uid: currentUserUid };
+    const sameScope = () => adSafety.current?.teamId === scope.teamId &&
+      adSafety.current?.projectId === scope.projectId && adSafety.current?.uid === scope.uid;
 
     Alert.alert(
       "一括公開",
@@ -556,7 +590,7 @@ const ProjectDetailScreen = ({
         {
           text: "公開する",
           onPress: async () => {
-            if (isSharingTagsRef.current || isRecordingTagRef.current) return;
+            if (isSharingTagsRef.current || isRecordingTagRef.current || !sameScope()) return;
             isSharingTagsRef.current = true;
             setIsSharingTags(true);
             const newTags = localTags.map((t) =>
@@ -567,14 +601,24 @@ const ProjectDetailScreen = ({
             try {
               const safeTeamId = activeTeamId || "test_team";
               await updateProject(safeTeamId, project.id, { tags: newTags });
+              if (!sameScope()) return;
               setLocalTags(newTags);
               setProjects?.((prev) => prev.map((p) => p.id === project.id ? { ...p, tags: newTags } : p));
               showToast("📢 チーム全体に一括公開しました！");
-              if (POST_PUBLISH_VIEWING_PROMPT_ENABLED && viewingScreenActive.current &&
-                  (viewingAccess.canCreate || viewingAccess.canAdd)) {
-                setPostPublishPromptPending({ teamId: activeTeamId, projectId: project.id });
-                viewingRegistration.retry();
-              }
+              const isCurrent = () => viewingScreenActive.current && adSafety.current?.focused &&
+                sameScope() &&
+                !adSafety.current.isPlaying && !adSafety.current.modal;
+              // Do not interrupt playback or the existing viewing-registration prompt.
+              // A skipped ad never retains a pending opportunity.
+              publicationAdBusy.current = true;
+              void Promise.resolve(showAfterTagPublication?.(isCurrent)).catch(() => false).finally(() => {
+                publicationAdBusy.current = false;
+                if (POST_PUBLISH_VIEWING_PROMPT_ENABLED && viewingScreenActive.current &&
+                    sameScope() &&
+                    (viewingAccess.canCreate || viewingAccess.canAdd)) {
+                  setPostPublishPromptPending(scope); viewingRegistration.retry();
+                }
+              });
             } catch (error) {
               Alert.alert("公開エラー", "タグを公開できませんでした。通信状態を確認して、もう一度お試しください。");
             } finally {
@@ -804,16 +848,19 @@ const ProjectDetailScreen = ({
           ]}
         >
           <YoutubePlayer
+            key={playerIdentity}
             ref={youtubeRef}
             height={isLandscape ? Math.min(width, height) : 220}
             play={isPlaying}
             videoId={youtubeVideoId}
             onChangeState={onYoutubeStateChange}
+            onError={resetPlayback}
             initialPlayerParams={{ controls: 1, rel: 0 }}
           />
         </View>
       ) : videoUri ? (
         <Video
+          key={playerIdentity}
           ref={videoRef}
           source={{ uri: videoUri }}
           style={styles.videoComponent}
@@ -822,6 +869,7 @@ const ProjectDetailScreen = ({
           useNativeControls={true}
           shouldPlay={isPlaying}
           onError={() => {
+            resetPlayback();
             Alert.alert(
               "エラー",
               "このURLは再生できません。\nYouTubeリンクか、直接の動画ファイル(.mp4)を指定してください。",

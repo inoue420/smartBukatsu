@@ -86,6 +86,7 @@ function appHarness() {
   const modules = {
     react: h.react, "@react-navigation/native": { NavigationContainer: "NavigationContainer", useNavigationContainerRef: () => ({ getCurrentRoute: () => ({ name: "WorkspaceHome" }) }) },
     "./src/hooks/useTeamInvitation": { useTeamInvitation: () => ({ invitationReady: true, pendingInvitation: null }) },
+    "./src/ads/navigationTransitionGate": require("../ads/navigationTransitionGate"),
     "@react-navigation/native-stack": { createNativeStackNavigator: () => ({ Screen: "Screen", Navigator: "Navigator" }) },
     "react-native": { LogBox: { ignoreLogs: idle }, AppState: { currentState: "active", addEventListener: () => ({ remove: idle }) },
       Alert: { alert: idle }, Platform: { OS: "android" }, View: "View", Text: "Text", ActivityIndicator: "ActivityIndicator" },

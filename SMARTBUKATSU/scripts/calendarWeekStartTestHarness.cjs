@@ -67,6 +67,7 @@ function renderHarness() {
 }
 
 function fillImports(file, modules) {
+  if (file === 'App.js') modules["./src/ads/navigationTransitionGate"] ||= require("../src/ads/navigationTransitionGate");
   if (file === 'App.js') modules["./src/utils/memberProfiles"] ||= require("../src/utils/memberProfiles");
   modules["../utils/teamInvitation"] ||= require("../src/utils/teamInvitation");
   modules["./src/hooks/useTeamInvitation"] ||= { useTeamInvitation: () => ({ invitationReady: true, pendingInvitation: null }) };

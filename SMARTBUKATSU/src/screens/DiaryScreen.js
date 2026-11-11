@@ -244,6 +244,8 @@ const DiaryScreen = ({
   useEffect(() => () => { commentContextRef.current = null; }, []);
   const [editingReportId, setEditingReportId] = useState(null);
   const [isReportModalVisible, setIsReportModalVisible] = useState(false);
+  const submissionAdSafe = useRef(false);
+  submissionAdSafe.current = !isCreateModalVisible && selectedReport === null && !isReportModalVisible;
   const [reportingComment, setReportingComment] = useState(null);
   const [reportSubject, setReportSubject] = useState("content");
   const [reportReason, setReportReason] = useState("");
@@ -989,7 +991,9 @@ const DiaryScreen = ({
           {
             text: "OK",
             onPress: () => {
-              onDiarySubmitted?.();
+              if (!saved?.existingSubmission && scopeRef.current === scope) {
+                onDiarySubmitted?.(() => scopeRef.current === scope && submissionAdSafe.current && navigation.isFocused?.() !== false);
+              }
             },
           },
         ]);

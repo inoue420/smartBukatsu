@@ -202,8 +202,8 @@ for (const os of ["android", "ios"]) {
   });
 }
 
-function screenEnvironment(name, { role = "owner", registration = { status: "ready", byVideo: { a: [] }, retry: idle }, params = {}, os = "android", popupEnabled = true } = {}) {
-  const h = hooks(), navigationCalls = [], alerts = [], writes = [], historyRequests = [];
+function screenEnvironment(name, { role = "owner", registration = { status: "ready", byVideo: { a: [] }, retry: idle }, params = {}, os = "android", popupEnabled = true, adResult = async () => false, onAdBlock = idle } = {}) {
+  const h = hooks(), navigationCalls = [], alerts = [], writes = [], historyRequests = [], adAttempts = [];
   let focused = true, teamId = "team";
   const v = video("a", { tags: [{ id: "t", label: "得点", videoTime: 10, status: "private", uid: "self", user: "監督" }] });
   const props = { route: { params: { project: v, userRole: role, ...params } }, navigation: {
@@ -215,6 +215,7 @@ function screenEnvironment(name, { role = "owner", registration = { status: "rea
     "react-native-youtube-iframe": { __esModule: true, default: "YoutubePlayer" },
     "expo-screen-orientation": { unlockAsync: async () => {}, lockAsync: async () => {}, OrientationLock: {} },
     "@react-navigation/native": { CommonActions: {}, useIsFocused: () => focused, usePreventRemove: idle },
+    "../ads/AdManager": { useAds: () => ({ setInterstitialBlocked: onAdBlock, showAfterTagPublication: isCurrent => { adAttempts.push(isCurrent); return adResult(isCurrent); } }) },
     "../AuthContext": { useAuth: () => ({ activeTeamId: teamId, user: { uid: "self" } }) }, "../firebase": { auth: { currentUser: { uid: "self" } } },
     "../utils/recordedTagPermissions": permissions, "../utils/videoViewingGuidance": guidance,
     "../utils/clipPlaybackTransition": require("../utils/clipPlaybackTransition"), "../utils/tacticalNotes": require("../utils/tacticalNotes"),
@@ -235,7 +236,7 @@ function screenEnvironment(name, { role = "owner", registration = { status: "rea
     assert.ok(source.includes(flag));
     return source.replace(flag, "const POST_PUBLISH_VIEWING_PROMPT_ENABLED = false;");
   }).default;
-  h.mount(() => component(props)); return { h, props, navigationCalls, alerts, writes, historyRequests,
+  h.mount(() => component(props)); return { h, props, navigationCalls, alerts, writes, historyRequests, adAttempts,
     setTeam(value) { teamId = value; h.render(); h.render(); },
     setFocused(value) { focused = value; h.render(); h.render(); }, render() { h.render(); return h.render(); } };
 }
@@ -368,8 +369,50 @@ async function publishSuccessfully(e) {
   const start = e.writes.length;
   button(e.h, "📢 自分のみのタグ(1件)を一括公開").onPress();
   const saving = e.alerts.at(-1)[2].find(item => item.text === "公開する").onPress();
-  e.writes[start].resolve(); await saving; e.render();
+  e.writes[start].resolve(); await saving; await new Promise(resolve => setImmediate(resolve)); e.render();
 }
+
+test("review regression: unloaded/error status clears video suppression for ads and reviews", () => {
+  const gate = require("./reviewPresentationGate").createPresentationGate(); gate.setBlocked("app-update", false);
+  const e = screenEnvironment("ProjectDetailScreen", { onAdBlock: gate.setBlocked });
+  e.props.projects = [{ ...e.props.projects[0], videoUrl: "https://example.test/synthetic.mp4" }]; e.render();
+  const player = walk(e.h.tree, n => n.type === "Video")[0]; assert.ok(player);
+  player.props.onPlaybackStatusUpdate({ isLoaded: true, isPlaying: true, positionMillis: 1000 }); e.render();
+  assert.equal(gate.isBlocked(), true);
+  player.props.onPlaybackStatusUpdate({ isLoaded: false, error: "synthetic-error" }); e.render();
+  assert.equal(gate.isBlocked(), false); assert.equal(gate.canReview(), true);
+});
+
+for (const os of ["android", "ios"]) for (const ending of ["unload", "error", "switch", "blur"]) {
+  test(`${os}: video ${ending} releases its presentation blocker and old media cannot block the new source`, () => {
+    const gate = require("./reviewPresentationGate").createPresentationGate(); gate.setBlocked("app-update", false);
+    const e = screenEnvironment("ProjectDetailScreen", { os, onAdBlock: gate.setBlocked });
+    e.props.projects = [{ ...e.props.projects[0], videoUrl: "https://example.test/first.mp4" }]; e.render();
+    const player = walk(e.h.tree, n => n.type === "Video")[0];
+    player.props.onPlaybackStatusUpdate({ isLoaded: true, isPlaying: true, positionMillis: 1000 }); e.render();
+    assert.equal(gate.isBlocked(), true);
+    if (ending === "unload") player.props.onPlaybackStatusUpdate({ isLoaded: false });
+    if (ending === "error") player.props.onError();
+    if (ending === "blur") e.setFocused(false);
+    if (ending === "switch") {
+      e.props.projects = [{ ...e.props.projects[0], videoUrl: "https://example.test/next.mp4" }]; e.render();
+      player.props.onPlaybackStatusUpdate({ isLoaded: true, isPlaying: true, positionMillis: 2000 });
+    }
+    e.render(); assert.equal(gate.isBlocked(), false); assert.equal(gate.canReview(), true);
+  });
+}
+
+test("publication guidance waits for advertising to close and an old account cannot inherit its result", async () => {
+  const ad = deferred(); let checks = 0;
+  const e = screenEnvironment("ProjectDetailScreen", { adResult: () => ad.promise,
+    registration: { status: "ready", byVideo: { a: [] }, retry() { checks++; } } });
+  await publishSuccessfully(e);
+  assert.equal(e.adAttempts.length, 1); assert.equal(e.adAttempts[0](), true);
+  assert.equal(checks, 0); assert.equal(walk(e.h.tree, node => node.type === "ViewingModal").length, 0);
+  e.props.currentUserUid = "other"; e.render(); assert.equal(e.adAttempts[0](), false);
+  ad.resolve(true); await new Promise(resolve => setImmediate(resolve)); e.render();
+  assert.equal(checks, 0); assert.equal(walk(e.h.tree, node => node.type === "ViewingModal").length, 0);
+});
 
 test("publication waits for server membership confirmation; dismissing retains the existing inline route", async () => {
   let checks = 0;

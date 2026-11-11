@@ -140,6 +140,28 @@ test("a committed submission with different retry inputs preserves the new draft
   assert.equal(input().props.value, "Changed after acknowledgement failure"); assert.equal(s.alerts.at(-1)[0], "前回の提出を確認しました"); s.h.unmount();
 });
 
+test("only a new successful diary submission offers an ad, after acknowledgement, and the opportunity expires on account change", async () => {
+  for (const duplicate of [false, true]) {
+    const opportunities = [];
+    const s = screenHarness("DiaryScreen", { createDailyReport: async (_team, report) => ({ ...report, existingSubmission: duplicate }) });
+    s.change({ onDiarySubmitted: safe => opportunities.push(safe) });
+    await tick(); s.h.render();
+    const input = s.h.find(n => n.type === "TextInput" && n.props.placeholder?.startsWith("今日の練習"));
+    input.props.onChangeText("Synthetic completed report"); s.h.render(); await tick();
+    await s.button("この内容で1日の日報を提出する").props.onPress(); s.h.render();
+    assert.equal(opportunities.length, 0);
+    const completion = s.alerts.find(alert => alert[0] === "提出完了"); assert.ok(completion);
+    completion[2][0].onPress(); assert.equal(opportunities.length, duplicate ? 0 : 1);
+    if (!duplicate) {
+      // A retained report-detail modal also prevents presentation.
+      assert.equal(opportunities[0](), false);
+      s.change({ currentUserUid: "other" }, { user: { uid: "other" } });
+      assert.equal(opportunities[0](), false);
+    }
+    s.h.unmount();
+  }
+});
+
 for (const os of ["android", "ios"]) test(`${os}: save failure preserves input; retry reuses ID and double tap makes one write`, async () => {
   const pending = deferred(), ids = [];
   const s = screenHarness("DiaryScreen", { createDailyReport: async (_team, report) => { ids.push(report.id); if (ids.length === 1) return pending.promise; return report; } }, os);
@@ -227,6 +249,7 @@ test("App reads the gate from the existing team listener, defaults OFF, and igno
     "./src/utils/dailyReportScope": require("../utils/dailyReportScope"),
     "./src/utils/historyLoading": require("../utils/historyLoading"), "./src/utils/medicalScale": require("../utils/medicalScale"),
     "./src/ads/AdManager": { useAds: () => ({ configureInterstitial: idle }) }, "./src/ads/adSettings": require("../ads/adSettings"),
+    "./src/ads/navigationTransitionGate": require("../ads/navigationTransitionGate"),
     "@react-navigation/native": { useNavigationContainerRef: () => ({}) },
     "@react-navigation/native-stack": { createNativeStackNavigator: () => ({ Screen: "Screen", Navigator: "Navigator" }) },
     "@react-native-community/netinfo": { __esModule: true, default: { addEventListener: () => idle } },
