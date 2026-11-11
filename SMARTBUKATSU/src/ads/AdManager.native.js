@@ -87,15 +87,21 @@ const AdsContext = createContext(defaultAdsContext);
 
 export const AdsProvider = ({ children }) => {
   const { user, loading, activeTeamId, isTeamSwitching, emailVerificationPending,
-    currentMemberProfile, adProfileResolved, adMinimumAgeConfirmed } = useAuth();
+    adAdultConfirmed, adProfileResolved, adMinimumAgeConfirmed } = useAuth();
   const agePolicy = resolveAdAgePolicy({
     uid: user?.uid, profileResolved: adProfileResolved,
-    minimumAgeConfirmed: adMinimumAgeConfirmed, membershipRole: currentMemberProfile?.role,
+    minimumAgeConfirmed: adMinimumAgeConfirmed, adultConfirmed: adAdultConfirmed,
   });
   const enabled = Boolean(user?.uid && adProfileResolved && !loading &&
-    !isTeamSwitching && !emailVerificationPending);
+    !emailVerificationPending);
   const [consentRevision, setConsentRevision] = useState(0);
-  const sessionKey = JSON.stringify([user?.uid || "", activeTeamId || "", agePolicy.audience, enabled, consentRevision]);
+  const sessionKey = JSON.stringify([user?.uid || "", agePolicy.audience, enabled, consentRevision]);
+  // Keep account-wide inventory while invalidating each team's old opportunity.
+  const teamScopeRef = useRef({ key: null, revision: 0 });
+  const teamKey = JSON.stringify([user?.uid || "", activeTeamId || "", Boolean(isTeamSwitching)]);
+  if (teamScopeRef.current.key !== teamKey) {
+    teamScopeRef.current = { key: teamKey, revision: teamScopeRef.current.revision + 1 };
+  }
   const latestSessionRef = useRef(sessionKey);
   latestSessionRef.current = sessionKey;
   const [readySession, setReadySession] = useState(null);
@@ -123,7 +129,7 @@ export const AdsProvider = ({ children }) => {
   });
   const controller = controllerRef.current;
   const enabledRef = useRef(false);
-  enabledRef.current = enabled && !privacyBusy;
+  enabledRef.current = enabled && !privacyBusy && !isTeamSwitching;
   const opportunityRef = useRef(0);
   const reservationRef = useRef(null);
   const loadedAtRef = useRef(0);
@@ -152,8 +158,8 @@ export const AdsProvider = ({ children }) => {
   }, [controller, user?.uid, emailVerificationPending]);
   useEffect(() => {
     if (!INTERSTITIAL_ADS_ENABLED || isCaptureEnvironment) return;
-    controller.setActive(enabled && !privacyBusy && AppState.currentState === "active" && !interstitialShowingRef.current);
-  }, [controller, enabled, privacyBusy]);
+    controller.setActive(enabled && !privacyBusy && !isTeamSwitching && AppState.currentState === "active" && !interstitialShowingRef.current);
+  }, [controller, enabled, privacyBusy, isTeamSwitching]);
   useEffect(() => {
     if (!INTERSTITIAL_ADS_ENABLED || isCaptureEnvironment) return;
     const app = AppState.addEventListener("change", state => {
@@ -188,7 +194,9 @@ export const AdsProvider = ({ children }) => {
     if (!interstitial || !interstitialLoadedRef.current) { loadInterstitialRef.current(); return resolve(false); }
     const usageAtOpportunity = opportunity.usageMs;
     const key = latestSessionRef.current, version = ++opportunityRef.current;
+    const teamRevision = teamScopeRef.current.revision;
     const safe = () => version === opportunityRef.current && key === latestSessionRef.current &&
+      teamRevision === teamScopeRef.current.revision &&
       readySessionKeyRef.current === key &&
       interstitialRef.current === interstitial && interstitialLoadedRef.current && loadedEpochRef.current === loadedEpoch &&
       controller.snapshot().date === opportunity.date && controller.snapshot().policyRevision === opportunity.policyRevision &&

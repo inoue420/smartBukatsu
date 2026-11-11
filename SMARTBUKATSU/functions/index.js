@@ -20,6 +20,15 @@ const { getStorage } = require("firebase-admin/storage");
 initializeApp();
 
 const firestore = getFirestore();
+const { createAdAgeProfileBackend } = require("./adAgeProfileBackend");
+const adAgeProfiles = createAdAgeProfileBackend({ firestore, FieldValue, HttpsError });
+exports.ensureAdAgeProfile = onCall({ region: "asia-northeast1", maxInstances: 2 }, adAgeProfiles.ensure);
+exports.updateAdAgeMembership = onDocumentWritten({
+  document: "teams/{teamId}/members/{uid}", region: "asia-northeast1", retry: true, maxInstances: 2,
+}, adAgeProfiles.membershipChanged);
+exports.updateAdAgeUser = onDocumentWritten({
+  document: "users/{uid}", region: "asia-northeast1", retry: true, maxInstances: 2,
+}, adAgeProfiles.userChanged);
 const { createInterstitialSettingsBackend } = require("./interstitialSettingsBackend");
 const interstitialSettings = createInterstitialSettingsBackend({ firestore, FieldValue, HttpsError });
 exports.getInterstitialAdAccess = onCall({ region: "asia-northeast1", maxInstances: 2 }, interstitialSettings.access);

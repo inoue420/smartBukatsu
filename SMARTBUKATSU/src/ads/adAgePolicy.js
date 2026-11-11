@@ -18,11 +18,10 @@ const UNKNOWN = policy("unknown", "child", "G");
 const TEEN = policy("teen", "teen", "T");
 const ADULT = policy("adult", "unspecified", "T");
 
-function resolveAdAgePolicy({ uid, profileResolved, minimumAgeConfirmed, membershipRole } = {}) {
+function resolveAdAgePolicy({ uid, profileResolved, minimumAgeConfirmed, adultConfirmed } = {}) {
   if (!uid || !profileResolved) return UNKNOWN;
-  // Product owner confirms guardian roles are assigned only to adults.
-  // No other team role (including staff/owner/alumni) proves adulthood.
-  if (membershipRole === "guardian") return ADULT;
+  // A server-verified guardian record belongs to the account, not the active team.
+  if (adultConfirmed === true) return ADULT;
   return minimumAgeConfirmed === true ? TEEN : UNKNOWN;
 }
 

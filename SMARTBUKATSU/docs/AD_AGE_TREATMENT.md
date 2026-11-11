@@ -1,5 +1,7 @@
 # 広告の年齢別取り扱い
 
+最新の変更は末尾の「SB-20261111-002：ユーザー単位の年齢確認」を参照。以下のSB-20261109-001の記述は当時の仕様・検証記録であり、現在のチームによる成人判定と切替時の広告破棄は今回置き換える。2026/11/11に本件のFunctions 3件と、公開Rulesへの本人の年齢判定取得許可を反映済み。アプリ配布・サイト編集と公開・実機確認は未実施。
+
 対応日：2026-11-09。管理番号：`SB-20261109-001`。アプリ作業ブランチ：`codex/ad-age-treatment`。
 
 ## 合意した仕様
@@ -335,3 +337,212 @@ git diff --check
 今回もiOS・Firebase・広告ポリシー・先行のAndroid年齢補正、app.config.js、app.json、eas.json、package.json/lockfileは変更していない。この追加修正のためにiOSを再ビルドする必要はない。commit・push・PR作成・EASビルド・管理シート更新は未実施。元に戻す場合は今回の3ファイルの差分だけを戻す。ただしコンパイラ不整合が再発する。データ復元は不要。
 
 管理シート追記案（未書き込み）：Android再ビルドで設定値と実コンパイラの不一致を確認。ルートKotlin Gradleプラグインの版を2.2.20へ固定。関連103テスト・隔離prebuild成功。最小Gradleプロジェクトで修正前2.1.20、修正後2.2.20のプラグイン・実コンパイラ選択を確認。EASネイティブ再ビルド・実機確認待ち。iOS/Firebase変更なし。ブランチ`codex/fix-android-kotlin-classpath`、commit・PR未作成。
+
+## SB-20261111-002：ユーザー単位の年齢確認
+
+対応日：2026-11-11。ブランチ：`codex/user-ad-age-profile`。管理シート「改訂履歴」120行目の登録仕様に基づくローカル実装・検証。Firebase反映、実機確認、アプリ配布、サイト編集・公開は未実施。
+
+### 今回の仕様と変更
+
+- 成人確認は現在のチームではなく、`users/{uid}/adAge/profile` に保存する。いずれかの実在チームで実際の保護者所属をサーバーで確認できたユーザーに、成人確認・根拠・確認日時を記録する。その後のチーム切替・役職変更・退会だけでは成人確認を取り消さない。チーム代表・監督・owner・adminを成人判定の根拠にしない。
+- 成人未確認の場合は、既存の `legalConsent.minimumAgeConfirmed === true` と整数の `minimumAge >= 13` からTEEN・T上限・非パーソナライズを選ぶ。それ以外は未確認として子ども向け保護・G上限・非パーソナライズを維持する。既存の年齢同意は書き換えず、新しい年齢入力や生年月日の収集も追加しない。
+- 成人もT上限。広告への同意・端末設定を引き続き適用し、インタースティシャルの非パーソナライズも維持する。
+- 初回広告は、ログインごとのサーバー確認と、その後のサーバー由来の判定スナップショットを待つ。端末キャッシュや未確定の書込みだけでは広告要求を開始しない。アプリ側は年齢区分の判定を現在の所属プロフィールから行わない。
+- ユーザー・年齢区分・広告同意が同じなら広告セッションを維持する。同じチームの再選択や別チームでの保護者プロフィール取得を理由にバナーを作り直さない。
+- 全画面広告の表示可否はチーム切替状態を別途確認する。チームの世代番号を持ち、切替前に予約された表示機会は、元のチームへ戻っても復活させない。既存の日次回数・利用時間・表示契機は維持する。
+- ログアウト、別アカウント、実際の年齢区分変更、同意変更、広告要求不可では旧広告・非同期処理を無効化する。停止済みの年齢情報購読の遅延通知も無視する。
+- 年齢情報の取得失敗後は前面復帰・通信復帰を契機に、最低60秒間隔で再試行する。常時ポーリングは追加しない。iOSで休止中の通信変化を取り逃した場合は前面復帰時に通信状態を再確認する。Web・撮影モードでは新しい取得・復帰処理を開始しない。
+
+### ファイルごとの内容
+
+| ファイル | 内容 |
+| --- | --- |
+| `functions/adAgeProfileBackend.js`（新規） | 初回確認、保護者所属検証、年齢情報保存、役職・利用者情報変更の処理。トランザクションで競合を防止。アカウント文書の作成時刻で同じUIDの旧記録を区別 |
+| `functions/index.js` | `ensureAdAgeProfile`、`updateAdAgeMembership`、`updateAdAgeUser`を登録。すべてasia-northeast1・最大2インスタンス |
+| `firestore.rules` | 年齢情報は本人が既知のprofile文書だけ取得可能。クライアントの作成・更新・削除・一覧取得と他ユーザーの取得を拒否。既存ルールは維持 |
+| `src/services/adAgeProfileService.js`（新規） | 初回サーバー確認、専用文書の購読、キャッシュ・古い通知の除外、通信復帰、購読解除 |
+| `src/AuthContext.js` | 年齢情報サービスの結果を広告へ提供。チーム選択で購読し直さず、アカウント変更時に破棄。チーム内の権限判定・登録手順は維持 |
+| `src/ads/adAgePolicy.js` | 現在の保護者ロールによる成人判定を、ユーザー単位の成人確認に置換 |
+| `src/ads/AdManager.native.js` | 広告セッションからチームID・切替状態を分離。バナーを保持し、全画面広告の切替中表示・古い表示予約を抑止 |
+| `functions/adAgeProfileBackend.test.js`（新規） | 根拠検証・永続化・役職変更・アカウント再作成・入力検証・不要な再走査の抑止 |
+| `src/services/adAgeProfileService.test.cjs`（新規） | 初回確認待ち、キャッシュ、通信復帰、旧アカウント・停止済み購読、Web・撮影モード |
+| `src/ads/adAgeProfile.rules.test.cjs`（新規） | 実Firestoreエミュレーターで権限・同時初期化・保護者への変更・成人確認日時の保持・ユーザー削除を検証 |
+| `src/ads/adAgePolicy.test.cjs` | Android/iOSの年齢区分、チーム切替での初期化回数・key・要求条件の保持、古い全画面広告予約の取消 |
+| `src/services/emailVerification.test.cjs` | 新しいサービスの境界と、アカウント分離・年齢情報の購読保持を検証 |
+| `src/services/teamSwitching.test.cjs` | AuthContextの新しいサービス依存をテスト用に置換。既存の切替仕様・テストの期待値は変更しない |
+| `docs/AD_AGE_TREATMENT.md` | 本作業の仕様、変更・検証記録、公開文案、管理シート追記案 |
+
+`App.js`、`AppBannerAd.native.js`、広告SDK・Android補正、package/lockfile、Expo/EAS設定、アプリ版・識別子・権限、`src/legal.js` は変更していない。
+
+### Firebaseへの影響と反映順序
+
+保存先は本人のみ取得できる専用のサブコレクションであり、クライアントが編集できる公開ユーザープロフィールへ成人フラグを書いても判定には使用しない。親ユーザー文書の通常編集・取得ルールは変更しない。既存アカウントに新しいメール確認要件は追加せず、アプリの既存のメール確認画面の制御を維持する。
+
+初回確認はユーザー・判定文書を読み、未成人確認者に限り記録済みの所属チームとメンバーを検証する。通常ユーザーは最大5チーム、既存の拡張上限は100チームを想定し、100を超える有効なチームIDは確認失敗として扱う。判定文書の購読が1本増える。成人確認済みではチームの再走査を省き、結果が変わらなければ保存しない。同じ所属集合内でのチーム切替やIDの並び替えではユーザートリガーも再走査しない。
+
+新規FunctionsとRulesを先に反映し、動作確認後にアプリを配布する必要がある。未反映の環境で新アプリを起動すると、年齢情報を確認できず広告を取得しない。本作業ではFirebaseの本番接続・deploy・既存データ移行を行っていない。実際のトリガー配信と実機広告SDKの挙動はローカル検証だけでは保証できない。
+
+### 検証と既知の問題
+
+- 新しい年齢情報・既存広告・認証の対象テストは成功。Android/iOSそれぞれで成人・TEEN・未確認のチーム再選択／切替による再初期化がないことと、初回保護者情報の遅延で広告区分が揺れないことを検証した。
+- 関連20テストファイルの広範囲検証：375件中373件成功、2件失敗。今回追加したサービス依存の置換漏れで一度失敗したチーム切替6件は、テスト境界を補って解消。
+- 残る2件は既存のテスト境界の不整合：`scripts/androidCapture/captureEnvironment.test.cjs` のcapture AdProviderテストが既存の `./interstitialPolicy` 依存を置換していないことと、`src/services/loadingOptimization.test.cjs` の起動テストが既存の `mergeMemberIdentity` を置換していないこと。今回と無関係の期待値・実装は変更せず、失敗を残して報告する。
+- 切り分けのため、`git show HEAD:SMARTBUKATSU/...` で取得した変更前のAdManager・App.js・上記2テストのソースをメモリ上だけで実行した。基点でも46件中44件成功・同じ2件失敗を再現。チェックアウトや実ファイルの差し替えは行っていない。
+- 実Firestoreエミュレーターの新規権限・競合テスト5件と既存の登録・参加検証11件は、合計16件すべて成功。拒否を期待する検証のPERMISSION_DENIED出力は正常。
+- `functions/index.js` と新規バックエンドの構文確認、導入済みAndroid年齢指定補正の検査は成功。
+- 全画面広告の1時間有効期限切れで広告全体が再初期化される既存経路と、iOS復帰時の既存のバナー再読込方針は、本件のユーザー単位化では変更していない。
+- Android/iOSのネイティブビルド、実機での広告配信、通信断からの復旧、バックエンドトリガーの本番配信、AdMobのマッチ率・表示率は未確認。今回のテストからマッチ率改善は断定しない。
+
+実行コマンド（依存追加や外部サービス反映なし）：
+
+```text
+git switch -c codex/user-ad-age-profile
+node --test --test-reporter=tap functions/adAgeProfileBackend.test.js functions/interstitialSettingsBackend.test.js src/services/adAgeProfileService.test.cjs src/services/emailVerification.test.cjs src/ads/adAgePolicy.test.cjs src/ads/AppBannerAd.test.cjs src/ads/adInitializationRecovery.test.cjs src/ads/interstitialPolicy.test.cjs src/ads/interstitialSettingsService.test.cjs src/ads/navigationTransitionGate.test.cjs src/components/InterstitialSettingsPanel.test.cjs src/services/teamSwitching.test.cjs src/services/loadingOptimization.test.cjs src/services/workspaceStartup.test.cjs src/services/appReview.test.cjs src/services/videoViewingService.test.cjs src/services/dailyReportComments.test.cjs src/services/calendarWeekStart.test.cjs scripts/androidCapture/captureEnvironment.test.cjs scripts/patchAdMobAgeTreatment.test.cjs
+node scripts/runLoadingOptimizationTests.cjs C:/projects/IEPpurchase/tmp/iep-p1-010-java/jdk-21.0.12.1+1-jre/bin/java.exe src/ads/adAgeProfile.rules.test.cjs
+node scripts/runLoadingOptimizationTests.cjs C:/projects/IEPpurchase/tmp/iep-p1-010-java/jdk-21.0.12.1+1-jre/bin/java.exe src/services/emailVerification.rules.test.cjs
+node --check functions/index.js
+node --check functions/adAgeProfileBackend.js
+node scripts/patchAdMobAgeTreatment.cjs --check
+git diff --check
+```
+
+### 手動確認と戻し方
+
+反映承認後、テスト広告を使って、他チームに保護者所属があるユーザーの初回起動、同じチームの再選択、別チームへの切替・役職変更、未成年者向け／未確認、別アカウント、同意変更、オフライン起動と復帰、通常のキーボード開閉、切替中の全画面広告抑止を両OSで確認する。専用保存文書が1ユーザーにつき1件となり、成人確認日時が通常の切替で更新されないことも確認する。
+
+ローカルで戻す場合は本件の変更ファイルの差分だけを戻し、新規5ファイルを個別に除く。他の作業を含むreset/cleanは使わない。本番反映していないためデータ復旧は不要。将来サーバーを反映した後にアプリだけを戻す場合、追加文書を一括削除せず、既存クライアントとの互換性と保存済み確認記録を維持する。
+
+### 公式プライバシーポリシー修正文案（未編集・未公開）
+
+対象：別リポジトリ `company-website/smartbukatsu/privacy.html` の「5. 広告」の説明と3区分。既存のヘッダー・フッター・CSSを維持して、次の文面へ置換する案。サイトの編集・版番号・公開は別途承認を得る。
+
+```html
+<p>本サービスはGoogle AdMobおよびGoogle User Messaging Platformを利用する場合があります。広告の配信条件は、利用者ごとに保存する年齢確認の記録、広告への同意状況および端末の設定に応じて扱います。所属チームでの保護者登録をサーバーで確認した場合は、その確認結果・根拠・確認日時を利用者の情報として記録し、チームの切り替えや役割の変更だけでは成人確認を取り消しません。</p>
+<ul>
+  <li><strong>成人確認がなく、13歳以上の確認も済んでいない場合：</strong>子ども向けの保護設定を適用し、広告内容をG相当に制限して、非パーソナライズ広告を要求します。アカウント情報や年齢に関する配信条件を確認できない場合は、広告の取得・表示を見合わせます。</li>
+  <li><strong>13歳以上の確認が済み、成人確認がない場合：</strong>未成年者向けの保護設定を適用します。広告内容はTを上限とする範囲（G・PG・T）とし、非パーソナライズ広告を要求します。</li>
+  <li><strong>保護者として成人確認が済んでいる場合：</strong>保護者の役割は成人にのみ付与する運用とし、成人向けの配信設定を適用します。広告内容はTを上限とする範囲（G・PG・T）とし、バナー広告は同意状況と端末の設定で許可される範囲でパーソナライズされる場合があります。チーム代表・監督等の役割だけでは成人と判定しません。</li>
+</ul>
+```
+
+既存の「インタースティシャルは非パーソナライズ」「Googleのポリシーも適用」等の後続段落は維持する。生年月日を収集しない方針と対象年齢の説明も維持する。
+
+### 管理シート追記案（未書き込み）
+
+対象は `SB-20261111-002` の同じ行。B「実施日」へ2026/11/11、K「ステータス」へレビュー中、F「改定内容」の先頭を「ローカル実装・自動検証済み／Firebase未反映・未配布」にする案。既存の登録仕様は維持する。実機確認が残るため、実装完了日・公開日・対象バージョン・PRは未確定のままとする。
+
+変更ファイル、コマンド、テストの詳細、ブランチ・戻し方は本作業記録に保持する。管理シートには専用列がないため備考へ勝手に統合しない。追加の管理シート更新、commit・push・PR、Firebase/EAS操作は未実施。
+
+### 追加レビュー対応：取得中の通信復旧通知の取りこぼし
+
+同じ管理番号・作業ブランチの通信復帰処理を修正。ユーザーの指摘どおり、初回の年齢情報取得が進行中に通信が復旧すると、`inFlight` による早期returnで復旧通知が失われていた。Android/iOS双方の模擬環境で、復旧後に元の取得が失敗し、さらに120秒進めても要求1回・タイマー0件・年齢情報nullのままとなることを修正前に再現した。
+
+変更は `src/services/adAgeProfileService.js`、同サービスのテスト、本記録の3ファイルに限定する。
+
+- 通信復帰・前面復帰を `recoveryPending` として保持し、複数の通知は1件にまとめる。取得中・バックグラウンド・オフラインの間も復旧意図を保持する。
+- 元の取得が失敗して終了したら、保持した復旧要求を再評価する。前回の取得開始から60秒未満なら残り時間だけ待ち、60秒以上経過していれば直ちに1回だけ再試行する。進行中の要求とは重ねない。
+- 初回のFirestore購読待ちにも同じ仕組みを適用する。購読が動いている間はSDKの自動再接続に任せて追加の初回確認を発行せず、その購読が失敗した場合に保持済みの復旧要求を使う。
+- サーバー由来の正常な年齢情報を取得したら、復旧予約・タイマーを解除する。再試行を開始した時点でも復旧要求を消費し、その再試行が失敗しても新しい外部通知がなければ繰り返さない。
+- 前面復帰時は、取得中でも未解決なら通信状態を確認する。休止中に通信変化を取り逃した場合の古いオフライン状態で復旧を止めない。
+- ログアウト・同一UIDでの再ログイン・別アカウント・購読解除後には、保留していた要求を実行しない。バックグラウンド・再オフライン時は実行を保留し、次の安全な復帰で処理する。
+
+検証：サービスの既存8件にAndroid/iOS各8件の回帰テストを追加し、24件すべて成功。通知の連続、10秒での失敗→残り50秒待機、70秒での失敗→直ちに再試行、成功時の二重取得防止、再試行の再失敗、初回スナップショットの失敗、前面復帰・オフライン・アカウント変更・購読解除を確認した。広告・認証・チーム切替を含む下記175件もすべて成功・失敗0・スキップ0。
+
+```text
+node --test --test-reporter=spec src/services/adAgeProfileService.test.cjs
+node --test --test-reporter=tap src/services/adAgeProfileService.test.cjs src/services/emailVerification.test.cjs src/services/teamSwitching.test.cjs src/ads/adAgePolicy.test.cjs src/ads/AppBannerAd.test.cjs src/ads/adInitializationRecovery.test.cjs
+git diff --check
+```
+
+Android/iOS共通のクライアント処理だけの変更で、Functions・Firestore Rules・保存形式・年齢区分・SDK設定・パッケージ・Web/撮影モードの無接続方針は追加変更していない。本番反映・実機確認・commit・push・PR・管理シートの追加更新は未実施。前節の広範囲検証に残った既存2件のテスト不整合には、この追加修正では手を加えていない。
+
+この追加修正だけを戻す場合は、サービスの復旧要求保持とそれに対応する16テスト・本節だけを取り消す。SB-20261111-002で追加した年齢情報サービス自体や、前回までのユーザー単位の判定・保存処理は削除しない。
+
+### Functions反映結果（2026/11/11）
+
+ユーザーの「functionも変更して」を受け、本件の3関数を `smart-bukatsu` / `asia-northeast1` に新規作成した。Firebase Rules・アプリ配布・公開サイトの変更は、この反映には含めない。
+
+| 関数 | 状態 | ランタイム | 最大インスタンス | 最新リビジョンのトラフィック | 確認したトリガー |
+| --- | --- | --- | --- | --- | --- |
+| `ensureAdAgeProfile` | ACTIVE | Node.js 22・第2世代 | 2 | 100% | Callable（イベントトリガーなし） |
+| `updateAdAgeMembership` | ACTIVE | Node.js 22・第2世代 | 2 | 100% | `teams/{teamId}/members/{uid}` のwritten、失敗時再試行有効 |
+| `updateAdAgeUser` | ACTIVE | Node.js 22・第2世代 | 2 | 100% | `users/{uid}` のwritten、失敗時再試行有効 |
+
+- 反映前は既存62関数・対象3件は未作成。反映後は65関数で、既存62関数の状態・更新時刻・ソース・リビジョン・実行設定・トリガー条件は不変。イベントフィルターの順序だけの差を正規化して比較した。
+- 全3関数で最新の作成リビジョンと準備済みリビジョンが一致し、Cloud Runの準備完了を確認した。
+- 反映済みソースのindex.js・adAgeProfileBackend.js・package.json・package-lock.jsonを配布用ソースと照合し、一致を確認。バックエンド本体はローカル実装とも一致。配布用index.jsは既存関数を混ぜない最小の起動処理と、ローカルindex.jsから抽出した対象3関数の登録のみ。
+- `ensureAdAgeProfile` の未認証HTTP呼出しは401 / UNAUTHENTICATED。本番ユーザーとしての呼出しや、検証用の本番文書作成・更新・削除は行っていない。認証済みの一連の処理とイベントトリガーの本番実行は、今後の実機確認が必要。
+- 反映開始から2026/11/11 20:52（日本時間）の確認時点まで、対象3関数の対象リビジョンにERRORログ0件。ログの本文やユーザーデータは取得せず、時刻・重要度による件数だけ確認した。
+- 公開RulesのRuleset・更新時刻は反映前後で一致。既存のRuleset `bd82930d-7afe-4482-b7bd-3b53496ac28a` を維持。本件の `users/{uid}/adAge/profile` の本人取得許可はまだ未反映のため、新アプリの広告取得を有効にするにはRules反映が必要。
+- Functionsの作成だけでは過去の所属情報を一括走査しない。今後の対象文書変更や、アプリからの初回確認で、必要に応じてユーザー単位の判定文書が作成される。既存のチーム・ユーザー・認証・Storageデータの一括変更や移行は行っていない。
+- 通信復旧通知の保持はアプリ側JSの修正であり、今回のFunctions反映だけでは配布済みアプリへ届かない。Rules反映と、修正を含むアプリ配布・両OSの実機確認が残る。
+
+反映前にバックエンドのテスト11件と構文確認が成功。配布準備の補助スクリプトで名前衝突と依存フォルダ参照の権限エラーを修正した後、限定ソースを準備した。初回のdeployは、失敗時再試行を有効にするCLIの確認で関数作成前に停止した。同じ3関数に限定し、設定済みの再試行を承認する `--force` を付けて再実行し成功した。SDK更新推奨の警告はあったが、依存を更新せず既存版で反映した。
+
+反映・検証用ファイル：`dist/sb-20261111-002-firebase/`。`before.json`、`after.json`、`verification.json`、`authentication.json`、`sources.json`、`logs.json`、最小配布ソースを保存した。認証トークンや本番ユーザーデータは検証記録に含めない。
+
+```text
+node --test --test-reporter=tap functions/adAgeProfileBackend.test.js
+node --check functions/index.js
+node --check functions/adAgeProfileBackend.js
+node dist/sb-20261111-002-firebase/prepare.cjs
+node dist/sb-20261111-002-firebase/ops.cjs snapshot before
+node <キャッシュ済みfirebase-tools/lib/bin/firebase.js> deploy --project smart-bukatsu --config dist/sb-20261111-002-firebase/deploy/firebase.json --only functions:ensureAdAgeProfile,functions:updateAdAgeMembership,functions:updateAdAgeUser --non-interactive --force
+node dist/sb-20261111-002-firebase/ops.cjs snapshot after
+node dist/sb-20261111-002-firebase/ops.cjs smoke
+node dist/sb-20261111-002-firebase/ops.cjs sources
+node dist/sb-20261111-002-firebase/ops.cjs logs
+```
+
+サーバー側を戻す必要がある場合は、新規3関数のみを対象に最新の状態と利用状況を確認し、削除等は別途承認後に行う。既存62関数と公開Rulesは戻さない。新アプリは3関数を必要とするため、アプリ側との整合を確認してから操作する。生成された成人確認記録を一括削除しない。
+
+管理シートの追加更新、commit・push・PR、EASビルド・配布、公開サイト編集は未実施。
+
+### 公開Rulesへの限定追加と既存アプリの影響確認（2026/11/11）
+
+ユーザーの「運用中アプリに影響がなければ変更」という承認条件に従い、公開中Rulesを取得してそのまま保全し、本人の年齢判定文書を個別取得する条件だけを追加した。ローカルRules全体は配布していない。公開中には別件の登録・認証等の差分があるため、それらを持ち込まない。
+
+追加した唯一のブロックは、既存の `match /users/{userId}` の内側：
+
+```text
+// Only the server verifies and stores advertising age information.
+match /adAge/{profileId} {
+  allow get: if signedIn() && userId == uid() && profileId == 'profile';
+  allow list, write: if false;
+}
+```
+
+新たに許可するのはログイン中の本人による `users/{uid}/adAge/profile` のgetのみ。他ユーザー・未認証・別の文書名・一覧取得・クライアント書込みは許可しない。既存のユーザープロフィールやチーム・投稿等の条件は追加変更していない。既存アプリは新しいパスを利用しないため、既存の読み書き条件を変えずに導入できる。
+
+#### 反映前の検証
+
+- 反映前の公開Rulesと配布候補を、それぞれ専用のローカルFirestoreエミュレーターへ適用して比較した。本番のユーザー・チームデータは使っていない。
+- 既存操作37項目で許可・拒否が一致（許可24・拒否13）。プロフィールの取得・名前変更、他人の編集拒否、チーム選択、名簿、連絡、カレンダー、日誌、動画、通知、既存広告設定、バージョン取得、招待コード等を確認した。公開中の既存の未確認メール利用者の扱いも維持する。
+- 本件の新しい取得許可、年齢情報の書込み・削除・他人による取得の拒否、実バックエンドの初期化・競合・成人確認維持、既存の広告共通設定の権限検証まで含め、45件すべて成功・失敗0・スキップ0。
+- 初回の互換性テストでは、同じ招待文書を使い回して後半が「作成」ではなく「更新」になったため、テスト準備の不備による失敗があった。各フェーズの初期状態を揃えて解消し、Rules候補を変更せずに45件成功を確認した。削除・初期化はローカルのdemoエミュレーター内だけで実施した。
+- 公開直前にRulesetと内容ハッシュを再確認し、検証中に公開Rulesが変更されていないことを確認した。配布ファイルも、検証した候補の内容・ハッシュと一致した。
+
+#### 反映後の確認
+
+- 対象：`smart-bukatsu` のCloud Firestore Rules。Functions・Storage Rules・インデックス・アプリ版・本番データはこの操作では変更していない。
+- CLIでコンパイル成功・配布成功。2026/11/11 21:03（日本時間）に公開Rulesを再取得し、配布候補と完全一致することを確認した。
+- 追加ブロックがちょうど1件であり、そのブロックだけを除くと反映前の公開Rulesと文字列として完全一致することを確認した。既存の許可・拒否条件は維持されている。
+- 反映前Ruleset：`bd82930d-7afe-4482-b7bd-3b53496ac28a`
+- 反映後Ruleset：`1909dadb-93fc-4a5a-b18e-6f9b2ea3eced`
+- 公開後の更新時刻：`2026-11-11T12:02:34.816261Z`
+
+反映前後のRulesと検証結果は `dist/sb-20261111-002-firebase/` の `before-ad-age.rules`、`ad-age-public.rules`、`after-ad-age.rules`、`rules-before.json`、`rules-compatibility.json`、`rules-verification.json` に保存。配布用設定は `deploy/rules.firebase.json` で、Firestore Rules以外の配布設定を含めていない。
+
+```text
+node dist/sb-20261111-002-firebase/rules-ops.cjs prepare
+node scripts/runLoadingOptimizationTests.cjs C:/projects/IEPpurchase/tmp/iep-p1-010-java/jdk-21.0.12.1+1-jre/bin/java.exe dist/sb-20261111-002-firebase/rules-validation.test.cjs
+node dist/sb-20261111-002-firebase/rules-ops.cjs guard
+node <キャッシュ済みfirebase-tools/lib/bin/firebase.js> deploy --project smart-bukatsu --config dist/sb-20261111-002-firebase/deploy/rules.firebase.json --only firestore:rules --non-interactive
+node dist/sb-20261111-002-firebase/rules-ops.cjs verify
+```
+
+本件で必要なFunctionsと本人取得用Rulesは反映済み。ユーザー単位の広告判定と通信復旧の修正を利用するには、修正を含むアプリ配布とAndroid/iOSの実機確認が引き続き必要。運用中アプリの実機操作や、本番ユーザーデータを用いる動作確認はこの検証には含めていない。
+
+戻す必要がある場合は、最新の公開Rulesを再取得したうえで本件の追加ブロックだけを取り除く。保存した旧Rules全体をそのまま再配布して、後続の別件変更を上書きしない。戻すための公開操作は別途承認後に実施する。新アプリの年齢情報取得にはこの許可が必要なため、戻す場合はアプリとの整合も確認する。
+
+管理シートの追加更新、commit・push・PR、アプリ配布、サイト編集・公開は未実施。
