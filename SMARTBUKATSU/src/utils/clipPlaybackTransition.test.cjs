@@ -128,6 +128,7 @@ function harness(overrides = {}) {
     hasReachedPlaylistEnd: false, hasReachedPlaylistEndRef: { current: false },
     activeTab: "summary", selectedHighlightProjectId: "project", ytId: null,
     notePlayback: null,
+    playbackSpeed: { onNativeStatus() {} },
     focused: true, referencesPending: false, initialNotePlayback: { current: { waitingForSource: false } },
     noteResumeRef: { current: null }, noteClipKey: require("./tacticalNotes").noteClipKey,
     setNotePlaybackError: (key) => events.alerts.push(key),

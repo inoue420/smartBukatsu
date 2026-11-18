@@ -219,7 +219,9 @@ function screenEnvironment(name, { role = "owner", registration = { status: "rea
     "../AuthContext": { useAuth: () => ({ activeTeamId: teamId, user: { uid: "self" } }) }, "../firebase": { auth: { currentUser: { uid: "self" } } },
     "../utils/recordedTagPermissions": permissions, "../utils/videoViewingGuidance": guidance,
     "../utils/clipPlaybackTransition": require("../utils/clipPlaybackTransition"), "../utils/tacticalNotes": require("../utils/tacticalNotes"),
+    "../utils/youtubePlaybackRateBridge": require("../utils/youtubePlaybackRateBridge"),
     "../hooks/useVideoViewingRegistration": { useVideoViewingRegistration: () => registration },
+    "../hooks/useVideoPlaybackRate": load("src/hooks/useVideoPlaybackRate.js", { react: h.react }),
     "../services/historyDataService": { subscribeProjectsByIds: (_team, _ids, next) => { next([v]); return idle; }, subscribeHistoryDocument: (team, _name, id, next) => { historyRequests.push({ team, id, next }); return idle; } },
     "../components/HistoryLoadingControls": { __esModule: true, default: "HistoryLoadingControls" },
     "../components/GuideHelpLink": { __esModule: true, default: "GuideHelpLink" },
@@ -246,12 +248,12 @@ test("video list shows scoped counts, opens registration with selected sources, 
   button(h, "閲覧用プロジェクトに追加する").onPress(); e.render();
   const dialog = walk(h.tree, node => node.type === "ViewingModal")[0]; assert.equal(dialog.props.videos[0].id, "a");
   dialog.props.onCompleted({ id: "saved", title: "閲覧", videoIds: ["a"] }); e.render();
-  assert.ok(walk(h.tree, node => node.type === "Text").some(node => textOf(node) === "閲覧"));
+  assert.equal(walk(h.tree, node => node.type === "YoutubePlayer")[0]?.props.videoId, "abcdefghijk");
   const route = screenEnvironment("ProjectListScreen", { params: { viewingProjectId: "older", viewingTeamId: "team" } });
   assert.equal(route.props.route.params.viewingProjectId, undefined);
   assert.equal(route.historyRequests[0].id, "older");
   route.historyRequests[0].next({ id: "older", title: "過去の閲覧先", videoIds: ["a"] }); route.render();
-  assert.ok(walk(route.h.tree, node => node.type === "Text").some(node => textOf(node) === "過去の閲覧先"));
+  assert.equal(walk(route.h.tree, node => node.type === "YoutubePlayer")[0]?.props.videoId, "abcdefghijk");
   const wrong = screenEnvironment("ProjectListScreen", { params: { viewingProjectId: "foreign", viewingTeamId: "other" } });
   assert.equal(wrong.props.route.params.viewingProjectId, undefined); assert.equal(wrong.navigationCalls.length, 0);
   assert.equal(wrong.historyRequests.length, 0);
