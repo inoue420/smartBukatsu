@@ -36,8 +36,10 @@ import HistoryLoadingControls from "../components/HistoryLoadingControls";
 import GuideHelpLink from "../components/GuideHelpLink";
 import VideoViewingRegistrationModal, { ViewingProjectPicker } from "../components/VideoViewingRegistrationModal";
 import { useVideoViewingRegistration } from "../hooks/useVideoViewingRegistration";
+import { useVideoPlaybackRate } from "../hooks/useVideoPlaybackRate";
+import { YOUTUBE_PLAYBACK_RATE_BRIDGE } from "../utils/youtubePlaybackRateBridge";
 import { canManageViewingProject, hasViewingTags, viewingPermissions } from "../utils/videoViewingGuidance";
-import { canReadNotes, canPostNotes, noteClipKey, toggleNoteClipSelection, buildNoteClips, buildNotePlaybackClips } from "../utils/tacticalNotes";
+import { canReadNotes, noteClipKey, toggleNoteClipSelection, buildNoteClips, buildNotePlaybackClips } from "../utils/tacticalNotes";
 import {
   createProject,
   createHighlightProject,
@@ -70,6 +72,8 @@ const DEFAULT_TAG_GROUP = {
 };
 const DEFAULT_CLIP_PRE_SECONDS = 5;
 const DEFAULT_CLIP_POST_SECONDS = 3;
+const FULLSCREEN_CONTROL_TOP = 20;
+const VIDEO_TAG_GAP = 8;
 // Set false to restore the previous fixed layout for the note scene picker.
 // Normal video viewing never uses this layout switch.
 const NOTE_PICKER_SCROLL_LAYOUT = true;
@@ -270,7 +274,7 @@ const ProjectListScreen = ({
 
   const notePicker = route?.params?.notePicker;
   const useScrollableNotePicker = Boolean(notePicker) && NOTE_PICKER_SCROLL_LAYOUT;
-  const [noteActionsOpen, setNoteActionsOpen] = useState(false);
+  const [speedMenuOpen, setSpeedMenuOpen] = useState(false);
   const [noteSelection, setNoteSelection] = useState([]);
   const [activeTab, setActiveTab] = useState(notePicker || notePlayback ? "summary" : "list");
   const [selectedHighlightProjectId, setSelectedHighlightProjectId] =
@@ -285,9 +289,7 @@ const ProjectListScreen = ({
     }, () => { if (active) setReferenceError("プロジェクトを読み込めませんでした。"); });
     return () => { active = false; stop(); };
   }, [activeTeamId, focused, needsHighlight, selectedHighlightProjectId, referenceRetry]);
-  const noteSelectionEnabled = notePicker
-    ? canReadNotes(currentUserProfile) && notePicker.teamId === activeTeamId
-    : canPostNotes(currentUserProfile) && noteActionsOpen;
+  const noteSelectionEnabled = Boolean(notePicker && canReadNotes(currentUserProfile) && notePicker.teamId === activeTeamId);
   const attachedNoteKeys = notePicker?.existingKeys || [];
 
   const { width, height } = useWindowDimensions();
@@ -295,6 +297,16 @@ const ProjectListScreen = ({
   const isLandscape = width > height && !useScrollableNotePicker;
 
   const [isSideUiVisible, setIsSideUiVisible] = useState(false);
+  const [videoTagVisible, setVideoTagVisible] = useState(true);
+  const [playlistToggleHeight, setPlaylistToggleHeight] = useState(44);
+  const [playerSize, setPlayerSize] = useState({ width: 0, height: 0 });
+  // Window dimensions also include space reserved outside this screen (ads,
+  // safe areas). Fit the iframe to the actual player viewport instead.
+  const fullscreenVideoWidth = Math.min(playerSize.width, playerSize.height * 16 / 9);
+  const fullscreenVideoHeight = fullscreenVideoWidth * 9 / 16;
+  // WebView has its own flex container. Give both layers the same fixed frame;
+  // percentage limits on the outer view alone can leave the iframe clipped.
+  const fullscreenWebViewFrame = { flex: 0, width: fullscreenVideoWidth, height: fullscreenVideoHeight };
   const [clipToastMessage, setClipToastMessage] = useState(null);
   const [viewingDraftVideos, setViewingDraftVideos] = useState(null);
   const [viewingChoices, setViewingChoices] = useState(null);
@@ -455,6 +467,7 @@ const ProjectListScreen = ({
     );
   }, [activeHighlightProjects, selectedHighlightProjectId, notePlayback]);
   const scrollNotePickerDetail = useScrollableNotePicker && Boolean(selectedHighlightProject);
+  const viewingProjectOpen = !notePicker && !notePlayback && activeTab === "summary" && Boolean(selectedHighlightProject);
   const ScreenBody = scrollNotePickerDetail ? ScrollView : notePlayback ? KeyboardAvoidingView : View;
   const PlaylistBody = scrollNotePickerDetail ? View : ScrollView;
 
@@ -628,11 +641,12 @@ const ProjectListScreen = ({
   }, []);
 
   const openLandscapeMode = async () => {
+    // Apply the target layout before rotation begins, not after its promise.
+    setIsSideUiVisible(false);
     try {
       await ScreenOrientation.lockAsync(
         ScreenOrientation.OrientationLock.LANDSCAPE_RIGHT,
       );
-      setIsSideUiVisible(false);
     } catch (e) {}
   };
 
@@ -689,6 +703,15 @@ const ProjectListScreen = ({
     return match && match[2].length === 11 ? match[2] : null;
   };
   const ytId = currentClip ? extractYoutubeId(currentClip.url) : null;
+  const playbackSourceKey = ytId || currentClip?.url || "";
+  const playbackSpeed = useVideoPlaybackRate({
+    sourceKey: playbackSourceKey,
+    enabled: Boolean(focused && !notePicker && !referencesPending && currentClip?.url &&
+      activeTab === "summary" && selectedHighlightProjectId && !isClipEditing &&
+      !hasReachedPlaylistEnd && notePlaybackError !== clipPlaybackKey),
+    isYoutube: Boolean(ytId), youtubeRef, videoRef, youtubeReadyPlayer,
+  });
+  useEffect(() => { setSpeedMenuOpen(false); }, [playbackSourceKey, isLandscape, focused]);
 
   const stopAtClipEnd = useCallback(
     async (clip = currentClip, token = transition.current()) => {
@@ -938,6 +961,7 @@ const ProjectListScreen = ({
   ]);
 
   const handlePlaybackStatusUpdate = (status) => {
+    playbackSpeed.onNativeStatus(status);
     if (isClipEditingRef.current) return;
     if (!status.isLoaded) return;
     const token = transition.current();
@@ -1630,7 +1654,7 @@ const ProjectListScreen = ({
 
   const renderHighlightProjectDetailHeader = () => (
     <View style={styles.highlightDetailHeader}>
-      <TouchableOpacity
+      {notePicker && <TouchableOpacity
         style={styles.highlightBackBtn}
         onPress={() => {
           setSelectedHighlightProjectId(null);
@@ -1638,7 +1662,7 @@ const ProjectListScreen = ({
         }}
       >
         <Text style={styles.highlightBackText}>一覧へ</Text>
-      </TouchableOpacity>
+      </TouchableOpacity>}
       <View style={{ flex: 1 }}>
         <Text style={styles.highlightDetailTitle} numberOfLines={1}>
           {selectedHighlightProject?.title || "プロジェクト"}
@@ -1659,7 +1683,7 @@ const ProjectListScreen = ({
   };
 
   const handleConfirmNoteSelection = () => {
-    if (!noteSelectionEnabled || !noteSelection.length) return;
+    if (!notePicker || !noteSelectionEnabled || !noteSelection.length) return;
     const available = buildNoteClips(projects, { videoIds: projects.map((p) => p.id) });
     const clips = noteSelection.filter((clip) => available.some((current) =>
       noteClipKey(current) === noteClipKey(clip) && current.sourceUrl === clip.sourceUrl));
@@ -1671,41 +1695,58 @@ const ProjectListScreen = ({
     requestClipTransition();
     setIsPlaying(false);
     setHasReachedPlaylistEnd(true);
-    if (notePicker) {
-      navigation.dispatch({ ...CommonActions.setParams({
-        noteAttachmentResult: { clips, sourceId: selectedHighlightProjectId || "", teamId: activeTeamId },
-      }), source: notePicker.returnKey });
-      navigation.goBack();
-    } else {
-      navigation.push("TacticalNotes", { noteSeed: {
-        sourceId: selectedHighlightProjectId, clips,
-        tags: [...selectedHighlightTags], mode: searchMode,
-      } });
-      setNoteSelection([]);
-      setNoteActionsOpen(false);
-    }
+    navigation.dispatch({ ...CommonActions.setParams({
+      noteAttachmentResult: { clips, sourceId: selectedHighlightProjectId || "", teamId: activeTeamId },
+    }), source: notePicker.returnKey });
+    navigation.goBack();
   };
 
+  const showPlaybackSpeed = !notePicker && activeTab === "summary" && selectedHighlightProjectId && currentClip?.url && !referencesPending;
+  const hasVideoTag = !notePlayback && Boolean(currentClip?.originalLabel);
+  const speedLabel = playbackSpeed.actual !== null ? `${playbackSpeed.actual}×`
+    : isClipEditing || hasReachedPlaylistEnd ? "—" : playbackSpeed.error ? "未確認" : "確認中";
+  const speedDisabled = playbackSpeed.pending || !playbackSpeed.rates.length || (playbackSpeed.actual === null && Boolean(playbackSpeed.error));
+  const renderSpeedButton = (overlay = false) => (
+    <TouchableOpacity accessibilityRole="button" accessibilityLabel={`再生速度：${speedLabel}`}
+      accessibilityState={{ expanded: speedMenuOpen, disabled: speedDisabled, busy: playbackSpeed.pending }}
+      disabled={speedDisabled} onPress={() => setSpeedMenuOpen((open) => !open)}
+      style={[styles.speedButton, speedDisabled && { opacity: 0.6 }]}>
+      <Text style={[styles.speedButtonText, overlay && styles.overlaySpeedText]}>⏱ 速度 {speedLabel} {speedMenuOpen ? "▴" : "▾"}</Text>
+    </TouchableOpacity>
+  );
+  const renderTagVisibilityButton = (overlay = false) => (
+    <TouchableOpacity accessibilityRole="switch" accessibilityLabel="動画タグの表示"
+      accessibilityState={{ checked: videoTagVisible }} onPress={() => setVideoTagVisible((visible) => !visible)}
+      style={styles.tagVisibilityButton}>
+      <Text style={[styles.tagVisibilityText, overlay && styles.overlaySpeedText]}>🏷 タグ{videoTagVisible ? "ON" : "OFF"}</Text>
+    </TouchableOpacity>
+  );
+  const renderSpeedOptions = (overlay = false) => speedMenuOpen && (
+    <View style={styles.speedOptions} accessibilityRole="radiogroup" accessibilityLabel="再生速度を選択">
+      {playbackSpeed.rates.map((rate) => <TouchableOpacity key={rate} accessibilityRole="radio"
+        accessibilityLabel={`再生速度 ${rate}倍`} accessibilityState={{ checked: playbackSpeed.actual === rate, disabled: speedDisabled }}
+        disabled={speedDisabled} onPress={() => { playbackSpeed.select(rate); setSpeedMenuOpen(false); }}
+        style={[styles.speedOption, overlay && styles.overlaySpeedOption, playbackSpeed.actual === rate && styles.speedOptionSelected]}>
+        <Text style={[styles.speedButtonText, (overlay || playbackSpeed.actual === rate) && styles.overlaySpeedText]}>{rate === 1 ? "通常（1×）" : `${rate}×`}</Text>
+      </TouchableOpacity>)}
+    </View>
+  );
+  const renderSpeedError = (overlay = false) => Boolean(playbackSpeed.error) && (
+    <Text accessibilityRole="alert" style={[styles.speedError, overlay && styles.overlaySpeedError]}>{playbackSpeed.error}</Text>
+  );
   const renderNoteSelectionControls = () => {
-    if (notePlayback) return null;
-    if (!notePicker && (!canPostNotes(currentUserProfile) || activeTab !== "summary")) return null;
-    return <View style={{ backgroundColor: "#f0f6fc", paddingHorizontal: 10, paddingVertical: 4 }}>
-      {!notePicker && <TouchableOpacity accessibilityRole="button" accessibilityState={{ expanded: noteActionsOpen }}
-        onPress={() => setNoteActionsOpen((open) => !open)} style={{ alignSelf: "flex-end", padding: 6 }}>
-        <Text style={{ color: COLORS.primary, fontSize: 12 }}>戦術ノート {noteActionsOpen ? "▾" : "▸"}</Text>
-      </TouchableOpacity>}
-      {(notePicker || noteActionsOpen) && <>
-        <Text style={{ color: COLORS.textSub, fontSize: 12 }}>左のチェックで場面を選択・カードを押すと再生。絞り込みやプロジェクトを変えても選択は保持されます。</Text>
-        <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
-          <TouchableOpacity accessibilityRole="button" disabled={!noteSelectionEnabled || !noteSelection.length}
-            accessibilityState={{ disabled: !noteSelectionEnabled || !noteSelection.length }}
-            onPress={handleConfirmNoteSelection} style={[styles.noteSelectionButton, { opacity: noteSelectionEnabled && noteSelection.length ? 1 : 0.4 }]}>
-            <Text style={styles.noteSelectionButtonText}>{notePicker ? `選択した${noteSelection.length}件を追加` : `選択した${noteSelection.length}件でノートを作成`}</Text>
-          </TouchableOpacity>
-          {!!noteSelection.length && <TouchableOpacity onPress={() => setNoteSelection([])}><Text>選択解除</Text></TouchableOpacity>}
-          {notePicker && <TouchableOpacity onPress={() => navigation.goBack()}><Text>キャンセル</Text></TouchableOpacity>}
-        </View>
-      </>}
+    if (!notePicker || isLandscape) return null;
+    return <View testID="video-top-toolbar" style={{ backgroundColor: "#f0f6fc", paddingHorizontal: 10, paddingVertical: 4 }}>
+      <Text style={{ color: COLORS.textSub, fontSize: 12 }}>左のチェックで場面を選択・カードを押すと再生。絞り込みやプロジェクトを変えても選択は保持されます。</Text>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
+        <TouchableOpacity accessibilityRole="button" disabled={!noteSelectionEnabled || !noteSelection.length}
+          accessibilityState={{ disabled: !noteSelectionEnabled || !noteSelection.length }}
+          onPress={handleConfirmNoteSelection} style={[styles.noteSelectionButton, { opacity: noteSelectionEnabled && noteSelection.length ? 1 : 0.4 }]}>
+          <Text style={styles.noteSelectionButtonText}>{`選択した${noteSelection.length}件を追加`}</Text>
+        </TouchableOpacity>
+        {!!noteSelection.length && <TouchableOpacity onPress={() => setNoteSelection([])}><Text>選択解除</Text></TouchableOpacity>}
+        <TouchableOpacity onPress={() => navigation.goBack()}><Text>キャンセル</Text></TouchableOpacity>
+      </View>
     </View>;
   };
 
@@ -1839,7 +1880,15 @@ const ProjectListScreen = ({
 
   const renderVideoPlayer = () => (
     <View
+      testID="video-player-area"
       style={[styles.videoPlayerArea, isLandscape && styles.fsVideoPlayerArea]}
+      onLayout={({ nativeEvent: { layout } }) => {
+        const { width: playerWidth, height: playerHeight } = layout;
+        if (playerWidth > 0 && playerHeight > 0) {
+          setPlayerSize((previous) => previous.width === playerWidth && previous.height === playerHeight
+            ? previous : { width: playerWidth, height: playerHeight });
+        }
+      }}
       onTouchStart={Keyboard.dismiss}
     >
       {notePlayback && (!currentClip?.url || notePlaybackError === clipPlaybackKey) ? (
@@ -1855,19 +1904,36 @@ const ProjectListScreen = ({
       ) : ytId ? (
         <View
           style={[
-            styles.youtubeContainer,
-            isLandscape && styles.fsYoutubeContainer,
+            isLandscape ? styles.fsYoutubeContainer : styles.youtubeContainer,
             { pointerEvents: "auto" },
           ]}
         >
           <YoutubePlayer
             key={ytId}
             ref={youtubeRef}
-            height={isLandscape ? height : 200}
+            height={isLandscape ? fullscreenVideoHeight : 200}
+            width={isLandscape ? fullscreenVideoWidth : undefined}
+            viewContainerStyle={isLandscape ? [styles.fsYoutubePlayer, {
+              left: (playerSize.width - fullscreenVideoWidth) / 2,
+              top: (playerSize.height - fullscreenVideoHeight) / 2,
+            }] : undefined}
+            webViewStyle={isLandscape ? fullscreenWebViewFrame : undefined}
+            webViewProps={{
+              injectedJavaScriptBeforeContentLoaded: YOUTUBE_PLAYBACK_RATE_BRIDGE,
+              injectedJavaScript: YOUTUBE_PLAYBACK_RATE_BRIDGE,
+              ...(isLandscape ? {
+                containerStyle: fullscreenWebViewFrame,
+                automaticallyAdjustContentInsets: false,
+                contentInsetAdjustmentBehavior: "never",
+                scrollEnabled: false,
+              } : {}),
+            }}
             play={isPlaying}
             videoId={ytId}
             onReady={() => setYoutubeReadyPlayer(youtubeRef.current)}
             onChangeState={onYoutubeStateChange}
+            playbackRate={playbackSpeed.requested}
+            onPlaybackRateChange={playbackSpeed.onYoutubeRateChange}
             onError={notePlayback ? handleNotePlaybackError : undefined}
             initialPlayerParams={{ controls: 0, rel: 0 }}
           />
@@ -1880,25 +1946,35 @@ const ProjectListScreen = ({
           style={styles.videoComponent}
           resizeMode={ResizeMode.CONTAIN}
           onPlaybackStatusUpdate={handlePlaybackStatusUpdate}
-          onLoad={() => setNativeLoadVersion((version) => version + 1)}
+          onLoad={() => { playbackSpeed.onNativeLoad(); setNativeLoadVersion((version) => version + 1); }}
           onError={notePlayback ? handleNotePlaybackError : undefined}
           useNativeControls={true}
           shouldPlay={isPlaying}
         />
       )}
 
-      <View style={styles.videoOverlay}>
+      <View style={styles.videoOverlay} pointerEvents="none">
         <Text style={styles.overlayProjectName}>
           {currentClip?.project || ""}
         </Text>
-        {!notePlayback && <Text style={styles.overlayTag}>
+        {!isLandscape && hasVideoTag && videoTagVisible && <Text testID="video-tag-overlay" style={styles.overlayTag}>
           🏷️ {currentClip?.originalLabel || ""}
         </Text>}
       </View>
 
+      {isLandscape && hasVideoTag && videoTagVisible && <View testID="video-tag-overlay" pointerEvents="none"
+        style={[styles.fsVideoTag, { top: FULLSCREEN_CONTROL_TOP + playlistToggleHeight + VIDEO_TAG_GAP }]}>
+        <Text style={styles.overlayTag} numberOfLines={2}>🏷️ {currentClip.originalLabel}</Text>
+      </View>}
+
       {isLandscape && (
         <TouchableOpacity
           style={styles.toggleSideUiBtn}
+          accessibilityRole="button"
+          accessibilityLabel={isSideUiVisible ? "プレイリストを隠す" : "プレイリストを表示"}
+          onLayout={({ nativeEvent: { layout } }) => {
+            if (layout.height > 0) setPlaylistToggleHeight(layout.height);
+          }}
           onPress={() => setIsSideUiVisible(!isSideUiVisible)}
         >
           <Text style={styles.toggleSideUiBtnText}>
@@ -1913,10 +1989,20 @@ const ProjectListScreen = ({
         </View>
       )}
 
-      <View style={[styles.videoControls, { zIndex: 100 }]}>
-        <Text style={styles.videoTimeDisplay}>{formatTime(videoTime)}</Text>
+      <View testID="video-playback-controls" style={[styles.videoControls, { zIndex: 100 }]}>
+        <View style={styles.videoTimeAndSpeed}>
+          <Text style={styles.videoTimeDisplay}>{formatTime(videoTime)}</Text>
+          {showPlaybackSpeed && renderSpeedButton(true)}
+          {hasVideoTag && renderTagVisibilityButton(true)}
+        </View>
+        {showPlaybackSpeed && (speedMenuOpen || Boolean(playbackSpeed.error)) && <View style={styles.overlaySpeedMenu}>
+          {renderSpeedOptions(true)}
+          {renderSpeedError(true)}
+        </View>}
         {!useScrollableNotePicker && <TouchableOpacity
           style={styles.fullscreenBtn}
+          accessibilityRole="button"
+          accessibilityLabel={isLandscape ? "全画面を閉じる" : "全画面にする"}
           onPress={isLandscape ? closeLandscapeMode : openLandscapeMode}
         >
           <Text style={styles.fullscreenBtnText}>
@@ -1945,7 +2031,7 @@ const ProjectListScreen = ({
         )}
         {currentClips.map((clip, index) => (
           <View key={`${clip.projectId}_${clip.id}`} style={{ flexDirection: "row", alignItems: "center" }}>
-          {noteSelectionEnabled && <TouchableOpacity
+          {noteSelectionEnabled && !isLandscape && <TouchableOpacity
             accessibilityRole="checkbox"
             accessibilityLabel={`${clip.project} ${formatTime(clip.start)}からの場面${attachedNoteKeys.includes(noteClipKey(clip)) ? "（添付済み）" : ""}`}
             accessibilityState={{ checked: attachedNoteKeys.includes(noteClipKey(clip)) || noteSelection.some((item) => noteClipKey(item) === noteClipKey(clip)), disabled: clip.status === "private" || attachedNoteKeys.includes(noteClipKey(clip)) }}
@@ -2039,7 +2125,7 @@ const ProjectListScreen = ({
     >
       <StatusBar hidden={isLandscape} />
 
-      <ScreenBody style={{ flex: 1 }} {...(notePlayback ? { behavior: Platform.OS === "ios" ? "padding" : undefined } : {})} {...(scrollNotePickerDetail ? {
+      <ScreenBody style={{ flex: 1, minHeight: 0 }} {...(notePlayback ? { behavior: Platform.OS === "ios" ? "padding" : undefined } : {})} {...(scrollNotePickerDetail ? {
         contentContainerStyle: styles.notePickerScrollContent,
         keyboardShouldPersistTaps: "handled",
         onScrollBeginDrag: Keyboard.dismiss,
@@ -2072,9 +2158,15 @@ const ProjectListScreen = ({
             <TouchableOpacity
               key={tab.id}
               style={[styles.tab, activeTab === tab.id && styles.activeTab]}
+              accessibilityRole="tab"
+              accessibilityLabel={tab.label}
+              accessibilityState={{ selected: activeTab === tab.id }}
+              accessibilityHint={tab.id === "summary" ? "閲覧用プロジェクトの一覧に戻ります" : undefined}
               onPress={() => {
+                requestClipTransition();
+                setSpeedMenuOpen(false);
+                if (tab.id === "summary") setSelectedHighlightProjectId(null);
                 setActiveTab(tab.id);
-                setIsPlaying(false);
               }}
             >
               <Text
@@ -2091,13 +2183,13 @@ const ProjectListScreen = ({
       )}
 
       {renderNoteSelectionControls()}
-      {!notePlayback && !isLandscape && <HistoryLoadingControls history={activeTab === "summary" && !selectedHighlightProject ? highlightHistory : history} label="過去の動画を追加読み込み" />}
+      {!notePlayback && !isLandscape && !viewingProjectOpen && <HistoryLoadingControls history={activeTab === "summary" && !selectedHighlightProject ? highlightHistory : history} label="過去の動画を追加読み込み" />}
       {notePlayback && !isLandscape && <ScrollView keyboardShouldPersistTaps="handled" style={{ maxHeight: 210, flexGrow: 0 }} contentContainerStyle={{ paddingHorizontal: 15 }}>{noteHeader}</ScrollView>}
-      <View style={[styles.content, isLandscape && { padding: 0 }, scrollNotePickerDetail && styles.notePickerFlow]}>
+      <View style={[styles.content, viewingProjectOpen && { paddingTop: 0 }, isLandscape && { padding: 0, minHeight: 0, overflow: "hidden" }, scrollNotePickerDetail && styles.notePickerFlow]}>
         {activeTab === "summary" ? (
           selectedHighlightProject ? (
             <>
-              {!isLandscape && !notePlayback && renderHighlightProjectDetailHeader()}
+              {!isLandscape && !notePlayback && notePicker && renderHighlightProjectDetailHeader()}
               <View
                 style={[
                   styles.summaryContainer,
@@ -2775,7 +2867,7 @@ const styles = StyleSheet.create({
   },
   noUrlText: { fontSize: 12, color: "#e74c3c", marginTop: 5 },
 
-  summaryContainer: { flex: 1, marginHorizontal: -15 },
+  summaryContainer: { flex: 1, minHeight: 0, marginHorizontal: -15 },
   tagSelectorWrapper: {
     paddingHorizontal: 15,
     paddingTop: 10,
@@ -2845,6 +2937,16 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     position: "relative",
   },
+  speedButton: { minHeight: 28, paddingHorizontal: 10, justifyContent: "center" },
+  speedButtonText: { color: COLORS.primary, fontSize: 13, fontWeight: "bold" },
+  speedOptions: { flexDirection: "row", flexWrap: "wrap", gap: 8, paddingBottom: 4 },
+  speedOption: { minHeight: 44, paddingHorizontal: 12, justifyContent: "center", borderWidth: 1, borderColor: COLORS.primary, borderRadius: 6 },
+  speedOptionSelected: { backgroundColor: COLORS.primary },
+  speedError: { color: COLORS.danger, fontSize: 12, paddingBottom: 4 },
+  overlaySpeedText: { color: "#fff" },
+  overlaySpeedOption: { borderColor: "#fff" },
+  overlaySpeedMenu: { position: "absolute", bottom: "100%", left: 0, right: 0, padding: 8, backgroundColor: "rgba(0,0,0,0.9)", borderRadius: 8 },
+  overlaySpeedError: { color: "#ffb4b4" },
   youtubeContainer: { width: "100%", height: 200 },
   videoComponent: {
     position: "absolute",
@@ -2892,6 +2994,9 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "bold",
   },
+  fsVideoTag: { position: "absolute", left: 10, right: 10, alignItems: "flex-end", zIndex: 50 },
+  tagVisibilityButton: { minHeight: 28, paddingHorizontal: 8, justifyContent: "center" },
+  tagVisibilityText: { color: COLORS.primary, fontSize: 12, fontWeight: "bold" },
   videoControls: {
     position: "absolute",
     bottom: 10,
@@ -2901,7 +3006,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     backgroundColor: "rgba(0,0,0,0.6)",
-    padding: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 2,
     borderRadius: 8,
   },
   videoTimeDisplay: {
@@ -2910,7 +3016,9 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     fontFamily: "monospace",
   },
+  videoTimeAndSpeed: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", flexShrink: 1, minWidth: 0 },
   fullscreenBtn: {
+    minHeight: 28,
     paddingHorizontal: 10,
     justifyContent: "center",
   },
@@ -2923,6 +3031,9 @@ const styles = StyleSheet.create({
 
   fsVideoCol: {
     flex: 0.6,
+    minWidth: 0,
+    minHeight: 0,
+    overflow: "hidden",
     backgroundColor: "#000",
     justifyContent: "center",
     position: "relative",
@@ -2935,13 +3046,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
   },
   fsVideoPlayerArea: {
+    flex: 1,
+    minHeight: 0,
     width: "100%",
-    height: "100%",
+    height: undefined,
+    overflow: "hidden",
   },
   fsYoutubeContainer: {
-    width: "100%",
-    justifyContent: "center",
+    ...StyleSheet.absoluteFillObject,
   },
+  fsYoutubePlayer: { position: "absolute", flexShrink: 0 },
   fsTagSelectorWrapper: {
     maxHeight: "45%",
     borderBottomWidth: 0,
@@ -2985,7 +3099,8 @@ const styles = StyleSheet.create({
   toggleSideUiBtn: {
     position: "absolute",
     right: 0,
-    top: 20,
+    top: FULLSCREEN_CONTROL_TOP,
+    minHeight: 44,
     backgroundColor: "rgba(0,119,204,0.85)",
     paddingVertical: 10,
     paddingHorizontal: 12,
