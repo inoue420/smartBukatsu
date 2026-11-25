@@ -83,6 +83,7 @@ function mountBanner(options = {}) {
       AdsConsent: { getConsentInfo() { consentChecks++; return consent(); } },
     },
     "./AdManager": { useAds: () => ads, logAdFailure: (...args) => failures.push(args) },
+    "./adDiagnostics": require("./adDiagnostics"),
     "./adSettings": { NON_PERSONALIZED_AD_REQUEST_OPTIONS: { requestNonPersonalizedAdsOnly: true } },
   };
   const module = { exports: {} };
@@ -141,7 +142,7 @@ function mountBanner(options = {}) {
     setConsent(fn) { consent = fn; },
     async settle() { await flush(); render(); },
     loaded() { assert.ok(bannerNode); bannerNode.props.onAdLoaded(); render(); },
-    failed() { assert.ok(bannerNode); bannerNode.props.onAdFailedToLoad({ code: "network-error" }); render(); },
+    failed(code = "network-error") { assert.ok(bannerNode); bannerNode.props.onAdFailedToLoad({ code }); render(); },
     state(value) { appState.currentState = value; for (const callback of [...appListeners]) callback(value); render(); },
     network(connected, reachable = connected) {
       network = { isConnected: connected, isInternetReachable: reachable };
@@ -415,6 +416,57 @@ test("Android: a healthy banner needs no manual requests on background return or
 });
 
 for (const os of ["ios", "android"]) {
+  const noFill = os === "android" ? "googleMobileAds/error-code-no-fill" : "googleMobileAds/no-fill";
+  const networkError = os === "android" ? "googleMobileAds/error-code-network-error" : "googleMobileAds/network-error";
+
+  test(`${os}: initial no-fill leaves retries to the SDK until a new load result`, async () => {
+    const h = mountBanner({ os });
+    h.failed(noFill);
+    for (let i = 0; i < 3; i++) {
+      h.keyboard(true); h.keyboard(false);
+      h.network(false); h.network(true);
+      h.state("background"); h.state("active");
+      h.advance(31000); await h.settle();
+    }
+    assert.equal(h.consentChecks, 0);
+    assert.equal(h.manualLoads, 0);
+    assert.equal(h.nativeMountLoads, 1);
+    h.loaded();
+    h.state("background"); h.state("active"); h.advance(30000); await h.settle();
+    assert.equal(h.manualLoads, os === "ios" ? 1 : 0);
+    h.unmount();
+  });
+
+  test(`${os}: no-fill cancels a queued retry and a later network error can recover once`, async () => {
+    const h = mountBanner({ os });
+    h.failed(networkError); h.keyboard(true); h.keyboard(false);
+    assert.equal(h.timers.size, 1);
+    h.failed(noFill);
+    assert.equal(h.timers.size, 0);
+    h.advance(60000); await h.settle();
+    assert.equal(h.manualLoads, 0);
+    h.failed(networkError); h.network(false); h.network(true); h.keyboard(true); h.keyboard(false);
+    h.advance(29999); await h.settle(); assert.equal(h.manualLoads, 0);
+    h.advance(1); await h.settle();
+    assert.equal(h.manualLoads, 1);
+    assert.equal(h.consentChecks, 1);
+    h.unmount();
+  });
+
+  test(`${os}: no-fill during a consent check cancels the pending load`, async () => {
+    const h = mountBanner({ os });
+    let finishConsent;
+    h.setConsent(() => new Promise(resolve => { finishConsent = resolve; }));
+    h.failed(networkError); h.network(false); h.network(true); h.advance(30000);
+    assert.equal(h.consentChecks, 1);
+    h.failed(noFill); finishConsent({ canRequestAds: true }); await h.settle();
+    assert.equal(h.timers.size, 0);
+    h.keyboard(true); h.keyboard(false); h.advance(60000); await h.settle();
+    assert.equal(h.manualLoads, 0);
+    assert.equal(h.consentChecks, 1);
+    h.unmount();
+  });
+
   for (const failureWhileHidden of [false, true]) {
     test(`${os}: a failure ${failureWhileHidden ? "during" : "before"} keyboard display resumes only after closing and cooldown`, async () => {
       const h = mountBanner({ os }); h.loaded();
