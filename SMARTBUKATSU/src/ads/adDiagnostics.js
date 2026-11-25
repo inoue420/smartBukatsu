@@ -8,7 +8,8 @@ const KNOWN_ERROR_CODES = new Set([
 ]);
 
 export const getAdErrorCode = (error) => {
-  const code = String(error?.code || "").split("/").pop();
+  // Android banner events use "error-code-no-fill", iOS uses "no-fill".
+  const code = String(error?.code || "").split("/").pop().replace(/^error-code-/, "");
   return KNOWN_ERROR_CODES.has(code) ? code : "unknown";
 };
 

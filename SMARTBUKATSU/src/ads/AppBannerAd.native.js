@@ -16,6 +16,7 @@ import {
 } from "react-native-google-mobile-ads";
 
 import { logAdFailure, useAds } from "./AdManager";
+import { getAdErrorCode } from "./adDiagnostics";
 import { NON_PERSONALIZED_AD_REQUEST_OPTIONS } from "./adSettings";
 
 const RECOVERY_COOLDOWN_MS = 30000;
@@ -50,7 +51,7 @@ const AppBannerAd = () => {
     let online = null;
     let pending = false;
     let loading = Boolean(bannerRef.current);
-    let failed = false;
+    let failure = null;
     let checkingConsent = false;
     let generation = 0;
     let lastActivity = Date.now();
@@ -91,7 +92,7 @@ const AppBannerAd = () => {
         // An SDK refresh may have finished while consent was being checked.
         if (Date.now() - lastActivity < RECOVERY_COOLDOWN_MS) return;
         pending = false;
-        failed = false;
+        failure = null;
         loading = true;
         lastActivity = Date.now();
         recordDiagnostic("consent-allowed");
@@ -100,9 +101,10 @@ const AppBannerAd = () => {
         banner.load();
       } catch (error) {
         if (disposed || generation !== currentGeneration) return;
+        if (!requestStarted && !pending) return;
         pending = false;
         loading = false;
-        failed = true;
+        failure = "retryable";
         lastActivity = Date.now();
         logAdFailure("banner-recovery", error);
         recordDiagnostic(requestStarted ? "banner-error" : "consent-cache-error", error);
@@ -122,22 +124,30 @@ const AppBannerAd = () => {
         checkingConsent = false;
         pending = false;
         loading = Boolean(banner);
-        failed = false;
+        failure = null;
         lastActivity = Date.now();
         cancelTimer();
       },
       loaded() {
         loading = false;
-        failed = false;
+        failure = null;
         pending = false;
         lastActivity = Date.now();
         cancelTimer();
       },
-      failed() {
+      failed(error) {
         loading = false;
-        failed = true;
-        if (keyboardVisible) pending = true;
         lastActivity = Date.now();
+        const code = getAdErrorCode(error);
+        if (code === "no-fill" || code === "mediation-no-fill") {
+          // Keep the view mounted so the SDK can refresh when it is visible.
+          failure = "no-fill";
+          pending = false;
+          cancelTimer();
+          return;
+        }
+        failure = "retryable";
+        if (keyboardVisible) pending = true;
         void recover();
       },
     };
@@ -151,7 +161,7 @@ const AppBannerAd = () => {
       keyboardVisible = visible;
       keyboardTransitioning = transitioning;
       if (visible) cancelTimer();
-      else if (wasVisible && failed) pending = true;
+      else if (wasVisible && failure === "retryable") pending = true;
       setIsKeyboardVisible(visible);
       if (!visible) void recover();
     };
@@ -176,8 +186,8 @@ const AppBannerAd = () => {
       // isVisible still describes the previous state between Will and Did events.
       if (!keyboardTransitioning) keyboardVisible = Keyboard.isVisible();
       setIsKeyboardVisible(keyboardVisible);
-      if (backgrounded) {
-        if (Platform.OS === "ios" || failed || pending) pending = true;
+      if (backgrounded && failure !== "no-fill") {
+        if (Platform.OS === "ios" || failure === "retryable") pending = true;
         if (pending && adsInitialized && bannerAdUnitId) {
           // iOS can miss network-change events while the app is suspended.
           const currentGeneration = generation;
@@ -198,7 +208,7 @@ const AppBannerAd = () => {
           online = state.isConnected === false || state.isInternetReachable === false
             ? false : state.isConnected === true ? true : null;
           if (online === false) cancelTimer();
-          if (wasOffline && online === true && (failed || pending)) {
+          if (wasOffline && online === true && (failure === "retryable" || pending)) {
             pending = true;
             void recover();
           }
@@ -259,7 +269,7 @@ const AppBannerAd = () => {
           }}
           onAdFailedToLoad={(error) => {
             if (!requestsAllowedRef.current || currentSessionRef.current !== adSessionKey) return;
-            lifecycleRef.current?.failed();
+            lifecycleRef.current?.failed(error);
             logAdFailure("banner-load", error);
             recordDiagnostic("banner-error", error);
           }}
