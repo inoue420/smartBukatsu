@@ -148,6 +148,8 @@ function mountNote(os, overrides = {}) {
     "../components/GuideHelpLink": { __esModule: true, default: "GuideHelpLink" },
     "../components/VideoViewingRegistrationModal": { __esModule: true, default: "ViewingModal", ViewingProjectPicker: "ViewingPicker" },
     "../utils/videoViewingGuidance": require("./videoViewingGuidance"),
+    "../components/YoutubeUploadPanel": { __esModule: true, default: "YoutubeUploadPanel" },
+    "../services/youtubeUploadService": { canUpload: async () => false },
     "../hooks/useVideoViewingRegistration": { useVideoViewingRegistration: (_team, _ids, enabled) => {
       assert.equal(enabled, overrides.registrationEnabled === true, "registration checks must match the viewing mode");
       return { status: "loading", byVideo: {}, retry() {} };

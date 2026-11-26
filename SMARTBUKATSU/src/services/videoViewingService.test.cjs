@@ -202,7 +202,7 @@ for (const os of ["android", "ios"]) {
   });
 }
 
-function screenEnvironment(name, { role = "owner", registration = { status: "ready", byVideo: { a: [] }, retry: idle }, params = {}, os = "android", popupEnabled = true, adResult = async () => false, onAdBlock = idle } = {}) {
+function screenEnvironment(name, { role = "owner", registration = { status: "ready", byVideo: { a: [] }, retry: idle }, params = {}, os = "android", popupEnabled = true, adResult = async () => false, onAdBlock = idle, youtube = { canUpload: async () => false } } = {}) {
   const h = hooks(), navigationCalls = [], alerts = [], writes = [], historyRequests = [], adAttempts = [];
   let focused = true, teamId = "team";
   const v = video("a", { tags: [{ id: "t", label: "得点", videoTime: 10, status: "private", uid: "self", user: "監督" }] });
@@ -220,6 +220,8 @@ function screenEnvironment(name, { role = "owner", registration = { status: "rea
     "../utils/recordedTagPermissions": permissions, "../utils/videoViewingGuidance": guidance,
     "../utils/clipPlaybackTransition": require("../utils/clipPlaybackTransition"), "../utils/tacticalNotes": require("../utils/tacticalNotes"),
     "../utils/youtubePlaybackRateBridge": require("../utils/youtubePlaybackRateBridge"),
+    "../components/YoutubeUploadPanel": { __esModule: true, default: "YoutubeUploadPanel" },
+    "../services/youtubeUploadService": youtube,
     "../hooks/useVideoViewingRegistration": { useVideoViewingRegistration: () => registration },
     "../hooks/useVideoPlaybackRate": load("src/hooks/useVideoPlaybackRate.js", { react: h.react }),
     "../services/historyDataService": { subscribeProjectsByIds: (_team, _ids, next) => { next([v]); return idle; }, subscribeHistoryDocument: (team, _name, id, next) => { historyRequests.push({ team, id, next }); return idle; } },
@@ -241,6 +243,119 @@ function screenEnvironment(name, { role = "owner", registration = { status: "rea
   h.mount(() => component(props)); return { h, props, navigationCalls, alerts, writes, historyRequests, adAttempts,
     setTeam(value) { teamId = value; h.render(); h.render(); },
     setFocused(value) { focused = value; h.render(); h.render(); }, render() { h.render(); return h.render(); } };
+}
+test("upload uses the current video name and requires audience, permission and final public confirmation", async () => {
+  const h = hooks(), sent = [];
+  let videoName = "";
+  const service = {
+    loadUpload: async (_owner, kind) => kind === "connection" ? { connection: "wrapped" } : null,
+    describeConnection: async () => ({ connection: "wrapped", channelId: "channel", title: "自分のチャンネル" }),
+    inspectVideo: asset => asset,
+    async startUpload(_owner, grant, source, metadata) {
+      sent.push([grant.channelId, source.name, metadata.title, metadata.privacy, metadata.publicConfirmed, metadata.kids]);
+      throw new Error("test stop before transfer");
+    },
+  };
+  const panel = load("src/components/YoutubeUploadPanel.js", { react: h.react,
+    "react-native": { ...native("android"), AppState: { addEventListener: () => ({ remove: idle }) } },
+    "expo-av": { Video: "Video", ResizeMode: { CONTAIN: "contain" } },
+    "expo-image-picker": { VideoExportPreset: { Passthrough: 0 }, launchImageLibraryAsync: async () => ({
+      assets: [{ uri: "file:///practice.mp4", name: "試合", size: 10, fileName: "試合.mp4" }],
+    }) }, "../services/youtubeUploadService": service }).default;
+  h.mount(() => panel({ owner: { uid: "self", teamId: "team" }, draft: { title: videoName }, onBusy: idle }));
+  const action = title => walk(h.tree, node => node.props?.title === title)[0]?.props;
+  const press = async title => { const item = action(title); assert.ok(item && !item.disabled, title); await item.onPress(); h.render(); };
+  await tick(); h.render();
+  await press("YouTubeへアップロード"); await tick(); h.render();
+  await press("端末の動画を選ぶ");
+  assert.equal(action("限定公開").selected, true);
+  assert.equal(walk(h.tree, node => node.props?.accessibilityLabel === "YouTube動画タイトル").length, 0);
+  assert.match(textOf(h.tree), /動画名を入力してください。/);
+  assert.equal(action("投稿内容を確認").disabled, true);
+  await press("公開"); await press("動画を選び直す");
+  assert.equal(action("限定公開").selected, true);
+  await press("公開"); await press("いいえ"); await press("撮影・掲載の許可を確認");
+  for (const emptyName of ["", " 　"]) {
+    videoName = emptyName; h.render();
+    assert.equal(action("投稿内容を確認").disabled, true);
+    assert.match(textOf(h.tree), /動画名を入力してください。/);
+  }
+  videoName = "練習試合"; h.render();
+  await press("投稿内容を確認");
+  videoName = ""; h.render();
+  assert.equal(action("公開で投稿する").disabled, true);
+  assert.match(textOf(h.tree), /動画名を入力してください。/);
+  videoName = "  秋季大会 決勝  "; h.render();
+  assert.doesNotMatch(textOf(h.tree), /動画名を入力してください。/);
+  assert.ok(walk(h.tree, node => textOf(node) === "秋季大会 決勝").length);
+  assert.deepEqual(sent, []);
+  await press("公開で投稿する");
+  assert.deepEqual(sent, [["channel", "試合", "秋季大会 決勝", "public", true, false]]);
+});
+
+for (const os of ["android", "ios"]) {
+  test(os + ": a manual video draft survives a role change with continued registration access", () => {
+    const e = screenEnvironment("ProjectListScreen", { os, role: "staff" });
+    button(e.h, "新規追加").onPress(); e.render();
+    const modal = () => walk(e.h.tree, node => node.type === "Modal" &&
+      textOf(node).includes("新しい動画を追加"))[0];
+    const url = () => walk(modal(), node => node.props?.placeholder === "https://youtu.be/...")[0];
+    url().props.onChangeText("https://youtu.be/abcdefghijk");
+    e.props.userProfiles.self.role = "captain"; e.render();
+    assert.equal(modal().props.visible, true);
+    assert.equal(url().props.value, "https://youtu.be/abcdefghijk");
+    e.props.userProfiles.self.role = "member"; e.render();
+    assert.equal(modal().props.visible, false);
+    e.props.userProfiles.self.role = "staff"; e.render();
+    button(e.h, "新規追加").onPress(); e.render();
+    e.setTeam("other-team");
+    assert.equal(modal().props.visible, false);
+  });
+
+  for (const role of ["owner", "guardian"]) {
+    test(os + ": " + role + " restores the last submitted video draft and retries the same YouTube project", async () => {
+      const canLimitAudience = role === "owner";
+      const openLabel = canLimitAudience ? "新規追加" : "YouTube動画を登録";
+      const audience = canLimitAudience ? "coach" : "team";
+      const saves = [];
+      const job = { videoId: "abcdefghijk", title: "試合映像", projectId: "stable-id",
+        draft: { title: "練習試合", type: "試合", participants: "team", tagGroupId: null } };
+      const e = screenEnvironment("ProjectListScreen", { os, role, youtube: {
+        canUpload: async () => true,
+        async saveUploadedProject(owner, project) {
+          const { title, type, participants, tagGroupId } = project;
+          job.draft = { title, type, participants, tagGroupId };
+          saves.push([owner.uid, owner.teamId, project.id, title, participants, project.videoUrl]);
+          if (saves.length === 1) throw new Error("offline");
+        },
+      } });
+      await tick(); e.render();
+      button(e.h, openLabel).onPress(); e.render();
+      await tick(); e.render();
+      const panel = () => walk(e.h.tree, node => node.type === "YoutubeUploadPanel")[0];
+      const input = () => walk(e.h.tree, node => node.props?.placeholder === "https://youtu.be/...")[0];
+      assert.equal(input().props.editable, canLimitAudience);
+      panel().props.onResult(job, false);
+      e.render();
+      assert.equal(input().props.value, "https://www.youtube.com/watch?v=abcdefghijk");
+      const name = () => walk(e.h.tree, node => node.props?.placeholder === "例: 秋季大会 決勝戦")[0];
+      name().props.onChangeText("指導者用の映像");
+      if (canLimitAudience) button(e.h, "指導者のみ").onPress();
+      e.render();
+      await button(e.h, "作成する").onPress(); e.render();
+      assert.equal(e.alerts.at(-1)[0], "アプリへの保存を確認できません");
+      button(e.h, "キャンセル").onPress(); e.render();
+      await tick(); e.render();
+      button(e.h, openLabel).onPress(); e.render();
+      await tick(); e.render();
+      panel().props.onResult(job, true); e.render();
+      assert.equal(name().props.value, "指導者用の映像");
+      assert.equal(panel().props.draft.participants, audience);
+      await button(e.h, "作成する").onPress(); e.render();
+      assert.deepEqual(saves, Array(2).fill(["self", "team", "stable-id", "指導者用の映像", audience, "https://www.youtube.com/watch?v=abcdefghijk"]));
+      assert.equal(e.alerts.at(-1)[0], "成功");
+    });
+  }
 }
 test("video list shows scoped counts, opens registration with selected sources, and handles cross-screen viewing", () => {
   const e = screenEnvironment("ProjectListScreen"), { h } = e;
