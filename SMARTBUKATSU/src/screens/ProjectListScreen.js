@@ -34,6 +34,8 @@ import { CommonActions, useIsFocused } from "@react-navigation/native";
 import { subscribeHistoryDocument, subscribeProjectsByIds } from "../services/historyDataService";
 import HistoryLoadingControls from "../components/HistoryLoadingControls";
 import GuideHelpLink from "../components/GuideHelpLink";
+import YoutubeUploadPanel, { YoutubeConnectionControl } from "../components/YoutubeUploadPanel";
+import { canUpload, saveUploadedProject } from "../services/youtubeUploadService";
 import VideoViewingRegistrationModal, { ViewingProjectPicker } from "../components/VideoViewingRegistrationModal";
 import { useVideoViewingRegistration } from "../hooks/useVideoViewingRegistration";
 import { useVideoPlaybackRate } from "../hooks/useVideoPlaybackRate";
@@ -1041,6 +1043,69 @@ const ProjectListScreen = ({
   );
   const [editTagGroupId, setEditTagGroupId] = useState(DEFAULT_TAG_GROUP_ID);
   const [isSaving, setIsSaving] = useState(false);
+  const [uploadBusy, setUploadBusy] = useState(false);
+  const [uploadResult, setUploadResult] = useState(null);
+  const [allowedUploadIdentity, setAllowedUploadIdentity] = useState(null);
+  const savingUpload = useRef(false);
+  const uploadOwner = useMemo(() => ({ uid: user?.uid, teamId: activeTeamId }), [user?.uid, activeTeamId]);
+  const uploadIdentity = JSON.stringify([user?.uid, activeTeamId, userRole]);
+  const latestUploadIdentity = useRef(uploadIdentity);
+  latestUploadIdentity.current = uploadIdentity;
+  const youtubeAllowed = focused && allowedUploadIdentity === uploadIdentity;
+  useEffect(() => {
+    let active = true;
+    setAllowedUploadIdentity(null);
+    if (Platform.OS !== "web" && focused && uploadOwner.uid && uploadOwner.teamId &&
+        ["owner", "admin", "guardian"].includes(userRole) && (isModalVisible || !canCreateProject)) {
+      canUpload(uploadOwner).then(allowed => {
+        if (active && allowed) setAllowedUploadIdentity(uploadIdentity);
+      }).catch(() => {});
+    }
+    return () => { active = false; };
+  }, [focused, uploadOwner, uploadIdentity, userRole, isModalVisible, canCreateProject]);
+  const previousFormAccess = useRef({ owner: uploadOwner, userRole, canCreateProject });
+  useEffect(() => {
+    const previous = previousFormAccess.current;
+    previousFormAccess.current = { owner: uploadOwner, userRole, canCreateProject };
+    if (previous.owner === uploadOwner && previous.userRole === userRole &&
+        previous.canCreateProject === canCreateProject) return;
+    if (previous.owner !== uploadOwner || !canCreateProject || uploadResult || uploadBusy) {
+      setIsModalVisible(false);
+    }
+    setUploadResult(null);
+    setUploadBusy(false);
+  }, [uploadOwner, userRole, canCreateProject, uploadResult, uploadBusy]);
+  useEffect(() => {
+    if (!focused) setUploadBusy(false);
+  }, [focused]);
+
+  const receiveUpload = (job, restore) => {
+    if (latestUploadIdentity.current !== uploadIdentity) return;
+    const url = "https://www.youtube.com/watch?v=" + job.videoId;
+    const apply = () => {
+      if (latestUploadIdentity.current !== uploadIdentity) return;
+      setVideoUrl(url);
+      setUploadResult({ identity: uploadIdentity, url, projectId: job.projectId });
+      setTitle(current => current || job.draft.title || job.title);
+      if (restore && !title && !videoUrl) {
+        setType(job.draft.type);
+        setParticipants(job.draft.participants);
+        setSelectedTagGroupId(job.draft.tagGroupId ?? DEFAULT_TAG_GROUP_ID);
+      }
+    };
+    if (videoUrl.trim() && videoUrl.trim() !== url) {
+      if (!restore) Alert.alert("入力中のURLを置き換えますか？", url, [
+        { text: "戻る", style: "cancel" }, { text: "反映する", onPress: apply },
+      ]);
+    } else apply();
+  };
+  const restoreUploadDraft = (draft) => {
+    if (latestUploadIdentity.current !== uploadIdentity || title || videoUrl) return;
+    setTitle(draft.title);
+    setType(draft.type);
+    setParticipants(draft.participants);
+    setSelectedTagGroupId(draft.tagGroupId);
+  };
 
   const [isHighlightProjectModalVisible, setIsHighlightProjectModalVisible] =
     useState(false);
@@ -1050,6 +1115,8 @@ const ProjectListScreen = ({
     useState(false);
 
   const handleOpenCreateProjectModal = () => {
+    setUploadResult(null);
+    setUploadBusy(false);
     setTitle("");
     setType("試合");
     setParticipants("team");
@@ -1080,6 +1147,7 @@ const ProjectListScreen = ({
   };
 
   const handleCreateProject = async () => {
+    if (uploadBusy || savingUpload.current) return;
     if (title.trim() === "") {
       return Alert.alert("エラー", "動画名を入力してください。");
     }
@@ -1087,9 +1155,13 @@ const ProjectListScreen = ({
     const realUid = user?.uid || currentUser || "local_user";
 
     const tagGroupFields = buildTagGroupProjectFields(selectedTagGroupId);
+    const fromUpload = uploadResult?.identity === uploadIdentity && uploadResult.url === videoUrl.trim();
+    if (!canCreateProject && !(fromUpload && youtubeAllowed)) {
+      return Alert.alert("動画登録", "自分のYouTube投稿を取得してから作成してください。");
+    }
 
     const newProject = {
-      id: "proj_" + Date.now().toString(),
+      id: fromUpload ? uploadResult.projectId : "proj_" + Date.now().toString(),
       title: title.trim(),
       type: type,
       participants: participants,
@@ -1103,7 +1175,23 @@ const ProjectListScreen = ({
       createdBy: realUid,
     };
 
-    setProjects([newProject, ...projects]);
+    if (fromUpload) {
+      savingUpload.current = true;
+      setIsSaving(true);
+      try {
+        await saveUploadedProject(uploadOwner, newProject);
+      } catch {
+        if (latestUploadIdentity.current === uploadIdentity) {
+          Alert.alert("アプリへの保存を確認できません", "YouTubeへの投稿は完了しています。入力内容を確認して「作成する」で保存を再試行してください。");
+        }
+        return;
+      } finally {
+        savingUpload.current = false;
+        setIsSaving(false);
+      }
+      if (latestUploadIdentity.current !== uploadIdentity) return;
+      setUploadResult(null);
+    } else setProjects([newProject, ...projects]);
     setIsModalVisible(false);
     setTitle("");
     setType("試合");
@@ -1111,6 +1199,7 @@ const ProjectListScreen = ({
     setVideoUrl("");
     setSelectedTagGroupId(DEFAULT_TAG_GROUP_ID);
     Alert.alert("成功", "動画を作成しました！");
+    if (fromUpload) return;
 
     try {
       if (activeTeamId) {
@@ -2247,14 +2336,16 @@ const ProjectListScreen = ({
           <>
             <View style={styles.topRow}>
               <Text style={styles.sectionTitle}>動画一覧</Text>
-              {(canCreateProject || canEditTagGroups) && (
+              {Platform.OS !== "web" && focused && user?.uid && !isModalVisible &&
+                <YoutubeConnectionControl key={user.uid} uid={user.uid} />}
+              {(canCreateProject || youtubeAllowed || canEditTagGroups) && (
                 <View style={styles.topActions}>
-                  {canCreateProject && (
+                  {(canCreateProject || youtubeAllowed) && (
                     <TouchableOpacity
                       style={styles.createBtn}
                       onPress={handleOpenCreateProjectModal}
                     >
-                      <Text style={styles.createBtnText}>新規追加</Text>
+                      <Text style={styles.createBtnText}>{canCreateProject ? "新規追加" : "YouTube動画を登録"}</Text>
                     </TouchableOpacity>
                   )}
                   {canEditTagGroups && (
@@ -2292,7 +2383,8 @@ const ProjectListScreen = ({
       {focused && viewingChoices && <ViewingProjectPicker projects={viewingChoices} onSelect={handleOpenViewingProject} onClose={() => setViewingChoices(null)} />}
 
       {/* プロジェクト作成モーダル */}
-      <Modal visible={isModalVisible} transparent={true} animationType="slide">
+      <Modal visible={isModalVisible} transparent={true} animationType="slide"
+        onRequestClose={() => { if (!uploadBusy && !isSaving) setIsModalVisible(false); }}>
         <KeyboardAvoidingView
           // Measure the full modal so centering the form cannot affect keyboard avoidance.
           enabled={Platform.OS === "android"}
@@ -2426,7 +2518,7 @@ const ProjectListScreen = ({
                   >
                     動画のURL (YouTubeなど)
                   </Text>
-                  {Platform.OS === "android" && (
+                  {Platform.OS === "android" && canCreateProject && (
                     <TouchableOpacity
                       style={styles.pasteVideoUrlBtn}
                       onPress={handlePasteVideoUrl}
@@ -2443,24 +2535,30 @@ const ProjectListScreen = ({
                   style={styles.input}
                   placeholder="https://youtu.be/..."
                   value={videoUrl}
+                  editable={canCreateProject && !uploadBusy && !isSaving}
                   onChangeText={setVideoUrl}
                   onFocus={scrollCreateVideoUrlIntoView}
                   autoCapitalize="none"
                 />
+                {isModalVisible && youtubeAllowed && !isSaving && (
+                  <YoutubeUploadPanel key={uploadIdentity} owner={uploadOwner}
+                    draft={{ title, type, participants, tagGroupId: selectedTagGroupId }}
+                    onRestoreDraft={restoreUploadDraft} onResult={receiveUpload} onBusy={setUploadBusy} onClear={() => setUploadResult(null)} />
+                )}
               </View>
 
               <View style={styles.modalButtons}>
                 <TouchableOpacity
                   style={styles.cancelBtn}
                   onPress={() => setIsModalVisible(false)}
-                  disabled={isSaving}
+                  disabled={isSaving || uploadBusy}
                 >
                   <Text style={styles.cancelBtnText}>キャンセル</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.submitBtn, isSaving && { opacity: 0.7 }]}
                   onPress={handleCreateProject}
-                  disabled={isSaving}
+                  disabled={isSaving || uploadBusy || (!canCreateProject && !uploadResult)}
                 >
                   <Text style={styles.submitBtnText}>
                     {isSaving ? "保存中..." : "作成する"}

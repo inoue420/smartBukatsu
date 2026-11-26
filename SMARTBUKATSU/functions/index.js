@@ -1,11 +1,11 @@
-const { onCall, HttpsError } = require("firebase-functions/v2/https");
+const { onCall, onRequest, HttpsError } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { onObjectFinalized } = require("firebase-functions/v2/storage");
 const {
   onDocumentUpdated,
   onDocumentWritten,
 } = require("firebase-functions/v2/firestore");
-const { defineSecret } = require("firebase-functions/params");
+const { defineSecret, defineString } = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
 const { initializeApp } = require("firebase-admin/app");
 const {
@@ -20,6 +20,29 @@ const { getStorage } = require("firebase-admin/storage");
 initializeApp();
 
 const firestore = getFirestore();
+const { createYoutubeUploadAccess, isUploadMember, syncYoutubeUploadMember } = require("./youtubeUploadAccess");
+const youtubeAccess = createYoutubeUploadAccess({ firestore, HttpsError });
+exports.getYoutubeUploadAccess = onCall(
+  { region: "asia-northeast1", maxInstances: 2 },
+  youtubeAccess,
+);
+const youtubeRosterPath = defineString("YOUTUBE_UPLOAD_ROSTER_PATH", {
+  description: "Membership document pattern for the team selected by invites/AWUH95: teams/<team ID>/members/{uid}",
+});
+exports.syncYoutubeUploadMembership = onDocumentWritten({
+  document: youtubeRosterPath, region: "asia-northeast1", retry: true, maxInstances: 2,
+}, async (event) => {
+  const { before, after } = event.data;
+  if (isUploadMember(before.data()) === isUploadMember(after.data())) return;
+  await syncYoutubeUploadMember(firestore, after.ref);
+});
+const { createYoutubeUpload, oauthReturn } = require("./youtubeUpload");
+const youtubeOAuth = defineSecret("YOUTUBE_UPLOAD_OAUTH");
+exports.youtubeUpload = onCall(
+  { region: "asia-northeast1", maxInstances: 2, secrets: [youtubeOAuth] },
+  createYoutubeUpload({ access: youtubeAccess, HttpsError, settings: () => JSON.parse(youtubeOAuth.value()) }),
+);
+exports.youtubeOAuthReturn = onRequest({ region: "asia-northeast1", maxInstances: 2 }, oauthReturn);
 const { createAdAgeProfileBackend } = require("./adAgeProfileBackend");
 const adAgeProfiles = createAdAgeProfileBackend({ firestore, FieldValue, HttpsError });
 exports.ensureAdAgeProfile = onCall({ region: "asia-northeast1", maxInstances: 2 }, adAgeProfiles.ensure);
